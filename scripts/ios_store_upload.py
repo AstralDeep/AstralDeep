@@ -22,6 +22,16 @@ from pathlib import Path
 BUNDLE = "com.personalailabs.astraldeep"
 REPO = "AstralDeep/AstralDeep"
 API = "https://api.appstoreconnect.apple.com/v1/"
+PROJECTION_INFO = "apple-clients/AstralApp/Info.plist"
+PROJECTION_CONSENT_TESTS = "apple-clients/AstralApp/AstralAppTests/MeshConsentTests.swift"
+FACE_ID_TEST_ANCHOR = b"final class LocalAuthenticatorTests: XCTestCase {\n"
+FACE_ID_HOST_BUNDLE_TEST = b'''    func testAppBundleDeclaresFaceIDPurposeForBiometricConsent() throws {
+        let purpose = try XCTUnwrap(
+            Bundle(for: AppModel.self).object(forInfoDictionaryKey: "NSFaceIDUsageDescription") as? String)
+        XCTAssertFalse(purpose.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
+
+'''
 
 
 def require(condition, reason):
@@ -43,6 +53,80 @@ def gitlink(ref, component):
     return row[2]
 
 
+class UniquePlistDictionary(dict):
+    def __init__(self, pairs=()):
+        super().__init__()
+        for key, value in pairs:
+            self[key] = value
+
+    def __setitem__(self, key, value):
+        require(key not in self, "Projection plist contains a duplicate dictionary key")
+        super().__setitem__(key, value)
+
+
+def projection_git(*args):
+    try:
+        return subprocess.check_output(
+            ["git", "--no-optional-locks", "--no-replace-objects", *args], stderr=subprocess.DEVNULL,
+        )
+    except subprocess.CalledProcessError:
+        raise ValueError("Projection compatibility Git objects are unavailable") from None
+
+
+def projection_blob(oid):
+    require(projection_git("cat-file", "-t", oid).strip() == b"blob", "Projection path must refer to a blob")
+    size = int(projection_git("cat-file", "-s", oid))
+    require(0 < size <= 1024**2, "Projection compatibility blob exceeds bounds")
+    return projection_git("cat-file", "blob", oid)
+
+
+def projection_compatibility(original, current):
+    require(all(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{40}", value) for value in (original, current)),
+            "Projection compatibility requires immutable commit identities")
+    proof = {"original_projection": original, "current_projection": current, "changed_paths": []}
+    if original == current:
+        return {**proof, "mode": "exact"}
+    require(all(projection_git("cat-file", "-t", value).strip() == b"commit" for value in (original, current)),
+            "Projection compatibility requires commit objects")
+    ancestor = subprocess.run(
+        ["git", "--no-optional-locks", "--no-replace-objects", "merge-base", "--is-ancestor", original, current],
+        check=False, capture_output=True,
+    )
+    require(ancestor.returncode == 0, "producer Projection must be an ancestor of the current consumer")
+    raw = projection_git("diff", "--raw", "--no-abbrev", "-z", "--no-renames", "--no-ext-diff",
+                         "--no-textconv", "--ignore-submodules=none", original, current, "--")
+    parts = raw.split(b"\0")
+    require(parts[-1] == b"" and len(parts) % 2 == 1, "invalid Projection raw tree delta")
+    changes = {}
+    for header, path in zip(parts[:-1:2], parts[1:-1:2], strict=True):
+        fields = header.split()
+        require(len(fields) == 5 and fields[0] == b":100644" and fields[1] == b"100644" and fields[4] == b"M",
+                "Projection compatibility permits only modified regular nonexecutable files")
+        name = path.decode("utf-8")
+        require(name in {PROJECTION_INFO, PROJECTION_CONSENT_TESTS} and name not in changes,
+                "Projection compatibility includes an unapproved path")
+        changes[name] = (fields[2].decode("ascii"), fields[3].decode("ascii"))
+    require(set(changes) == {PROJECTION_INFO, PROJECTION_CONSENT_TESTS},
+            "Projection compatibility requires exactly the purpose string and host-bundle regression")
+    old_info, new_info = [plistlib.loads(projection_blob(oid), dict_type=UniquePlistDictionary)
+                          for oid in changes[PROJECTION_INFO]]
+    require(isinstance(old_info, dict) and isinstance(new_info, dict), "Projection Info must be a dictionary")
+    purpose = new_info.get("NSFaceIDUsageDescription")
+    require("NSFaceIDUsageDescription" not in old_info and isinstance(purpose, str) and purpose.strip(),
+            "Projection Info must only add a nonempty Face ID purpose")
+    del new_info["NSFaceIDUsageDescription"]
+    require(plistlib.dumps(old_info, fmt=plistlib.FMT_BINARY) == plistlib.dumps(new_info, fmt=plistlib.FMT_BINARY),
+            "Projection Info changed beyond the Face ID purpose addition")
+    old_tests, new_tests = [projection_blob(oid) for oid in changes[PROJECTION_CONSENT_TESTS]]
+    require(old_tests.count(FACE_ID_TEST_ANCHOR) == 1
+            and new_tests == old_tests.replace(FACE_ID_TEST_ANCHOR, FACE_ID_TEST_ANCHOR + FACE_ID_HOST_BUNDLE_TEST, 1),
+            "Projection consent tests must preserve every byte except the exact host-bundle regression")
+    return {**proof, "mode": "face-id-purpose-addition", "ancestor": True,
+            "changed_paths": sorted(changes), "blob_changes": {
+                name: {"original": pair[0], "current": pair[1]} for name, pair in sorted(changes.items())},
+            "info_only_adds_face_id_purpose": True, "tests_exact_host_bundle_regression": True}
+
+
 def producer(run_id, artifact_id):
     run = github(f"actions/runs/{run_id}")
     require(
@@ -58,9 +142,9 @@ def producer(run_id, artifact_id):
     sha = run.get("head_sha", "")
     require(re.fullmatch(r"[0-9a-f]{40}", sha), "invalid producer source")
     subprocess.run(["git", "fetch", "--no-tags", "origin", sha], check=True)
-    for component in ("AstralProjection", "AstralKernel"):
-        require(gitlink("HEAD", component) == gitlink(sha, component), "producer component mismatch")
+    require(gitlink("HEAD", "AstralKernel") == gitlink(sha, "AstralKernel"), "producer component mismatch")
     projection = gitlink("HEAD", "AstralProjection")
+    original_projection = gitlink(sha, "AstralProjection")
     response = json.loads(command(
         "gh", "api", f"repos/AstralDeep/AstralProjection/actions/workflows/apple-ci.yml/runs?head_sha={projection}&event=push&branch=main&per_page=100",
     ))
@@ -83,8 +167,16 @@ def producer(run_id, artifact_id):
         and re.fullmatch(r"sha256:[0-9a-f]{64}", artifact.get("digest", "")),
         "Apple artifact identity or provider digest mismatch",
     )
+    if original_projection != projection:
+        subprocess.run([
+            "git", "fetch", "--no-tags", "--no-write-fetch-head",
+            "https://github.com/AstralDeep/AstralProjection.git", original_projection, projection,
+        ], check=True)
+    compatibility = projection_compatibility(original_projection, projection)
     return {"producer_run": run_id, "producer_sha": sha, "artifact_id": artifact_id,
             "artifact_digest": artifact["digest"], "projection": projection,
+            "original_projection": original_projection, "current_projection": projection,
+            "projection_compatibility": compatibility,
             "kernel": gitlink("HEAD", "AstralKernel")}
 
 
@@ -286,6 +378,9 @@ def verify_app(app, version, build):
         require(info.get("CFBundleIdentifier") == bundle
                 and info.get("CFBundleShortVersionString") == version
                 and info.get("CFBundleVersion") == build, "iPhone/Watch release versions disagree")
+        if target == app:
+            purpose = info.get("NSFaceIDUsageDescription")
+            require(isinstance(purpose, str) and purpose.strip(), "exported iPhone app must explain Face ID approval")
         subprocess.run(["codesign", "--verify", "--deep", "--strict", str(target)], check=True)
         entitlements = plistlib.loads(subprocess.check_output(
             ["codesign", "-d", "--entitlements", ":-", str(target)], stderr=subprocess.DEVNULL))

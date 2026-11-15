@@ -236,8 +236,10 @@ def make_app(tmp_path, profiles):
     watch = app / "Watch/AstralWatch.app"
     watch.mkdir(parents=True)
     for target, bundle, provision in ((app, upload.BUNDLE, profiles[0]), (watch, upload.BUNDLE + ".watch", profiles[1])):
-        (target / "Info.plist").write_bytes(plistlib.dumps({"CFBundleIdentifier": bundle,
-            "CFBundleShortVersionString": "2.0.0", "CFBundleVersion": "97"}))
+        info = {"CFBundleIdentifier": bundle, "CFBundleShortVersionString": "2.0.0", "CFBundleVersion": "97"}
+        if target == app:
+            info["NSFaceIDUsageDescription"] = "Verify approval of mesh changes and sensitive actions."
+        (target / "Info.plist").write_bytes(plistlib.dumps(info))
         (target / "embedded.mobileprovision").write_bytes(plistlib.dumps(provision))
     return app
 
@@ -255,6 +257,20 @@ def test_verify_app_denies_entitlements(profiles, monkeypatch, tmp_path):
     app = make_app(tmp_path, profiles)
     monkeypatch.setattr(upload.subprocess, "check_output", lambda *a, **kw: plistlib.dumps({}))
     with pytest.raises(ValueError, match="entitlements"):
+        upload.verify_app(app, "2.0.0", "97")
+
+
+@pytest.mark.parametrize("purpose", [None, "", " \n ", 0, [], {}])
+def test_verify_app_denies_absent_or_invalid_face_id_purpose(profiles, tmp_path, purpose):
+    app = make_app(tmp_path, profiles)
+    path = app / "Info.plist"
+    info = plistlib.loads(path.read_bytes())
+    if purpose is None:
+        del info["NSFaceIDUsageDescription"]
+    else:
+        info["NSFaceIDUsageDescription"] = purpose
+    path.write_bytes(plistlib.dumps(info))
+    with pytest.raises(ValueError, match="Face ID"):
         upload.verify_app(app, "2.0.0", "97")
 
 
@@ -523,3 +539,167 @@ def test_profile_platform_family_rejects_other_or_unanchored_platforms(profiles,
     value['Platform'] = platforms
     with pytest.raises(ValueError, match='platform_tags_allowed'):
         upload.profile_identity(value, upload.BUNDLE + ('.watch' if target else ''), 'watch' if target else 'phone', 'TEAM')
+
+
+COMPAT_INFO = 'apple-clients/AstralApp/Info.plist'
+COMPAT_TESTS = 'apple-clients/AstralApp/AstralAppTests/MeshConsentTests.swift'
+COMPAT_ANCHOR = 'final class LocalAuthenticatorTests: XCTestCase {\n'
+COMPAT_ADDITION = '''    func testAppBundleDeclaresFaceIDPurposeForBiometricConsent() throws {
+        let purpose = try XCTUnwrap(
+            Bundle(for: AppModel.self).object(forInfoDictionaryKey: "NSFaceIDUsageDescription") as? String)
+        XCTAssertFalse(purpose.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
+
+'''
+
+
+def compat_git(repo, *args):
+    import subprocess
+
+    result = subprocess.run(['git', '-C', str(repo), '-c', 'commit.gpgsign=false',
+        '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', *args],
+        capture_output=True, check=True)
+    return result.stdout.decode().strip()
+
+
+@pytest.fixture
+def projection_repo(tmp_path, monkeypatch):
+    repo = tmp_path / 'projection'
+    repo.mkdir()
+    compat_git(repo, 'init', '-q')
+    compat_git(repo, 'config', 'core.filemode', 'true')
+    info = repo / COMPAT_INFO
+    tests = repo / COMPAT_TESTS
+    info.parent.mkdir(parents=True)
+    tests.parent.mkdir(parents=True)
+    old_info = {'CFBundleName': 'AstralDeep', 'LSRequiresIPhoneOS': True}
+    old_test = 'import XCTest\n' + COMPAT_ANCHOR + '    func testExistingConsentDenial() {}\n}\n'
+    info.write_bytes(plistlib.dumps(old_info))
+    tests.write_text(old_test)
+    compat_git(repo, 'add', '.')
+    compat_git(repo, 'commit', '-qm', 'Original')
+    old = compat_git(repo, 'rev-parse', 'HEAD')
+    new_info = {**old_info, 'NSFaceIDUsageDescription': 'Verify protected actions.'}
+    info.write_bytes(plistlib.dumps(new_info))
+    tests.write_text(old_test.replace(COMPAT_ANCHOR, COMPAT_ANCHOR + COMPAT_ADDITION))
+    monkeypatch.chdir(repo)
+    return repo, old, old_info, old_test
+
+
+def compat_commit(repo):
+    compat_git(repo, 'add', '-A')
+    compat_git(repo, 'commit', '--allow-empty', '-qm', 'Consumer')
+    return compat_git(repo, 'rev-parse', 'HEAD')
+
+
+def test_projection_purpose_compatibility_uses_real_git_tree(projection_repo):
+    repo, old, _, _ = projection_repo
+    new = compat_commit(repo)
+    proof = upload.projection_compatibility(old, new)
+    assert proof['mode'] == 'face-id-purpose-addition'
+    assert proof['original_projection'] == old and proof['current_projection'] == new
+    assert proof['changed_paths'] == [COMPAT_TESTS, COMPAT_INFO]
+    assert proof['ancestor'] is True
+    assert proof['info_only_adds_face_id_purpose'] is True
+    assert proof['tests_exact_host_bundle_regression'] is True
+    assert upload.projection_compatibility(old, old)['mode'] == 'exact'
+
+
+@pytest.mark.parametrize('mutation', ['outside', 'newline-path', 'gitlink', 'info-executable', 'test-executable',
+    'info-symlink', 'test-symlink', 'deleted', 'renamed', 'no-delta', 'info-other-key', 'info-bool-to-int',
+    'purpose-missing', 'purpose-empty', 'purpose-whitespace', 'purpose-number', 'purpose-list', 'purpose-dict',
+    'info-invalid', 'info-duplicate-key', 'test-arbitrary-addition', 'test-existing-change', 'test-wrong-bundle'])
+def test_projection_compatibility_denies_other_tree_or_semantic_changes(projection_repo, mutation):
+    repo, old, old_info, old_test = projection_repo
+    info = repo / COMPAT_INFO
+    tests = repo / COMPAT_TESTS
+    new_info = {**old_info, 'NSFaceIDUsageDescription': 'Verify protected actions.'}
+    if mutation in {'outside', 'newline-path'}:
+        path = repo / ('unapproved.swift' if mutation == 'outside' else 'unapproved\nfile.swift')
+        path.write_text('unapproved')
+    elif mutation == 'gitlink':
+        compat_git(repo, 'config', 'diff.ignoreSubmodules', 'all')
+        compat_git(repo, 'add', COMPAT_INFO, COMPAT_TESTS)
+        compat_git(repo, 'update-index', '--add', '--cacheinfo', '160000,' + old + ',unapproved-component')
+    elif mutation in {'info-executable', 'test-executable'}:
+        (info if mutation == 'info-executable' else tests).chmod(0o755)
+    elif mutation in {'info-symlink', 'test-symlink'}:
+        path = info if mutation == 'info-symlink' else tests
+        path.unlink()
+        path.symlink_to('unapproved-target')
+    elif mutation == 'deleted':
+        info.unlink()
+    elif mutation == 'renamed':
+        info.rename(info.with_name('Renamed.plist'))
+    elif mutation == 'no-delta':
+        info.write_bytes(plistlib.dumps(old_info))
+        tests.write_text(old_test)
+    elif mutation in {'info-other-key', 'info-bool-to-int'}:
+        new_info['CFBundleName' if mutation == 'info-other-key' else 'LSRequiresIPhoneOS'] = 'Changed' if mutation == 'info-other-key' else 1
+        info.write_bytes(plistlib.dumps(new_info))
+    elif mutation.startswith('purpose-'):
+        values = {'purpose-empty':'', 'purpose-whitespace':' \n ', 'purpose-number':1, 'purpose-list':[], 'purpose-dict':{}}
+        if mutation == 'purpose-missing':
+            info.write_bytes(plistlib.dumps(old_info, fmt=plistlib.FMT_BINARY))
+        else:
+            new_info['NSFaceIDUsageDescription'] = values[mutation]
+            info.write_bytes(plistlib.dumps(new_info))
+    elif mutation == 'info-invalid':
+        info.write_bytes(b'not a plist')
+    elif mutation == 'info-duplicate-key':
+        raw = plistlib.dumps(new_info).replace(b'<key>CFBundleName</key>', b'<key>CFBundleName</key><string>Changed</string><key>CFBundleName</key>')
+        info.write_bytes(raw)
+    elif mutation == 'test-arbitrary-addition':
+        tests.write_text(tests.read_text() + 'func arbitraryCode() {}\n')
+    elif mutation == 'test-existing-change':
+        tests.write_text(tests.read_text().replace('testExistingConsentDenial', 'disabledExistingConsentDenial'))
+    else:
+        tests.write_text(tests.read_text().replace('Bundle(for: AppModel.self)', 'Bundle.main'))
+    if mutation == 'gitlink':
+        compat_git(repo, 'commit', '-qm', 'Consumer with gitlink')
+        new = compat_git(repo, 'rev-parse', 'HEAD')
+    else:
+        new = compat_commit(repo)
+    with pytest.raises(ValueError):
+        upload.projection_compatibility(old, new)
+
+
+def test_projection_compatibility_requires_ancestor_and_immutable_commit_ids(projection_repo):
+    repo, old, _, _ = projection_repo
+    compat_git(repo, 'checkout', '--orphan', 'other-history')
+    new = compat_commit(repo)
+    with pytest.raises(ValueError, match='ancestor'):
+        upload.projection_compatibility(old, new)
+    for bad in ('main', '0' * 40):
+        with pytest.raises(ValueError):
+            upload.projection_compatibility(old, bad)
+
+
+def test_projection_compatibility_rejects_preexisting_purpose(projection_repo):
+    repo, _, old_info, old_test = projection_repo
+    path = repo / COMPAT_INFO
+    path.write_bytes(plistlib.dumps({**old_info, 'NSFaceIDUsageDescription': 'Already present'}))
+    (repo / COMPAT_TESTS).write_text(old_test)
+    old = compat_commit(repo)
+    path.write_bytes(plistlib.dumps({**old_info, 'NSFaceIDUsageDescription': 'Changed'}))
+    (repo / COMPAT_TESTS).write_text(old_test.replace(COMPAT_ANCHOR, COMPAT_ANCHOR + COMPAT_ADDITION))
+    with pytest.raises(ValueError):
+        upload.projection_compatibility(old, compat_commit(repo))
+
+
+def test_producer_retains_origin_and_requires_current_native_ci_for_compatibility(provider, monkeypatch):
+    old, new, kernel = 'd' * 40, 'e' * 40, 'c' * 40
+    monkeypatch.setattr(upload, 'gitlink', lambda ref, component: kernel if component == 'AstralKernel' else new if ref == 'HEAD' else old)
+    provider[2]['workflow_runs'][0]['head_sha'] = new
+    proof = {'mode':'face-id-purpose-addition','original_projection':old,'current_projection':new,
+             'changed_paths':[COMPAT_TESTS, COMPAT_INFO]}
+    monkeypatch.setattr(upload, 'projection_compatibility', lambda a, b: proof, raising=False)
+    calls = []
+    monkeypatch.setattr(upload.subprocess, 'run', lambda args, **kwargs: calls.append(args))
+    receipt = upload.producer(11, 22)
+    assert receipt['original_projection'] == old and receipt['current_projection'] == new
+    assert receipt['projection_compatibility'] == proof
+    assert any('https://github.com/AstralDeep/AstralProjection.git' in args and old in args and new in args for args in calls)
+    provider[2]['workflow_runs'][0]['head_sha'] = old
+    with pytest.raises(ValueError, match='Projection'):
+        upload.producer(11, 22)
