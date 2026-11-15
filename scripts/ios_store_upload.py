@@ -169,12 +169,87 @@ def projection_compatibility(original, current):
             "provenance_only_updates_info_result": True, "info_result_sha256": ledger_hashes}
 
 
+def framework_only_jobs(run):
+    attempt = run.get("run_attempt")
+    require(type(attempt) is int and 1 <= attempt <= 20, "invalid framework producer attempt")
+    repository_id = run["repository"].get("id")
+    require(type(repository_id) is int and repository_id > 0
+            and run["head_repository"].get("id") == repository_id,
+            "framework producer repository identity is invalid")
+    expected = {
+        "Decide the next Mac release": "success", "Require exact pinned Projection Apple CI": "success",
+        "Build source-bound Apple framework": "success", "Build and qualify source-bound node pack": "skipped",
+        "Build, notarize and publish the Mac DMG": "skipped",
+    }
+    response = github(f"actions/runs/{run['id']}/jobs?filter=all&per_page=100")
+    require(isinstance(response, dict) and isinstance(response.get("jobs"), list)
+            and type(response.get("total_count")) is int
+            and 0 < response["total_count"] == len(response["jobs"]) <= 100,
+            "framework producer job graph is malformed or exceeds bounds")
+    latest, identities, occurrences = {}, set(), set()
+    for job in response["jobs"]:
+        require(isinstance(job, dict) and type(job.get("id")) is int and job["id"] > 0
+                and job["id"] not in identities and isinstance(job.get("name"), str) and job["name"] in expected
+                and job.get("run_id") == run["id"] and job.get("head_sha") == run["head_sha"]
+                and type(job.get("run_attempt")) is int and 1 <= job["run_attempt"] <= attempt
+                and job.get("status") == "completed"
+                and isinstance(job.get("conclusion"), str)
+                and job["conclusion"] in {"success", "failure", "skipped", "cancelled", "timed_out",
+                                               "action_required", "neutral", "stale", "startup_failure"},
+                "framework producer job identity or completion is invalid")
+        require(expected[job["name"]] != "skipped" or job["conclusion"] == "skipped",
+                "framework producer must skip Mac packaging and publication in every attempt")
+        occurrence = (job["name"], job["run_attempt"])
+        require(occurrence not in occurrences, "duplicate framework producer job attempt")
+        occurrences.add(occurrence)
+        identities.add(job["id"])
+        if job["name"] not in latest or latest[job["name"]]["run_attempt"] < job["run_attempt"]:
+            latest[job["name"]] = job
+    require(set(latest) == set(expected)
+            and any(job["run_attempt"] == attempt for job in latest.values())
+            and all(job["conclusion"] == expected[name] for name, job in latest.items()),
+            "manual Apple producer is not a successful framework-only job graph")
+    steps = latest["Decide the next Mac release"].get("steps")
+    require(isinstance(steps, list) and all(isinstance(item, dict) for item in steps),
+            "framework decision steps are malformed")
+    markers = [item for item in steps if item.get("name") == "Confirm framework-only source decision"]
+    require(len(markers) == 1 and markers[0].get("status") == "completed"
+            and markers[0].get("conclusion") == "success", "missing successful framework-only source decision")
+    return {"run_attempt": attempt, "jobs": {
+        name: {key: job[key] for key in ("id", "run_attempt", "conclusion")} for name, job in latest.items()}}
+
+
+def kernel_qualification(kernel):
+    repo = "AstralDeep/AstralKernel"
+    response = json.loads(command(
+        "gh", "api", f"repos/{repo}/actions/workflows/ci.yml/runs?head_sha={kernel}&event=push&branch=k%2Fintegration&per_page=100",
+    ))
+    require(isinstance(response, dict) and isinstance(response.get("workflow_runs"), list)
+            and len(response["workflow_runs"]) <= 100
+            and all(isinstance(item, dict) for item in response["workflow_runs"]),
+            "malformed Kernel qualification response")
+    for item in response["workflow_runs"]:
+        if (type(item.get("id")) is int and item["id"] > 0
+                and type(item.get("workflow_id")) is int and item["workflow_id"] > 0
+                and type(item.get("run_attempt")) is int and item["run_attempt"] > 0
+                and item.get("head_sha") == kernel and item.get("head_branch") == "k/integration"
+                and item.get("event") == "push" and item.get("path") == ".github/workflows/ci.yml"
+                and isinstance(item.get("repository"), dict) and item["repository"].get("full_name") == repo
+                and isinstance(item.get("head_repository"), dict) and item["head_repository"].get("full_name") == repo
+                and item.get("status") == "completed" and item.get("conclusion") == "success"):
+            return {key: item[key] for key in ("id", "workflow_id", "run_attempt", "head_sha", "head_branch",
+                                              "event", "path", "repository", "head_repository", "status", "conclusion")}
+    raise ValueError("no successful exact-source Kernel qualification on k/integration")
+
+
 def producer(run_id, artifact_id):
     run = github(f"actions/runs/{run_id}")
+    require(isinstance(run, dict) and isinstance(run.get("repository"), dict)
+            and isinstance(run.get("head_repository"), dict), "malformed Apple producer identity")
     require(
         run.get("id") == run_id and run.get("workflow_id") == 397620410
         and run.get("path") == ".github/workflows/release-macos.yml"
-        and run.get("event") == "workflow_run"
+        and run.get("event") in ("workflow_run", "workflow_dispatch")
         and run.get("head_branch") == "main" and run.get("status") == "completed"
         and run.get("conclusion") == "success"
         and run.get("repository", {}).get("full_name") == REPO
@@ -182,7 +257,8 @@ def producer(run_id, artifact_id):
         "Apple producer must be a successful default-branch run of the approved workflow",
     )
     sha = run.get("head_sha", "")
-    require(re.fullmatch(r"[0-9a-f]{40}", sha), "invalid producer source")
+    require(isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40}", sha), "invalid producer source")
+    manual = {"provider_event": "workflow_dispatch", "framework_only": framework_only_jobs(run)} if run["event"] == "workflow_dispatch" else {}
     subprocess.run(["git", "fetch", "--no-tags", "origin", sha], check=True)
     require(gitlink("HEAD", "AstralKernel") == gitlink(sha, "AstralKernel"), "producer component mismatch")
     projection = gitlink("HEAD", "AstralProjection")
@@ -215,11 +291,14 @@ def producer(run_id, artifact_id):
             "https://github.com/AstralDeep/AstralProjection.git", original_projection, projection,
         ], check=True)
     compatibility = projection_compatibility(original_projection, projection)
+    if manual:
+        manual["kernel_qualification"] = kernel_qualification(gitlink("HEAD", "AstralKernel"))
+        require(github(f"actions/runs/{run_id}") == run, "framework producer metadata changed during verification")
     return {"producer_run": run_id, "producer_sha": sha, "artifact_id": artifact_id,
             "artifact_digest": artifact["digest"], "projection": projection,
             "original_projection": original_projection, "current_projection": projection,
             "projection_compatibility": compatibility,
-            "kernel": gitlink("HEAD", "AstralKernel")}
+            "kernel": gitlink("HEAD", "AstralKernel"), **manual}
 
 
 def verify_download(path, receipt):

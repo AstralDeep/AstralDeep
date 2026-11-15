@@ -1,5 +1,6 @@
 # Publishes a notarized macOS DMG as an immutable macos-v<version>-<build> release after CI succeeds for a push to main, or stages one when dispatched from main.
 # scripts/next_macos_release.py decides the version, scripts/macos_release_notes.py writes the notes and scripts/release_macos.py builds, notarizes and publishes.
+# Framework-only dry runs build the same source-bound Apple artifacts without Mac packaging or signing.
 name: Release macOS
 
 on:
@@ -13,6 +14,10 @@ on:
         description: Build, notarize and stage without publishing
         type: boolean
         default: true
+      framework_only:
+        description: Build only the source-bound Apple framework (requires dry_run)
+        type: boolean
+        default: false
       emergency_skip_ci:
         description: Publish from main without the exact-head CI gate (manual emergency release only)
         type: boolean
@@ -44,6 +49,11 @@ jobs:
       skip: ${{ steps.decide.outputs.skip }}
       previous_target: ${{ steps.decide.outputs.previous_target }}
     steps:
+      - name: Reject framework-only publication
+        if: ${{ inputs.framework_only == true && inputs.dry_run != true }}
+        run: |
+          echo "::error::framework_only requires dry_run=true."
+          exit 1
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
@@ -73,12 +83,27 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           EXPECTED_HEAD: ${{ github.event.workflow_run.head_sha || github.sha }}
+          FRAMEWORK_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.framework_only == true }}
         run: |
           set -euo pipefail
           head="$(git rev-parse HEAD)"
           test "$head" = "$EXPECTED_HEAD"
           echo "head=$head" >> "$GITHUB_OUTPUT"
-          python scripts/next_macos_release.py --repo "$GITHUB_REPOSITORY" --head "$head" --pbxproj components/AstralProjection/apple-clients/AstralApp/AstralApp.xcodeproj/project.pbxproj --github-output "$GITHUB_OUTPUT"
+          if [[ "$FRAMEWORK_ONLY" == "true" ]]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          else
+            python scripts/next_macos_release.py --repo "$GITHUB_REPOSITORY" --head "$head" --pbxproj components/AstralProjection/apple-clients/AstralApp/AstralApp.xcodeproj/project.pbxproj --github-output "$GITHUB_OUTPUT"
+          fi
+      - name: Confirm framework-only source decision
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.framework_only == true && inputs.dry_run == true }}
+        env:
+          DECIDED_HEAD: ${{ steps.decide.outputs.head }}
+          EXPECTED_HEAD: ${{ github.sha }}
+          DECIDED_SKIP: ${{ steps.decide.outputs.skip }}
+        run: |
+          set -euo pipefail
+          test "$DECIDED_HEAD" = "$EXPECTED_HEAD"
+          test "$DECIDED_SKIP" = "false"
 
   native-check:
     name: Require exact pinned Projection Apple CI
@@ -205,7 +230,7 @@ jobs:
   node-pack:
     name: Build and qualify source-bound node pack
     needs: [decide, apple-artifacts]
-    if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && (needs.decide.outputs.skip != 'true') }}
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && (inputs.framework_only != true && needs.decide.outputs.skip != 'true') }}
     runs-on: macos-26
     timeout-minutes: 30
     permissions:
@@ -281,7 +306,7 @@ jobs:
   release:
     name: Build, notarize and publish the Mac DMG
     needs: [decide, native-check, apple-artifacts, node-pack]
-    if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && (needs.decide.outputs.skip != 'true' && needs.native-check.result == 'success' && (github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.head_repository.full_name == github.repository))) }}
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && (inputs.framework_only != true && needs.decide.outputs.skip != 'true' && needs.native-check.result == 'success' && (github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.head_repository.full_name == github.repository))) }}
     runs-on: macos-26
     timeout-minutes: 30
     environment: release-macos

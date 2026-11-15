@@ -48,6 +48,225 @@ def test_producer(provider):
     assert result["artifact_digest"] == "sha256:" + "b" * 64
 
 
+@pytest.fixture
+def framework_provider(provider, monkeypatch):
+    run, artifact, ci = provider
+    run.update(event="workflow_dispatch", run_attempt=1)
+    names = ["Decide the next Mac release", "Require exact pinned Projection Apple CI",
+             "Build source-bound Apple framework", "Build and qualify source-bound node pack",
+             "Build, notarize and publish the Mac DMG"]
+    jobs = {"total_count": 5, "jobs": [
+        {"id": index + 100, "run_id": 11, "run_attempt": 1, "head_sha": "a" * 40,
+         "name": name, "status": "completed", "conclusion": "success" if index < 3 else "skipped",
+         "steps": [{"name": "Confirm framework-only source decision", "status": "completed", "conclusion": "success"}]
+         if index == 0 else []}
+        for index, name in enumerate(names)
+    ]}
+    kernel = {"workflow_runs": [{
+        "id": 33, "workflow_id": 44, "run_attempt": 1, "head_sha": "c" * 40,
+        "head_branch": "k/integration", "event": "push", "path": ".github/workflows/ci.yml",
+        "repository": {"full_name": "AstralDeep/AstralKernel"},
+        "head_repository": {"full_name": "AstralDeep/AstralKernel"},
+        "status": "completed", "conclusion": "success",
+    }]}
+    queries = []
+
+    def github(path):
+        queries.append(path)
+        if path == "actions/runs/11":
+            return copy.deepcopy(run)
+        if path == "actions/runs/11/jobs?filter=all&per_page=100":
+            return copy.deepcopy(jobs)
+        assert path == "actions/artifacts/22"
+        return artifact
+
+    def command(*args):
+        queries.append(args[-1])
+        return json.dumps(kernel if "AstralDeep/AstralKernel/" in args[-1] else ci)
+
+    monkeypatch.setattr(upload, "github", github)
+    monkeypatch.setattr(upload, "command", command)
+    return run, jobs, kernel, queries
+
+
+def test_framework_producer_requires_provider_graph_and_kernel_qualification(framework_provider):
+    receipt = upload.producer(11, 22)
+    assert receipt["provider_event"] == "workflow_dispatch"
+    assert receipt["framework_only"]["run_attempt"] == 1
+    assert receipt["framework_only"]["jobs"]["Require exact pinned Projection Apple CI"]["id"] == 101
+    assert receipt["kernel_qualification"] == framework_provider[2]["workflow_runs"][0]
+    assert framework_provider[3].count("actions/runs/11") == 2
+    assert "actions/runs/11/jobs?filter=all&per_page=100" in framework_provider[3]
+    assert ("repos/AstralDeep/AstralKernel/actions/workflows/ci.yml/runs?head_sha=" + "c" * 40
+            + "&event=push&branch=k%2Fintegration&per_page=100") in framework_provider[3]
+
+
+def test_automatic_producer_keeps_its_existing_receipt_and_does_not_query_jobs_or_kernel(provider):
+    receipt = upload.producer(11, 22)
+    assert not {"provider_event", "framework_only", "kernel_qualification"} & receipt.keys()
+
+
+def test_framework_producer_accepts_a_failed_native_job_followed_by_a_successful_retry(framework_provider):
+    run, jobs, _, _ = framework_provider
+    run["run_attempt"] = 2
+    retry = copy.deepcopy(jobs["jobs"][1])
+    jobs["jobs"][1]["conclusion"] = "failure"
+    retry.update(id=200, run_attempt=2)
+    jobs["jobs"].append(retry)
+    jobs["total_count"] += 1
+    receipt = upload.producer(11, 22)
+    assert receipt["framework_only"]["run_attempt"] == 2
+    assert receipt["framework_only"]["jobs"][retry["name"]]["id"] == 200
+
+
+@pytest.mark.parametrize("field,value", [
+    ("run_attempt", None), ("run_attempt", True), ("run_attempt", 0), ("run_attempt", 21),
+    ("event", "pull_request"), ("head_branch", "candidate"), ("conclusion", "failure"),
+    ("repository", {"full_name": "fork/repo"}), ("head_repository", {"full_name": "fork/repo"}),
+    ("repository", {"full_name": upload.REPO}), ("head_repository", {"full_name": upload.REPO, "id": 99}),
+    ("repository", None), ("head_repository", None), ("head_sha", None), ("event", []),
+])
+def test_framework_producer_refuses_untrusted_or_unbounded_runs(framework_provider, field, value):
+    framework_provider[0][field] = value
+    with pytest.raises(ValueError):
+        upload.producer(11, 22)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("id", None), ("id", True), ("run_id", 12), ("head_sha", "d" * 40),
+    ("run_attempt", 0), ("run_attempt", 2), ("run_attempt", True),
+    ("name", "native-check"), ("name", []), ("status", "in_progress"), ("conclusion", "failure"),
+    ("conclusion", []),
+])
+def test_framework_producer_refuses_wrong_or_incomplete_provider_jobs(framework_provider, field, value):
+    framework_provider[1]["jobs"][1][field] = value
+    with pytest.raises(ValueError):
+        upload.producer(11, 22)
+
+
+@pytest.mark.parametrize("mutation", ["not-object", "missing", "not-array", "bad-job", "truncated", "too-many",
+    "duplicate", "missing-job", "extra-job", "full-mac", "emergency", "missing-marker", "pending-marker",
+    "failed-marker", "duplicate-marker", "missing-current-attempt", "prior-pack-success", "marker-not-array",
+    "malformed-step", "duplicate-job-attempt"])
+def test_framework_producer_refuses_malformed_graphs_and_ordinary_manual_mac_runs(framework_provider, mutation):
+    run, jobs, _, _ = framework_provider
+    if mutation == "not-object":
+        jobs.clear()
+    elif mutation == "missing":
+        del jobs["total_count"]
+    elif mutation == "not-array":
+        jobs["jobs"] = {}
+    elif mutation == "bad-job":
+        jobs["jobs"][0] = None
+    elif mutation == "truncated":
+        jobs["total_count"] = 100
+    elif mutation == "too-many":
+        jobs["total_count"] = 101
+    elif mutation == "duplicate":
+        jobs["jobs"].append(copy.deepcopy(jobs["jobs"][0]))
+        jobs["total_count"] += 1
+    elif mutation == "missing-job":
+        jobs["jobs"].pop()
+        jobs["total_count"] -= 1
+    elif mutation == "extra-job":
+        extra = copy.deepcopy(jobs["jobs"][0])
+        extra.update(id=300, name="unexpected")
+        jobs["jobs"].append(extra)
+        jobs["total_count"] += 1
+    elif mutation in {"full-mac", "emergency"}:
+        jobs["jobs"][3]["conclusion"] = "success"
+        jobs["jobs"][4]["conclusion"] = "success"
+        jobs["jobs"][0]["steps"] = []
+    elif mutation == "missing-marker":
+        jobs["jobs"][0]["steps"] = []
+    elif mutation == "pending-marker":
+        jobs["jobs"][0]["steps"][0]["status"] = "in_progress"
+    elif mutation == "failed-marker":
+        jobs["jobs"][0]["steps"][0]["conclusion"] = "failure"
+    elif mutation == "duplicate-marker":
+        jobs["jobs"][0]["steps"] *= 2
+    elif mutation == "missing-current-attempt":
+        run["run_attempt"] = 2
+    elif mutation == "prior-pack-success":
+        run["run_attempt"] = 2
+        previous = copy.deepcopy(jobs["jobs"][3])
+        previous["conclusion"] = "success"
+        jobs["jobs"][3].update(id=300, run_attempt=2)
+        jobs["jobs"].append(previous)
+        jobs["total_count"] += 1
+    elif mutation == "marker-not-array":
+        jobs["jobs"][0]["steps"] = {}
+    elif mutation == "malformed-step":
+        jobs["jobs"][0]["steps"] = [None]
+    elif mutation == "duplicate-job-attempt":
+        duplicate = copy.deepcopy(jobs["jobs"][0])
+        duplicate["id"] = 300
+        jobs["jobs"].append(duplicate)
+        jobs["total_count"] += 1
+    with pytest.raises(ValueError):
+        upload.producer(11, 22)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("head_sha", "d" * 40), ("head_branch", "main"), ("event", "pull_request"),
+    ("path", ".github/workflows/other.yml"), ("status", "in_progress"), ("conclusion", "failure"),
+    ("repository", {"full_name": "fork/kernel"}), ("head_repository", {"full_name": "fork/kernel"}),
+    ("repository", None), ("id", None), ("workflow_id", True),
+])
+def test_framework_producer_refuses_wrong_or_unqualified_kernel(framework_provider, field, value):
+    framework_provider[2]["workflow_runs"][0][field] = value
+    with pytest.raises(ValueError):
+        upload.producer(11, 22)
+
+
+@pytest.mark.parametrize("payload", [{}, {"workflow_runs": {}}, {"workflow_runs": [None]}, {"workflow_runs": []}])
+def test_framework_producer_refuses_malformed_or_missing_kernel_runs(framework_provider, payload):
+    framework_provider[2].clear()
+    framework_provider[2].update(payload)
+    with pytest.raises(ValueError):
+        upload.producer(11, 22)
+
+
+def test_framework_producer_rejects_metadata_changed_during_verification(framework_provider, monkeypatch):
+    github = upload.github
+    calls = 0
+
+    def changed(path):
+        nonlocal calls
+        result = github(path)
+        if path == "actions/runs/11":
+            calls += 1
+            if calls == 2:
+                result.update(run_attempt=2, status="in_progress", conclusion=None)
+        return result
+
+    monkeypatch.setattr(upload, "github", changed)
+    with pytest.raises(ValueError):
+        upload.producer(11, 22)
+
+
+@pytest.mark.parametrize("failure", ["kernel-source", "projection-ci", "artifact-digest", "artifact-source"])
+def test_framework_producer_retains_existing_source_and_artifact_gates(framework_provider, provider, monkeypatch, failure):
+    if failure == "kernel-source":
+        monkeypatch.setattr(upload, "gitlink", lambda ref, component: "d" * 40 if ref == "HEAD" else "c" * 40)
+    elif failure == "projection-ci":
+        provider[2]["workflow_runs"][0]["conclusion"] = "failure"
+    elif failure == "artifact-digest":
+        provider[1]["digest"] = "untrusted"
+    else:
+        provider[1]["workflow_run"]["head_sha"] = "d" * 40
+    with pytest.raises(ValueError):
+        upload.producer(11, 22)
+
+
+def test_framework_producer_accepts_qualified_kernel_after_an_earlier_failed_run(framework_provider):
+    runs = framework_provider[2]["workflow_runs"]
+    failed = copy.deepcopy(runs[0])
+    failed.update(id=32, conclusion="failure")
+    runs.insert(0, failed)
+    assert upload.producer(11, 22)["kernel_qualification"]["id"] == 33
+
+
 @pytest.mark.parametrize("field,value", [
     ("workflow_id", 8), ("path", "evil.yml"), ("event", "pull_request"),
     ("head_branch", "candidate"), ("status", "in_progress"), ("conclusion", "failure"),

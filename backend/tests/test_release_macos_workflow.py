@@ -71,11 +71,120 @@ def test_runs_after_green_ci_on_main_or_by_dispatch_that_defaults_to_a_dry_run(f
     assert on["workflow_run"] == {"workflows": ["CI"], "types": ["completed"], "branches": ["main"]}
     dry_run = on["workflow_dispatch"]["inputs"]["dry_run"]
     assert dry_run["type"] == "boolean" and dry_run["default"] is True
+    framework = on["workflow_dispatch"]["inputs"]["framework_only"]
+    assert framework["type"] == "boolean" and framework["default"] is False
     assert flow["permissions"] == {"contents": "read"}
     assert flow["concurrency"] == {
         "group": "release-macos-${{ github.event_name == 'workflow_dispatch' && inputs.dry_run != false && 'dry-run' || 'publish' }}",
         "cancel-in-progress": False,
     }
+
+
+def workflow_allows(entry, *, event="workflow_dispatch", ref="refs/heads/main", dry_run=True,
+                    framework_only=False, skip="false"):
+    values = {
+        "github.event_name": event, "github.ref": ref, "github.repository": "AstralDeep/AstralDeep",
+        "github.event.workflow_run.conclusion": "success", "github.event.workflow_run.event": "push",
+        "github.event.workflow_run.head_branch": "main",
+        "github.event.workflow_run.head_repository.full_name": "AstralDeep/AstralDeep",
+        "inputs.dry_run": dry_run, "inputs.framework_only": framework_only,
+        "needs.decide.outputs.skip": skip, "needs.native-check.result": "success",
+    }
+    expression = re.sub(r"(?<!')\btrue\b(?!')", "True", condition(entry))
+    expression = re.sub(r"(?<!')\bfalse\b(?!')", "False", expression)
+    expression = re.sub(r"\b(?:github|inputs|needs)\.[\w.-]+", lambda match: repr(values[match[0]]), expression)
+    return eval(expression.replace("&&", " and ").replace("||", " or "), {"__builtins__": {}})
+
+
+@pytest.mark.parametrize("event,dry_run,framework_only,skip,expected", [
+    ("workflow_dispatch", False, False, "false", {"decide", "native-check", "apple-artifacts", "node-pack", "release"}),
+    ("workflow_dispatch", True, False, "false", {"decide", "native-check", "apple-artifacts", "node-pack", "release"}),
+    ("workflow_dispatch", True, True, "false", {"decide", "native-check", "apple-artifacts"}),
+    ("workflow_dispatch", True, False, "true", {"decide"}),
+    ("workflow_run", False, False, "false", {"decide", "native-check", "apple-artifacts", "node-pack", "release"}),
+    ("workflow_run", False, False, "true", {"decide"}),
+])
+def test_framework_mode_runs_only_the_source_bound_producer_jobs(flow, event, dry_run, framework_only, skip, expected):
+    assert {name for name, job in flow["jobs"].items()
+            if workflow_allows(job, event=event, dry_run=dry_run, framework_only=framework_only, skip=skip)} == expected
+
+
+@pytest.mark.parametrize("dry_run,framework_only", [(True, False), (False, False), (True, True), (False, True)])
+def test_no_dispatch_mode_can_run_jobs_from_another_ref(flow, dry_run, framework_only):
+    assert all(not workflow_allows(job, ref="refs/heads/candidate", dry_run=dry_run, framework_only=framework_only)
+               for job in flow["jobs"].values())
+
+
+@pytest.mark.parametrize("dry_run,framework_only,rejected", [
+    (True, False, False), (False, False, False), (True, True, False), (False, True, True),
+])
+def test_framework_publication_is_rejected_before_checkout(flow, dry_run, framework_only, rejected):
+    decide = flow["jobs"]["decide"]
+    guard = step(decide, "Reject framework-only publication")
+    assert decide["steps"][0] == guard
+    assert workflow_allows(guard, dry_run=dry_run, framework_only=framework_only) is rejected
+    if rejected:
+        result = subprocess.run(["bash", "-c", guard["run"]], capture_output=True, text=True, check=False)
+        assert result.returncode != 0 and "::error::" in result.stdout
+        assert all(not workflow_allows(flow["jobs"][name], dry_run=dry_run, framework_only=framework_only)
+                   for name in ("node-pack", "release"))
+
+
+@pytest.mark.parametrize("dry_run,framework_only,expected", [
+    (True, False, False), (False, False, False), (True, True, True), (False, True, False),
+])
+def test_framework_decision_has_provider_visible_proof_only_for_safe_framework_mode(flow, dry_run, framework_only, expected):
+    marker = step(flow["jobs"]["decide"], "Confirm framework-only source decision")
+    assert workflow_allows(marker, dry_run=dry_run, framework_only=framework_only) is expected
+    assert marker["env"] == {
+        "DECIDED_HEAD": "${{ steps.decide.outputs.head }}", "EXPECTED_HEAD": "${{ github.sha }}",
+        "DECIDED_SKIP": "${{ steps.decide.outputs.skip }}",
+    }
+    for head, skip, valid in [("a" * 40, "false", True), ("b" * 40, "false", False), ("a" * 40, "true", False)]:
+        result = subprocess.run(["bash", "-c", marker["run"]], env={
+            **os.environ, "DECIDED_HEAD": head, "EXPECTED_HEAD": "a" * 40, "DECIDED_SKIP": skip,
+        }, capture_output=True, text=True, check=False)
+        assert (result.returncode == 0) is valid
+
+
+@pytest.mark.parametrize("framework_only,mac_skip,checked_head", [
+    (True, "true", "a" * 40), (False, "true", "a" * 40), (False, "false", "a" * 40),
+    (True, "true", "b" * 40), (False, "false", "b" * 40),
+])
+def test_framework_source_decision_does_not_allocate_a_mac_release(flow, tmp_path, framework_only, mac_skip, checked_head):
+    commands = tmp_path / "bin"
+    commands.mkdir()
+    git = commands / "git"
+    git.write_text('#!/bin/sh\nprintf "%s\\n" "$TEST_HEAD"\n', encoding="utf-8")
+    python = commands / "python"
+    python.write_text(
+        '#!/bin/sh\nprintf "%s\\n" "$*" > "$TEST_MAC_CALL"\n'
+        'printf "skip=%s\\nversion=2.0.1\\nbuild=97\\nprevious_target=prior\\n" "$TEST_SKIP" >> "$GITHUB_OUTPUT"\n',
+        encoding="utf-8")
+    git.chmod(0o755)
+    python.chmod(0o755)
+    decision = step(flow["jobs"]["decide"], "Decide the next release")
+    assert decision["env"]["FRAMEWORK_ONLY"] == "${{ github.event_name == 'workflow_dispatch' && inputs.framework_only == true }}"
+    output, called = tmp_path / "output", tmp_path / "mac-call"
+    env = {
+        **os.environ, "PATH": str(commands) + os.pathsep + os.environ["PATH"],
+        "EXPECTED_HEAD": "a" * 40, "FRAMEWORK_ONLY": str(framework_only).lower(),
+        "TEST_HEAD": checked_head,
+        "GITHUB_OUTPUT": str(output), "GITHUB_REPOSITORY": "AstralDeep/AstralDeep",
+        "TEST_MAC_CALL": str(called), "TEST_SKIP": mac_skip,
+    }
+    result = subprocess.run(["bash", "-c", decision["run"]], env=env, capture_output=True, text=True, check=False)
+    if checked_head != "a" * 40:
+        assert result.returncode != 0 and not output.exists() and not called.exists()
+        return
+    assert result.returncode == 0, result.stderr
+    outputs = dict(line.split("=", 1) for line in output.read_text().splitlines())
+    assert outputs["head"] == "a" * 40
+    assert called.exists() is not framework_only
+    if framework_only:
+        assert outputs == {"head": "a" * 40, "skip": "false"}
+    else:
+        assert outputs == {"head": "a" * 40, "skip": mac_skip, "version": "2.0.1", "build": "97", "previous_target": "prior"}
 
 
 def test_decide_is_cheap_unprivileged_and_guarded(flow):
@@ -241,6 +350,22 @@ def test_node_pack_and_framework_producers_are_read_only_and_bounded(flow):
         assert condition(job).startswith(f"{GUARD} && ")
         assert "secrets." not in yaml.safe_dump(job)
     assert flow["jobs"]["node-pack"]["needs"] == ["decide", "apple-artifacts"]
+
+
+def test_framework_producer_preserves_all_slices_and_source_bound_artifact_contract(flow):
+    job = flow["jobs"]["apple-artifacts"]
+    assert "environment" not in job
+    assert job["env"] == {"XCODE_VERSION": "26.6", "XCODE_BUILD": "17F113"}
+    build = step(job, "Build and verify the pinned Apple Kernel framework")["run"]
+    assert 'test "$(git rev-parse HEAD)" = "$DECIDED_HEAD"' in build
+    assert "rustup target add --toolchain 1.99.1 aarch64-apple-darwin x86_64-apple-darwin aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios" in build
+    assert "components/AstralKernel/scripts/build-apple.sh" in build
+    assert '--kind apple --expected-source "$(git -C components/AstralKernel rev-parse HEAD)"' in build
+    upload = job["steps"][-1]
+    assert upload["with"] == {
+        "name": "macos-apple-artifacts-${{ needs.decide.outputs.head }}",
+        "path": "${{ runner.temp }}/apple-artifacts.tar.gz", "if-no-files-found": "error", "retention-days": 1,
+    }
 
 
 def test_no_job_or_step_uses_always(text):
