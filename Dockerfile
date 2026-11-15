@@ -1,6 +1,6 @@
 # One image for the executor and the sandbox: the same code, run as `astralvessel executor` or `astralvessel sandbox`.
 # Agent packages are mounted at runtime; compose applies the sandbox hardening. Build with
-# --build-context kernel-artifacts=<folder holding the pinned kernel wheel>: the build fails without it, because the
+# --build-context kernel-artifacts=<folder holding the pinned kernel wheel and mailbox>: the build fails without it, because the
 # executor cannot check a ticket without the kernel.
 FROM scratch AS kernel-artifacts
 

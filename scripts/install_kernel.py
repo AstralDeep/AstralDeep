@@ -1,11 +1,12 @@
-"""Installs the pinned kernel Python wheel into the image after checking its digest against kernel-binding.json.
-The Dockerfile runs it with the kernel-artifacts build context and fails the build if the wheel is absent or differs."""
+"""Verifies and installs the pinned kernel wheel and mailbox from the artifacts build context.
+The executor image can verify tickets only when both artifacts match config/kernel-binding.json."""
 
 from __future__ import annotations
 
 import hashlib
 import json
 import platform
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -13,29 +14,59 @@ from pathlib import Path
 MANIFEST = Path(__file__).resolve().parent / "kernel-binding.json"
 ARCHITECTURES = {"aarch64": "aarch64", "arm64": "aarch64", "x86_64": "x86_64", "amd64": "x86_64"}
 HINT = "set [executor] kernel_artifacts in deployment.toml, or pass --build-context kernel-artifacts=<folder>"
+MAILBOX_NAME = "astral-mailbox"
+DEFAULT_BIN_DIR = Path("/usr/local/bin")
 
 
-def main(directory: str, binding: Path = MANIFEST) -> int:
-    manifest = json.loads(binding.read_text())
-    machine = platform.machine().lower()
-    key = f"linux-{ARCHITECTURES.get(machine, machine)}"
-    entry = (manifest["artifacts"].get(key) or {}).get("wheel")
-    if entry is None:
-        print(f"kernel-binding.json pins no kernel wheel for {key}, so this image cannot be built", file=sys.stderr)
-        return 1
-    wheel = Path(directory) / entry["file"]
-    if not wheel.is_file():
-        print(f"the executor image needs the pinned kernel wheel {entry['file']} in {directory}; {HINT}",
-              file=sys.stderr)
-        return 1
-    digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
-    if digest != entry["sha256"]:
-        print(f"{wheel.name} has sha256 {digest}, but kernel-binding.json pins {entry['sha256']}", file=sys.stderr)
-        return 1
-    subprocess.run([sys.executable, "-m", "pip", "install", "--no-cache-dir", "--no-deps", str(wheel)], check=True)
+def platform_key(machine: str | None = None, system: str | None = None) -> str:
+    machine = (machine or platform.machine()).lower()
+    system = (system or platform.system()).lower()
+    architecture = ARCHITECTURES.get(machine)
+    if system != "linux" or architecture is None:
+        raise ValueError(f"no kernel artifacts for {system}/{machine}")
+    return f"linux-{architecture}"
+
+
+def verify(directory: Path, key: str, manifest: dict) -> dict[str, Path]:
+    entries = manifest["artifacts"].get(key)
+    if not isinstance(entries, dict) or not {"wheel", "mailbox"} <= entries.keys():
+        raise ValueError(f"kernel-binding.json pins no kernel wheel and mailbox for {key}")
+    verified = {}
+    for name in ("wheel", "mailbox"):
+        entry = entries[name]
+        path = directory / entry["file"]
+        if not path.is_file():
+            raise ValueError(f"missing pinned kernel {name} {entry['file']} in {directory}; {HINT}")
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        if digest != entry["sha256"]:
+            raise ValueError(f"{path.name} has sha256 {digest}, but kernel-binding.json pins {entry['sha256']}")
+        verified[name] = path
+    return verified
+
+
+def install(directory: Path, key: str, bin_directory: Path, manifest: dict) -> None:
+    verified = verify(directory, key, manifest)
+    subprocess.run([sys.executable, "-m", "pip", "install", "--no-cache-dir", "--no-deps", "--no-index",
+                    "--force-reinstall", str(verified["wheel"])], check=True)
     subprocess.run([sys.executable, "-c", f"import {manifest['python']['import']}"], check=True)
+    bin_directory.mkdir(parents=True, exist_ok=True)
+    target = bin_directory / MAILBOX_NAME
+    shutil.copyfile(verified["mailbox"], target)
+    target.chmod(0o755)
+
+
+def main(directory: str, binding: Path = MANIFEST, bin_directory: Path = DEFAULT_BIN_DIR) -> int:
+    try:
+        manifest = json.loads(binding.read_text())
+        install(Path(directory), platform_key(), bin_directory, manifest)
+    except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+        print(f"kernel binding: {exc}", file=sys.stderr)
+        return 1
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1]))
+    if len(sys.argv) not in (2, 4) or (len(sys.argv) == 4 and sys.argv[2] != "--bin-dir"):
+        print("usage: install_kernel.py ARTIFACTS [--bin-dir DIRECTORY]", file=sys.stderr)
+        sys.exit(2)
+    sys.exit(main(sys.argv[1], bin_directory=Path(sys.argv[3]) if len(sys.argv) == 4 else Path("/usr/local/bin")))

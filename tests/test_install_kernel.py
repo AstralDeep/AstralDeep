@@ -1,73 +1,116 @@
-# The kernel installer: the image build fails with a clear message unless the pinned wheel is there and matches.
+"""Tests architecture-specific Kernel artifact verification and fail-closed image installation."""
 
 from __future__ import annotations
 
 import hashlib
 import importlib.util
 import json
-import platform
 import subprocess
 from pathlib import Path
 
 import pytest
 
-SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "install_kernel.py"
-BINDING = Path(__file__).resolve().parent.parent / "config" / "kernel-binding.json"
+SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "install_kernel.py"
+spec = importlib.util.spec_from_file_location("install_kernel", SCRIPT)
+installer = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(installer)
+
+
+def digest(content: bytes) -> str:
+    return hashlib.sha256(content).hexdigest()
 
 
 @pytest.fixture
-def installer():
-    spec = importlib.util.spec_from_file_location("install_kernel", SCRIPT)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+def artifacts(tmp_path):
+    directory = tmp_path / "artifacts"
+    directory.mkdir()
+    payloads = {"wheel": b"wheel", "mailbox": b"mailbox"}
+    entries = {name: {"file": f"kernel.{name}", "sha256": digest(content)}
+               for name, content in payloads.items()}
+    for name, content in payloads.items():
+        (directory / entries[name]["file"]).write_bytes(content)
+    manifest = {"python": {"import": "astral_kernel"}, "artifacts": {"linux-aarch64": entries}}
+    return directory, manifest
 
 
-def binding_for(tmp_path, wheel: bytes, digest: str | None = None) -> tuple[Path, Path]:
-    machine = platform.machine().lower()
-    key = f"linux-{'aarch64' if machine in ('aarch64', 'arm64') else 'x86_64'}"
-    folder = tmp_path / "artifacts"
-    folder.mkdir()
-    (folder / "k-0.1.0.whl").write_bytes(wheel)
-    manifest = tmp_path / "kernel-binding.json"
-    manifest.write_text(json.dumps({"python": {"import": "astral_kernel"}, "artifacts": {
-        key: {"wheel": {"file": "k-0.1.0.whl", "sha256": digest or hashlib.sha256(wheel).hexdigest()}}}}))
-    return folder, manifest
+def test_platform_key_supports_linux_arm_and_amd64_aliases():
+    assert installer.platform_key("arm64", "Linux") == "linux-aarch64"
+    assert installer.platform_key("AMD64", "Linux") == "linux-x86_64"
 
 
-def test_the_shipped_binding_pins_a_digest_for_a_linux_wheel():
-    document = json.loads(BINDING.read_text())
-    entry = document["artifacts"]["linux-aarch64"]["wheel"]
-    assert entry["file"].endswith("manylinux_2_36_aarch64.whl") and len(entry["sha256"]) == 64
-    assert document["python"]["import"] == "astral_kernel"
+def test_platform_key_fails_closed_outside_linux_artifact_architectures():
+    with pytest.raises(ValueError, match="no kernel artifacts"):
+        installer.platform_key("arm64", "Darwin")
+    with pytest.raises(ValueError, match="no kernel artifacts"):
+        installer.platform_key("riscv64", "Linux")
 
 
-def test_a_wheel_with_the_pinned_digest_is_installed_and_imported(installer, tmp_path, monkeypatch):
-    folder, manifest = binding_for(tmp_path, b"wheel")
-    ran = []
-    monkeypatch.setattr(subprocess, "run", lambda command, **kw: ran.append(command))
-    assert installer.main(str(folder), manifest) == 0
-    assert ran[0][-1] == str(folder / "k-0.1.0.whl") and "--no-deps" in ran[0] and ran[1][-1] == "import astral_kernel"
+def test_binding_pins_final_kernel_and_both_linux_architectures():
+    manifest = json.loads((SCRIPT.parents[1] / "config" / "kernel-binding.json").read_text())
+    assert manifest["source"]["commit"] == "cf826ae17ebb8d36dec7872a374319988c8aca72"
+    assert set(manifest["artifacts"]) == {"linux-aarch64", "linux-x86_64"}
+    for entries in manifest["artifacts"].values():
+        assert set(entries) == {"wheel", "mailbox"}
+        assert all(len(entry["sha256"]) == 64 for entry in entries.values())
 
 
-def test_a_missing_wheel_fails_the_build_and_says_what_to_do(installer, tmp_path, monkeypatch, capsys):
-    folder, manifest = binding_for(tmp_path, b"wheel")
-    (folder / "k-0.1.0.whl").unlink()
-    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: pytest.fail("nothing may be installed"))
-    assert installer.main(str(folder), manifest) == 1
-    message = capsys.readouterr().err
-    assert "needs the pinned kernel wheel k-0.1.0.whl" in message and "kernel_artifacts" in message
+def test_verify_requires_both_matching_artifacts(artifacts):
+    directory, manifest = artifacts
+    assert set(installer.verify(directory, "linux-aarch64", manifest)) == {"wheel", "mailbox"}
+    (directory / "kernel.mailbox").write_bytes(b"changed")
+    with pytest.raises(ValueError, match="sha256"):
+        installer.verify(directory, "linux-aarch64", manifest)
+    (directory / "kernel.mailbox").unlink()
+    with pytest.raises(ValueError, match="missing pinned kernel mailbox"):
+        installer.verify(directory, "linux-aarch64", manifest)
+    with pytest.raises(ValueError, match="no kernel wheel and mailbox"):
+        installer.verify(directory, "linux-x86_64", manifest)
 
 
-def test_a_wheel_with_another_digest_is_refused(installer, tmp_path, monkeypatch, capsys):
-    folder, manifest = binding_for(tmp_path, b"wheel", digest="0" * 64)
-    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: pytest.fail("nothing may be installed"))
-    assert installer.main(str(folder), manifest) == 1
-    assert "pins " + "0" * 64 in capsys.readouterr().err
+def test_install_installs_wheel_imports_binding_and_copies_mailbox(artifacts, tmp_path, monkeypatch):
+    directory, manifest = artifacts
+    calls = []
+    monkeypatch.setattr(installer.subprocess, "run", lambda command, check: calls.append(command))
+    bin_directory = tmp_path / "bin"
+    installer.install(directory, "linux-aarch64", bin_directory, manifest)
+    assert "--no-index" in calls[0] and "--force-reinstall" in calls[0]
+    assert calls[0][-1] == str(directory / "kernel.wheel")
+    assert calls[1][-1] == "import astral_kernel"
+    mailbox = bin_directory / "astral-mailbox"
+    assert mailbox.read_bytes() == b"mailbox"
+    assert mailbox.stat().st_mode & 0o777 == 0o755
 
 
-def test_an_architecture_without_a_pinned_wheel_is_refused(installer, tmp_path, monkeypatch, capsys):
-    folder, manifest = binding_for(tmp_path, b"wheel")
-    monkeypatch.setattr(installer.platform, "machine", lambda: "riscv64")
-    assert installer.main(str(folder), manifest) == 1
-    assert "pins no kernel wheel for linux-riscv64" in capsys.readouterr().err
+def test_main_refuses_an_artifact_digest_mismatch(artifacts, tmp_path, monkeypatch, capsys):
+    directory, manifest = artifacts
+    binding = tmp_path / "binding.json"
+    binding.write_text(json.dumps(manifest))
+    (directory / "kernel.wheel").write_bytes(b"tampered")
+    monkeypatch.setattr(installer, "platform_key", lambda: "linux-aarch64")
+    assert installer.main(str(directory), binding, tmp_path / "bin") == 1
+    assert "sha256" in capsys.readouterr().err
+
+
+def test_main_installs_verified_artifacts(artifacts, tmp_path, monkeypatch):
+    directory, manifest = artifacts
+    binding = tmp_path / "binding.json"
+    binding.write_text(json.dumps(manifest))
+    monkeypatch.setattr(installer, "platform_key", lambda: "linux-aarch64")
+    monkeypatch.setattr(installer.subprocess, "run", lambda command, check: None)
+    bin_directory = tmp_path / "bin"
+    assert installer.main(str(directory), binding, bin_directory) == 0
+    assert (bin_directory / "astral-mailbox").read_bytes() == b"mailbox"
+
+
+def test_main_reports_failed_wheel_install(artifacts, tmp_path, monkeypatch, capsys):
+    directory, manifest = artifacts
+    binding = tmp_path / "binding.json"
+    binding.write_text(json.dumps(manifest))
+    monkeypatch.setattr(installer, "platform_key", lambda: "linux-aarch64")
+
+    def fail(command, check):
+        raise subprocess.CalledProcessError(1, command)
+
+    monkeypatch.setattr(installer.subprocess, "run", fail)
+    assert installer.main(str(directory), binding, tmp_path / "bin") == 1
+    assert "kernel binding" in capsys.readouterr().err

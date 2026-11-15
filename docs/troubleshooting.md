@@ -30,11 +30,11 @@ The executor waits for the node's mailbox, which exists only after the node has 
 
 ## Every call is refused with `executor.no_kernel`
 
-The kernel binding does not import in the executor's image. An image built here always has it, because the build fails without the pinned wheel. Rebuild from this checkout with `[executor] kernel_artifacts` set, or use the released image.
+The kernel binding does not import in the executor's image. An image built here always has it, because the build fails without the pinned wheel and mailbox. Rebuild from this checkout with `[executor] kernel_artifacts` set, or use the released image.
 
 ## The image build says it needs the pinned kernel wheel
 
-The build checks the wheel's sha256 against `config/kernel-binding.json` and stops if the wheel is missing or differs. Point `[executor] kernel_artifacts` at the folder that holds `astral_kernel-<version>-py3-none-manylinux_2_36_<arch>.whl`. The binding pins only the architectures it lists.
+The build checks the wheel and mailbox sha256 values against `config/kernel-binding.json` and stops if either artifact is missing or differs. Point `[executor] kernel_artifacts` at the folder that holds `astral_kernel-<version>-py3-none-manylinux_2_36_<arch>.whl` and `astral-mailbox-linux-<arch>`. The binding pins only the architectures it lists.
 
 ## A call is refused with a `ticket.*` code
 

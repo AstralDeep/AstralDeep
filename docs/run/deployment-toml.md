@@ -66,7 +66,7 @@ Optional. See [The egress](models-and-egress.md).
 
 ## [executor]
 
-`kernel_artifacts` names a folder with the pinned kernel wheel. It is passed to the image build, which checks the wheel's sha256 against `config/kernel-binding.json` and fails without it. A checkout needs it. A deployment that uses the released images does not.
+`kernel_artifacts` names a folder with the pinned kernel wheel and mailbox binary for the build architecture. It is passed to the image build, which checks both sha256 values against `config/kernel-binding.json` and fails if either artifact is missing or differs. A checkout needs it. A deployment that uses the released images does not.
 
 ## [[agents]]
 

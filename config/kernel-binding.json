@@ -2,8 +2,8 @@
   "format": "astraldeep.kernel-binding/v1",
   "source": {
     "repository": "https://github.com/AstralDeep/AstralKernel.git",
-    "branch": "k/integration",
-    "commit": "a49905544244c79dd0f5b847ac4c1618e4a055e5"
+    "branch": "codex/105-chat-recovery",
+    "commit": "cf826ae17ebb8d36dec7872a374319988c8aca72"
   },
   "python": {
     "distribution": "astral-kernel",
@@ -14,7 +14,21 @@
     "linux-aarch64": {
       "wheel": {
         "file": "astral_kernel-0.1.0-py3-none-manylinux_2_36_aarch64.whl",
-        "sha256": "4fc2f5beeafbbf8d425fcc33c9e44715e3809e12282f00da46246254c4c6de34"
+        "sha256": "97df1155f4079a73bb0aa254a6b0be8459514abf817b78659238612ce5b04f0b"
+      },
+      "mailbox": {
+        "file": "astral-mailbox-linux-aarch64",
+        "sha256": "c3da76d44f772b1f493f7d2bc3c05b96bcc5f1df9ade716f4c5f649110cf8bbd"
+      }
+    },
+    "linux-x86_64": {
+      "wheel": {
+        "file": "astral_kernel-0.1.0-py3-none-manylinux_2_36_x86_64.whl",
+        "sha256": "0e8de6f657da72ff6ff7668764ff517f9ec88b27ccf84530107305e28e17da90"
+      },
+      "mailbox": {
+        "file": "astral-mailbox-linux-x86_64",
+        "sha256": "716f68575802b93f1cf86a844c33f1000603e1579c892d1aadd75a52696ecc94"
       }
     }
   }
