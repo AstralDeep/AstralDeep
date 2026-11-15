@@ -107,7 +107,11 @@ async def test_current_mesh_authority_is_required_at_physical_dispatch(
         laptop.grant_tool(TOOL, "*")
         result = await asyncio.wait_for(laptop.run_turn(chat), 60)
         requests = [r for r in laptop.chat_requests(chat) if r.call is not None]
-        assert result.status == "completed" and len(requests) == 1
+        assert len(requests) == 1
+        if change in {"entry_stop", "entry_collision", "final_stop"}:
+            assert result.status == "failed" and result.code == "gate.mesh_stopped"
+        else:
+            assert result.status == "completed"
         assert requests[0].state == ak.RequestState.ANSWERED
         assert len(outcomes) == 1
         assert outcomes[0].code == code

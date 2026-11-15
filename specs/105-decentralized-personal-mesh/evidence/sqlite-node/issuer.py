@@ -1,5 +1,9 @@
 """Development-only OIDC issuer: serves an RS256 JWKS and mints short-lived access tokens for the node under test."""
-import base64, json, os, sys, time
+import base64
+import json
+import os
+import sys
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
@@ -26,7 +30,8 @@ def load():
 
 def jwks(key):
     n = key.public_key().public_numbers()
-    size = lambda v: v.to_bytes((v.bit_length() + 7) // 8, "big")
+    def size(v):
+        return v.to_bytes((v.bit_length() + 7) // 8, "big")
     return {"keys": [{"kty": "RSA", "use": "sig", "alg": "RS256", "kid": KID, "n": b64(size(n.n)), "e": b64(size(n.e))}]}
 
 
@@ -48,9 +53,13 @@ if sys.argv[1] == "serve":
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             if self.path.endswith("/protocol/openid-connect/certs"):
-                self.send_response(200); self.send_header("content-type", "application/json"); self.end_headers(); self.wfile.write(body)
+                self.send_response(200)
+                self.send_header("content-type", "application/json")
+                self.end_headers()
+                self.wfile.write(body)
             else:
-                self.send_response(404); self.end_headers()
+                self.send_response(404)
+                self.end_headers()
 
         def log_message(self, *args):
             sys.stderr.write("issuer %s\n" % (args[0] % args[1:] if args else ""))

@@ -138,6 +138,7 @@ async def test_revocation_after_native_mint_blocks_the_actual_agent_effect(turn_
         await setup_native(host, node, laptop, device, bridge, model_server, monkeypatch)
         await grant(node, laptop, dice_grant(host))
         recorded = []
+        state = {}
         record_turn = node.record_turn
 
         async def observed_record(*args, **kwargs):
@@ -155,6 +156,12 @@ async def test_revocation_after_native_mint_blocks_the_actual_agent_effect(turn_
             if change == "stop":
                 node.kernel.raise_stop()
             elif change == "remove":
+                mesh_chat = next(item.chat_id for item in node.kernel.list_chats())
+                inner_before_remove = [item for item in node.kernel.chat_requests(mesh_chat) if item.call is not None]
+                assert len(inner_before_remove) == 1
+                state["chat"] = mesh_chat
+                state["inner_id"] = inner_before_remove[0].id
+                state["inner_state"] = inner_before_remove[0].state
                 laptop.remove_device(device)
                 await until(lambda: not any(member.is_local for member in node.kernel.roster().members),
                             "the local verifier to observe its removal")
@@ -167,12 +174,22 @@ async def test_revocation_after_native_mint_blocks_the_actual_agent_effect(turn_
         chat, request = await ask(node, laptop, device)
         await asyncio.wait_for(changed.wait(), 30)
         await until(lambda: request not in bridge._running, "the refused native request to settle")
-        inner = [item for item in node.kernel.chat_requests(chat) if item.call is not None]
-        assert not any(host.dispatched.values()) and not host.sent
-        assert len(inner) == 1
         if change == "remove":
-            assert inner[0].state == ak.RequestState.REFUSED
+            assert state["chat"] == chat
+            with pytest.raises(ak.KernelError.State) as denied:
+                node.kernel.chat_requests(chat)
+            assert denied.value.code == "mesh.not_a_member"
+            with pytest.raises(ak.KernelError.State) as denied:
+                node.kernel.request(state["inner_id"])
+            assert denied.value.code == "mesh.not_a_member"
+            assert state["inner_state"] == ak.RequestState.CLAIMED
+            assert laptop.request(request).state != ak.RequestState.ANSWERED
+            assert not recorded
         else:
+            inner = [item for item in node.kernel.chat_requests(chat) if item.call is not None]
+            assert len(inner) == 1
+        assert not any(host.dispatched.values()) and not host.sent
+        if change != "remove":
             assert inner[0].state == ak.RequestState.ANSWERED
             assert len(recorded) == 1
             turn, steps = recorded[0]

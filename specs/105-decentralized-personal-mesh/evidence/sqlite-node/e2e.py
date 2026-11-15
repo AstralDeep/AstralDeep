@@ -1,5 +1,9 @@
 """Drives a booted personal node as its owner: auth refusals, chat creation, provider save, one tool turn and history readback."""
-import asyncio, json, uuid, aiohttp
+import asyncio
+import json
+import uuid
+
+import aiohttp
 BASE = "http://127.0.0.1:8001"
 TOKEN = open("/creds/owner.token").read().strip()
 H = {"Authorization": "Bearer " + TOKEN}
@@ -13,7 +17,8 @@ async def rest(s, method, path, headers=H, **kw):
         return r.status, (json.loads(text) if text[:1] in "{[" else text)
 
 async def pump(ws, seconds, stop=None):
-    loop = asyncio.get_event_loop(); end = loop.time() + seconds
+    loop = asyncio.get_event_loop()
+    end = loop.time() + seconds
     while loop.time() < end:
         try:
             msg = await ws.receive(timeout=end - loop.time())

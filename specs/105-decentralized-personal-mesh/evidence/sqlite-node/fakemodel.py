@@ -1,5 +1,8 @@
 """Deterministic OpenAI-compatible model: calls the named tool once, then answers from the tool result."""
-import json, os, sys, time
+import json
+import os
+import sys
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 TARGET = os.environ.get("FAKE_TOOL", "")
@@ -7,7 +10,8 @@ FIXED_ARGS = os.environ.get("FAKE_ARGS", "")
 
 
 def log(*parts):
-    sys.stderr.write(" ".join(str(p) for p in parts) + "\n"); sys.stderr.flush()
+    sys.stderr.write(" ".join(str(p) for p in parts) + "\n")
+    sys.stderr.flush()
 
 
 def tool_args(spec):
@@ -41,7 +45,11 @@ def completion(body):
 class Handler(BaseHTTPRequestHandler):
     def _send(self, status, payload, ctype="application/json"):
         raw = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
-        self.send_response(status); self.send_header("content-type", ctype); self.send_header("content-length", str(len(raw))); self.end_headers(); self.wfile.write(raw)
+        self.send_response(status)
+        self.send_header("content-type", ctype)
+        self.send_header("content-length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
 
     def do_GET(self):
         if self.path.rstrip("/").endswith("/models"):
