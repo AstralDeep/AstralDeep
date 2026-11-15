@@ -371,14 +371,17 @@ async def test_each_institution_owner_gets_a_trigger_that_wakes_for_that_owner_o
     targets = Targets(APNS)
     wake = pw.WakeGateway(targets=targets, adapters={"apns": adapter(transport)}, limiter=pw.WakeLimiter(min_interval_seconds=0))
     monkeypatch.setenv(ni.PROFILE_ENV, "institution")
+    async def accepted_issuers():
+        return [{"issuer": "https://idp.example/realms/a", "client_id": "astral-desktop", "jwks_json": json.dumps({"keys": []})}]
+
     runtime = institution_runtime.InstitutionRuntime(
-        config=ip.InstitutionConfig(key="k", issuers=("i",)),
+        config=ip.InstitutionConfig(key="k", issuers=("https://idp.example/realms/a",)),
         base_dir=tmp_path,
         history=History(),
         runner=answering(),
         calls=None,
         binding=fake,
-        issuers=no_issuers,
+        issuers=accepted_issuers,
         settings=node_mesh.MeshSettings(mailbox=node_mesh.MailboxSettings(enabled=False)),
         phi_active=lambda _owner: False,
         wake=pw.WakeTriggers(wake),

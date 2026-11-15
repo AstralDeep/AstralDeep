@@ -32,7 +32,7 @@ Signed mesh turns use the Kernel's sealed per-owner provider book. Python hosts 
 | `ASTRAL_INSTITUTION_KEY` | The institution's P-256 public key, base64url. Required |
 | `ASTRAL_INSTITUTION_NODE_APPROVAL` | Path to a signed approval for this node, optional |
 | `KEYCLOAK_AUTHORITY`, `ASTRAL_ACCEPTED_ISSUERS` | The issuers the node accepts. At least one is required |
-| `KEYCLOAK_CLIENT_ID` | Public client used for the node device's owner-bound attestation; required to initialize an owner peer |
+| `KEYCLOAK_CLIENT_ID` | Keycloak client used for the node device's owner-bound attestation; required to initialize an owner peer |
 | `ASTRAL_INSTITUTION_MAX_OWNERS` | How many owners one node serves, 1000 by default |
 | `ASTRAL_NODE_MAILBOX_MAX_MESHES` | How many meshes the shared mailbox holds |
 | `ASTRAL_NODE_WAKE` | Set to `off` to stop content-free wake pushes |
