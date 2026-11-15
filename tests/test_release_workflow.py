@@ -21,7 +21,12 @@ def test_release_produces_and_installs_kernel_artifacts_for_both_architectures()
     assert "runner: ubuntu-24.04" in producer
     assert "runner: ubuntu-24.04-arm" in producer
     assert "docker/setup-qemu-action" not in producer
+    assert "- uses: actions/upload-artifact@" in producer
+    assert "        if: always()" in producer
+    assert "retention-days: 14" in producer
     images = WORKFLOW.split("  images:\n", 1)[1].split("\n  build:\n", 1)[0]
+    assert "needs: [check, kernel-binding]" in images
+    assert "if: always()" not in images
     assert "docker/setup-qemu-action" in images
     assert "kernel-artifacts=${{ runner.temp }}/kernel-artifacts" in WORKFLOW
     dockerfile = (ROOT / "Dockerfile").read_text()
