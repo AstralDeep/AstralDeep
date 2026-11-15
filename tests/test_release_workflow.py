@@ -16,6 +16,13 @@ def test_release_produces_and_installs_kernel_artifacts_for_both_architectures()
     assert "python scripts/build_kernel_binding.py produce" in WORKFLOW
     assert "name: kernel-artifacts-linux-${{ matrix.architecture }}" in WORKFLOW
     assert "needs: [check, kernel-binding]" in WORKFLOW
+    producer = WORKFLOW.split("  kernel-binding:\n", 1)[1].split("\n  images:\n", 1)[0]
+    assert "runs-on: ${{ matrix.runner }}" in producer
+    assert "runner: ubuntu-24.04" in producer
+    assert "runner: ubuntu-24.04-arm" in producer
+    assert "docker/setup-qemu-action" not in producer
+    images = WORKFLOW.split("  images:\n", 1)[1].split("\n  build:\n", 1)[0]
+    assert "docker/setup-qemu-action" in images
     assert "kernel-artifacts=${{ runner.temp }}/kernel-artifacts" in WORKFLOW
     dockerfile = (ROOT / "Dockerfile").read_text()
     assert "from=kernel-artifacts" in dockerfile
