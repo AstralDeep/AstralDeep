@@ -6,6 +6,7 @@ jobs stay source-free, and signing dependencies are hash-locked.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import shutil
 import subprocess
@@ -72,6 +73,12 @@ REVIEWED_PUBLIC_SOURCE_FINGERPRINTS = {
     '50412b3e7d514da6a3aaad5084346da600b1c651:config/astral-composition.json:generic-api-key:68',
     '5791a82e238268b694730743672c289d5bfb603b:backend/shared/node_identity.py:generic-api-key:122',
     '732e3d3ecfccb54fb933b19ad6b4b3b2a5d64500:backend/shared/institution_profile.py:generic-api-key:210',
+}
+REVIEWED_PUBLIC_LOCAL_MESH_FINGERPRINTS = {
+    "19f867946ccb52a2231e13ea3f5f67e824980eca:"
+    "specs/106-sign-in-free-clients/contracts/vectors/crypto-v2.json:"
+    f"generic-api-key:{line}"
+    for line in (78, 101, 124, 147, 170, 193, 216, 239, 468, 484, 497, 510)
 }
 REVIEWED_PUBLIC_MESH_BASELINE_SHA256 = '3dae639f3d4261b5a0fef550bb0645bbd39bc143e6a85eb6f2e464881c8e3ea0'
 WINDOWS_CANDIDATE = REPO_ROOT / ".github" / "workflows" / "build-windows-candidate.yml"
@@ -232,7 +239,8 @@ def test_gitleaks_history_baseline_is_exact_fingerprint_only() -> None:
     assert public_mesh <= set(fingerprints)
     assert len(public_mesh) == 133
     assert hashlib.sha256("\n".join(sorted(public_mesh)).encode()).hexdigest() == REVIEWED_PUBLIC_MESH_BASELINE_SHA256
-    assert len(fingerprints) == 28 + len(public_mesh)
+    assert REVIEWED_PUBLIC_LOCAL_MESH_FINGERPRINTS <= set(fingerprints)
+    assert len(fingerprints) == 28 + len(public_mesh) + 12
     assert len(fingerprints) == len(set(fingerprints))
     assert REVIEWED_074_FINGERPRINTS <= set(fingerprints)
     assert REVIEWED_079_FINGERPRINT in fingerprints
@@ -520,3 +528,26 @@ def test_windows_release_installs_only_hash_locked_build_and_signing_deps() -> N
     assert "pip install" not in workflow
     assert "pip install --upgrade" not in workflow
     assert "sigstore>=" not in workflow
+
+
+def test_accountless_crypto_baseline_values_are_public_fixed_seed_fixtures() -> None:
+    path = REPO_ROOT / "specs/106-sign-in-free-clients/contracts/vectors/crypto-v2.json"
+    lines = path.read_text(encoding="utf-8").splitlines()
+
+    def seed(label: str) -> bytes:
+        return hashlib.sha256(b"astral-test-seed/" + label.encode()).digest()
+
+    order = int("ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551", 16)
+    expected = {
+        "secret_hex": {
+            seed("alice/ops").hex(),
+            f"{int.from_bytes(seed('alice/identity'), 'big') % (order - 1) + 1:064x}",
+        },
+        "key_hex": {seed("aead/key").hex()},
+    }
+    for fingerprint in REVIEWED_PUBLIC_LOCAL_MESH_FINGERPRINTS:
+        number = int(fingerprint.rsplit(":", 1)[1])
+        field = json.loads("{" + lines[number - 1].strip().rstrip(",") + "}")
+        assert len(field) == 1
+        name, value = next(iter(field.items()))
+        assert value in expected[name]

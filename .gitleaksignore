@@ -180,3 +180,19 @@ f2213f62924eda00368413a6c78cc1d9299dfd6c:specs/105-decentralized-personal-mesh/c
 50412b3e7d514da6a3aaad5084346da600b1c651:config/astral-composition.json:generic-api-key:68
 5791a82e238268b694730743672c289d5bfb603b:backend/shared/node_identity.py:generic-api-key:122
 732e3d3ecfccb54fb933b19ad6b4b3b2a5d64500:backend/shared/institution_profile.py:generic-api-key:210
+# Public fixed-seed accountless crypto vectors, copied from the reviewed original
+# vectors by generate_local_vectors.py: SHA256 astral-test-seed/alice/ops,
+# the alice/identity P-256 scalar, and SHA256 astral-test-seed/aead/key.
+# Only these exact historical findings are excluded; new values remain scanned.
+19f867946ccb52a2231e13ea3f5f67e824980eca:specs/106-sign-in-free-clients/contracts/vectors/crypto-v2.json:generic-api-key:78
+19f867946ccb52a2231e13ea3f5f67e824980eca:specs/106-sign-in-free-clients/contracts/vectors/crypto-v2.json:generic-api-key:101
+19f867946ccb52a2231e13ea3f5f67e824980eca:specs/106-sign-in-free-clients/contracts/vectors/crypto-v2.json:generic-api-key:124
+19f867946ccb52a2231e13ea3f5f67e824980eca:specs/106-sign-in-free-clients/contracts/vectors/crypto-v2.json:generic-api-key:147
+19f867946ccb52a2231e13ea3f5f67e824980eca:specs/106-sign-in-free-clients/contracts/vectors/crypto-v2.json:generic-api-key:170
+19f867946ccb52a2231e13ea3f5f67e824980eca:specs/106-sign-in-free-clients/contracts/vectors/crypto-v2.json:generic-api-key:193
+19f867946ccb52a2231e13ea3f5f67e824980eca:specs/106-sign-in-free-clients/contracts/vectors/crypto-v2.json:generic-api-key:216
+19f867946ccb52a2231e13ea3f5f67e824980eca:specs/106-sign-in-free-clients/contracts/vectors/crypto-v2.json:generic-api-key:239
+19f867946ccb52a2231e13ea3f5f67e824980eca:specs/106-sign-in-free-clients/contracts/vectors/crypto-v2.json:generic-api-key:468
+19f867946ccb52a2231e13ea3f5f67e824980eca:specs/106-sign-in-free-clients/contracts/vectors/crypto-v2.json:generic-api-key:484
+19f867946ccb52a2231e13ea3f5f67e824980eca:specs/106-sign-in-free-clients/contracts/vectors/crypto-v2.json:generic-api-key:497
+19f867946ccb52a2231e13ea3f5f67e824980eca:specs/106-sign-in-free-clients/contracts/vectors/crypto-v2.json:generic-api-key:510
