@@ -377,6 +377,7 @@ async def test_meta_tools_are_refused_in_a_node_turn(turn_host, tmp_path, monkey
 
 @pytest.mark.parametrize("change,code", [
     ("stop", "gate.mesh_stopped"),
+    ("stop_refreshed", "node.owner_mismatch"),
     ("definition", "gate.tool_def_changed"),
     ("permission", "mint.unknown_tool"),
     ("unticketed", "node.ticket_required"),
@@ -405,7 +406,13 @@ async def test_authority_lost_after_gate_entry_refuses_the_effect(turn_host, tmp
             bound = node_mesh_admission.current_turn()
             state["held"] = len(bound.held) if bound else None
             if change == "stop":
+                await node._owner_lock.acquire()
+                state["owner_lock_held"] = True
                 node.kernel.raise_stop()
+            elif change == "stop_refreshed":
+                node.kernel.raise_stop()
+                assert await node.refresh_personal_owner() is None
+                assert node.personal_owner_id() is None
             elif change == "definition":
                 host.skill.description += " changed mid-turn"
             elif change == "permission":
@@ -425,7 +432,11 @@ async def test_authority_lost_after_gate_entry_refuses_the_effect(turn_host, tmp
                 )
 
         monkeypatch.setattr(host.orch.audit_recorder, "record", mutate)
-        outcome = await run_turn(host, node, laptop, node_device, bridge, [(TOOL, {"n": 2})])
+        try:
+            outcome = await run_turn(host, node, laptop, node_device, bridge, [(TOOL, {"n": 2})])
+        finally:
+            if state.get("owner_lock_held"):
+                node._owner_lock.release()
     assert state.get("done") and state["held"] == 1 and "error" not in state, (state, diag(outcome, host))
     assert host.dispatched[AGENT] == [] and len(outcome.minted) == (2 if change == "other_arguments" else 1), (state, diag(outcome, host))
     assert denials(outcome, TOOL) == [("node_mesh", code)]
