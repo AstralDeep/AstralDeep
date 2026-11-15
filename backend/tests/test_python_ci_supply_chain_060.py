@@ -290,6 +290,7 @@ def test_release_tooling_job_covers_owned_scripts_with_exact_omissions() -> None
         "install_doctor.py",
         "install_local_components.py",
         "install_kernel_binding.py",
+        "ios_store_upload.py",
         "macos_release_notes.py",
         "merge_backend_web_coverage.py",
         "next_macos_release.py",
@@ -321,6 +322,7 @@ def test_release_tooling_job_covers_owned_scripts_with_exact_omissions() -> None
         expected_scripts
     )
     expected_test_paths = {
+        "backend/tests/test_ios_store_upload.py",
         "scripts/tests/test_ci_browser_retry.py",
         "scripts/tests/test_ci_network_fixture.py",
         "scripts/tests/test_ci_fence_fixture_verifier.py",

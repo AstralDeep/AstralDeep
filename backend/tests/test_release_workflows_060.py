@@ -130,7 +130,6 @@ PRODUCER_JOBS = (
 IOS_LANES = ("core", "unit", "ui")
 BUILD_SIGN_PUBLISH_JOBS = {
     ("android-release.yml", "release-bundle"),
-    ("apple-release.yml", "release"),
     ("build-windows-candidate.yml", "windows-candidate"),
     ("release-macos.yml", "release"),
     ("release-windows.yml", "build-sign-release"),
@@ -2061,20 +2060,31 @@ def test_privileged_manual_dispatch_jobs_refuse_candidate_refs() -> None:
     assert "workflow_dispatch:" not in _workflow_head(_workflow_text(READINESS))
 
 
-def test_mac_store_resource_repair_uses_exported_package_before_upload() -> None:
+def test_iphone_store_upload_requires_qualified_inputs_and_never_archives_mac_store() -> None:
     workflow = _workflow_text(WORKFLOWS / "apple-release.yml")
-    helper = "components/AstralProjection/apple-clients/Scripts/repair_macos_store_package.py"
-    assert workflow.index(f"test -f {helper}") < workflow.index("- name: Require signing material")
-    export = workflow.index("- name: Export both archives for the App Store")
-    repair = workflow.index(f"python3 {helper}")
-    retain = workflow.index('echo "PKG=$PKG" >> "$GITHUB_ENV"')
-    assert export < repair < retain
-    repair_body = workflow[repair:retain].replace("\\\n", " ")
-    command = shlex.split(repair_body.split("\n", 1)[0])
-    assert command[2:6] == ["--input", "$PKG", "--output", "$REPAIRED_PKG"]
-    assert 'PKG="$REPAIRED_PKG"' in repair_body
-    assert "macos-store-signature-receipt.json" in repair_body
-    assert "--deep" not in repair_body
+    jobs = _workflow_jobs(WORKFLOWS / "apple-release.yml")
+    assert set(jobs) == {"gate", "release"}
+    assert jobs["release"]["environment"] == "release-publisher"
+    assert jobs["release"]["needs"] == "gate"
+    assert jobs["release"]["permissions"] == {"contents": "read", "actions": "read"}
+    assert all(job["timeout-minutes"] <= 30 for job in jobs.values())
+    assert "push:" not in _workflow_head(workflow)
+    assert "cancel-in-progress: false" in workflow
+    assert "pip install --require-hashes --only-binary=:all: -r scripts/requirements-ios-release.txt" in workflow
+    for forbidden in ("generic/platform=macOS", "APPLE_PROFILE_MACOS", "APPLE_INSTALLER_CERT", ".pkg", "notarytool", "GITHUB_RUN_NUMBER"):
+        assert forbidden not in workflow
+    commands = [str(step.get("run", "")) for step in jobs["release"]["steps"]]
+    restore = next(index for index, cmd in enumerate(commands) if "ios_store_upload.py restore" in cmd)
+    preflight = next(index for index, cmd in enumerate(commands) if "ios_store_upload.py preflight" in cmd)
+    archive = next(index for index, cmd in enumerate(commands) if "xcodebuild archive" in cmd)
+    upload = next(index for index, cmd in enumerate(commands) if "--upload-app" in cmd)
+    assert restore < preflight < archive < upload
+    assert "artifact_manifest.py verify" in commands[restore]
+    assert "MARKETING_VERSION=\"$VERSION\" CURRENT_PROJECT_VERSION=\"$BUILD\"" in commands[archive]
+    assert "ios_store_upload.py verify-app" in commands[archive]
+    assert "altool_strict.sh" in commands[upload]
+    assert commands[upload].index("--validate-app") < commands[upload].index("--upload-app")
+    assert "upload-receipt.txt" in commands[upload]
 
 
 def _diagnostic_argv(
