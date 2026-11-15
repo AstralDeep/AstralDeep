@@ -127,6 +127,7 @@ def test_pinned_native_check_is_read_only_bounded_and_precedes_signing(flow):
     assert "https://api.github.com/repos/$repo/actions/workflows/apple-ci.yml/runs?" in gate["run"]
     assert "git ls-tree HEAD -- components/AstralProjection" in gate["run"]
     assert "for attempt in {1..26}" in gate["run"] and "sleep 60" in gate["run"]
+    assert "python3 -c" in gate["run"] and "jq" not in gate["run"]
     assert list(flow["jobs"]).index("native-check") < list(flow["jobs"]).index("release")
 
 
@@ -141,7 +142,7 @@ def native_run(*, conclusion="success", **changes):
     return run
 
 
-def execute_native_check(flow, tmp_path, runs, *, projection="b" * 40, checked_head="a" * 40):
+def execute_native_check(flow, tmp_path, runs, *, projection="b" * 40, checked_head="a" * 40, response=None):
     commands = tmp_path / "bin"
     commands.mkdir(parents=True)
     git = commands / "git"
@@ -164,7 +165,8 @@ def execute_native_check(flow, tmp_path, runs, *, projection="b" * 40, checked_h
     env.update({
         "PATH": str(commands) + os.pathsep + env["PATH"],
         "DECIDED_HEAD": "a" * 40, "TEST_HEAD": checked_head, "TEST_PROJECTION": projection,
-        "FAKE_RESPONSE": json.dumps({"workflow_runs": runs}), "API_QUERY_LOG": str(tmp_path / "queries"),
+        "FAKE_RESPONSE": response if response is not None else json.dumps({"workflow_runs": runs}),
+        "API_QUERY_LOG": str(tmp_path / "queries"),
     })
     result = subprocess.run(
         ["bash", "-c", step(flow["jobs"]["native-check"], "Wait for pinned Projection Apple CI")["run"]],
@@ -180,6 +182,22 @@ def test_native_check_accepts_only_exact_pinned_main_push_and_queries_that_sourc
         "https://api.github.com/repos/AstralDeep/AstralProjection/actions/workflows/apple-ci.yml/runs?"
         f"head_sha={'b' * 40}&event=push&branch=main&per_page=100"
     ]
+
+
+def test_native_check_accepts_exact_green_even_with_earlier_failed_run(flow, tmp_path):
+    result, queries = execute_native_check(flow, tmp_path, [native_run(conclusion="failure"), native_run()])
+    assert result.returncode == 0, result.stderr
+    assert len(queries) == 1
+
+
+@pytest.mark.parametrize("response", ["not json", "{}", '{"workflow_runs":{}}',
+                                            '{"workflow_runs":[null]}',
+                                            '{"workflow_runs":[{"head_sha":"bad","repository":null}]}'])
+def test_native_check_rejects_malformed_api_response(flow, tmp_path, response):
+    result, queries = execute_native_check(flow, tmp_path, [], response=response)
+    assert result.returncode != 0
+    assert len(queries) == 1
+    assert "Malformed Projection Apple CI response" in result.stderr
 
 
 @pytest.mark.parametrize("change", [
