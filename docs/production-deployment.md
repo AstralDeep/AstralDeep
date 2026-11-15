@@ -532,6 +532,14 @@ than drop items, reset the serial or lower the minimum build.
 
 The workflow also builds the pinned Apple Kernel framework and the Mac node pack
 in separate read-only, 30-minute jobs before the environment-approved release job.
+In parallel, a read-only job waits up to 25 minutes for a successful
+`apple-ci.yml` push run on AstralProjection `main` at the exact Projection
+gitlink in the decided Deep commit, using Projection's public Actions API. A
+completed failure or cancellation with no successful run stops the release
+immediately; a missing or pending run stops it at the deadline. Signing and
+publication cannot start until this native gate
+and both source-bound artifact jobs succeed, including for an emergency manual
+dispatch.
 The pack job runs the bundled tool-turn check and the real Swift installer check.
 The release job verifies the framework's source receipt and the descriptor,
 manifest and archive digests, then places the immutable same-release

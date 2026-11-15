@@ -80,6 +80,52 @@ jobs:
           echo "head=$head" >> "$GITHUB_OUTPUT"
           python scripts/next_macos_release.py --repo "$GITHUB_REPOSITORY" --head "$head" --pbxproj components/AstralProjection/apple-clients/AstralApp/AstralApp.xcodeproj/project.pbxproj --github-output "$GITHUB_OUTPUT"
 
+  native-check:
+    name: Require exact pinned Projection Apple CI
+    needs: [decide]
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && (needs.decide.outputs.skip != 'true') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 27
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ needs.decide.outputs.head }}
+          persist-credentials: false
+      - name: Wait for pinned Projection Apple CI
+        env:
+          DECIDED_HEAD: ${{ needs.decide.outputs.head }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$DECIDED_HEAD"
+          projection="$(git ls-tree HEAD -- components/AstralProjection | awk '$1 == "160000" && $2 == "commit" && $4 == "components/AstralProjection" { print $3 }')"
+          [[ "$projection" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Missing exact Projection gitlink"; exit 1; }
+          repo=AstralDeep/AstralProjection
+          workflow=.github/workflows/apple-ci.yml
+          for attempt in {1..26}; do
+            response="$(curl --fail --silent --show-error --max-time 20 \
+              -H 'Accept: application/vnd.github+json' \
+              "https://api.github.com/repos/$repo/actions/workflows/apple-ci.yml/runs?head_sha=$projection&event=push&branch=main&per_page=100")"
+            jq -e '(.workflow_runs | type) == "array"' <<< "$response" > /dev/null
+            matches="$(jq -c --arg sha "$projection" --arg repo "$repo" --arg workflow "$workflow" \
+              '[.workflow_runs[] | select(.head_sha == $sha and .head_branch == "main" and .event == "push" and .path == $workflow and .repository.full_name == $repo and .head_repository.full_name == $repo)]' <<< "$response")"
+            green="$(jq '[.[] | select(.status == "completed" and .conclusion == "success")] | length' <<< "$matches")"
+            failed="$(jq '[.[] | select(.status == "completed" and .conclusion != "success")] | length' <<< "$matches")"
+            if (( green > 0 )); then
+              echo "Pinned Projection Apple CI succeeded for $projection"
+              exit 0
+            fi
+            if (( failed > 0 )); then
+              echo "::error::Pinned Projection Apple CI completed without success for $projection"
+              exit 1
+            fi
+            if (( attempt < 26 )); then sleep 60; fi
+          done
+          echo "::error::No successful pinned Projection Apple CI within 25 minutes for $projection"
+          exit 1
+
   apple-artifacts:
     name: Build source-bound Apple framework
     needs: [decide]
@@ -209,8 +255,8 @@ jobs:
 
   release:
     name: Build, notarize and publish the Mac DMG
-    needs: [decide, apple-artifacts, node-pack]
-    if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && (needs.decide.outputs.skip != 'true' && (github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.head_repository.full_name == github.repository))) }}
+    needs: [decide, native-check, apple-artifacts, node-pack]
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && (needs.decide.outputs.skip != 'true' && needs.native-check.result == 'success' && (github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.head_repository.full_name == github.repository))) }}
     runs-on: macos-26
     timeout-minutes: 30
     environment: release-macos

@@ -5,8 +5,11 @@ The bootstrap grammar from scripts/verify_release_evidence_bootstrap.py is run o
 from __future__ import annotations
 
 import importlib.util
+import json
+import os
 import re
 import shlex
+import subprocess
 import sys
 from pathlib import Path
 
@@ -94,7 +97,7 @@ def test_decide_is_cheap_unprivileged_and_guarded(flow):
 def test_release_job_runs_only_for_a_green_main_commit_that_is_not_released(flow):
     job = flow["jobs"]["release"]
     assert job["runs-on"] == "macos-26" and job["timeout-minutes"] == 30
-    assert job["needs"] == ["decide", "apple-artifacts", "node-pack"]
+    assert job["needs"] == ["decide", "native-check", "apple-artifacts", "node-pack"]
     assert job["permissions"] == {"contents": "write"}
     assert job["environment"] == "release-macos"
     expression = condition(job)
@@ -103,8 +106,113 @@ def test_release_job_runs_only_for_a_green_main_commit_that_is_not_released(flow
         "github.event.workflow_run.conclusion == 'success'", "github.event.workflow_run.head_branch == 'main'",
         "github.event.workflow_run.head_repository.full_name == github.repository",
         "needs.decide.outputs.skip != 'true'",
+        "needs.native-check.result == 'success'",
     ):
         assert clause in expression
+
+
+def test_pinned_native_check_is_read_only_bounded_and_precedes_signing(flow):
+    job = flow["jobs"]["native-check"]
+    assert job["needs"] == ["decide"]
+    assert job["runs-on"] == "ubuntu-24.04" and job["timeout-minutes"] == 27
+    assert job["permissions"] == {"contents": "read", "actions": "read"}
+    assert condition(job).startswith(f"{GUARD} && ")
+    assert "needs.decide.outputs.skip != 'true'" in condition(job)
+    assert "emergency_skip_ci" not in yaml.safe_dump(job)
+    assert "secrets." not in yaml.safe_dump(job)
+    checkout = job["steps"][0]
+    assert checkout["with"] == {"ref": "${{ needs.decide.outputs.head }}", "persist-credentials": False}
+    gate = step(job, "Wait for pinned Projection Apple CI")
+    assert gate["env"] == {"DECIDED_HEAD": "${{ needs.decide.outputs.head }}"}
+    assert "https://api.github.com/repos/$repo/actions/workflows/apple-ci.yml/runs?" in gate["run"]
+    assert "git ls-tree HEAD -- components/AstralProjection" in gate["run"]
+    assert "for attempt in {1..26}" in gate["run"] and "sleep 60" in gate["run"]
+    assert list(flow["jobs"]).index("native-check") < list(flow["jobs"]).index("release")
+
+
+def native_run(*, conclusion="success", **changes):
+    run = {
+        "head_sha": "b" * 40, "head_branch": "main", "event": "push",
+        "path": ".github/workflows/apple-ci.yml", "repository": {"full_name": "AstralDeep/AstralProjection"},
+        "head_repository": {"full_name": "AstralDeep/AstralProjection"},
+        "status": "completed", "conclusion": conclusion,
+    }
+    run.update(changes)
+    return run
+
+
+def execute_native_check(flow, tmp_path, runs, *, projection="b" * 40, checked_head="a" * 40):
+    commands = tmp_path / "bin"
+    commands.mkdir(parents=True)
+    git = commands / "git"
+    git.write_text(
+        "#!/bin/sh\ncase \"$*\" in\n"
+        "  'rev-parse HEAD') printf '%s\\n' \"$TEST_HEAD\";;\n"
+        "  'ls-tree HEAD -- components/AstralProjection') "
+        "printf '160000 commit %s\\tcomponents/AstralProjection\\n' \"$TEST_PROJECTION\";;\n"
+        "  *) exit 2;;\nesac\n", encoding="utf-8")
+    curl = commands / "curl"
+    curl.write_text(
+        "#!/bin/sh\nfor arg do url=\"$arg\"; done\n"
+        "printf '%s\\n' \"$url\" >> \"$API_QUERY_LOG\"\n"
+        "printf '%s' \"$FAKE_RESPONSE\"\n", encoding="utf-8")
+    sleeper = commands / "sleep"
+    sleeper.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    for command in (git, curl, sleeper):
+        command.chmod(0o755)
+    env = os.environ.copy()
+    env.update({
+        "PATH": str(commands) + os.pathsep + env["PATH"],
+        "DECIDED_HEAD": "a" * 40, "TEST_HEAD": checked_head, "TEST_PROJECTION": projection,
+        "FAKE_RESPONSE": json.dumps({"workflow_runs": runs}), "API_QUERY_LOG": str(tmp_path / "queries"),
+    })
+    result = subprocess.run(
+        ["bash", "-c", step(flow["jobs"]["native-check"], "Wait for pinned Projection Apple CI")["run"]],
+        cwd=tmp_path, env=env, capture_output=True, text=True, timeout=10, check=False)
+    queries = (tmp_path / "queries").read_text(encoding="utf-8").splitlines() if (tmp_path / "queries").exists() else []
+    return result, queries
+
+
+def test_native_check_accepts_only_exact_pinned_main_push_and_queries_that_source(flow, tmp_path):
+    result, queries = execute_native_check(flow, tmp_path, [native_run()])
+    assert result.returncode == 0, result.stderr
+    assert queries == [
+        "https://api.github.com/repos/AstralDeep/AstralProjection/actions/workflows/apple-ci.yml/runs?"
+        f"head_sha={'b' * 40}&event=push&branch=main&per_page=100"
+    ]
+
+
+@pytest.mark.parametrize("change", [
+    {"head_sha": "c" * 40}, {"head_branch": "feature"}, {"event": "pull_request"},
+    {"path": ".github/workflows/other.yml"},
+    {"repository": {"full_name": "Other/AstralProjection"}},
+    {"head_repository": {"full_name": "Other/AstralProjection"}},
+])
+def test_native_check_rejects_wrong_source_identity(flow, tmp_path, change):
+    result, queries = execute_native_check(flow, tmp_path, [native_run(**change)])
+    assert result.returncode != 0
+    assert len(queries) == 26
+
+
+@pytest.mark.parametrize("conclusion", ["failure", "cancelled", "timed_out"])
+def test_native_check_stops_immediately_on_completed_failure(flow, tmp_path, conclusion):
+    result, queries = execute_native_check(flow, tmp_path, [native_run(conclusion=conclusion)])
+    assert result.returncode != 0
+    assert len(queries) == 1
+
+
+def test_native_check_rejects_pending_or_missing_green_run(flow, tmp_path):
+    result, queries = execute_native_check(
+        flow, tmp_path, [native_run(status="in_progress", conclusion=None)])
+    assert result.returncode != 0
+    assert len(queries) == 26
+
+
+def test_native_check_requires_decided_head_and_gitlink(flow, tmp_path):
+    result, queries = execute_native_check(flow, tmp_path, [native_run()], checked_head="c" * 40)
+    assert result.returncode != 0 and queries == []
+    result, queries = execute_native_check(flow, tmp_path / "missing-link", [native_run()], projection="missing")
+    assert result.returncode != 0 and queries == []
 
 
 def test_node_pack_and_framework_producers_are_read_only_and_bounded(flow):
