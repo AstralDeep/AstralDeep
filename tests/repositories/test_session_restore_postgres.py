@@ -43,11 +43,25 @@ class RecoveryTarget(dict):
 def target(database):
     from psycopg2.extensions import make_dsn
 
+    database_url = os.environ["ASTRALPLANE_TEST_POSTGRES_DSN"]
     with database.transaction() as tx:
         tx.execute("DELETE FROM assignment_operation_receipt")
         tx.execute("DELETE FROM persistent_assignment")
         tx.execute("DELETE FROM web_session")
         tx.execute("DELETE FROM astralplane_blob_owner_state WHERE owner_id='owner'")
+    if database_url.startswith("sqlite:"):
+        from astralplane.database.sqlite import sqlite_path_from_url
+        from astralplane.database.sqlite_migrations import SQLITE_MIGRATION_DIGEST
+
+        return RecoveryTarget(
+            database_url=database_url,
+            expected_database=str(sqlite_path_from_url(database_url).resolve()),
+            expected_schema="main",
+            expected_schema_revision=SCHEMA_REVISION,
+            expected_migration_digest=SQLITE_MIGRATION_DIGEST,
+        )
+
+    with database.transaction() as tx:
         row = tx.fetch_one("SELECT current_database() AS database, current_schema() AS schema")
     return RecoveryTarget(
         database_url=make_dsn(
@@ -216,6 +230,7 @@ def test_joint_restore_refuses_unqualified_unit_without_session_mutation(
     assert sessions(database) == before
 
 
+@pytest.mark.postgresql_schema_catalog
 def test_joint_restore_retirement_failure_returns_no_completion_evidence(
     database, target, tmp_path, monkeypatch
 ):
@@ -309,7 +324,11 @@ def test_held_lock_refuses_with_bounded_wait_and_no_partial_deletion(database, t
     before = sessions(database)
     with database.transaction() as blocker:
         if lock == "table":
-            blocker.execute("LOCK TABLE web_session IN ACCESS EXCLUSIVE MODE")
+            blocker.execute(
+                "UPDATE web_session SET sid=sid WHERE 0"
+                if blocker.dialect.is_sqlite
+                else "LOCK TABLE web_session IN ACCESS EXCLUSIVE MODE"
+            )
         else:
             blocker.fetch_one(
                 "SELECT pg_advisory_xact_lock(%s,%s)", CURRENT_DATA_PLANE_REVISION.migration_lock
@@ -342,6 +361,7 @@ def test_same_snapshot_restored_again_is_retired_again_without_marker_skip(datab
 
 
 @pytest.mark.parametrize("outcome", ["succeeded", "failed", "uncertain"])
+@pytest.mark.postgresql_schema_catalog
 def test_restore_retirement_preserves_liabilities_and_authentic_settlement(
     database, target, tmp_path, outcome
 ):
@@ -439,6 +459,7 @@ def test_typed_consent_and_execution_are_both_refused_after_retirement(database,
 @pytest.mark.parametrize(
     "corruption", ["set_config", "current_schema", "pg_settings", "schema_meta"]
 )
+@pytest.mark.postgresql_schema_catalog
 def test_restored_shadow_functions_and_metadata_view_are_never_executed(
     database, target, corruption
 ):
@@ -516,6 +537,8 @@ def test_lost_commit_acknowledgement_returns_no_completion_and_retry_checks_actu
     assert retire_restored_sessions(**target).retired_sessions == 0
 
 
+@pytest.mark.postgresql_lock_catalog
+@pytest.mark.postgresql_schema_catalog
 def test_statement_timeout_after_delete_rolls_back_complete_retirement(
     database, target, monkeypatch
 ):

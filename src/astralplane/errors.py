@@ -10,6 +10,8 @@ from collections.abc import Mapping
 from heapq import nsmallest
 from typing import Final
 
+from psycopg2.errors import LockNotAvailable
+
 MAX_METADATA_ENTRIES: Final = 16
 MAX_METADATA_KEY_LENGTH: Final = 64
 MAX_METADATA_VALUE_LENGTH: Final = 512
@@ -153,5 +155,26 @@ class DomainValidationError(PlaneError, ValueError):
     default_code = "domain_validation"
 
 
-class RepositoryConflictError(PlaneError):
+class RepositoryError(PlaneError):
+    default_code = "repository_error"
+
+
+class RepositoryConflictError(RepositoryError):
     default_code = "repository_conflict"
+
+
+class LockContentionError(RepositoryConflictError):
+    default_code = "repository_busy"
+
+
+def is_lock_contention(error: BaseException) -> bool:
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, (LockContentionError, LockNotAvailable)):
+            return True
+        current = current.__cause__ or (
+            None if current.__suppress_context__ else current.__context__
+        )
+    return False

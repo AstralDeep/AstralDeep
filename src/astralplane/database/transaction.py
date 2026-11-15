@@ -15,6 +15,7 @@ from types import MappingProxyType
 from typing import Any
 
 from astralplane.contracts import IsolationLevel, Parameters, Statement
+from astralplane.database.dialect import POSTGRES, Dialect
 from astralplane.database.pool import ConnectionPool
 from astralplane.database.sql import execute_native
 from astralplane.errors import (
@@ -125,6 +126,15 @@ class Transaction:
     @property
     def discard_required(self) -> bool:
         return self._discard_required
+
+    @property
+    def dialect(self) -> Dialect:
+        found = getattr(self._connection, "dialect", None)
+        return found if isinstance(found, Dialect) else POSTGRES
+
+    @property
+    def isolation(self) -> IsolationLevel | None:
+        return self._isolation
 
     def _connection_interrupted(self) -> bool:
         try:
@@ -279,8 +289,13 @@ class Transaction:
         quoted_name = f'"{name}"'
         try:
             self._control(f"SAVEPOINT {quoted_name}")
-        except BaseException:
-            self._failed = True
+        except BaseException as exc:
+            if not (
+                self.dialect.is_sqlite
+                and getattr(exc, "pgcode", None) == "55P03"
+                and not self._connection.raw.in_transaction
+            ):
+                self._failed = True
             raise
         failed_before = self._failed
         try:
@@ -352,11 +367,17 @@ class PlaneDatabase:
         self._pool = pool
 
     @contextmanager
-    def transaction(self, *, isolation: IsolationLevel | None = None) -> Iterator[Transaction]:
+    def transaction(
+        self, *, isolation: IsolationLevel | None = None, read_only: bool = False
+    ) -> Iterator[Transaction]:
         with self._pool.connection() as connection:
             transaction = Transaction(connection, isolation=isolation)
+            if read_only and transaction.dialect.is_sqlite:
+                connection.configure_read_only(True)
             try:
                 transaction._begin()
+                if read_only and transaction.dialect.is_postgres:
+                    transaction._control("SET TRANSACTION READ ONLY")
                 try:
                     yield transaction
                 except BaseException:

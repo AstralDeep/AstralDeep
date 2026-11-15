@@ -11,7 +11,9 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from astralplane.contracts import Transaction
+from astralplane.contracts import IsolationLevel, Transaction
+from astralplane.database.dialect import dialect_of
+from astralplane.errors import LockContentionError, is_lock_contention
 from astralplane.repositories import (
     RepositoryConflictError,
     RepositoryDataError,
@@ -76,15 +78,24 @@ class ToolPolicyStateRepository:
     ) -> FixedReaderPolicySnapshot:
         owner_id = _required_id(owner_id, "owner_id")
         try:
-            isolation = transaction.fetch_one(
-                "SELECT current_setting('transaction_isolation') AS isolation"
-            )
-            if isolation is None or isolation["isolation"] != "read committed":
-                raise RepositoryConflictError("fixed reader policy unavailable")
-            transaction.execute(
+            if dialect_of(transaction).is_sqlite:
+                if transaction.isolation not in {None, IsolationLevel.READ_COMMITTED}:
+                    raise RepositoryConflictError("fixed reader policy unavailable")
+                prior_timeout = transaction.fetch_one(
+                    "SELECT current_setting('lock_timeout') AS value"
+                )["value"]
+                transaction.execute("SET LOCAL lock_timeout='1ms'")
+                transaction.fetch_one("SELECT pg_advisory_xact_lock(%s,%s)", (79, 1))
+            else:
+                isolation = transaction.fetch_one(
+                    "SELECT current_setting('transaction_isolation') AS isolation"
+                )
+                if isolation is None or isolation["isolation"] != "read committed":
+                    raise RepositoryConflictError("fixed reader policy unavailable")
+                transaction.execute(
                 "LOCK TABLE agent_ownership, agent_scopes, agent_trust, draft_agents, "
                 "tool_overrides, user_agent, user_preferences IN SHARE MODE NOWAIT"
-            )
+                )
             scopes = transaction.fetch_all(
                 "SELECT user_id, agent_id, scope, enabled, updated_at FROM agent_scopes "
                 "WHERE user_id = %s AND agent_id = 'web-research-1' AND scope = 'tools:read'",
@@ -112,7 +123,7 @@ class ToolPolicyStateRepository:
                 "ORDER BY created_at DESC NULLS LAST, id ASC LIMIT 1"
             )
             disabled = self.list_disabled_agents(transaction, owner_id=owner_id)
-            return FixedReaderPolicySnapshot(
+            snapshot = FixedReaderPolicySnapshot(
                 owner_id=owner_id,
                 scopes=tuple(_scope(row) for row in scopes),
                 overrides=tuple(_override(row) for row in overrides),
@@ -123,8 +134,13 @@ class ToolPolicyStateRepository:
                 user_agent_deleted=agent is not None and agent["deleted_at"] is not None,
                 draft_status=None if draft is None else str(draft["status"]),
             )
-        except Exception:
+            if dialect_of(transaction).is_sqlite:
+                transaction.fetch_one("SELECT set_config('lock_timeout',%s,true)", (prior_timeout,))
+            return snapshot
+        except Exception as exc:
             # Detail hidden on purpose; caller must still abort the txn
+            if is_lock_contention(exc):
+                raise LockContentionError("fixed reader policy unavailable") from None
             raise RepositoryConflictError("fixed reader policy unavailable") from None
 
     def list_scopes(

@@ -11,7 +11,6 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from threading import Barrier
 
-import psycopg2
 import pytest
 
 from astralplane.api import create_repository_catalog
@@ -26,6 +25,7 @@ from astralplane.repositories.atlas_pages import (
     AtlasPageCursor,
     AtlasPageDeleteCommand,
 )
+from tests.fixtures.database_errors import check_violation
 from tests.integration.test_lifecycle_acceptance import concurrent_database
 
 OWNER = "atlas-owner"
@@ -292,7 +292,7 @@ def test_tombstone_and_receipt_mutations_are_refused_by_postgresql(migrated_clon
         repo.create_page(tx, command=create_command(command_id=COMMAND_A))
         repo.delete_page(tx, command=delete_command(command_id=COMMAND_B))
     with (
-        pytest.raises(psycopg2.errors.CheckViolation),
+        check_violation(),
         migrated_clone.database.transaction() as tx,
     ):
         tx.execute(
@@ -301,7 +301,7 @@ def test_tombstone_and_receipt_mutations_are_refused_by_postgresql(migrated_clon
             (b"restored", hashlib.sha256(b"restored").hexdigest(), OWNER, PAGE_A),
         )
     with (
-        pytest.raises(psycopg2.errors.CheckViolation),
+        check_violation(),
         migrated_clone.database.transaction() as tx,
     ):
         tx.execute(
@@ -313,6 +313,7 @@ def test_tombstone_and_receipt_mutations_are_refused_by_postgresql(migrated_clon
         assert tx.fetch_one("SELECT count(*) AS count FROM atlas_page_command")["count"] == 2
 
 
+@pytest.mark.postgresql_schema_catalog
 def test_corrupt_content_digest_fails_closed_on_read(migrated_clone):
     repo = create_repository_catalog().atlas_pages
     with migrated_clone.database.transaction() as tx:
@@ -463,7 +464,7 @@ def test_four_byte_source_maximum_matches_database_bound(migrated_clone):
         assert repo.create_page(tx, command=create_command(sources=sources)).page.sources == sources
         assert (
             tx.fetch_one("SELECT octet_length(sources::text) AS size FROM atlas_page")["size"]
-            == 16416
+            == (16409 if tx.dialect.is_sqlite else 16416)
         )
 
 

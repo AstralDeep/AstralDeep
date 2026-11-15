@@ -19,6 +19,7 @@ from tests.integration.test_lifecycle_acceptance import (
 
 
 @pytest.mark.parametrize("first", ("read", "cancel"))
+@pytest.mark.postgresql_lock_catalog
 def test_locked_source_read_serializes_completion_subscription_and_cancel(migrated_clone, first):
     catalog = create_repository_catalog()
     repo = catalog.assignments
@@ -128,6 +129,7 @@ def test_operation_read_refuses_non_boolean_lock(migrated_clone, lock):
         )
 
 
+@pytest.mark.postgresql_lock_catalog
 def test_reciprocal_operation_locking_takes_owner_before_source(migrated_clone):
     repo = create_repository_catalog().assignments
     with migrated_clone.database.transaction() as tx:

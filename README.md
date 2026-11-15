@@ -1,16 +1,21 @@
 # AstralPlane
 
-AstralPlane is Astral's independent embedded durable-state library. It owns PostgreSQL connection
+AstralPlane is Astral's independent embedded durable-state library. It owns PostgreSQL and SQLite connection
 and transaction mechanics, guarded schema evolution, owner-scoped repositories, audit-chain
 storage, transactional outbox delivery, and explicit blob-purge recovery. AstralDeep installs the
 package in-process; AstralPlane does not add a service port or a second database.
+
+Personal nodes can select a persistent SQLite file through `create_sqlite_runtime(...)` or
+the URL-selecting `create_runtime(...)`; institutional nodes keep `create_postgres_runtime(...)`.
+See [SQLite composition, locking and recovery](docs/sqlite-backend.md) for the dialect-specific
+registry pin, file requirements and single-writer contract.
 
 ## Contracts
 
 - Python: 3.11 or newer
 - Package: `astralplane`
 - Contract: `astralplane.contract/v1`
-- Current schema: `089.020`, read-compatible from `066.001`, with guarded upgrade entry points
+- Current schema: `089.022`, read-compatible from `066.001`, with guarded upgrade entry points
   at `066.001`, `067.001`, `074.001`, `074.002`, `074.003`, `074.004`, `075.001`, `079.001`,
   `088.001`, `088.002`, `088.003`, `088.004`, `088.005`, `088.006`, `088.007`, `088.008`,
   `089.001`, `089.002`, `089.003`, `089.004`, `089.005`, and `089.006`
@@ -25,11 +30,11 @@ package in-process; AstralPlane does not add a service port or a second database
 composition, and guarded startup. On a truly empty application schema it first installs the
 schema-only `066.001` compatibility baseline under the migration advisory lock, then applies every
 required edge of
-`066.001 -> 067.001 -> 074.001 -> 074.002 -> 074.003 -> 074.004 -> 075.001 -> 079.001 -> 088.001 -> 088.002 -> 088.003 -> 088.004 -> 088.005 -> 088.006 -> 088.007 -> 088.008 -> 089.001 -> 089.002 -> 089.003 -> 089.004 -> 089.005 -> 089.006 -> 089.007 -> 089.008 -> 089.009 -> 089.010 -> 089.011 -> 089.012 -> 089.013 -> 089.014 -> 089.015 -> 089.016 -> 089.017 -> 089.018 -> 089.019 -> 089.020`
+`066.001 -> 067.001 -> 074.001 -> 074.002 -> 074.003 -> 074.004 -> 075.001 -> 079.001 -> 088.001 -> 088.002 -> 088.003 -> 088.004 -> 088.005 -> 088.006 -> 088.007 -> 088.008 -> 089.001 -> 089.002 -> 089.003 -> 089.004 -> 089.005 -> 089.006 -> 089.007 -> 089.008 -> 089.009 -> 089.010 -> 089.011 -> 089.012 -> 089.013 -> 089.014 -> 089.015 -> 089.016 -> 089.017 -> 089.018 -> 089.019 -> 089.020 -> 089.021 -> 089.022`
 in one registry transaction. A pre-split `066.001` database has only its legacy revision marker.
 Every later predecessor, from `067.001` through `089.006`, is accepted only when it carries its own
 pinned historical migration-registry digest. Every supported predecessor is structurally attested
-before the first migration write. A current `089.020` database must carry the exact current
+before the first migration write. A current `089.022` database must carry the exact current
 registry digest and pass canonical catalog-structure verification over all Plane-owned tables,
 sequences, functions, indexes, constraints, triggers, rules, policies, inheritance, and
 owned-schema privileges. A same-name or unexpected object with changed behavior is rejected. A
@@ -52,8 +57,8 @@ The package contains no AstralDeep, AstralProjection, AstralPrimitives, LETS, AP
 media, or transport implementation dependency. Product policy and authorization remain in
 AstralDeep; callers pass neutral owner context and retain transaction ownership.
 
-`create_repository_catalog()` returns the stable repository catalog. Its 54 members, in `RepositoryCatalog.as_mapping()` order, are
-`assignments`, `agent_management`, `agents`, `artifacts`, `attachment_parsers`, `audit`, `audit_retention`, `authority`, `background_tasks`, `chat_queue`, `chat_read_receipts`, `chat_steps`, `conversation_files`, `credentials`, `draft_agents`, `generated_agent_publications`, `encrypted_llm_config`, `encrypted_typesafe_credential`, `framework_credentials`, `history`, `harness_cleanup`, `identity`, `knowledge`, `maintenance`, `mesh_enrollment`, `verification_credentials`, `notifications`, `push_deliveries`, `projects`, `observations`, `offline_grants`, `outbox`, `preferences`, `personalization_graph`, `purge`, `quality_audit`, `remote`, `remote_operation_proposals`, `revocations`, `saved_components`, `scheduler`, `share_grants`, `stop_epochs`, `tool_policy_state`, `tracked_jobs`, `tutorials`, `voice`, `work_admission`, `workspaces`, `completion_wake`, `computer_use`, `capability_publications`, `atlas_pages`, and `atlas_links`.
+`create_repository_catalog()` returns the stable repository catalog. Its 59 members, in `RepositoryCatalog.as_mapping()` order, are
+`assignments`, `agent_management`, `agents`, `artifacts`, `attachment_parsers`, `audit`, `audit_retention`, `authority`, `background_tasks`, `chat_queue`, `chat_read_receipts`, `chat_steps`, `derived_chat`, `event_log`, `event_roster`, `learning_ledger`, `runs`, `conversation_files`, `credentials`, `draft_agents`, `generated_agent_publications`, `encrypted_llm_config`, `encrypted_typesafe_credential`, `framework_credentials`, `history`, `harness_cleanup`, `identity`, `knowledge`, `maintenance`, `mesh_enrollment`, `verification_credentials`, `notifications`, `push_deliveries`, `projects`, `observations`, `offline_grants`, `outbox`, `preferences`, `personalization_graph`, `purge`, `quality_audit`, `remote`, `remote_operation_proposals`, `revocations`, `saved_components`, `scheduler`, `share_grants`, `stop_epochs`, `tool_policy_state`, `tracked_jobs`, `tutorials`, `voice`, `work_admission`, `workspaces`, `completion_wake`, `computer_use`, `capability_publications`, `atlas_pages`, and `atlas_links`.
 
 `preferences.personalization.get_memory(query, owner_id=..., memory_id=...,
 for_update=True)` reads and locks the current owner-scoped memory row until the caller's
@@ -500,6 +505,30 @@ exactly once under a uniqueness constraint with a bounded retention prune. Locke
 verification lookups never return a credential as active after a concurrent revocation
 commits. Only public key material and digests are stored; biometric verification, possession
 proof, and approval policy stay with the host. See the guarded migration and recovery section.
+
+### Mesh event store
+
+Schema `089.021` adds one owner's mesh event log. `create_event_roster_repository()` creates a
+mesh whose id is the hash of its first signed roster entry, appends later entries that must follow
+entries already held, and stores checkpoints with countersignatures. `create_event_log_repository()`
+appends events to per-device feeds with contiguous sequence and previous-hash checks, stays
+idempotent on the same event id, and keeps both events as evidence and freezes the feed when two
+different events claim one position. It reads feed heads, ranges after a sequence, events by scope in
+clock order, and hash-addressed sealed bodies that may be absent. `create_derived_chat_repository()`
+upserts chat and message rows that a host derived from events, linked through a unique `event_id`
+column on `chats` and `messages`. Signatures, encryption and the fold from events to chat state stay
+with the host. See the guarded migration and recovery section.
+
+### Run leases, goals and the learning ledger
+
+Schema `089.022` adds event-derived, append-only history for long-running work on a mesh.
+`create_run_repository()` records executor leases (take, transfer, takeover and state changes)
+with contiguous epochs, one executor per run and no changes after a run finishes, and goal state
+transitions with contiguous revisions, an unchanged goal text and non-decreasing rounds.
+`create_learning_ledger_repository()` records proposals, adoptions and reversals with a content hash,
+a scope, a review mode and the event ids that justify each entry, in that order and once each. Every
+entry is idempotent by its event id. Authorization of the events and the decision to adopt stay with
+the host. See the guarded migration and recovery section.
 
 ### Conversation audit range reads and segment proofs
 

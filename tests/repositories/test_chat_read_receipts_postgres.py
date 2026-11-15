@@ -62,6 +62,15 @@ def mark(tx, position=5, chat_id=CHAT, owner_id=OWNER, expected_revision=0):
 
 @contextmanager
 def concurrent_database(clone):
+    if clone.dsn.startswith("sqlite:"):
+        from astralplane.database.sqlite import create_sqlite_driver_pool
+
+        pool = ConnectionPool(create_sqlite_driver_pool(clone.dsn))
+        try:
+            yield PlaneDatabase(pool)
+        finally:
+            pool.close()
+        return
     configured = make_dsn(clone.dsn, options=f"-csearch_path={clone.schema},pg_catalog")
     pool = ConnectionPool(
         create_postgres_driver_pool(configured, minimum_connections=1, maximum_connections=2)

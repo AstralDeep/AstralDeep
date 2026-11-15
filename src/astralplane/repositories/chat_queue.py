@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any, Final
 
 from astralplane.contracts import Transaction
+from astralplane.database.dialect import dialect_of
 from astralplane.repositories import (
     RepositoryConflictError,
     RepositoryDataError,
@@ -360,9 +361,7 @@ class ChatQueueRepository:
         owner = _required_id(owner_id, "owner_id")
         chat = _required_id(chat_id, "chat_id")
         updated = _required_integer(reordered_at, "reordered_at")
-        if isinstance(ordered_item_ids, (str, bytes)) or not isinstance(
-            ordered_item_ids, Sequence
-        ):
+        if isinstance(ordered_item_ids, (str, bytes)) or not isinstance(ordered_item_ids, Sequence):
             raise RepositoryValidationError("ordered_item_ids must be a sequence of item ids")
         if not isinstance(expected_revisions, Mapping):
             raise RepositoryValidationError("expected_revisions must be a revision mapping")
@@ -399,7 +398,8 @@ class ChatQueueRepository:
                 metadata={"field": "expected_revisions"},
             )
         _lock_chat_queue(transaction, owner, chat)
-        transaction.execute("SET CONSTRAINTS chat_queue_item_chat_order DEFERRED")
+        if not dialect_of(transaction).is_sqlite:
+            transaction.execute("SET CONSTRAINTS chat_queue_item_chat_order DEFERRED")
         current = transaction.fetch_all(
             f"SELECT {_FIELDS} FROM chat_queue_item "
             "WHERE owner_id = %s AND chat_id = %s ORDER BY position, item_id FOR UPDATE",
@@ -429,8 +429,30 @@ class ChatQueueRepository:
         for identifier, next_position, expected in ordering:
             parameters.extend((identifier, next_position, expected))
         parameters.extend((owner, chat))
-        result = transaction.execute(_reorder_sql(len(ordering)), tuple(parameters))
-        rows = getattr(result, "returned_records", ())
+        if dialect_of(transaction).is_sqlite:
+            occupied = {row["position"] for row in current} | {item[1] for item in ordering}
+            temporary = (
+                position for position in range(3 * len(ordering)) if position not in occupied
+            )
+            for identifier, _next_position, _expected in ordering:
+                transaction.execute(
+                    "UPDATE chat_queue_item SET position=%s "
+                    "WHERE owner_id=%s AND chat_id=%s AND item_id=%s",
+                    (next(temporary), owner, chat, identifier),
+                )
+            rows = tuple(
+                row
+                for identifier, next_position, expected in ordering
+                for row in transaction.execute(
+                    f"UPDATE chat_queue_item SET position=%s, revision=revision+1, updated_at=%s "
+                    f"WHERE owner_id=%s AND chat_id=%s AND item_id=%s AND revision=%s "
+                    f"RETURNING {_FIELDS}",
+                    (next_position, updated, owner, chat, identifier, expected),
+                ).returned_records
+            )
+        else:
+            result = transaction.execute(_reorder_sql(len(ordering)), tuple(parameters))
+            rows = getattr(result, "returned_records", ())
         if len(rows) != len(ordering):
             raise RepositoryConflictError(
                 "queue reorder revision fence rejected",

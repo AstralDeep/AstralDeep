@@ -283,7 +283,7 @@ def test_089_005_notification_edge_is_pinned_to_the_exact_089_004_registry() -> 
 
     edge = canonical.PLANE_SCHEMA_089_005_MIGRATION
     assert edge in canonical.MIGRATION_REGISTRY.migrations
-    assert canonical.MIGRATION_REGISTRY.migrations[-16] is edge
+    assert canonical.MIGRATION_REGISTRY.migrations[-18] is edge
     assert edge.name == "astralplane-089-notification-records"
     assert edge.source_revisions == ("089.004",)
     assert edge.target_revision == "089.005"
@@ -310,7 +310,7 @@ def test_089_005_notification_edge_is_pinned_to_the_exact_089_004_registry() -> 
     assert canonical.PLANE_SCHEMA_089_004_PREDECESSOR_SCHEMA_VERIFIER_CHECKSUM == (
         "e3f2988fea4b6e8cf7edd9064cec67b3d0665f0863de40bbd8332ff9e7f0a9f3"
     )
-    assert canonical.CURRENT_DATA_PLANE_REVISION.schema_revision == "089.020"
+    assert canonical.CURRENT_DATA_PLANE_REVISION.schema_revision == "089.022"
     assert canonical.CURRENT_DATA_PLANE_REVISION.predecessor_digest_for("089.004") == (
         OLD_089_004_REGISTRY_DIGEST
     )

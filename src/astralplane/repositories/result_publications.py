@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from dataclasses import fields
 from datetime import timedelta
 
+from astralplane.database.dialect import dialect_of
 from astralplane.repositories import (
     RepositoryConflictError,
     RepositoryNotFoundError,
@@ -628,6 +629,24 @@ def put(
         return a._action_record(action)
 
 
+@contextmanager
+def _prepare_rows(tx):
+    previous = None
+    try:
+        if dialect_of(tx).is_sqlite:
+            previous = tx.fetch_one("SELECT current_setting('lock_timeout') AS value")["value"]
+            tx.fetch_one("SELECT set_config('lock_timeout','1ms',true)")
+        with tx.savepoint("result_publication_prepare"):
+            yield
+    except Exception as exc:
+        if dialect_of(tx).is_sqlite and getattr(exc, "pgcode", None) == "55P03":
+            a._conflict("assignment_publication_busy")
+        raise
+    finally:
+        if previous is not None:
+            tx.fetch_one("SELECT set_config('lock_timeout',%s,true)", (previous,))
+
+
 def prepare(
     repo,
     tx,
@@ -643,7 +662,7 @@ def prepare(
     decision = _decision(decision)
     authority, cutoff = _authority(authority), a._guidance_cutoff(caller_valid_until)
     _ids(owner_id, assignment_id, action_id, expected_state_version)
-    with tx.savepoint("result_publication_prepare"):
+    with _prepare_rows(tx):
         _require(repo._lock_operation_owner(tx, owner_id))
         peek = repo._load(tx, owner_id, assignment_id)
         row = tx.fetch_one(
@@ -695,14 +714,15 @@ def prepare(
 def _fresh_writes(tx):
     before = tx.fetch_one("SELECT current_setting('lock_timeout') AS value")["value"]
     try:
+        tx.fetch_one("SELECT set_config('lock_timeout','1ms',true)")
         with tx.savepoint("result_publication_fresh_rows"):
-            tx.fetch_one("SELECT set_config('lock_timeout','1ms',true)")
             yield
-            tx.fetch_one("SELECT set_config('lock_timeout',%s,true)", (before,))
     except Exception as exc:
         if getattr(exc, "pgcode", None) == "55P03":
             a._conflict("assignment_publication_busy")
         raise
+    finally:
+        tx.fetch_one("SELECT set_config('lock_timeout',%s,true)", (before,))
 
 
 def commit(

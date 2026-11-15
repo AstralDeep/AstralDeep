@@ -417,6 +417,7 @@ def test_audit_and_wake_roll_back_with_required_host_failure(database, repo, bou
         ("assignment", "authority"),
     ],
 )
+@pytest.mark.postgresql_lock_catalog
 def test_new_wake_rechecks_committed_loss_after_real_lock_wait(database, repo, blocker, loss):
     with database.transaction() as tx:
         _reset(tx)
@@ -573,6 +574,7 @@ def test_factual_reconciliation_clears_liability_without_granting_a_wake(tx, rep
     assert values[8].dispatch_token
 
 
+@pytest.mark.postgresql_lock_catalog
 def test_continuation_clear_locks_actions_in_sorted_order(database, repo):
     with database.transaction() as tx:
         _reset(tx)
@@ -616,6 +618,7 @@ def test_continuation_clear_locks_actions_in_sorted_order(database, repo):
 
 
 @pytest.mark.parametrize("expiry", ["authority", "deadline"])
+@pytest.mark.postgresql_lock_catalog
 def test_continuation_clear_checks_db_deadline_after_action_lock_wait(database, repo, expiry):
     with database.transaction() as tx:
         _reset(tx)
@@ -668,6 +671,7 @@ def test_continuation_clear_checks_db_deadline_after_action_lock_wait(database, 
         assert stored_rows(tx, record.assignment_id) == before
 
 
+@pytest.mark.postgresql_lock_catalog
 def test_concurrent_settlement_invalidates_original_preparation_counters(database, repo):
     with database.transaction() as tx:
         _reset(tx)

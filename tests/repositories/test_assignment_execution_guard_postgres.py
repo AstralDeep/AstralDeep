@@ -228,6 +228,7 @@ def _wait_for_lock(tx, waiting_pid, blocking_pid):
 
 
 @pytest.mark.parametrize("profile", ["persistent", "interactive_grant"])
+@pytest.mark.postgresql_lock_catalog
 def test_grant_revocation_committed_during_lock_wait_refuses_guard(database, repo, profile):
     with database.transaction() as tx:
         _reset(tx)
@@ -290,6 +291,7 @@ def test_guard_contends_with_existing_owner_mutations_without_deadlock(database,
 
 
 @pytest.mark.parametrize("expiry", ["claim", "authority", "deadline", "grant"])
+@pytest.mark.postgresql_lock_catalog
 def test_guard_resamples_database_time_after_admission_lock_wait(database, repo, expiry):
     with database.transaction() as tx:
         _reset(tx)

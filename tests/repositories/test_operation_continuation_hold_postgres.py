@@ -206,6 +206,7 @@ def test_due_label_cannot_hide_an_existing_event_wait(tx, repo):
     assert current(repo, tx, waiting) == current_wait
 
 
+@pytest.mark.postgresql_lock_catalog
 def test_claim_rechecks_original_observation_after_real_action_lock_wait(database, repo):
     with database.transaction() as tx:
         _reset(tx)

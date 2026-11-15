@@ -473,9 +473,16 @@ def test_real_postgresql_conversation_page_is_owner_isolated_and_keeps_its_filte
             conversation_id="chat-a",
             outcomes=("failure",),
         )
-        transaction.execute("SET LOCAL enable_seqscan = off")
+        if not transaction.dialect.is_sqlite:
+            transaction.execute("SET LOCAL enable_seqscan = off")
         plan = transaction.fetch_all(
-            "EXPLAIN SELECT * FROM audit_events WHERE actor_user_id = %s "
+            (
+                "EXPLAIN QUERY PLAN SELECT * FROM audit_events "
+                "INDEXED BY idx_audit_user_conversation_recorded "
+                if transaction.dialect.is_sqlite
+                else "EXPLAIN SELECT * FROM audit_events "
+            )
+            + "WHERE actor_user_id = %s "
             "AND conversation_id = %s ORDER BY recorded_at DESC, event_id DESC LIMIT 51",
             ("owner-1", "chat-a"),
         )
@@ -487,7 +494,7 @@ def test_real_postgresql_conversation_page_is_owner_isolated_and_keeps_its_filte
     assert unknown == AuditPage(records=(), next_cursor=None)
     assert narrowed == AuditPage(records=(), next_cursor=None)
     assert "idx_audit_user_conversation_recorded" in " ".join(
-        str(next(iter(row.values()))) for row in plan
+        str(value) for row in plan for value in row.values()
     )
 
 

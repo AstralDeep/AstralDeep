@@ -116,12 +116,26 @@ def test_locked_owner_prefix_does_not_hide_an_available_owner(database, repo, bl
         with independent_database(schema) as other, other.transaction() as recovery:
             observed = ObservedTransaction(recovery)
             result = repo.recover_expired_operations_for_administration(observed, limit=1)
-            assert result.reclaimed_assignment_ids == (available.assignment_id,)
-            assert [identity for kind, identity in observed.calls if kind == "owner"] == [
-                "held-owner", "available-owner",
-            ]
-            assert observed.calls[-1] == ("rows", None)
-            assert sum(kind == "rows" for kind, _ in observed.calls) == 1
+            if recovery.dialect.is_sqlite:
+                assert result.reclaimed_assignment_ids == ()
+                assert repo.get_assignment(
+                    recovery, owner_id="available-owner", assignment_id=available.assignment_id
+                ).lifecycle == "active"
+            else:
+                assert result.reclaimed_assignment_ids == (available.assignment_id,)
+                assert [identity for kind, identity in observed.calls if kind == "owner"] == [
+                    "held-owner",
+                    "available-owner",
+                ]
+                assert observed.calls[-1] == ("rows", None)
+                assert sum(kind == "rows" for kind, _ in observed.calls) == 1
+    if recovery.dialect.is_sqlite:
+        with database.transaction() as retry:
+            result = repo.recover_expired_operations_for_administration(
+                retry, limit=blocked_count + 1
+            )
+            assert available.assignment_id in result.reclaimed_assignment_ids
+            assert len(result.reclaimed_assignment_ids) == blocked_count + 1
 
 
 def test_retired_owner_prefix_is_preserved_while_another_owner_recovers(tx, repo):

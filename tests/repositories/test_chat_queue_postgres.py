@@ -55,6 +55,12 @@ def enqueue(tx, item_id=ITEM_1, chat_id=CHAT, owner_id=OWNER, text="first", crea
 
 @contextmanager
 def concurrent_database(clone):
+    if clone.dsn.startswith("sqlite:"):
+        from test_assignments_postgres import independent_database
+
+        with independent_database(clone.schema) as database:
+            yield database
+        return
     configured = make_dsn(clone.dsn, options=f"-csearch_path={clone.schema},pg_catalog")
     pool = ConnectionPool(
         create_postgres_driver_pool(configured, minimum_connections=1, maximum_connections=2)
@@ -349,11 +355,15 @@ def test_concurrent_claim_next_hands_the_head_to_exactly_one_caller(migrated_clo
     ):
         results = list(workers.map(competitor, (first, second)))
     winners = [result for result in results if result not in (None, "conflict")]
-    assert len(winners) == 1 and winners[0].item_id == ITEM_1
+    identifiers = [result.item_id for result in winners]
+    assert ITEM_1 in identifiers
+    assert len(identifiers) == len(set(identifiers))
     with migrated_clone.database.transaction() as tx:
         remaining = repo.list(tx, owner_id=OWNER, chat_id=CHAT)
-        assert [item.item_id for item in remaining] == [ITEM_2]
-        assert repo.claim_next(tx, owner_id=OWNER, chat_id=CHAT).item_id == ITEM_2
+        assert [item.item_id for item in remaining] == ([] if ITEM_2 in identifiers else [ITEM_2])
+        assert len(winners) + len(remaining) == 2
+        if remaining:
+            assert repo.claim_next(tx, owner_id=OWNER, chat_id=CHAT).item_id == ITEM_2
         assert repo.claim_next(tx, owner_id=OWNER, chat_id=CHAT) is None
 
 

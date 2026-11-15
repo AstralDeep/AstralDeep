@@ -180,19 +180,27 @@ def test_optional_empty_reason_and_strict_update_flag(database):
 
 
 def test_absent_admission_holds_exact_owner_lock_to_caller_commit(database):
-    import psycopg2.errors
+    from tests.fixtures.database_errors import LOCK_ERRORS
 
     with database.transaction() as tx:
         schema = tx.fetch_one("SELECT current_schema() AS name")["name"]
         assert StopEpochRepository().assert_running(tx, owner_id="stop-owner") is None
         with independent_database(schema) as second:
-            with pytest.raises(psycopg2.errors.LockNotAvailable), second.transaction() as other:
+            with pytest.raises(LOCK_ERRORS), second.transaction() as other:
                 other.execute("SET LOCAL lock_timeout = '50ms'")
                 engage(other)
-            with second.transaction() as other:
-                assert StopEpochRepository().assert_running(other, owner_id="foreign-owner") is None
+            if tx.dialect.is_sqlite:
+                with pytest.raises(LOCK_ERRORS), second.transaction() as other:
+                    other.execute("SET LOCAL lock_timeout = '50ms'")
+                    StopEpochRepository().assert_running(other, owner_id="foreign-owner")
+            else:
+                with second.transaction() as other:
+                    assert StopEpochRepository().assert_running(
+                        other, owner_id="foreign-owner"
+                    ) is None
     with database.transaction() as tx:
         assert engage(tx).engaged
+        assert StopEpochRepository().assert_running(tx, owner_id="foreign-owner") is None
 
 
 @pytest.mark.parametrize("operation", ["engage", "resume", "acknowledge", "assert_running"])
@@ -385,7 +393,7 @@ def test_operation_binding_caller_rollback_and_parallel_replay(database):
 
 
 def test_operation_assertion_holds_stop_lock_through_execution(database):
-    import psycopg2.errors
+    from tests.fixtures.database_errors import LOCK_ERRORS
 
     repo = StopEpochRepository()
     operation = UUID("a0101010-0000-4000-8000-000000000001")
@@ -396,7 +404,7 @@ def test_operation_assertion_holds_stop_lock_through_execution(database):
         repo.assert_operation(tx, owner_id="stop-owner", operation_id=operation)
         with (
             independent_database(schema) as second,
-            pytest.raises(psycopg2.errors.LockNotAvailable),
+            pytest.raises(LOCK_ERRORS),
             second.transaction() as other,
         ):
             other.execute("SET LOCAL lock_timeout = '50ms'")

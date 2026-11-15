@@ -11,10 +11,10 @@ from enum import StrEnum
 from typing import Final
 
 from astralplane.database.migrations import CURRENT_DATA_PLANE_REVISION, MIGRATION_DIGEST
-from astralplane.database.revision import ADVISORY_LOCK_IDS, SCHEMA_REVISION
+from astralplane.database.revision import ADVISORY_LOCK_IDS, SCHEMA_REVISION, DataPlaneRevision
 
 CONTRACT_VERSION: Final = "astralplane.contract/v1"
-PACKAGE_VERSION: Final = "0.1.10"
+PACKAGE_VERSION: Final = "0.1.12"
 MINIMUM_CONSUMER_VERSION: Final = "0.1.0"
 BLOB_LAYOUT_VERSION: Final = "astralplane.blob-layout/v1"
 RECOVERY_CONTRACT_VERSION: Final = "astralplane.recovery/v1"
@@ -72,12 +72,13 @@ def inspect_compatibility(
     expected_contract_version: str,
     observed_schema_revision: str,
     consumer_version: str,
+    data_plane_revision: DataPlaneRevision = CURRENT_DATA_PLANE_REVISION,
 ) -> CompatibilityReport:
     reasons: list[str] = []
     if expected_contract_version != CONTRACT_VERSION:
         reasons.append("contract_version_mismatch")
     try:
-        schema_accepted = CURRENT_DATA_PLANE_REVISION.accepts_reader_at(observed_schema_revision)
+        schema_accepted = data_plane_revision.accepts_reader_at(observed_schema_revision)
     except Exception:
         schema_accepted = False
     if not schema_accepted:
@@ -91,8 +92,8 @@ def inspect_compatibility(
         contract_version=CONTRACT_VERSION,
         package_version=PACKAGE_VERSION,
         schema_revision=SCHEMA_REVISION,
-        read_compatible_from=CURRENT_DATA_PLANE_REVISION.read_compatible_from,
-        migration_digest=MIGRATION_DIGEST,
+        read_compatible_from=data_plane_revision.read_compatible_from,
+        migration_digest=data_plane_revision.migration_digest,
         minimum_consumer_version=MINIMUM_CONSUMER_VERSION,
         blob_layout_version=BLOB_LAYOUT_VERSION,
         recovery_contract_version=RECOVERY_CONTRACT_VERSION,

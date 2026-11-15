@@ -55,6 +55,12 @@ class Pool:
 def independent_database(schema):
     import psycopg2
 
+    if os.environ["ASTRALPLANE_TEST_POSTGRES_DSN"].startswith("sqlite:"):
+        from test_assignments_postgres import independent_database as sqlite_database
+
+        with sqlite_database(schema) as database:
+            yield database
+        return
     connection = psycopg2.connect(os.environ["ASTRALPLANE_TEST_POSTGRES_DSN"])
     with connection.cursor() as cursor:
         cursor.execute(f'SET search_path TO "{schema}",pg_catalog')

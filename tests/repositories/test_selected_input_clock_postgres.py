@@ -22,6 +22,7 @@ from astralplane.repositories.history import SessionExecutionObservation, Sessio
 
 @pytest.mark.parametrize("selected", [False, True])
 @pytest.mark.parametrize("compare", [False, True])
+@pytest.mark.postgresql_lock_catalog
 def test_original_cutoff_crossed_while_final_selected_query_waits(
     database, repo, selected, compare
 ):
@@ -98,6 +99,7 @@ def test_cutoff_normalizes_offset_and_accepts_completion_counters(tx, repo):
 
 
 @pytest.mark.parametrize("database_timezone", ["UTC", "America/New_York"])
+@pytest.mark.postgresql_lock_catalog
 def test_custom_timezone_is_detached_before_owner_lock(database, repo, database_timezone):
     class MutableZone(tzinfo):
         offset = timedelta(0)
@@ -128,6 +130,7 @@ def test_custom_timezone_is_detached_before_owner_lock(database, repo, database_
 
 
 @pytest.mark.parametrize("compare", [False, True])
+@pytest.mark.postgresql_lock_catalog
 def test_same_final_clock_refuses_elapsed_note_with_live_original_cutoff(
     tx, repo, monkeypatch, compare
 ):

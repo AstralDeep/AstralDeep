@@ -218,7 +218,7 @@ class ProjectRepository:
             "UPDATE chat_project AS p SET deleted=TRUE,revision=revision+1"
             " WHERE owner_id=%s AND project_id=%s AND revision=%s AND NOT deleted"
             " AND NOT EXISTS(SELECT 1 FROM chat_project_membership AS m"
-            " WHERE m.owner_id=p.owner_id AND m.project_id=p.project_id) RETURNING p.*",
+            " WHERE m.owner_id=p.owner_id AND m.project_id=p.project_id) RETURNING *",
             (owner_id, project_id, expected_revision),
         )
         if row is None:

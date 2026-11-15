@@ -389,8 +389,8 @@ class VerificationCredentialRepository:
             DELETE FROM verification_challenge_consumption
             WHERE owner_id = %s
               AND consumed_at < to_timestamp(%s)
-              AND ctid IN (
-                  SELECT victim.ctid
+              AND consumption_id IN (
+                  SELECT victim.consumption_id
                   FROM verification_challenge_consumption AS victim
                   WHERE victim.owner_id = %s AND victim.consumed_at < to_timestamp(%s)
                   ORDER BY victim.consumed_at, victim.consumption_id

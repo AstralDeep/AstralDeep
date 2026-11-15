@@ -10,7 +10,6 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from threading import Barrier
 
-import psycopg2
 import pytest
 
 from astralplane.api import create_repository_catalog
@@ -24,6 +23,7 @@ from astralplane.repositories.atlas_pages import (
     AtlasPageCreateCommand,
     AtlasPageDeleteCommand,
 )
+from tests.fixtures.database_errors import check_violation
 from tests.integration.test_lifecycle_acceptance import concurrent_database
 
 OWNER = "atlas-link-owner"
@@ -424,7 +424,7 @@ def test_database_triggers_refuse_link_mutation_and_command_deletion(migrated_cl
         command = link_command()
         links.set_links(tx, command=command)
     with (
-        pytest.raises(psycopg2.errors.CheckViolation),
+        check_violation(),
         migrated_clone.database.transaction() as failing,
     ):
         failing.execute(
@@ -433,7 +433,7 @@ def test_database_triggers_refuse_link_mutation_and_command_deletion(migrated_cl
             (OWNER, PAGE_A),
         )
     with (
-        pytest.raises(psycopg2.errors.CheckViolation),
+        check_violation(),
         migrated_clone.database.transaction() as failing,
     ):
         failing.execute(
@@ -442,7 +442,7 @@ def test_database_triggers_refuse_link_mutation_and_command_deletion(migrated_cl
             (OWNER, PAGE_A),
         )
     with (
-        pytest.raises(psycopg2.errors.CheckViolation),
+        check_violation(),
         migrated_clone.database.transaction() as failing,
     ):
         failing.execute(

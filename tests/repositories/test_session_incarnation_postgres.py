@@ -276,6 +276,7 @@ def test_concurrent_same_issuance_retains_one_database_identity(database):
 
 
 @pytest.mark.parametrize("operation", ["refresh", "resume", "delete", "delete_and_return"])
+@pytest.mark.postgresql_lock_catalog
 def test_replacement_commits_while_stale_mutation_waits_on_row(database, operation):
     repo = SessionRepository()
     with database.transaction() as tx:
@@ -323,6 +324,7 @@ def test_replacement_commits_while_stale_mutation_waits_on_row(database, operati
         assert repo.get(tx, owner_id=stored.owner_id, session_id=stored.session_id) == newer
 
 
+@pytest.mark.postgresql_lock_catalog
 def test_retirement_lock_prevents_new_session_resurrection(database):
     repo = SessionRepository()
     with database.transaction() as tx:
@@ -419,6 +421,7 @@ def test_consent_rejects_malformed_and_stale_observations(tx, change):
 
 
 @pytest.mark.parametrize("expire", [False, True])
+@pytest.mark.postgresql_lock_catalog
 def test_consent_grant_write_and_final_clock_check_are_one_transaction(database, expire):
     from astralplane.api import create_repository_catalog
 
@@ -478,15 +481,30 @@ def test_deliberate_owner_session_delete_preserves_issued_liabilities_and_startu
         assert repo.delete_owner(tx, owner_id=session.owner_id) >= 1
         after = stored_rows(tx, values[3].assignment_id)
         assert before == after
-    report = MigrationRunner(
-        database, revision=CURRENT_DATA_PLANE_REVISION, registry=MIGRATION_REGISTRY
-    ).run(expected_revision=CURRENT_DATA_PLANE_REVISION.schema_revision)
+    if tx.dialect.is_sqlite:
+        from astralplane.database.sqlite_migrations import (
+            SQLITE_DATA_PLANE_REVISION,
+            SQLITE_MIGRATION_REGISTRY,
+            SQLiteBootRunner,
+        )
+
+        report = SQLiteBootRunner(
+            database,
+            MigrationRunner(
+                database, revision=SQLITE_DATA_PLANE_REVISION, registry=SQLITE_MIGRATION_REGISTRY
+            ),
+        ).run(expected_revision=SQLITE_DATA_PLANE_REVISION.schema_revision)
+    else:
+        report = MigrationRunner(
+            database, revision=CURRENT_DATA_PLANE_REVISION, registry=MIGRATION_REGISTRY
+        ).run(expected_revision=CURRENT_DATA_PLANE_REVISION.schema_revision)
     assert report.already_current
     with database.transaction() as tx:
         assert repo.get(tx, owner_id=session.owner_id, session_id=session.session_id) is None
         assert repo.get(tx, owner_id=other.owner_id, session_id=other.session_id) == other
 
 
+@pytest.mark.postgresql_lock_catalog
 def test_consent_checks_original_deadline_after_session_lock_wait(database):
     repo = SessionRepository()
     with database.transaction() as tx:

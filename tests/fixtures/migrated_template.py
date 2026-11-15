@@ -284,6 +284,10 @@ _SESSION: dict[str, LineageTemplates] = {}
 
 
 def process_lineages(administrator_dsn: str) -> LineageTemplates:
+    if administrator_dsn.startswith("sqlite:"):
+        from tests.fixtures.sqlite_template import SQLiteTemplates
+
+        return SQLiteTemplates()
     lineages = LineageTemplates(administrator_dsn)
     shared = os.environ.get(SHARED_CURRENT_TEMPLATE_ENV)
     if shared:

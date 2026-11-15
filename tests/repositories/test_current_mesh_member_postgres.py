@@ -77,7 +77,7 @@ def test_current_member_owner_and_identity_are_scoped(database):
 
 
 def test_current_member_holds_lock_until_commit_and_then_refuses_revoked_observation(database):
-    import psycopg2.errors
+    from tests.fixtures.database_errors import LOCK_ERRORS
 
     with database.transaction() as tx:
         repo, owner, mesh, initial, member = bootstrap(tx)
@@ -88,7 +88,7 @@ def test_current_member_holds_lock_until_commit_and_then_refuses_revoked_observa
         )
         with (
             independent_database(schema) as second,
-            pytest.raises(psycopg2.errors.LockNotAvailable),
+            pytest.raises(LOCK_ERRORS),
             second.transaction() as other,
         ):
             other.execute("SET LOCAL lock_timeout = '50ms'")

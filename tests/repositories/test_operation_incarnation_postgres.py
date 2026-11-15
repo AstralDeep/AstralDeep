@@ -394,6 +394,7 @@ def test_exact_claim_refuses_stale_or_nonexecutable_candidate(tx, repo, loss):
 
 
 @pytest.mark.parametrize("boundary", ["session", "assignment", "receipt"])
+@pytest.mark.postgresql_lock_catalog
 def test_actual_lock_wait_crossing_observation_expiry_has_no_partial_claim_or_create(
     database, repo, boundary
 ):
@@ -916,6 +917,7 @@ def test_v1_reserved_no_permit_can_release_but_issued_cannot_refund(tx, repo):
 
 
 @pytest.mark.parametrize("blocker", ["owner", "session", "assignment"])
+@pytest.mark.postgresql_lock_catalog
 def test_request_host_caps_before_first_operation_call_release_worker_while_blocker_remains(
     database, repo, blocker
 ):

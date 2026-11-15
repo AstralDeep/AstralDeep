@@ -34,6 +34,15 @@ NOW = datetime(2026, 10, 12, tzinfo=UTC)
 
 @contextmanager
 def concurrent_database(clone):
+    if clone.dsn.startswith("sqlite:"):
+        from astralplane.database.sqlite import create_sqlite_driver_pool
+
+        pool = ConnectionPool(create_sqlite_driver_pool(clone.dsn))
+        try:
+            yield PlaneDatabase(pool)
+        finally:
+            pool.close()
+        return
     configured = make_dsn(clone.dsn, options=f"-csearch_path={clone.schema},pg_catalog")
     pool = ConnectionPool(
         create_postgres_driver_pool(configured, minimum_connections=1, maximum_connections=2)
@@ -192,6 +201,7 @@ def test_repository_write_keeps_caller_rollback_and_connection_custody(migrated_
 
 
 @pytest.mark.parametrize("first", ("revoke", "open"))
+@pytest.mark.postgresql_lock_catalog
 def test_share_open_rechecks_revocation_after_row_lock(migrated_clone, first):
     repo = create_repository_catalog().share_grants
     with migrated_clone.database.transaction() as tx:

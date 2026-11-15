@@ -14,7 +14,7 @@ from enum import StrEnum
 from types import MappingProxyType
 
 from astralplane.contracts import Record, Transaction
-from astralplane.errors import PlaneError
+from astralplane.errors import LockContentionError, PlaneError, is_lock_contention
 from astralplane.repositories import RepositoryConflictError, RepositoryValidationError
 
 
@@ -420,6 +420,8 @@ class VoiceRepository:
                     now.astimezone(UTC),
                 )
         except Exception as exc:
+            if is_lock_contention(exc):
+                raise LockContentionError("voice guidance is unavailable") from None
             if (getattr(exc, "pgcode", None) == "55P03"
                     or isinstance(exc, (KeyError, TypeError, ValueError))):
                 raise RepositoryConflictError("voice guidance is unavailable") from None

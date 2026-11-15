@@ -15,6 +15,7 @@ from astralplane.contracts import Transaction
 from astralplane.repositories import RepositoryValidationError
 
 _RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,126}$")
+_ISSUER_HASH = re.compile(r"^[0-9a-f]{16}$")
 
 _VERIFICATION_TABLES: Final = (
     "message_attachment",
@@ -83,9 +84,17 @@ class HarnessCleanupRepository:
         *,
         profile: HarnessCleanupProfile,
         run_id: str,
+        owner_issuer_hash: str | None = None,
     ) -> HarnessCleanupReport:
         if not isinstance(profile, HarnessCleanupProfile):
             raise RepositoryValidationError("harness cleanup profile is unsupported")
+        if owner_issuer_hash is not None and (
+            not isinstance(owner_issuer_hash, str)
+            or _ISSUER_HASH.fullmatch(owner_issuer_hash) is None
+        ):
+            raise RepositoryValidationError(
+                "harness owner issuer hash must be 16 lowercase hex digits"
+            )
         if profile is HarnessCleanupProfile.VERIFICATION:
             namespace = "__verif__"
             bare = _bare_run_id(run_id, namespace)
@@ -96,6 +105,8 @@ class HarnessCleanupRepository:
             bare = _bare_run_id(run_id, namespace)
             literal_prefix = f"{namespace}{bare}__"
             tables = _SECURITY_BENCHMARK_TABLES
+        if owner_issuer_hash is not None:
+            literal_prefix = f"oidc.{owner_issuer_hash}.{literal_prefix}"
         pattern = _literal_like_prefix(literal_prefix)
         results: list[HarnessCleanupTableResult] = []
         for table in tables:

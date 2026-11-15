@@ -60,6 +60,12 @@ def repo():
 def second_database(plane):
     import psycopg2
 
+    if plane[2].startswith("sqlite:"):
+        from astralplane.database.sqlite import create_sqlite_driver_pool
+
+        connection = create_sqlite_driver_pool(plane[2]).getconn()
+        pool = ConnectionPool(Pool(connection))
+        return PlaneDatabase(pool), pool, connection
     connection = psycopg2.connect(plane[2])
     with connection.cursor() as cursor:
         cursor.execute(f'SET search_path TO "{plane[1]}",pg_catalog')
@@ -200,6 +206,14 @@ def test_current_scheduler_policy_structure_digest(database):
     from astralplane.database import migrations as m
 
     with database.transaction() as tx:
+        if tx.dialect.is_sqlite:
+            from astralplane.database.sqlite_migrations import (
+                SQLITE_SCHEMA_STRUCTURE_DIGEST,
+                read_structure_digest,
+            )
+
+            assert read_structure_digest(tx) == SQLITE_SCHEMA_STRUCTURE_DIGEST
+            return
         assert (
             m._schema_structure_digest(tx.fetch_all(m.CURRENT_SCHEMA_STRUCTURE_QUERY))
             == m.CURRENT_SCHEMA_STRUCTURE_DIGEST

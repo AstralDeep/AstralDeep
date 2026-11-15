@@ -443,6 +443,8 @@ def test_empty_database_reaches_current_revision_and_repeats_safely(
         "astralplane-089-computer-use",
         "astralplane-089-verification-credentials",
         "astralplane-089-chat-read-receipts",
+        "astralplane-089-mesh-event-store",
+        "astralplane-089-run-and-learning-ledger",
     )
     assert second.already_current
     assert second.applied_steps == ()
@@ -1107,6 +1109,8 @@ def test_runtime_contract_upgrade_preserves_bounded_legacy_host_history(
         "astralplane-089-computer-use",
         "astralplane-089-verification-credentials",
         "astralplane-089-chat-read-receipts",
+        "astralplane-089-mesh-event-store",
+        "astralplane-089-run-and-learning-ledger",
     )
 
     cursor = fixture.connection.cursor()

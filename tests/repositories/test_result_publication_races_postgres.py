@@ -68,6 +68,7 @@ def test_save_refuses_both_legacy_writer_lock_orders_without_wait(database, repo
         assert pool.submit(save).result(5) == before
 
 
+@pytest.mark.postgresql_lock_catalog
 def test_absent_publication_unique_fk_cycle_is_bounded_and_restores_timeout(database, repo):
     (record, proposal, content, args, _), schema = setup(database, repo)
     ready, worker = Event(), {}
@@ -102,6 +103,7 @@ def test_absent_publication_unique_fk_cycle_is_bounded_and_restores_timeout(data
         assert future.result(5).state == "staged"
 
 
+@pytest.mark.postgresql_schema_catalog
 def test_success_preserves_strict_timeout_and_only_immediate_constraints_apply(tx, repo):
     _record, _proposal, content, args, _ = proposed(repo, tx)
     tx.fetch_one("SELECT set_config('lock_timeout','1ms',true)")
@@ -193,6 +195,7 @@ def test_duplicate_decisions_commit_exactly_one_publication(database, repo):
         )
 
 
+@pytest.mark.postgresql_lock_catalog
 def test_copied_content_cannot_change_during_owner_wait(database, repo):
     (_record, proposal, content, args, _), _schema = setup(database, repo)
     before = content.components[0].payload["text"]
@@ -212,6 +215,7 @@ def test_copied_content_cannot_change_during_owner_wait(database, repo):
 
 
 @pytest.mark.parametrize("cutoff", ["caller", "original"])
+@pytest.mark.postgresql_lock_catalog
 def test_final_db_clock_after_visible_write_refuses_elapsed_original_bounds(
     tx, repo, monkeypatch, cutoff
 ):
@@ -239,6 +243,7 @@ def test_final_db_clock_after_visible_write_refuses_elapsed_original_bounds(
     assert state(tx, record, proposal) == before
 
 
+@pytest.mark.postgresql_lock_catalog
 def test_original_expiry_is_rechecked_after_held_owner_lock(database, repo):
     (record, proposal, content, args, _), schema = setup(database, repo)
     with database.transaction() as tx:

@@ -73,10 +73,12 @@ def test_populated_upgrade_repeat_and_old_reader_denial(predecessor):
     with database.transaction() as tx:
         tables = seed_populated(tx)
         before = retained_rows(tx, tables)
-    report = runner(database).run(expected_revision="089.020")
+    report = runner(database).run(expected_revision="089.022")
     assert report.applied_steps == (
         "astralplane-089-verification-credentials",
         "astralplane-089-chat-read-receipts",
+        "astralplane-089-mesh-event-store",
+        "astralplane-089-run-and-learning-ledger",
     )
     with database.transaction() as tx:
         assert retained_rows(tx, tables) == before
@@ -99,7 +101,7 @@ def test_populated_upgrade_repeat_and_old_reader_denial(predecessor):
             tx, owner_id=OWNER, challenge_digest="a" * 64, consumption_id="upgrade-consumption"
         )
         assert consumed.challenge_digest == "a" * 64
-    assert runner(database).run(expected_revision="089.020").applied_steps == ()
+    assert runner(database).run(expected_revision="089.022").applied_steps == ()
     with pytest.raises(SchemaRevisionError):
         prior_runner(database).run(expected_revision="089.018")
 
@@ -122,7 +124,7 @@ def test_interrupted_edge_rolls_back_then_normal_runner_recovers(predecessor):
         predecessor_schema_verifier_checksum=m.PREDECESSOR_SCHEMA_VERIFIER_CHECKSUM,
     )
     with pytest.raises(RuntimeError, match="synthetic interruption"):
-        runner(predecessor.database, registry=registry).run(expected_revision="089.020")
+        runner(predecessor.database, registry=registry).run(expected_revision="089.022")
     with predecessor.database.transaction() as tx:
         assert (
             tx.fetch_one("SELECT to_regclass('verification_credential') AS relation")["relation"]
@@ -134,7 +136,9 @@ def test_interrupted_edge_rolls_back_then_normal_runner_recovers(predecessor):
             )["relation"]
             is None
         )
-    assert runner(predecessor.database).run(expected_revision="089.020").applied_steps == (
+    assert runner(predecessor.database).run(expected_revision="089.022").applied_steps == (
         "astralplane-089-verification-credentials",
         "astralplane-089-chat-read-receipts",
+        "astralplane-089-mesh-event-store",
+        "astralplane-089-run-and-learning-ledger",
     )

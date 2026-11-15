@@ -10,6 +10,7 @@ import threading
 import time
 import uuid
 from collections.abc import Iterator
+from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -33,29 +34,9 @@ from astralplane.database.transaction import PlaneDatabase
 from astralplane.errors import PlaneError
 from astralplane.purge import PurgeAttemptState
 from tests.fixtures.migrated_template import DatabaseTemplate, bound_clone
-from tests.fixtures.pre_split.loader import connect_fixture_database
+from tests.integration.test_lifecycle_acceptance import concurrent_database
 
 _NOW = datetime(2026, 8, 14, 22, tzinfo=UTC)
-
-
-class _DedicatedDriverPool:
-    def __init__(self, connection: Any) -> None:
-        self.connection = connection
-        self.borrowed = False
-
-    def getconn(self) -> Any:
-        if self.borrowed:
-            raise RuntimeError("integration connection is already borrowed")
-        self.borrowed = True
-        return self.connection
-
-    def putconn(self, connection: Any, *, close: bool = False) -> None:
-        if connection is not self.connection or not self.borrowed or close:
-            raise RuntimeError("integration connection was returned in an invalid state")
-        self.borrowed = False
-
-    def closeall(self) -> None:
-        return None
 
 
 @dataclass(slots=True)
@@ -66,16 +47,9 @@ class _PurgeFixture:
     pool: ConnectionPool
     database: PlaneDatabase
 
-
-def _quoted_schema(schema: str) -> str:
-    assert schema.startswith("astralplane_fixture_")
-    assert schema.removeprefix("astralplane_fixture_").isalnum()
-    return f'"{schema}"'
-
-
-def _database_for(connection: Any) -> tuple[ConnectionPool, PlaneDatabase]:
-    pool = ConnectionPool(_DedicatedDriverPool(connection))
-    return pool, PlaneDatabase(pool)
+    @property
+    def dsn(self):
+        return self.database_url
 
 
 @pytest.fixture(scope="module")
@@ -147,42 +121,32 @@ def test_concurrent_casefold_attachment_identities_cannot_both_begin(
     outcome_guard = threading.Lock()
 
     def begin(index: int) -> None:
-        connection = connect_fixture_database(fixture.database_url)
-        cursor = connection.cursor()
-        try:
-            cursor.execute(f"SET search_path TO {_quoted_schema(fixture.schema)}, pg_catalog")
-            connection.commit()
-        finally:
-            cursor.close()
-        pool, database = _database_for(connection)
-        try:
-            with database.transaction() as transaction:
-                materializations = create_repository_catalog().artifacts.materializations
-                result = materializations.begin_pending_materialization(
-                    transaction,
-                    attachment_id=attachment_ids[index],
-                    owner_id=owner_id,
-                    filename="fixture.bin",
-                    category="data",
-                    extension="bin",
-                    storage_locator=(f"{owner_id}/{attachment_ids[index]}/fixture.bin"),
-                    storage_key=f"{attachment_ids[index]}/fixture.bin",
-                    max_bytes=4,
-                    created_at=1,
-                    lease_id=f"case-lease-{index}",
-                    lease_seconds=300,
-                )
-                if index == 0:
-                    first_inserted.set()
-                    assert allow_first_commit.wait(timeout=10)
-            with outcome_guard:
-                outcomes.append(("success", result))
-        except BaseException as exc:
-            with outcome_guard:
-                outcomes.append(("failure", exc))
-        finally:
-            pool.close()
-            connection.close()
+        with concurrent_database(fixture) as database:
+            try:
+                with database.transaction() as transaction:
+                    materializations = create_repository_catalog().artifacts.materializations
+                    result = materializations.begin_pending_materialization(
+                        transaction,
+                        attachment_id=attachment_ids[index],
+                        owner_id=owner_id,
+                        filename="fixture.bin",
+                        category="data",
+                        extension="bin",
+                        storage_locator=(f"{owner_id}/{attachment_ids[index]}/fixture.bin"),
+                        storage_key=f"{attachment_ids[index]}/fixture.bin",
+                        max_bytes=4,
+                        created_at=1,
+                        lease_id=f"case-lease-{index}",
+                        lease_seconds=300,
+                    )
+                    if index == 0:
+                        first_inserted.set()
+                        assert allow_first_commit.wait(timeout=10)
+                with outcome_guard:
+                    outcomes.append(("success", result))
+            except BaseException as exc:
+                with outcome_guard:
+                    outcomes.append(("failure", exc))
 
     first = threading.Thread(target=begin, args=(0,))
     second = threading.Thread(target=begin, args=(1,))
@@ -339,14 +303,8 @@ def test_two_postgres_executors_converge_one_prefix_without_fork(
             deleted_at=2,
         )
     synchronized_blobs = _BarrierBlobStore(blobs)
-    second_connection = connect_fixture_database(fixture.database_url)
-    cursor = second_connection.cursor()
-    try:
-        cursor.execute(f"SET search_path TO {_quoted_schema(fixture.schema)}, pg_catalog")
-        second_connection.commit()
-    finally:
-        cursor.close()
-    second_pool, second_database = _database_for(second_connection)
+    second_scope = ExitStack()
+    second_database = second_scope.enter_context(concurrent_database(fixture))
     executors = (
         create_durable_purge_executor(
             database=fixture.database,
@@ -396,8 +354,7 @@ def test_two_postgres_executors_converge_one_prefix_without_fork(
         assert final.attempt_count == 1
         assert final.version == 1
     finally:
-        second_pool.close()
-        second_connection.close()
+        second_scope.close()
         blobs.close()
 
 

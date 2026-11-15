@@ -255,12 +255,14 @@ def test_populated_upgrade_preserves_visible_output_and_backfills_one_branch(
             for name, conversation_id in chats.items()
         }
 
-    report = runner(database).run(expected_revision="089.020")
+    report = runner(database).run(expected_revision="089.022")
     assert report.applied_steps == (
         "astralplane-089-conversation-branches",
         "astralplane-089-computer-use",
         "astralplane-089-verification-credentials",
         "astralplane-089-chat-read-receipts",
+        "astralplane-089-mesh-event-store",
+        "astralplane-089-run-and-learning-ledger",
     )
 
     with database.transaction() as tx:
@@ -336,7 +338,7 @@ def test_populated_upgrade_preserves_visible_output_and_backfills_one_branch(
             tx, owner_id=OWNER_B, conversation_id=chats["long"]
         ) == ()
 
-    assert runner(database).run(expected_revision="089.020").applied_steps == ()
+    assert runner(database).run(expected_revision="089.022").applied_steps == ()
     with pytest.raises(SchemaRevisionError):
         prior_runner(database).run(expected_revision="089.016")
 
@@ -372,7 +374,7 @@ def test_interrupted_edge_rolls_back_then_normal_runner_recovers_and_backfills(
         database, revision=m.CURRENT_DATA_PLANE_REVISION, registry=registry
     )
     with pytest.raises(RuntimeError, match="synthetic interruption"):
-        interrupted.run(expected_revision="089.020")
+        interrupted.run(expected_revision="089.022")
     with database.transaction() as tx:
         assert (
             tx.fetch_one("SELECT to_regclass('chat_branch_head') AS relation")["relation"] is None
@@ -385,12 +387,14 @@ def test_interrupted_edge_rolls_back_then_normal_runner_recovers_and_backfills(
             "089.016"
         )
 
-    report = runner(database).run(expected_revision="089.020")
+    report = runner(database).run(expected_revision="089.022")
     assert report.applied_steps == (
         "astralplane-089-conversation-branches",
         "astralplane-089-computer-use",
         "astralplane-089-verification-credentials",
         "astralplane-089-chat-read-receipts",
+        "astralplane-089-mesh-event-store",
+        "astralplane-089-run-and-learning-ledger",
     )
     with database.transaction() as tx:
         for name, conversation_id in chats.items():
@@ -419,7 +423,7 @@ def test_namesake_or_damaged_predecessor_is_refused(predecessor, corruption):
     with predecessor.database.transaction() as tx:
         tx.execute(corruption)
     with pytest.raises(SchemaRevisionError):
-        runner(predecessor.database).run(expected_revision="089.020")
+        runner(predecessor.database).run(expected_revision="089.022")
 
 
 @pytest.mark.parametrize(
@@ -433,4 +437,4 @@ def test_current_catalog_damage_is_refused(predecessor, migrated_clone, corrupti
     with migrated_clone.database.transaction() as tx:
         tx.execute(corruption)
     with pytest.raises(SchemaRevisionError):
-        runner(migrated_clone.database).run(expected_revision="089.020")
+        runner(migrated_clone.database).run(expected_revision="089.022")

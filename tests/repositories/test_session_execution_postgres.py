@@ -597,6 +597,7 @@ def test_authentic_late_consumption_charged_once_without_stale_result_or_wake(
 
 
 @pytest.mark.parametrize("blocker", ["logout", "session", "owner", "admission", "action"])
+@pytest.mark.postgresql_lock_catalog
 def test_database_time_and_logout_rechecked_after_real_lock_wait(database, repo, blocker):
     with database.transaction() as tx:
         tx.execute("DELETE FROM assignment_operation_receipt")
@@ -668,6 +669,7 @@ def test_database_time_and_logout_rechecked_after_real_lock_wait(database, repo,
 
 
 @pytest.mark.parametrize("method", ["reserve", "start"])
+@pytest.mark.postgresql_lock_catalog
 def test_action_lock_wait_expiry_rolls_back_guarded_writes_even_when_caught(database, repo, method):
     with database.transaction() as tx:
         tx.execute("DELETE FROM assignment_operation_receipt")
@@ -716,6 +718,7 @@ def test_action_lock_wait_expiry_rolls_back_guarded_writes_even_when_caught(data
 
 
 @pytest.mark.parametrize("operation_name", ["logout", "refresh"])
+@pytest.mark.postgresql_lock_catalog
 def test_guard_holds_exact_session_until_commit_before_logout_or_rotation(
     database, repo, operation_name
 ):

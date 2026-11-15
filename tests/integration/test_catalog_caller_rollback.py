@@ -431,6 +431,94 @@ def _write_chat_read_receipts(catalog: api.RepositoryCatalog, transaction: Trans
     )
 
 
+_MESH_GENESIS = b"rollback-genesis"
+
+
+def _mesh_reference(data: bytes) -> str:
+    import hashlib
+
+    return f"sha256:{hashlib.sha256(data).hexdigest()}"
+
+
+def _write_derived_chat(catalog: api.RepositoryCatalog, transaction: Transaction) -> None:
+    event = _mesh_reference(b"rollback-derived-chat")
+    catalog.derived_chat.upsert_chat(
+        transaction,
+        owner_id=_OWNER,
+        event_id=event,
+        chat_id=event,
+        title="Rollback derived chat",
+        agent_id=None,
+        created_at=10,
+    )
+
+
+def _write_event_log(catalog: api.RepositoryCatalog, transaction: Transaction) -> None:
+    mesh = catalog.event_roster.create_mesh(
+        transaction, owner_id=_OWNER, kind="genesis", signed_bytes=_MESH_GENESIS, recorded_at=1
+    ).mesh_id
+    header = b"rollback-header"
+    catalog.event_log.append_event(
+        transaction,
+        owner_id=_OWNER,
+        mesh_id=mesh,
+        feed_id="rollback-feed",
+        seq=1,
+        event_id=_mesh_reference(header),
+        prev_hash=None,
+        clock_ms=1,
+        clock_n=0,
+        scope="rollback-scope",
+        event_type="chat.message",
+        labels={},
+        key_id="epoch-1",
+        body_hash=_mesh_reference(b"rollback-body"),
+        header_bytes=header,
+        header_sealed=b"sealed",
+        recorded_at=2,
+    )
+
+
+def _write_event_roster(catalog: api.RepositoryCatalog, transaction: Transaction) -> None:
+    catalog.event_roster.create_mesh(
+        transaction, owner_id=_OWNER, kind="genesis", signed_bytes=_MESH_GENESIS, recorded_at=1
+    )
+
+
+def _write_learning_ledger(catalog: api.RepositoryCatalog, transaction: Transaction) -> None:
+    mesh = catalog.event_roster.create_mesh(
+        transaction, owner_id=_OWNER, kind="genesis", signed_bytes=_MESH_GENESIS, recorded_at=1
+    ).mesh_id
+    catalog.learning_ledger.record_proposal(
+        transaction,
+        owner_id=_OWNER,
+        mesh_id=mesh,
+        event_id=_mesh_reference(b"rollback-proposal"),
+        item_kind="memory",
+        content_hash=_mesh_reference(b"rollback-content"),
+        scope="rollback-scope",
+        evidence=[_mesh_reference(b"rollback-evidence")],
+        recorded_at=2,
+    )
+
+
+def _write_runs(catalog: api.RepositoryCatalog, transaction: Transaction) -> None:
+    mesh = catalog.event_roster.create_mesh(
+        transaction, owner_id=_OWNER, kind="genesis", signed_bytes=_MESH_GENESIS, recorded_at=1
+    ).mesh_id
+    catalog.runs.record_lease(
+        transaction,
+        owner_id=_OWNER,
+        mesh_id=mesh,
+        run_id="rollback-run",
+        kind="take",
+        executor_feed_id="rollback-feed",
+        state="running",
+        event_id=_mesh_reference(b"rollback-lease"),
+        recorded_at=2,
+    )
+
+
 def _write_chat_steps(catalog: api.RepositoryCatalog, transaction: Transaction) -> None:
     catalog.chat_steps.create_step(
         transaction,
@@ -1461,6 +1549,41 @@ ROLLBACK_CASES = (
         "chat_steps", _write_chat_steps, _count("chat_steps", "id", "rollback-chat-step"), 1, 0
     ),
     RollbackCase(
+        "derived_chat",
+        _write_derived_chat,
+        _count("chats", "event_id", _mesh_reference(b"rollback-derived-chat")),
+        1,
+        0,
+    ),
+    RollbackCase(
+        "event_log",
+        _write_event_log,
+        _count("event_entry", "owner_id", _OWNER),
+        1,
+        0,
+    ),
+    RollbackCase(
+        "event_roster",
+        _write_event_roster,
+        _count("event_roster_entry", "owner_id", _OWNER),
+        1,
+        0,
+    ),
+    RollbackCase(
+        "learning_ledger",
+        _write_learning_ledger,
+        _count("learning_ledger_entry", "owner_id", _OWNER),
+        1,
+        0,
+    ),
+    RollbackCase(
+        "runs",
+        _write_runs,
+        _count("run_lease_entry", "owner_id", _OWNER),
+        1,
+        0,
+    ),
+    RollbackCase(
         "conversation_files",
         _write_conversation_files,
         _count("chat_files", "backend_path", "uploads/rollback.txt"),
@@ -1754,7 +1877,7 @@ def test_rollback_matrix_exactly_classifies_every_public_catalog_member() -> Non
     public_keys = tuple(api.create_repository_catalog().as_mapping())
     applicable_keys = tuple(case.key for case in ROLLBACK_CASES)
 
-    assert len(applicable_keys) == len(set(applicable_keys)) == 53
+    assert len(applicable_keys) == len(set(applicable_keys)) == 58
     assert tuple(key for key in public_keys if key != "agent_management") == applicable_keys
     read_only_methods = tuple(
         name

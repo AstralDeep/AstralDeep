@@ -3,7 +3,7 @@
 This repository slice exposes the durable mechanics required to remove identity/agent SQL from
 AstralDeep without moving identity or authorization policy into AstralPlane. It uses tables already
 present in the schema-only `066.001` compatibility baseline, so this slice itself adds no migration
-edge. The current Plane schema is `089.020`; its registry digest includes later independent durable
+edge. The current Plane schema is `089.022`; its registry digest includes later independent durable
 changes.
 
 ## Public composition

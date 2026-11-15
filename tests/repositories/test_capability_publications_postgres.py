@@ -304,7 +304,7 @@ def test_bounded_active_inventory_is_deterministically_ordered(database):
 
 
 def test_lock_reads_hold_the_owner_row_to_caller_commit(database):
-    import psycopg2.errors
+    from tests.fixtures.database_errors import LOCK_ERRORS
 
     repo = CapabilityPublicationRepository()
     with database.transaction() as tx:
@@ -321,7 +321,7 @@ def test_lock_reads_hold_the_owner_row_to_caller_commit(database):
         ).state_revision == 1
         with (
             independent_database(schema) as second,
-            pytest.raises(psycopg2.errors.LockNotAvailable),
+            pytest.raises(LOCK_ERRORS),
             second.transaction() as other,
         ):
             other.execute("SET LOCAL lock_timeout = '50ms'")

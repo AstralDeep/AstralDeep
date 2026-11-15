@@ -497,6 +497,7 @@ def test_unknown_or_unattributed_hold_cannot_be_erased_by_wait(tx, repo, hold):
 
 
 @pytest.mark.parametrize("blocker", ["owner", "assignment", "action", "audit"])
+@pytest.mark.postgresql_lock_catalog
 def test_owner_wait_uses_same_ordered_transaction_across_real_lock_wait(database, repo, blocker):
     with database.transaction() as tx:
         _reset(tx)
@@ -548,6 +549,7 @@ def test_owner_wait_uses_same_ordered_transaction_across_real_lock_wait(database
         assert current(repo, tx, record).usage == record.usage
 
 
+@pytest.mark.postgresql_lock_catalog
 def test_action_inventory_locks_sorted_before_a_result_reader_second_lock(database, repo):
     from unittest.mock import patch
     from uuid import UUID

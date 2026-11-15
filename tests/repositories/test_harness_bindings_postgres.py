@@ -4,6 +4,7 @@ isolation, execution-fence replay, immutable storage, restart persistence, and p
 
 from __future__ import annotations
 
+import sqlite3
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -169,7 +170,11 @@ def test_binding_rows_are_immutable_and_refuse_direct_mutation(tx):
     ):
         with (
             pytest.raises(
-                (psycopg2.errors.CheckViolation, psycopg2.errors.RaiseException),
+                (
+                    psycopg2.errors.CheckViolation,
+                    psycopg2.errors.RaiseException,
+                    sqlite3.IntegrityError,
+                ),
                 match="immutable",
             ),
             tx.savepoint("binding_mutation"),

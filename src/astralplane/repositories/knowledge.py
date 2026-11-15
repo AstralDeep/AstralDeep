@@ -14,6 +14,7 @@ from types import MappingProxyType
 from typing import Any
 
 from astralplane.contracts import QueryExecutor, Transaction
+from astralplane.database.dialect import dialect_of
 from astralplane.repositories import (
     RepositoryConflictError,
     RepositoryDataError,
@@ -434,13 +435,19 @@ class QualitySignalRepository:
                 )
             )
         parameters.append(maximum)
+        latest = (
+            f"SELECT DISTINCT ON (agent_id, tool_name) {self._FIELDS} "
+            "FROM tool_quality_signal ORDER BY agent_id, tool_name, computed_at DESC, id DESC"
+        )
+        if dialect_of(query).is_sqlite:
+            latest = (
+                f"SELECT {self._FIELDS} FROM (SELECT {self._FIELDS}, row_number() OVER "
+                "(PARTITION BY agent_id, tool_name ORDER BY computed_at DESC, id DESC) AS rank "
+                "FROM tool_quality_signal) AS ranked WHERE rank=1"
+            )
         rows = query.fetch_all(
             f"""
-            WITH latest AS (
-                SELECT DISTINCT ON (agent_id, tool_name) {self._FIELDS}
-                  FROM tool_quality_signal
-                 ORDER BY agent_id, tool_name, computed_at DESC, id DESC
-            )
+            WITH latest AS ({latest})
             SELECT * FROM latest WHERE status = 'underperforming'{cursor_clause}
              ORDER BY computed_at DESC, id DESC LIMIT %s
             """,
@@ -594,13 +601,19 @@ class QualitySignalRepository:
         return tuple(_comment_sample(row) for row in rows)
 
     def underperforming_count_for_administration(self, query: QueryExecutor) -> int:
-        row = query.fetch_one(
-            """
-            WITH latest AS (
-                SELECT DISTINCT ON (agent_id, tool_name) status
-                  FROM tool_quality_signal
-                 ORDER BY agent_id, tool_name, computed_at DESC, id DESC
+        latest = (
+            "SELECT DISTINCT ON (agent_id, tool_name) status FROM tool_quality_signal "
+            "ORDER BY agent_id, tool_name, computed_at DESC, id DESC"
+        )
+        if dialect_of(query).is_sqlite:
+            latest = (
+                "SELECT status FROM (SELECT status, row_number() OVER "
+                "(PARTITION BY agent_id, tool_name ORDER BY computed_at DESC, id DESC) AS rank "
+                "FROM tool_quality_signal) AS ranked WHERE rank=1"
             )
+        row = query.fetch_one(
+            f"""
+            WITH latest AS ({latest})
             SELECT COUNT(*) AS count FROM latest WHERE status = 'underperforming'
             """
         )

@@ -225,12 +225,12 @@ def test_attach_delete_race_has_one_serial_order(migrated_clone):
 
 
 def test_same_owner_foreign_keys_refuse_direct_cross_owner_membership(migrated_clone):
-    import psycopg2
+    from tests.fixtures.database_errors import INTEGRITY_ERRORS
 
     with migrated_clone.database.transaction() as tx:
         create(tx)
         chat(tx, owner_id=OTHER)
-    with pytest.raises(psycopg2.IntegrityError), migrated_clone.database.transaction() as tx:
+    with pytest.raises(INTEGRITY_ERRORS), migrated_clone.database.transaction() as tx:
         tx.execute(
             "INSERT INTO chat_project_membership(owner_id,project_id,chat_id) VALUES(%s,%s,%s)",
             (OWNER, P1, "chat-a"),

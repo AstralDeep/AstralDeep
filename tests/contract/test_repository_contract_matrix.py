@@ -272,6 +272,36 @@ def _chat_read_receipts(catalog: api.RepositoryCatalog, transaction: FailingExec
     catalog.chat_read_receipts.get(transaction, owner_id=_OWNER, chat_id="contract-chat")
 
 
+def _derived_chat(catalog: api.RepositoryCatalog, transaction: FailingExecutor) -> None:
+    catalog.derived_chat.get_chat_by_event(
+        transaction, owner_id=_OWNER, event_id="sha256:" + "0" * 64
+    )
+
+
+def _event_log(catalog: api.RepositoryCatalog, transaction: FailingExecutor) -> None:
+    catalog.event_log.get_event(
+        transaction, owner_id=_OWNER, mesh_id="sha256:" + "1" * 64, event_id="sha256:" + "2" * 64
+    )
+
+
+def _event_roster(catalog: api.RepositoryCatalog, transaction: FailingExecutor) -> None:
+    catalog.event_roster.get_entry(
+        transaction, owner_id=_OWNER, mesh_id="sha256:" + "1" * 64, entry_id="sha256:" + "3" * 64
+    )
+
+
+def _learning_ledger(catalog: api.RepositoryCatalog, transaction: FailingExecutor) -> None:
+    catalog.learning_ledger.get_entry(
+        transaction, owner_id=_OWNER, mesh_id="sha256:" + "1" * 64, event_id="sha256:" + "4" * 64
+    )
+
+
+def _runs(catalog: api.RepositoryCatalog, transaction: FailingExecutor) -> None:
+    catalog.runs.get_lease(
+        transaction, owner_id=_OWNER, mesh_id="sha256:" + "1" * 64, run_id="contract-run"
+    )
+
+
 def _chat_steps(catalog: api.RepositoryCatalog, transaction: FailingExecutor) -> None:
     catalog.chat_steps.get_step(transaction, owner_id=_OWNER, step_id="step-1")
 
@@ -609,6 +639,66 @@ REPOSITORY_CONTRACT_MATRIX = (
         ("ON CONFLICT (id)", "step replay changed immutable semantics"),
         None,
         ("RepositoryConflictError", "RepositoryNotFoundError"),
+    ),
+    RepositoryContract(
+        "derived_chat",
+        api.create_derived_chat_repository,
+        "src/astralplane/repositories/derived_chat.py",
+        _derived_chat,
+        _OWNER,
+        "event_id = %s AND user_id = %s",
+        ("pg_advisory_xact_lock", "event already derived a different"),
+        ("event already derived a different message", "chat identity already exists"),
+        None,
+        ("RepositoryConflictError", "RepositoryNotFoundError"),
+    ),
+    RepositoryContract(
+        "event_log",
+        api.create_event_log_repository,
+        "src/astralplane/repositories/mesh_events.py",
+        _event_log,
+        _OWNER,
+        "owner_id = %s AND mesh_id = %s AND event_id = %s",
+        ("FOR UPDATE", "head_seq = %s", "feed is frozen by fork evidence"),
+        ("event identity was reused with different semantics", "ON CONFLICT DO NOTHING"),
+        None,
+        ("RepositoryConflictError", "RepositoryDataError", "RepositoryNotFoundError"),
+    ),
+    RepositoryContract(
+        "event_roster",
+        api.create_event_roster_repository,
+        "src/astralplane/repositories/mesh_roster.py",
+        _event_roster,
+        _OWNER,
+        "owner_id = %s AND mesh_id = %s AND entry_id = %s",
+        ("ON CONFLICT (owner_id, mesh_id, entry_id) DO NOTHING",),
+        ("roster entry identity was reused with different semantics", "ON CONFLICT"),
+        None,
+        ("RepositoryConflictError", "RepositoryDataError", "RepositoryNotFoundError"),
+    ),
+    RepositoryContract(
+        "learning_ledger",
+        api.create_learning_ledger_repository,
+        "src/astralplane/repositories/learning_ledger.py",
+        _learning_ledger,
+        _OWNER,
+        "owner_id = %s AND mesh_id = %s AND event_id = %s",
+        ("pg_advisory_xact_lock", "proposal already has a decision"),
+        ("ledger event identity was reused with different semantics", "already_reversed"),
+        None,
+        ("RepositoryConflictError", "RepositoryDataError", "RepositoryNotFoundError"),
+    ),
+    RepositoryContract(
+        "runs",
+        api.create_run_repository,
+        "src/astralplane/repositories/runs.py",
+        _runs,
+        _OWNER,
+        "owner_id = %s AND mesh_id = %s AND run_id = %s",
+        ("pg_advisory_xact_lock", "run already has an executor"),
+        ("lease event identity was reused with different semantics", "goal event identity"),
+        None,
+        ("RepositoryConflictError", "RepositoryNotFoundError", "RepositoryValidationError"),
     ),
     RepositoryContract(
         "conversation_files",
@@ -1237,6 +1327,41 @@ BEHAVIORAL_EVIDENCE = (
         "tests.repositories.test_chat_steps:test_create_step_accepts_exact_replay_after_terminal_transition",
         "tests.repositories.test_chat_steps:test_finish_step_uses_owner_status_and_timestamp_fences",
         "tests.repositories.test_chat_steps:test_create_rolls_back_when_turn_counter_scope_is_lost",
+    ),
+    BehavioralEvidence(
+        "derived_chat",
+        "tests.repositories.test_derived_chat_postgres:test_public_derived_chat_contract_behaviors",
+        "tests.repositories.test_derived_chat_postgres:test_public_derived_chat_contract_behaviors",
+        "tests.repositories.test_derived_chat_postgres:test_public_derived_chat_contract_behaviors",
+        "tests.repositories.test_derived_chat_postgres:test_public_derived_chat_contract_behaviors",
+    ),
+    BehavioralEvidence(
+        "event_log",
+        "tests.repositories.test_mesh_events_postgres:test_public_event_log_contract_behaviors",
+        "tests.repositories.test_mesh_events_postgres:test_public_event_log_contract_behaviors",
+        "tests.repositories.test_mesh_events_postgres:test_public_event_log_contract_behaviors",
+        "tests.repositories.test_mesh_events_postgres:test_public_event_log_contract_behaviors",
+    ),
+    BehavioralEvidence(
+        "event_roster",
+        "tests.repositories.test_mesh_roster_postgres:test_public_event_roster_contract_behaviors",
+        "tests.repositories.test_mesh_roster_postgres:test_public_event_roster_contract_behaviors",
+        "tests.repositories.test_mesh_roster_postgres:test_public_event_roster_contract_behaviors",
+        "tests.repositories.test_mesh_roster_postgres:test_public_event_roster_contract_behaviors",
+    ),
+    BehavioralEvidence(
+        "learning_ledger",
+        "tests.repositories.test_learning_ledger_postgres:test_public_learning_ledger_contract_behaviors",
+        "tests.repositories.test_learning_ledger_postgres:test_public_learning_ledger_contract_behaviors",
+        "tests.repositories.test_learning_ledger_postgres:test_public_learning_ledger_contract_behaviors",
+        "tests.repositories.test_learning_ledger_postgres:test_public_learning_ledger_contract_behaviors",
+    ),
+    BehavioralEvidence(
+        "runs",
+        "tests.repositories.test_runs_postgres:test_public_run_contract_behaviors",
+        "tests.repositories.test_runs_postgres:test_public_run_contract_behaviors",
+        "tests.repositories.test_runs_postgres:test_public_run_contract_behaviors",
+        "tests.repositories.test_runs_postgres:test_public_run_contract_behaviors",
     ),
     BehavioralEvidence(
         "conversation_files",

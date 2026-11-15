@@ -6,10 +6,20 @@ Never runs during ordinary startup or admission.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 from astralplane.database.migrations import CURRENT_DATA_PLANE_REVISION, MIGRATION_REGISTRY
 from astralplane.database.pool import ConnectionPool
 from astralplane.database.postgres import create_postgres_driver_pool
+from astralplane.database.sqlite import (
+    create_sqlite_driver_pool,
+    is_sqlite_url,
+    sqlite_path_from_url,
+)
+from astralplane.database.sqlite_migrations import (
+    SQLITE_DATA_PLANE_REVISION,
+    SQLITE_MIGRATION_REGISTRY,
+)
 from astralplane.database.transaction import PlaneDatabase
 from astralplane.errors import PlaneError
 from astralplane.repositories.history import SessionRepository
@@ -42,6 +52,14 @@ def retire_restored_sessions(
     expected_migration_digest: str,
 ) -> RestoredSessionRetirement:
     try:
+        if is_sqlite_url(database_url):
+            return _retire_sqlite_sessions(
+                database_url=database_url,
+                expected_database=expected_database,
+                expected_schema=expected_schema,
+                expected_schema_revision=expected_schema_revision,
+                expected_migration_digest=expected_migration_digest,
+            )
         if (
             not _identifier(expected_database)
             or not _identifier(expected_schema)
@@ -106,6 +124,49 @@ def retire_restored_sessions(
         return result
     except Exception:
         raise SessionRetirementError("restored session retirement unavailable") from None
+
+
+def _retire_sqlite_sessions(
+    *,
+    database_url,
+    expected_database,
+    expected_schema,
+    expected_schema_revision,
+    expected_migration_digest,
+):
+    path = sqlite_path_from_url(database_url)
+    if (
+        expected_schema != "main"
+        or not isinstance(expected_database, str)
+        or Path(expected_database) != path.resolve()
+        or not path.is_file()
+        or path.is_symlink()
+        or expected_schema_revision != SQLITE_DATA_PLANE_REVISION.schema_revision
+        or expected_migration_digest != SQLITE_MIGRATION_REGISTRY.digest
+    ):
+        raise SessionRetirementError("restored SQLite target or revision differs")
+    pool = ConnectionPool(
+        create_sqlite_driver_pool(
+            database_url, maximum_connections=1, acquire_timeout_seconds=1, busy_timeout_seconds=1
+        )
+    )
+    try:
+        with PlaneDatabase(pool).transaction() as transaction:
+            SessionRepository.bound_request_execution_waits(transaction)
+            SQLITE_MIGRATION_REGISTRY.verify_current(transaction)
+            metadata = transaction.fetch_all(
+                "SELECT key,value FROM schema_meta WHERE key IN (%s,%s)",
+                ("revision", "astralplane_migration_digest"),
+            )
+            if len(metadata) != 2 or {row["key"]: row["value"] for row in metadata} != {
+                "revision": expected_schema_revision,
+                "astralplane_migration_digest": expected_migration_digest,
+            }:
+                raise SessionRetirementError("restored SQLite schema metadata differs")
+            retired = SessionRepository().retire_all_for_recovery(transaction)
+        return RestoredSessionRetirement(retired)
+    finally:
+        pool.close()
 
 
 __all__ = ("RestoredSessionRetirement", "SessionRetirementError", "retire_restored_sessions")

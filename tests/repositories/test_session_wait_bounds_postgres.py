@@ -11,6 +11,7 @@ from test_assignments_postgres import database as database
 from test_assignments_postgres import independent_database, uid
 
 from astralplane.repositories.history import SessionRepository
+from tests.fixtures.database_errors import LOCK_ERRORS
 
 
 def schema(database):
@@ -19,6 +20,18 @@ def schema(database):
 
 
 def settings(transaction):
+    if transaction.dialect.is_sqlite:
+        from astralplane.database.sqlite_functions import timeout_seconds
+
+        return {
+            name: round(
+                timeout_seconds(
+                    transaction.fetch_one("SELECT current_setting(%s) AS value", (name,))["value"]
+                )
+                * 1000
+            )
+            for name in ("lock_timeout", "statement_timeout")
+        }
     return {
         row["name"]: int(row["setting"])
         for row in transaction.fetch_all(
@@ -64,7 +77,11 @@ def test_blocked_query_finishes_and_returns_pool_borrow_while_blocker_remains(da
         if lock_kind == "owner":
             blocker.fetch_one("SELECT pg_advisory_xact_lock(hashtextextended(%s,79))", (owner,))
         else:
-            blocker.execute("LOCK TABLE web_session IN ACCESS EXCLUSIVE MODE")
+            blocker.execute(
+                "UPDATE web_session SET sid=sid WHERE 0"
+                if blocker.dialect.is_sqlite
+                else "LOCK TABLE web_session IN ACCESS EXCLUSIVE MODE"
+            )
 
         def blocked():
             with worker_database.transaction() as transaction:
@@ -74,17 +91,21 @@ def test_blocked_query_finishes_and_returns_pool_borrow_while_blocker_remains(da
                         "SELECT pg_advisory_xact_lock(hashtextextended(%s,79))", (owner,)
                     )
                 else:
-                    transaction.fetch_one("SELECT sid FROM web_session LIMIT 1")
+                    if transaction.dialect.is_sqlite:
+                        transaction.execute("UPDATE web_session SET sid=sid WHERE 0")
+                    else:
+                        transaction.fetch_one("SELECT sid FROM web_session LIMIT 1")
 
         with ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(blocked)
-            with pytest.raises(psycopg2.errors.LockNotAvailable):
+            with pytest.raises(LOCK_ERRORS):
                 future.result(timeout=3)
         assert worker_database._pool.snapshot.borrowed == 0
         with worker_database.transaction() as transaction:
             assert transaction.fetch_one("SELECT 1 AS alive")["alive"] == 1
 
 
+@pytest.mark.postgresql_lock_catalog
 def test_slow_statement_releases_previously_acquired_owner_lock(database):
     owner = uid()
     with independent_database(schema(database)) as worker_database:

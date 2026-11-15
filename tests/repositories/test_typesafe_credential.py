@@ -273,6 +273,7 @@ def _owner() -> str:
     return "owner-" + uuid.uuid4().hex[:8]
 
 
+@pytest.mark.postgresql_schema_catalog
 def test_table_exists_at_089_001(credentials) -> None:
     row = credentials.fetch_one(
         "SELECT to_regclass('user_typesafe_credential') AS credential, "
@@ -282,6 +283,7 @@ def test_table_exists_at_089_001(credentials) -> None:
     assert row["acknowledgment"] is not None
 
 
+@pytest.mark.postgresql_schema_catalog
 def test_no_system_scope_table_exists(credentials) -> None:
     row = credentials.fetch_one(
         "SELECT to_regclass('system_typesafe_credential') AS system_table"
@@ -439,6 +441,7 @@ def test_a_valid_outcome_advances_last_verified_at(credentials) -> None:
     assert repository.get_user(credentials, owner_id=owner).last_verified_at == LATER
 
 
+@pytest.mark.postgresql_schema_catalog
 def test_the_live_catalog_carries_the_declared_constraints(credentials) -> None:
     rows = credentials.fetch_all(
         "SELECT pg_get_constraintdef(constraint_record.oid) AS definition "
@@ -521,6 +524,7 @@ def test_clearing_a_credential_leaves_the_acknowledgment(credentials) -> None:
     assert acknowledgments.get_user(credentials, owner_id=owner) is not None
 
 
+@pytest.mark.postgresql_schema_catalog
 def test_rollback_drops_both_tables_and_leaves_the_rest(credentials) -> None:
     owner = _owner()
     EncryptedTypeSafeCredentialRepository().upsert_user(

@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from astralplane.contracts import QueryExecutor, Transaction
+from astralplane.database.dialect import dialect_of
 from astralplane.errors import PlaneError
 from astralplane.repositories import (
     RepositoryConflictError,
@@ -670,8 +671,7 @@ class ConversationRepository:
             UPDATE chat_branch_head AS head
             SET head_message_id = %s, branch_snapshot_id = %s, version = head.version + 1
             WHERE head.chat_id = %s AND head.user_id = %s AND head.version = %s
-            RETURNING head.chat_id, head.user_id, head.head_message_id,
-                      head.branch_snapshot_id, head.version
+            RETURNING chat_id, user_id, head_message_id, branch_snapshot_id, version
             """,
             (head_message_id, branch_snapshot_id, conversation_id, owner_id, expected_version),
         )
@@ -1538,6 +1538,13 @@ class SessionRepository:
 
     @staticmethod
     def bound_request_execution_waits(transaction: Transaction) -> None:
+        if dialect_of(transaction).is_sqlite:
+            for name, bound in (("lock_timeout", 100), ("statement_timeout", 1000)):
+                transaction.fetch_one(
+                    "SELECT set_config(%s,astral_timeout_cap(current_setting(%s),%s),true)",
+                    (name, name, bound),
+                )
+            return
         transaction.execute(
             """
             SELECT set_config(
@@ -1987,15 +1994,26 @@ class SessionRepository:
 
     def retire_all_for_recovery(self, transaction: Transaction) -> int:
         self.bound_request_execution_waits(transaction)
-        transaction.execute("LOCK TABLE web_session IN ACCESS EXCLUSIVE MODE")
+        if not dialect_of(transaction).is_sqlite:
+            transaction.execute("LOCK TABLE web_session IN ACCESS EXCLUSIVE MODE")
         result = transaction.execute("DELETE FROM web_session")
         if type(result.rowcount) is not int or result.rowcount < 0:
             raise PlaneError(
                 "restored session retirement returned an invalid count",
                 code="session_retirement_invalid",
             )
-        remaining = transaction.fetch_one("SELECT EXISTS(SELECT 1 FROM web_session) AS remaining")
-        if remaining is None or remaining["remaining"] is not False:
+        sqlite = dialect_of(transaction).is_sqlite
+        remaining = transaction.fetch_one(
+            "SELECT count(*) AS remaining FROM web_session"
+            if sqlite
+            else "SELECT EXISTS(SELECT 1 FROM web_session) AS remaining"
+        )
+        complete = remaining is not None and (
+            type(remaining["remaining"]) is int and remaining["remaining"] == 0
+            if sqlite
+            else remaining["remaining"] is False
+        )
+        if not complete:
             raise PlaneError(
                 "restored session retirement was incomplete", code="session_retirement_incomplete"
             )

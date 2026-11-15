@@ -12,6 +12,7 @@ from enum import StrEnum
 from typing import Any
 
 from astralplane.contracts import Transaction
+from astralplane.errors import LockContentionError, is_lock_contention
 from astralplane.repositories import (
     RepositoryConflictError,
     RepositoryDataError,
@@ -214,6 +215,8 @@ class OfflineGrantRepository:
                     (owner,),
                 )
                 if locked is None or locked["acquired"] is not True:
+                    if locked is not None and locked["acquired"] is False:
+                        raise LockContentionError("offline grant is unavailable") from None
                     raise RepositoryConflictError("offline grant is unavailable")
                 state = transaction.fetch_one(
                     "SELECT state FROM astralplane_blob_owner_state "
@@ -238,6 +241,8 @@ class OfflineGrantRepository:
                     raise RepositoryConflictError("offline grant is unavailable")
                 return record
         except Exception as exc:
+            if is_lock_contention(exc):
+                raise LockContentionError("offline grant is unavailable") from None
             if getattr(exc, "pgcode", None) == "55P03":
                 raise RepositoryConflictError("offline grant is unavailable") from None
             raise

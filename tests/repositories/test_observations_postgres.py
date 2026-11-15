@@ -11,7 +11,6 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from threading import Barrier
 
-import psycopg2
 import pytest
 
 from astralplane.api import create_repository_catalog
@@ -27,6 +26,7 @@ from astralplane.repositories.observations import (
     ObservationCaptureCommand,
     ObservationCursor,
 )
+from tests.fixtures.database_errors import check_violation
 from tests.integration.test_lifecycle_acceptance import concurrent_database
 
 OWNER = "observation-owner"
@@ -372,7 +372,7 @@ def test_purge_erases_pages_and_the_tombstone_is_terminal(migrated_clone):
     ):
         repo.capture(tx, command=capture_command())
     with (
-        pytest.raises(psycopg2.errors.CheckViolation),
+        check_violation(),
         migrated_clone.database.transaction() as tx,
     ):
         tx.execute(
@@ -388,7 +388,7 @@ def test_purge_erases_pages_and_the_tombstone_is_terminal(migrated_clone):
             ),
         )
     with (
-        pytest.raises(psycopg2.errors.CheckViolation),
+        check_violation(),
         migrated_clone.database.transaction() as tx,
     ):
         tx.execute(
@@ -403,7 +403,7 @@ def test_page_mutations_and_unpurged_deletion_are_refused_by_postgresql(migrated
     with migrated_clone.database.transaction() as tx:
         repo.capture(tx, command=capture_command())
     with (
-        pytest.raises(psycopg2.errors.CheckViolation),
+        check_violation(),
         migrated_clone.database.transaction() as tx,
     ):
         tx.execute(
@@ -412,7 +412,7 @@ def test_page_mutations_and_unpurged_deletion_are_refused_by_postgresql(migrated
             (b"tampered", OWNER, CONVERSATION, OBSERVATION_A),
         )
     with (
-        pytest.raises(psycopg2.errors.CheckViolation),
+        check_violation(),
         migrated_clone.database.transaction() as tx,
     ):
         tx.execute(
@@ -634,6 +634,7 @@ def test_conversation_capacity_bounds_retained_bytes_and_purge_frees_them(migrat
         assert freed.observation.observation_octets == len(b"fits again")
 
 
+@pytest.mark.postgresql_schema_catalog
 def test_corrupt_pages_and_extent_fail_closed(migrated_clone):
     repo = create_repository_catalog().observations
     with migrated_clone.database.transaction() as tx:

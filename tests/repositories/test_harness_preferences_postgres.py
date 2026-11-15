@@ -3,6 +3,7 @@ Admission checks retain the captured revision while unrelated preference edits r
 """
 
 import json
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from threading import Barrier
@@ -127,7 +128,12 @@ def test_retired_owner_and_repository_outage_never_become_default(migrated_clone
                 identity=IDENTITY,
                 qualification_digest="b" * 64,
             )
-        with pytest.raises(psycopg2.errors.UndefinedTable), tx.savepoint("outage"):
+        with (
+            pytest.raises(
+                (psycopg2.errors.UndefinedTable, sqlite3.OperationalError), match="user_preferences"
+            ),
+            tx.savepoint("outage"),
+        ):
             tx.execute("ALTER TABLE user_preferences RENAME TO unavailable_user_preferences")
             PreferencesRepository().harness.get(tx, owner_id="a")
         assert PreferencesRepository().harness.get(tx, owner_id="a").revision == 0

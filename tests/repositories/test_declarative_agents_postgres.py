@@ -19,6 +19,7 @@ from astralplane.repositories import (
     RepositoryValidationError,
 )
 from astralplane.repositories.agents import AgentRepository, DeclarativeAgentCommand
+from tests.fixtures.database_errors import INTEGRITY_ERRORS
 
 
 @pytest.fixture
@@ -257,9 +258,10 @@ def test_receipt_capacity_reserves_both_retirement_transitions(declaration_db):
         created = apply(tx, value)
         active = apply(tx, command("activate", expected_revision=0, revision_id=value.revision_id))
         tx.execute(
+            "WITH RECURSIVE counts(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM counts WHERE n<4092) "
             "INSERT INTO user_agent_command_receipt(owner_user_id,agent_id,command_id,"
             "command_version,command,request_digest,result_state_revision) "
-            "SELECT %s,%s,gen_random_uuid(),1,'activate',%s,1 FROM generate_series(1,4092)",
+            "SELECT %s,%s,gen_random_uuid(),1,'activate',%s,1 FROM counts",
             (value.owner_id, value.agent_id, "a" * 64),
         )
         with pytest.raises(RepositoryConflictError, match="capacity"):
@@ -302,6 +304,7 @@ def test_two_identical_commands_commit_one_revision_and_receipt(declaration_db):
 
 @pytest.mark.parametrize("first", ["declarative", "legacy"])
 @pytest.mark.parametrize("legacy_kind", ["trust", "ownership"])
+@pytest.mark.postgresql_lock_catalog
 def test_absent_identity_lock_serializes_legacy_trust_and_declaration(
     declaration_db, first, legacy_kind
 ):
@@ -416,11 +419,10 @@ def test_every_legacy_identity_mutator_cannot_change_a_definition(declaration_db
         if method == "remove":
             assert calls[method]() is False
         else:
-            import psycopg2
 
             with (
                 pytest.raises(
-                    (RepositoryConflictError, RepositoryNotFoundError, psycopg2.IntegrityError)
+                    (RepositoryConflictError, RepositoryNotFoundError, *INTEGRITY_ERRORS)
                 ),
                 tx.savepoint("legacy_refusal"),
             ):
@@ -474,7 +476,6 @@ def test_untyped_preparation_and_command_cannot_enter_a_transaction(declaration_
 
 @pytest.mark.parametrize("table", ["agent_runtime_instance", "draft_artifact_publication"])
 def test_actual_runtime_and_publication_kind_fks_refuse_declarative_revision(declaration_db, table):
-    import psycopg2
 
     from tests.integration.test_declarative_agents_upgrade import seed_existing_agents
 
@@ -488,13 +489,17 @@ def test_actual_runtime_and_publication_kind_fks_refuse_declarative_revision(dec
         else:
             sql = "UPDATE draft_artifact_publication SET target_agent_id=%s,target_revision_id=%s"
             constraint = "draft_publication_executable_revision_fk"
-        with pytest.raises(psycopg2.IntegrityError) as caught, tx.savepoint("kind_refusal"):
+        with pytest.raises(INTEGRITY_ERRORS) as caught, tx.savepoint("kind_refusal"):
             tx.execute(sql, (result.agent.agent_id, result.revision.revision_id))
-        assert caught.value.diag.constraint_name == constraint
+        if tx.dialect.is_sqlite:
+            import sqlite3
+
+            assert caught.value.sqlite_errorcode == sqlite3.SQLITE_CONSTRAINT_FOREIGNKEY
+        else:
+            assert caught.value.diag.constraint_name == constraint
 
 
 def test_legacy_draft_publication_pointer_refuses_definition_through_public_api(declaration_db):
-    import psycopg2
 
     from astralplane.repositories.drafts import DraftAgentRepository
 
@@ -512,7 +517,7 @@ def test_legacy_draft_publication_pointer_refuses_definition_through_public_api(
             observed_at=1,
             target_agent_id=value.agent_id,
         )
-        with pytest.raises(psycopg2.IntegrityError) as caught, tx.savepoint("draft_kind_refusal"):
+        with pytest.raises(INTEGRITY_ERRORS) as caught, tx.savepoint("draft_kind_refusal"):
             drafts.compare_and_set_draft(
                 tx,
                 owner_id=value.owner_id,
@@ -521,7 +526,12 @@ def test_legacy_draft_publication_pointer_refuses_definition_through_public_api(
                 updates={"published_revision_id": result.revision.revision_id},
                 updated_at=2,
             )
-        assert caught.value.diag.constraint_name == "draft_agents_executable_revision_fk"
+        if tx.dialect.is_sqlite:
+            import sqlite3
+
+            assert caught.value.sqlite_errorcode == sqlite3.SQLITE_CONSTRAINT_FOREIGNKEY
+        else:
+            assert caught.value.diag.constraint_name == "draft_agents_executable_revision_fk"
         assert (
             drafts.get_draft(
                 tx, owner_id=value.owner_id, draft_id=draft.draft_id
@@ -530,6 +540,7 @@ def test_legacy_draft_publication_pointer_refuses_definition_through_public_api(
         )
 
 
+@pytest.mark.postgresql_lock_catalog
 def test_create_before_publication_cannot_take_identity_before_its_owner_lock(declaration_db):
     repo, value = AgentRepository(), command()
     with declaration_db.transaction() as tx:
@@ -569,6 +580,7 @@ def test_create_before_publication_cannot_take_identity_before_its_owner_lock(de
         assert isinstance(future.result(5), RepositoryConflictError)
 
 
+@pytest.mark.postgresql_lock_catalog
 def test_existing_executable_head_then_ownership_has_no_identity_lock_inversion(declaration_db):
     repo, value = AgentRepository(), command()
     with declaration_db.transaction() as tx:
@@ -619,6 +631,7 @@ def test_existing_executable_head_then_ownership_has_no_identity_lock_inversion(
 
 
 @pytest.mark.parametrize("change", ["owner_retirement", "head_revision"])
+@pytest.mark.postgresql_lock_catalog
 def test_preparation_rechecks_owner_and_head_after_actual_lock_wait(declaration_db, change):
     value = command()
     with declaration_db.transaction() as tx:

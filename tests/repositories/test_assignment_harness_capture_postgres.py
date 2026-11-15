@@ -5,7 +5,6 @@ Replay and later episode admission reuse the initial capture after owner rollbac
 import uuid
 from dataclasses import replace
 
-import psycopg2
 import pytest
 
 from astralplane.repositories import RepositoryConflictError
@@ -16,6 +15,7 @@ from astralplane.repositories.work_admission import (
     OperationRequest,
     WorkAdmissionRepository,
 )
+from tests.fixtures.database_errors import check_violation
 from tests.repositories.test_assignments_postgres import definition
 from tests.repositories.test_harness_bindings_postgres import _configs, _owner
 from tests.repositories.test_harness_capture_models import capture
@@ -64,7 +64,7 @@ def test_assignment_capture_is_typed_immutable_and_replayed_before_current_selec
                 **dict(arguments, assignment_id=str(uuid.uuid4()), submission_id=str(uuid.uuid4())),
             )
         for document in ("null", '{"unexpected":true}'):
-            with pytest.raises(psycopg2.errors.CheckViolation), tx.savepoint("capture_immutable"):
+            with check_violation(), tx.savepoint("capture_immutable"):
                 tx.execute(
                     "UPDATE persistent_assignment SET data=jsonb_set(data,'{harness_capture}',%s) "
                     "WHERE owner_user_id=%s AND id=%s",

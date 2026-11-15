@@ -15,6 +15,7 @@ from test_assignments_postgres import independent_database
 from test_authority_clock_reads_postgres import running, schema_of
 from test_authority_clock_reads_postgres import work as work
 
+from astralplane.errors import LockContentionError, is_lock_contention
 from astralplane.repositories import RepositoryConflictError, RepositoryValidationError
 from astralplane.repositories.voice import (
     VoiceRepository,
@@ -103,6 +104,63 @@ def live_turn(database, work, *, backend="client_local"):
                 operation_id=str(fence.operation_id),
             ),
         )
+
+
+@pytest.mark.parametrize("held",["session","turn"])
+def test_native_voice_lock_refusal_remains_publicly_classified_after_redaction(database,work,held):
+    repo,_,args=live_turn(database,work)
+    schema = schema_of(database)
+    with database.transaction() as blocker:
+        if held == "session":
+            repo.get_session_record(
+                blocker,
+                owner_id=args["owner_id"],
+                session_id=args["session_id"],
+                for_update=True,
+            )
+        else:
+            repo.get_turn_record(
+                blocker,
+                owner_id=args["owner_id"],
+                turn_id=args["turn_id"],
+                for_update=True,
+            )
+        with independent_database(schema) as db, db.transaction() as contender:
+            with pytest.raises(LockContentionError) as caught:
+                repo.assert_current_guidance_turn(contender, **args)
+            assert str(caught.value) == "voice guidance is unavailable"
+            assert caught.value.__suppress_context__ and is_lock_contention(caught.value)
+            assert contender.fetch_one("SELECT 1 AS usable")["usable"] == 1
+    with database.transaction() as retry:
+        assert repo.assert_current_guidance_turn(retry, **args).turn["state"] == "accepted"
+
+
+def test_forged_voice_sqlstate_is_redacted_without_becoming_contention():
+    from contextlib import contextmanager
+
+    class ForgedError(RuntimeError):
+        pgcode = "55P03"
+
+    class Refusal:
+        @contextmanager
+        def savepoint(self, _name):
+            yield self
+
+        def fetch_one(self, *_args):
+            raise ForgedError("private backend detail")
+
+    with pytest.raises(RepositoryConflictError) as caught:
+        VoiceRepository().assert_current_guidance_turn(
+            Refusal(),
+            owner_id="owner",
+            session_id=uid(),
+            turn_id=uid(),
+            operation_id=uid(),
+            expected_session_generation=1,
+            expected_media_grant_revision=1,
+        )
+    assert str(caught.value) == "voice guidance is unavailable"
+    assert caught.value.__suppress_context__ and not is_lock_contention(caught.value)
 
 
 @pytest.mark.parametrize("backend", ["client_local", "llm_factory"])
@@ -231,6 +289,7 @@ def test_voice_unavailable_state_refuses(database, work, damage):
 
 
 @pytest.mark.parametrize("lock", ["session", "turn"])
+@pytest.mark.postgresql_lock_catalog
 def test_nowait_refusal_releases_partial_locks_for_reverse_writer(database, work, lock):
     repo, fence, args = live_turn(database, work)
     schema = schema_of(database)
@@ -266,11 +325,11 @@ def test_voice_expiry_after_prior_operation_wait_uses_fresh_db_clock(database, w
     repo, fence, args = live_turn(database, work)
     schema = schema_of(database)
     entered = Event()
-    from test_authority_clock_reads_postgres import WatchSQL
+    from test_authority_clock_reads_postgres import watch_sql
 
     def reader():
         with independent_database(schema) as db, db.transaction() as tx:
-            work.assert_current_execution_lease(WatchSQL(tx, entered), fence)
+            work.assert_current_execution_lease(watch_sql(tx, entered), fence)
             with pytest.raises(RepositoryConflictError):
                 repo.assert_current_guidance_turn(tx, **args)
 
@@ -290,6 +349,81 @@ def test_voice_expiry_after_prior_operation_wait_uses_fresh_db_clock(database, w
             time.sleep(0.25)
             assert not future.done()
         future.result(timeout=5)
+
+
+def test_sqlite_authorization_uses_fresh_clock_after_real_writer_wait(tmp_path):
+    from datetime import UTC, datetime
+
+    from astralplane import SCHEMA_REVISION
+    from astralplane.database.migrations import MigrationRunner
+    from astralplane.database.pool import ConnectionPool
+    from astralplane.database.sqlite import create_sqlite_driver_pool
+    from astralplane.database.sqlite_migrations import (
+        SQLITE_DATA_PLANE_REVISION,
+        SQLITE_MIGRATION_REGISTRY,
+        SQLiteBootRunner,
+    )
+    from astralplane.database.transaction import PlaneDatabase
+    from astralplane.repositories.work_admission import WorkAdmissionRepository
+    from tests.fixtures.sqlite_template import ObservedWriterGate
+
+    wall = [datetime(2026, 11, 1, tzinfo=UTC)]
+    initial = wall[0]
+    driver = create_sqlite_driver_pool(
+        f"sqlite://{tmp_path / 'voice-clock.db'}", clock=lambda: wall[0]
+    )
+    gate = ObservedWriterGate()
+    driver._writer_gate = gate
+    pool = ConnectionPool(driver)
+    db = PlaneDatabase(pool)
+    try:
+        SQLiteBootRunner(
+            db,
+            MigrationRunner(
+                db,
+                revision=SQLITE_DATA_PLANE_REVISION,
+                registry=SQLITE_MIGRATION_REGISTRY,
+            ),
+        ).run(expected_revision=SCHEMA_REVISION)
+        admission = WorkAdmissionRepository()
+        with db.transaction() as tx:
+            configs = admission.load_existing_configs(tx)
+            admission.configure(tx, configs)
+            admission.bind_configs(configs)
+        repo, fence, args = live_turn(db, admission)
+        with db.transaction() as tx:
+            tx.execute(
+                "UPDATE voice_session SET lease_expires_at=%s WHERE session_id=%s",
+                (initial + timedelta(seconds=10), args["session_id"]),
+            )
+        with pool.connection(), pool.connection():
+            pass
+
+        def read():
+            with db.transaction() as tx:
+                admission.assert_current_execution_lease(tx, fence)
+                clocks = tx.fetch_one("SELECT now() AS started,clock_timestamp() AS current")
+                with pytest.raises(RepositoryConflictError) as caught:
+                    repo.assert_current_guidance_turn(tx, **args)
+                assert not is_lock_contention(caught.value)
+                return clocks
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            with db.transaction() as writer:
+                writer.fetch_one(
+                    "SELECT operation_id FROM operation_record WHERE operation_id=%s FOR UPDATE",
+                    (args["operation_id"],),
+                )
+                gate.observe = True
+                pending = executor.submit(read)
+                assert gate.waiting.wait(5)
+                assert not pending.done()
+                wall[0] = initial + timedelta(seconds=30)
+            clocks = pending.result(5)
+        assert clocks["started"] == initial
+        assert clocks["current"] == wall[0]
+    finally:
+        pool.close()
 
 
 @pytest.mark.parametrize(
@@ -351,10 +485,22 @@ def test_voice_read_fault_or_cancellation_releases_partial_locks(database, work,
         with pytest.raises(KeyboardInterrupt if damage == "cancel" else RepositoryConflictError):
             repo.assert_current_guidance_turn(FaultedRead(tx), **args)
         assert tx.fetch_one("SELECT 1 AS usable")["usable"] == 1
-        with independent_database(schema) as db, db.transaction() as other:
-            other.fetch_one(
-                "SELECT session_id FROM voice_session WHERE session_id=%s FOR UPDATE NOWAIT",
-                (args["session_id"],),
-            )
+        with independent_database(schema) as db:
+            if tx.dialect.is_sqlite:
+                from astralplane.database.sqlite import SQLiteLockTimeoutError
+
+                with pytest.raises(SQLiteLockTimeoutError), db.transaction() as other:
+                    other.fetch_one(
+                        "SELECT session_id FROM voice_session "
+                        "WHERE session_id=%s FOR UPDATE NOWAIT",
+                        (args["session_id"],),
+                    )
+            else:
+                with db.transaction() as other:
+                    other.fetch_one(
+                        "SELECT session_id FROM voice_session "
+                        "WHERE session_id=%s FOR UPDATE NOWAIT",
+                        (args["session_id"],),
+                    )
     with database.transaction() as tx:
         assert repo.assert_current_guidance_turn(tx, **args).turn["state"] == "accepted"

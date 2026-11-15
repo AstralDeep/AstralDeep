@@ -5,6 +5,7 @@ parent-stage lock does not freeze bytes already reviewed onto the current canvas
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 
+import pytest
 from test_assignments_postgres import database as database
 from test_assignments_postgres import independent_database, uid
 
@@ -16,6 +17,7 @@ from astralplane.repositories.workspaces import (
 )
 
 
+@pytest.mark.postgresql_lock_catalog
 def test_legacy_parent_stage_lock_does_not_freeze_reviewed_canvas_bytes(database):
     owner, chat, publication = uid(), uid(), uid()
     canvas, publications = CanvasRepository(), PublicationRepository()

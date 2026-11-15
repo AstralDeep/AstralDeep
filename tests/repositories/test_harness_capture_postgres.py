@@ -7,7 +7,6 @@ import uuid
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
-import psycopg2
 import pytest
 
 from astralplane.repositories import RepositoryConflictError, RepositoryValidationError
@@ -20,6 +19,7 @@ from astralplane.repositories.work_admission import (
     OperationState,
     WorkAdmissionRepository,
 )
+from tests.fixtures.database_errors import check_violation
 from tests.repositories.test_harness_bindings_postgres import _configs, _owner
 from tests.repositories.test_harness_capture_models import capture
 
@@ -137,7 +137,7 @@ def test_capture_cannot_be_added_or_mutated_after_admission(migrated_clone):
             "UPDATE operation_harness_capture SET capture=capture||'{\"extra\":1}'::jsonb",
             "DELETE FROM operation_harness_capture",
         ):
-            with pytest.raises(psycopg2.errors.CheckViolation), tx.savepoint("immutable"):
+            with check_violation(), tx.savepoint("immutable"):
                 tx.execute(statement)
         claim = repository.claim_operation(
             tx,

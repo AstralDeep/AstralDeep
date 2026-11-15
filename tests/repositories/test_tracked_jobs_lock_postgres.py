@@ -32,6 +32,7 @@ def poll(repository, tx, record):
 
 
 @pytest.mark.parametrize("rollback", [False, True])
+@pytest.mark.postgresql_lock_catalog
 def test_locked_job_selection_serializes_terminal_poll_and_caller_rollback(database, rollback):
     record, schema = seed(database)
     repository = TrackedJobRepository()

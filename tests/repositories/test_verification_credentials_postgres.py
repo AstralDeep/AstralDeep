@@ -76,6 +76,10 @@ def wait_for_blocked_statement(observer_database, waiting_pid, blocking_pid):
 def independent_connection(schema):
     import psycopg2
 
+    if os.environ["ASTRALPLANE_TEST_POSTGRES_DSN"].startswith("sqlite:"):
+        from astralplane.database.sqlite import create_sqlite_driver_pool
+
+        return create_sqlite_driver_pool(os.environ["ASTRALPLANE_TEST_POSTGRES_DSN"]).getconn()
     connection = psycopg2.connect(os.environ["ASTRALPLANE_TEST_POSTGRES_DSN"])
     with connection.cursor() as cursor:
         cursor.execute(f'SET search_path TO "{schema}",pg_catalog')
@@ -207,13 +211,16 @@ def test_concurrent_revocation_never_returns_active():
         revoked_ready = threading.Event()
         release = threading.Event()
         verifier_started = threading.Event()
+        sqlite = os.environ["ASTRALPLANE_TEST_POSTGRES_DSN"].startswith("sqlite:")
 
         def revoker():
             connection = independent_connection(schema)
             pool = ConnectionPool(Pool(connection))
             try:
                 with PlaneDatabase(pool).transaction() as tx:
-                    outcomes["revoker_pid"] = tx.fetch_one("SELECT pg_backend_pid() AS pid")["pid"]
+                    if not sqlite:
+                        observed = tx.fetch_one("SELECT pg_backend_pid() AS pid")
+                        outcomes["revoker_pid"] = observed["pid"]
                     repo.revoke_credential(
                         tx, owner_id=owner, credential_id=credential, expected_record_version=1
                     )
@@ -229,7 +236,9 @@ def test_concurrent_revocation_never_returns_active():
             pool = ConnectionPool(Pool(connection))
             try:
                 with PlaneDatabase(pool).transaction() as tx:
-                    outcomes["verifier_pid"] = tx.fetch_one("SELECT pg_backend_pid() AS pid")["pid"]
+                    if not sqlite:
+                        observed = tx.fetch_one("SELECT pg_backend_pid() AS pid")
+                        outcomes["verifier_pid"] = observed["pid"]
                     verifier_started.set()
                     repo.require_active_credential(tx, owner_id=owner, credential_id=credential)
                 outcomes["verifier"] = "active"
@@ -245,7 +254,8 @@ def test_concurrent_revocation_never_returns_active():
         verification_thread = threading.Thread(target=verifier)
         verification_thread.start()
         assert verifier_started.wait(30)
-        wait_for_blocked_statement(database, outcomes["verifier_pid"], outcomes["revoker_pid"])
+        if not sqlite:
+            wait_for_blocked_statement(database, outcomes["verifier_pid"], outcomes["revoker_pid"])
         release.set()
         revocation_thread.join(30)
         verification_thread.join(30)

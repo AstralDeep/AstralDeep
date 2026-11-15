@@ -245,6 +245,7 @@ def finish(repo, tx, fence, **changes):
     return repo.finish_episode(tx, fence=fence, completion=AssignmentEpisodeCompletion(**values))
 
 
+@pytest.mark.postgresql_schema_catalog
 def test_current_assignment_structure_digest(database):
     from astralplane.database import migrations as m
 
@@ -805,6 +806,7 @@ def test_one_shot_grant_and_conversation_references_remain_owner_scoped(tx, repo
     assert create_operation(repo, tx, caller_key="with-grant", definition=value)
 
 
+@pytest.mark.postgresql_schema_catalog
 def test_profile_and_receipt_structure_repeat_verification(database):
     runner = MigrationRunner(
         database, revision=CURRENT_DATA_PLANE_REVISION, registry=MIGRATION_REGISTRY
@@ -849,6 +851,7 @@ def assignment_079_runner(upgrade_database):
     return m.MigrationRunner(upgrade_database, revision=old_revision, registry=old_registry)
 
 
+@pytest.mark.postgresql_schema_catalog
 def test_populated_079_upgrade_preserves_legacy_bytes_and_repeats(
     database, repo, lineage_templates
 ):
@@ -925,6 +928,8 @@ def test_populated_079_upgrade_preserves_legacy_bytes_and_repeats(
                 "astralplane-089-computer-use",
                 "astralplane-089-verification-credentials",
                 "astralplane-089-chat-read-receipts",
+                "astralplane-089-mesh-event-store",
+                "astralplane-089-run-and-learning-ledger",
             )
             assert runner.run(
                 expected_revision=CURRENT_DATA_PLANE_REVISION.schema_revision
@@ -1012,14 +1017,37 @@ def test_operation_receipt_and_target_are_read_in_one_snapshot(database, repo):
             == first
         )
         assert query.replaced
-        with pytest.raises(RepositoryConflictError, match="assignment_operation_deleted"):
-            repo.get_operation_receipt(
-                transaction,
-                owner_id="owner",
-                origin_namespace="web",
-                caller_key="ordinary-send",
-                command_digest=digest("ordinary-send"),
+        if transaction.dialect.is_sqlite:
+            assert (
+                repo.get_operation_receipt(
+                    transaction,
+                    owner_id="owner",
+                    origin_namespace="web",
+                    caller_key="ordinary-send",
+                    command_digest=digest("ordinary-send"),
+                )
+                == first
             )
+        else:
+            with pytest.raises(RepositoryConflictError, match="assignment_operation_deleted"):
+                repo.get_operation_receipt(
+                    transaction,
+                    owner_id="owner",
+                    origin_namespace="web",
+                    caller_key="ordinary-send",
+                    command_digest=digest("ordinary-send"),
+                )
+    with (
+        database.transaction() as transaction,
+        pytest.raises(RepositoryConflictError, match="assignment_operation_deleted"),
+    ):
+        repo.get_operation_receipt(
+            transaction,
+            owner_id="owner",
+            origin_namespace="web",
+            caller_key="ordinary-send",
+            command_digest=digest("ordinary-send"),
+        )
 
 
 def test_create_replay_owner_controls_and_retirement(tx, repo):
@@ -2133,6 +2161,16 @@ def test_expired_approval_and_changed_decision_are_refused(tx, repo):
 def independent_database(schema):
     import psycopg2
 
+    database_url = os.environ["ASTRALPLANE_TEST_POSTGRES_DSN"]
+    if database_url.startswith("sqlite:"):
+        from astralplane.database.sqlite import create_sqlite_driver_pool
+
+        pool = ConnectionPool(create_sqlite_driver_pool(database_url))
+        try:
+            yield PlaneDatabase(pool)
+        finally:
+            pool.close()
+        return
     connection = psycopg2.connect(os.environ["ASTRALPLANE_TEST_POSTGRES_DSN"])
     with connection.cursor() as cursor:
         cursor.execute(f'SET search_path TO "{schema}",pg_catalog')
@@ -2146,18 +2184,29 @@ def independent_database(schema):
 
 
 def parallel_transactions(database, operations):
+    from threading import Event
+
+    from astralplane import is_lock_contention
+
     with database.transaction() as tx:
         schema = tx.fetch_one("SELECT current_schema() AS name")["name"]
     barrier = Barrier(len(operations))
+    peer_finished = Event()
 
     def run(operation):
         with independent_database(schema) as db:
             barrier.wait(timeout=10)
             try:
-                with db.transaction() as tx:
-                    return operation(tx)
-            except RepositoryConflictError as error:
-                return error
+                for attempt in range(4):
+                    try:
+                        with db.transaction() as tx:
+                            return operation(tx)
+                    except RepositoryConflictError as error:
+                        if not (tx.dialect.is_sqlite and is_lock_contention(error) and attempt < 3):
+                            return error
+                        assert peer_finished.wait(timeout=10)
+            finally:
+                peer_finished.set()
 
     with ThreadPoolExecutor(max_workers=len(operations)) as workers:
         return tuple(workers.map(run, operations))
@@ -2730,7 +2779,37 @@ def test_full_history_still_persists_attention_and_releases_claim(tx, repo):
         fence=current.fence,
         activity=AssignmentActivityRecord("first", "checked", "Checked", "No change"),
     )
-    tx.execute(
+    if tx.dialect.is_sqlite:
+        import hashlib
+        import json
+        from uuid import UUID
+
+        stored = tx.fetch_one(
+            "SELECT * FROM persistent_assignment_activity WHERE id=%s", (activity.activity_id,)
+        )
+        for sequence in range(2, 1001):
+            identifier = hashlib.md5(f"copy{sequence}".encode()).hexdigest()
+            data = dict(
+                plain(stored["data"]),
+                activity_key=f"copy{sequence}",
+                sequence=sequence,
+                activity_id=identifier,
+            )
+            tx.execute(
+                "INSERT INTO persistent_assignment_activity "
+                "(id,assignment_id,owner_user_id,activity_key,sequence,notification_state,data) "
+                "VALUES(%s,%s,%s,%s,%s,'none',%s::jsonb)",
+                (
+                    str(UUID(identifier)),
+                    stored["assignment_id"],
+                    stored["owner_user_id"],
+                    f"copy{sequence}",
+                    sequence,
+                    json.dumps(data),
+                ),
+            )
+    else:
+        tx.execute(
         "INSERT INTO persistent_assignment_activity "
         "(id,assignment_id,owner_user_id,activity_key,sequence,notification_state,data) "
         "SELECT md5('copy'||n)::uuid,assignment_id,owner_user_id,'copy'||n,n,'none', "

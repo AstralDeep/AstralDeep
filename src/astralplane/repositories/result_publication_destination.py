@@ -5,6 +5,7 @@ authority; used by repositories/assignments.py and result_publications.py.
 
 from __future__ import annotations
 
+from astralplane.database.dialect import dialect_of
 from astralplane.repositories import RepositoryValidationError, _freeze
 from astralplane.repositories import assignments as a
 from astralplane.repositories.result_publication_models import ResultPublicationContent
@@ -18,6 +19,34 @@ from astralplane.repositories.workspaces import (
 
 MAX_ENTRIES = 1000
 MAX_BYTES = 8 * 1024 * 1024
+_SQLITE_ROW_FIELDS = {
+    "saved_components": (
+        "id",
+        "chat_id",
+        "user_id",
+        "component_data",
+        "component_type",
+        "title",
+        "created_at",
+        "component_id",
+        "position",
+        "updated_at",
+        "conversation_commit_id",
+        "committed_render_revision",
+    ),
+    "workspace_layout": (
+        "id",
+        "chat_id",
+        "user_id",
+        "layout_key",
+        "position",
+        "layout",
+        "created_at",
+        "updated_at",
+        "conversation_commit_id",
+        "committed_render_revision",
+    ),
+}
 
 
 def _require(value):
@@ -50,6 +79,10 @@ def read(
         "user_id=%s AND chat_id=%s AND conversation_commit_id IS NOT DISTINCT FROM %s "
         "AND committed_render_revision IS NOT DISTINCT FROM %s"
     )
+    previous_timeout = None
+    if dialect_of(tx).is_sqlite:
+        previous_timeout = tx.fetch_one("SELECT current_setting('lock_timeout') AS value")["value"]
+        tx.fetch_one("SELECT set_config('lock_timeout','1ms',true)")
     try:
         with tx.savepoint("result_publication_destination"):
             _require(repo._lock_operation_owner(tx, owner_id))
@@ -94,9 +127,18 @@ def read(
                 total += len(rows)
                 _require(total <= MAX_ENTRIES)
                 identifiers[table] = {row["id"] for row in rows}
+                projection = "row_to_json(item)::text"
+                if dialect_of(tx).is_sqlite:
+                    projection = (
+                        "json_object("
+                        + ",".join(
+                            f"'{column}',item.{column}" for column in _SQLITE_ROW_FIELDS[table]
+                        )
+                        + ")"
+                    )
                 sizes = tx.fetch_one(
                     "SELECT count(*) AS n,COALESCE(sum(octet_length("
-                    "row_to_json(item)::text)),0) AS bytes FROM "
+                    + projection + ")),0) AS bytes FROM "
                     + table
                     + " item WHERE "
                     + predicate,
@@ -140,3 +182,6 @@ def read(
         if getattr(exc, "pgcode", None) == "55P03":
             a._conflict("assignment_publication_busy")
         raise
+    finally:
+        if previous_timeout is not None:
+            tx.fetch_one("SELECT set_config('lock_timeout',%s,true)", (previous_timeout,))

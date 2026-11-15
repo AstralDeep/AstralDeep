@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any, Final
 
 from astralplane.contracts import Transaction
+from astralplane.database.dialect import dialect_of
 from astralplane.repositories import (
     RepositoryConflictError,
     RepositoryDataError,
@@ -973,24 +974,29 @@ class PushDeliveryRepository:
         current, expiry = _lease_bounds(now, lease_expires_at)
         bounded = _bounded_limit(limit, maximum=100)
         claim_id = str(uuid.uuid4())
-        rows = transaction.fetch_all(
-            _CLAIM_SQL,
-            (
-                current,
-                owner,
-                current,
-                owner,
-                current,
-                current,
-                bounded,
-                worker,
-                claim_id,
-                expiry,
-                current,
-                current,
-                _MAX_INTEGER,
-            ),
-        )
+        if dialect_of(transaction).is_sqlite:
+            rows = self._claim_sqlite(
+                transaction, owner, worker, current, expiry, bounded, claim_id
+            )
+        else:
+            rows = transaction.fetch_all(
+                _CLAIM_SQL,
+                (
+                    current,
+                    owner,
+                    current,
+                    owner,
+                    current,
+                    current,
+                    bounded,
+                    worker,
+                    claim_id,
+                    expiry,
+                    current,
+                    current,
+                    _MAX_INTEGER,
+                ),
+            )
         claimed = tuple(_claimed_record(row) for row in rows)
         if any(item.worker_id != worker for item in claimed):
             raise RepositoryDataError("push claim returned a different worker")
@@ -1002,6 +1008,56 @@ class PushDeliveryRepository:
                     item.delivery.delivery_id,
                 ),
             )
+        )
+
+    @staticmethod
+    def _claim_sqlite(transaction, owner, worker, current, expiry, bounded, claim_id):
+        transaction.execute(
+            "UPDATE notification_push_delivery "
+            "SET status='dead_letter',lease_owner=NULL,lease_expires_at=NULL,"
+            "last_error_code='lease_expired',version=version+1,updated_at=%s "
+            "WHERE owner_id=%s AND status='claimed' AND lease_expires_at<=%s "
+            "AND attempt_count>=max_attempts",
+            (current, owner, current),
+        )
+        candidates = transaction.fetch_all(
+            "SELECT delivery.delivery_id FROM notification_push_delivery AS delivery "
+            "JOIN notification_device_destination AS destination "
+            "ON destination.destination_id=delivery.destination_id "
+            "AND destination.owner_id=delivery.owner_id "
+            "WHERE delivery.owner_id=%s AND delivery.attempt_count<delivery.max_attempts "
+            "AND ((delivery.status IN ('pending','retry') AND delivery.available_at<=%s) "
+            "OR (delivery.status='claimed' AND delivery.lease_expires_at<=%s)) "
+            "AND destination.deleted_at IS NULL AND destination.revoked_at IS NULL "
+            "AND destination.token_version=delivery.token_version "
+            "AND destination.revision=delivery.destination_revision "
+            "ORDER BY delivery.available_at,delivery.delivery_id LIMIT %s",
+            (owner, current, current, bounded),
+        )
+        for candidate in candidates:
+            transaction.execute(
+                "UPDATE notification_push_delivery SET status='claimed',lease_owner=%s,"
+                "claim_id=%s,lease_expires_at=%s,claimed_at=%s,attempt_count=attempt_count+1,"
+                "last_error_code=NULL,version=version+1,updated_at=%s "
+                "WHERE owner_id=%s AND delivery_id=%s AND version<%s",
+                (
+                    worker,
+                    claim_id,
+                    expiry,
+                    current,
+                    current,
+                    owner,
+                    candidate["delivery_id"],
+                    _MAX_INTEGER,
+                ),
+            )
+        return transaction.fetch_all(
+            f"SELECT {_CLAIM_FIELDS} FROM notification_push_delivery AS delivery "
+            "JOIN notification_device_destination AS destination "
+            "ON destination.destination_id=delivery.destination_id "
+            "AND destination.owner_id=delivery.owner_id "
+            "WHERE delivery.owner_id=%s AND delivery.claim_id=%s",
+            (owner, claim_id),
         )
 
     def acknowledge_delivery(

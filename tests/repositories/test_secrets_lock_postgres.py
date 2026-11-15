@@ -47,6 +47,7 @@ def wait_for_lock(transaction, waiting_pid, blocking_pid):
 
 @pytest.mark.parametrize("operation", ["update", "delete", "delete_recreate"])
 @pytest.mark.parametrize("rollback", [False, True])
+@pytest.mark.postgresql_lock_catalog
 def test_selected_row_cannot_change_until_selection_commit_or_rollback(
     database, operation, rollback
 ):
@@ -120,10 +121,20 @@ def test_other_owner_can_update_while_selected_owner_row_is_locked(database):
 
     with ThreadPoolExecutor(max_workers=1) as worker, database.transaction() as transaction:
         assert repository.get_user_for_update(transaction, owner_id=owner) == original
-        assert worker.submit(update_other).result(timeout=3).model == "other-new"
+        if transaction.dialect.is_sqlite:
+            from astralplane.database.sqlite import SQLiteLockTimeoutError
+
+            with pytest.raises(SQLiteLockTimeoutError):
+                worker.submit(update_other).result(timeout=3)
+        else:
+            assert worker.submit(update_other).result(timeout=3).model == "other-new"
+        assert repository.get_user(transaction, owner_id=owner) == original
+    assert update_other().model == "other-new"
+    with database.transaction() as transaction:
         assert repository.get_user(transaction, owner_id=owner) == original
 
 
+@pytest.mark.postgresql_lock_catalog
 def test_selector_waits_for_preexisting_update_and_returns_actual_changed_row(database):
     owner, schema, original = seed(database)
     repository = EncryptedLLMConfigRepository()

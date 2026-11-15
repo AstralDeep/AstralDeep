@@ -269,6 +269,7 @@ def test_issue_takes_the_same_owner_lock_domain_as_assignment_creation(database)
     assert token_hash not in repr(record)
 
 
+@pytest.mark.postgresql_lock_catalog
 def test_issue_refuses_when_the_issuing_session_is_revoked_while_it_waits_on_the_owner_lock(
     database,
 ):
@@ -311,6 +312,7 @@ def test_issue_refuses_when_the_issuing_session_is_revoked_while_it_waits_on_the
         assert tx.fetch_all("SELECT * FROM framework_credential WHERE owner_id=%s", (owner,)) == ()
 
 
+@pytest.mark.postgresql_lock_catalog
 def test_issue_refuses_when_the_owner_retires_while_it_waits_on_the_lock(database):
     owner = uid()
     with database.transaction() as tx:

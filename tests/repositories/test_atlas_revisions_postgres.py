@@ -27,6 +27,7 @@ from astralplane.repositories.atlas_pages import (
     AtlasPageEditCommand,
     AtlasPageRevisionCursor,
 )
+from tests.fixtures.database_errors import check_violation
 from tests.integration.test_lifecycle_acceptance import concurrent_database
 
 OWNER = "atlas-revision-owner"
@@ -314,7 +315,7 @@ def test_postgresql_refuses_revision_mutation_and_unbacked_live_heads(migrated_c
     with migrated_clone.database.transaction() as tx:
         repo.create_page(tx, command=create_command())
     with (
-        pytest.raises(psycopg2.errors.CheckViolation),
+        check_violation(),
         migrated_clone.database.transaction() as tx,
     ):
         tx.execute(
@@ -322,7 +323,7 @@ def test_postgresql_refuses_revision_mutation_and_unbacked_live_heads(migrated_c
             (b"mutated", OWNER, PAGE_A),
         )
     with (
-        pytest.raises(psycopg2.errors.CheckViolation),
+        check_violation(),
         migrated_clone.database.transaction() as tx,
     ):
         tx.execute(
@@ -330,7 +331,7 @@ def test_postgresql_refuses_revision_mutation_and_unbacked_live_heads(migrated_c
             (OWNER, PAGE_A),
         )
     with (
-        pytest.raises(psycopg2.errors.CheckViolation),
+        check_violation(),
         migrated_clone.database.transaction() as tx,
     ):
         tx.execute(
@@ -355,6 +356,27 @@ def test_postgresql_refuses_revision_mutation_and_unbacked_live_heads(migrated_c
                 hashlib.sha256(b"unbacked").hexdigest(),
             ),
         )
+    if migrated_clone.dsn.startswith("sqlite:"):
+        import sqlite3
+
+        assert isinstance(error.value.__cause__, sqlite3.IntegrityError)
+        assert error.value.__cause__.sqlite_errorcode == sqlite3.SQLITE_CONSTRAINT_FOREIGNKEY
+        with migrated_clone.database.transaction() as tx:
+            assert (
+                tx.fetch_one(
+                    "SELECT revision FROM atlas_page WHERE owner_id=%s AND page_id=%s",
+                    (OWNER, PAGE_A),
+                )["revision"]
+                == 1
+            )
+            assert (
+                tx.fetch_one(
+                    "SELECT count(*) AS n FROM atlas_page WHERE owner_id=%s AND page_id=%s",
+                    (OWNER, PAGE_B),
+                )["n"]
+                == 0
+            )
+        return
     assert isinstance(error.value.__cause__, psycopg2.errors.CheckViolation)
     with psycopg2.connect(migrated_clone.dsn) as connection, connection.cursor() as cursor:
         cursor.execute(f'SET search_path TO "{migrated_clone.schema}", pg_catalog')
@@ -370,6 +392,7 @@ def test_postgresql_refuses_revision_mutation_and_unbacked_live_heads(migrated_c
         assert cursor.fetchone() == (0,)
 
 
+@pytest.mark.postgresql_schema_catalog
 def test_corrupt_revision_digest_fails_closed_on_revision_reads(migrated_clone):
     repo = create_repository_catalog().atlas_pages
     with migrated_clone.database.transaction() as tx:

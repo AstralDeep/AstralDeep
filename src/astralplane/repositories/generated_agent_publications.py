@@ -14,6 +14,7 @@ from datetime import datetime
 from typing import Any
 
 from astralplane.contracts import Transaction
+from astralplane.database.dialect import dialect_of
 from astralplane.immutable_bundle_store import (
     BundlePublicationKey,
     BundlePublicationPaths,
@@ -32,6 +33,7 @@ from astralplane.repositories import (
     _positive_int,
     _required_id,
 )
+from astralplane.repositories import generated_agent_publication_sqlite as sqlite_publication
 from astralplane.repositories.agents import AgentRepository, AgentRevisionRecord
 from astralplane.repositories.drafts import (
     _GENERATED_PUBLICATION_MUTATION_CAPABILITY,
@@ -631,6 +633,11 @@ class GeneratedAgentPublicationRepository:
             new_attempt=new_attempt,
         )
 
+        if dialect_of(transaction).is_sqlite:
+            return _publication(
+                sqlite_publication.rebind(transaction, expected, new_attempt, lease_seconds)
+            )
+
         row = transaction.fetch_one(
             """
             WITH eligible AS (
@@ -807,6 +814,17 @@ class GeneratedAgentPublicationRepository:
             raise RepositoryConflictError("validated artifact digest changed revision identity")
         if canonical_generated_agent_manifest_digest(revision.manifest or {}) != manifest_digest:
             raise RepositoryConflictError("validated manifest digest changed revision identity")
+        if dialect_of(transaction).is_sqlite:
+            return _publication(
+                sqlite_publication.validate(
+                    transaction,
+                    expected,
+                    attempt,
+                    artifact_digest,
+                    manifest_digest,
+                    generation_result,
+                )
+            )
         row = transaction.fetch_one(
             """
             WITH eligible AS (
@@ -918,6 +936,12 @@ class GeneratedAgentPublicationRepository:
             revision=revision,
             attempt=attempt,
         )
+        if dialect_of(transaction).is_sqlite:
+            return _publication(
+                sqlite_publication.fail(
+                    transaction, expected, attempt, failure_code, safe_error_message
+                )
+            )
         row = transaction.fetch_one(
             """
             WITH eligible AS (
@@ -1034,6 +1058,10 @@ class GeneratedAgentPublicationRepository:
             revision=revision,
             attempt=attempt,
         )
+        if dialect_of(transaction).is_sqlite:
+            return _publication(
+                sqlite_publication.publish(transaction, expected, attempt, persisted_result)
+            )
         row = transaction.fetch_one(
             """
             WITH eligible AS (

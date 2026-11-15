@@ -9,6 +9,7 @@ import hashlib
 import importlib
 import os
 import re
+import sqlite3
 from collections.abc import Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -46,6 +47,7 @@ from astralplane.database.migrations import (
     PLANE_SCHEMA_074_STATEMENTS,
 )
 from astralplane.errors import PlaneError
+from tests.fixtures.database_errors import check_violation
 
 psycopg2 = pytest.importorskip("psycopg2")
 sql = importlib.import_module("psycopg2.sql")
@@ -82,6 +84,12 @@ class PostgresTransaction:
     def __init__(self, connection: Any) -> None:
         self.connection = connection
 
+    @property
+    def dialect(self):
+        from astralplane.database.dialect import POSTGRES
+
+        return getattr(self.connection, "dialect", POSTGRES)
+
     def execute(self, statement: str, parameters: object = ()) -> CommandResult:
         with self.connection.cursor() as cursor:
             cursor.execute(statement, parameters)
@@ -117,6 +125,21 @@ class PostgresTransaction:
 
     @contextmanager
     def savepoint(self, name: str) -> Iterator[PostgresTransaction]:
+        if self.dialect.is_sqlite:
+            assert re.fullmatch(r"[a-z_]+", name) is not None
+            with self.connection.cursor() as cursor:
+                cursor.execute(f'SAVEPOINT "{name}"')
+            try:
+                yield self
+            except BaseException:
+                with self.connection.cursor() as cursor:
+                    cursor.execute(f'ROLLBACK TO SAVEPOINT "{name}"')
+                    cursor.execute(f'RELEASE SAVEPOINT "{name}"')
+                raise
+            else:
+                with self.connection.cursor() as cursor:
+                    cursor.execute(f'RELEASE SAVEPOINT "{name}"')
+            return
         identifier = sql.Identifier(name)
         with self.connection.cursor() as cursor:
             cursor.execute(sql.SQL("SAVEPOINT {}").format(identifier))
@@ -139,6 +162,18 @@ class PostgresHarness:
 
     @contextmanager
     def connection(self) -> Iterator[Any]:
+        if self.dsn.startswith("sqlite:"):
+            from astralplane.database.sqlite import create_sqlite_driver_pool
+
+            driver = create_sqlite_driver_pool(self.dsn)
+            connection = driver.getconn()
+            connection.raw.row_factory = sqlite3.Row
+            try:
+                yield connection
+            finally:
+                driver.putconn(connection)
+                driver.closeall()
+            return
         connection = psycopg2.connect(self.dsn, cursor_factory=RealDictCursor)
         try:
             with connection.cursor() as cursor:
@@ -168,10 +203,16 @@ def _apply_authority_schema(connection: Any) -> None:
 
 
 @pytest.fixture
-def postgres_074() -> Iterator[PostgresHarness]:
+def postgres_074(migrated_template) -> Iterator[PostgresHarness]:
     dsn = os.environ.get(_TEST_DSN_ENV, "").strip()
     if not dsn:
         pytest.skip(f"set {_TEST_DSN_ENV} to an isolated PostgreSQL test database")
+    if dsn.startswith("sqlite:"):
+        from tests.fixtures.migrated_template import bound_clone
+
+        with bound_clone(migrated_template) as clone:
+            yield PostgresHarness(dsn=clone.dsn, schema=clone.schema)
+        return
 
     schema = f"astralplane_074_test_{uuid4().hex}"
     assert _SCHEMA_PATTERN.fullmatch(schema) is not None
@@ -431,6 +472,7 @@ def _raw_binding_values(
     )
 
 
+@pytest.mark.postgresql_schema_catalog
 def test_074_001_authority_ddl_is_repeat_safe_on_real_postgresql(
     postgres_074: PostgresHarness,
 ) -> None:
@@ -707,6 +749,7 @@ def test_lifecycle_replay_requires_the_same_request_fingerprint(
         connection.commit()
 
 
+@pytest.mark.postgresql_lock_catalog
 def test_recoverable_lifecycle_work_is_owner_partitioned_and_skip_locked(
     postgres_074: PostgresHarness,
 ) -> None:
@@ -759,6 +802,7 @@ def test_recoverable_lifecycle_work_is_owner_partitioned_and_skip_locked(
         locking_connection.rollback()
 
 
+@pytest.mark.postgresql_lock_catalog
 def test_recoverable_effect_work_is_ordered_owner_partitioned_and_skip_locked(
     postgres_074: PostgresHarness,
 ) -> None:
@@ -886,7 +930,7 @@ def test_authority_constraints_reject_noncanonical_capabilities(
     postgres_074: PostgresHarness,
 ) -> None:
     with postgres_074.connection() as connection:
-        with connection.cursor() as cursor, pytest.raises(psycopg2.errors.CheckViolation):
+        with connection.cursor() as cursor, check_violation():
             cursor.execute(
                 _INSERT_BINDING_SQL,
                 _raw_binding_values(

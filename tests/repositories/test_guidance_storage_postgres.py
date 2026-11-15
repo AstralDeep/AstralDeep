@@ -35,6 +35,7 @@ from astralplane.repositories.guidance_models import (
     SkillDefinition,
     legacy_directory_digest,
 )
+from tests.fixtures.database_errors import check_violation
 
 
 @pytest.fixture
@@ -503,6 +504,7 @@ def test_empty_initial_guidance_binding_cannot_later_select_nonempty(tx, repo):
     assert tx.fetch_one("SELECT count(*) AS n FROM assignment_guidance_reference")["n"] == 0
 
 
+@pytest.mark.postgresql_lock_catalog
 def test_skill_command_original_mutation_during_owner_wait_does_not_change_writes(database):
     from concurrent.futures import ThreadPoolExecutor
     from threading import Event
@@ -567,6 +569,7 @@ def during_owner_wait(database, owner_id, run, change):
         return future.result(5)
 
 
+@pytest.mark.postgresql_lock_catalog
 def test_legacy_entry_mutation_during_owner_wait_cannot_change_captured_import(database):
     skills = SkillsRepository()
     value = LegacySkillEntry(
@@ -597,6 +600,7 @@ def test_legacy_entry_mutation_during_owner_wait_cannot_change_captured_import(d
     assert r.legacy_markdown == raw and r.definition.instructions == "Original exact instructions."
 
 
+@pytest.mark.postgresql_lock_catalog
 def test_note_preparation_mutation_during_owner_wait_cannot_replace_original_snapshot(database):
     notes = ExplicitNotesRepository()
     with database.transaction() as tx:
@@ -619,6 +623,7 @@ def test_note_preparation_mutation_during_owner_wait_cannot_replace_original_sna
     assert result == record
 
 
+@pytest.mark.postgresql_lock_catalog
 def test_guidance_reference_mutation_during_owner_wait_cannot_adopt_new_selection(database, repo):
     skills = SkillsRepository()
     with database.transaction() as tx:
@@ -808,16 +813,17 @@ def test_expiry_admin_skips_locked_owner_and_next_page_reaches_another_owner(dat
                     tx, limit=1, after=first.next_cursor, cutoff_ms=first.cutoff_ms
                 )
                 assert second.records[0].note_id == b.note_id
-                assert (
-                    notes.expire_explicit_note(
-                        tx,
-                        owner_id=b.owner_id,
-                        note_id=b.note_id,
-                        expected_revision=1,
-                        skip_locked=True,
-                    ).deleted_reason
-                    == "expired"
+                expired = notes.expire_explicit_note(
+                    tx,
+                    owner_id=b.owner_id,
+                    note_id=b.note_id,
+                    expected_revision=1,
+                    skip_locked=True,
                 )
+                if tx.dialect.is_sqlite:
+                    assert expired is None
+                else:
+                    assert expired.deleted_reason == "expired"
         with worker.transaction() as tx:
             assert notes.page_expired_explicit_notes(tx).records[0].note_id == a.note_id
             assert (
@@ -830,6 +836,17 @@ def test_expiry_admin_skips_locked_owner_and_next_page_reaches_another_owner(dat
                 ).deleted_reason
                 == "expired"
             )
+            if tx.dialect.is_sqlite:
+                assert (
+                    notes.expire_explicit_note(
+                        tx,
+                        owner_id=b.owner_id,
+                        note_id=b.note_id,
+                        expected_revision=1,
+                        skip_locked=True,
+                    ).deleted_reason
+                    == "expired"
+                )
 
 
 @pytest.mark.parametrize("reason", ["forgotten", "expired"])
@@ -909,6 +926,7 @@ def test_last_live_note_revision_can_always_forget_or_expire(tx):
         assert result.revision == MAX_REVISION and result.deleted_reason == reason
 
 
+@pytest.mark.postgresql_lock_catalog
 def test_owner_read_lock_serializes_note_page_against_mutation(database):
     from concurrent.futures import ThreadPoolExecutor
     from threading import Event
@@ -1203,12 +1221,12 @@ def incomplete_legacy_fixture(tx, field):
 
 @pytest.mark.parametrize("field", ["legacy_digest", "legacy_updated_at"])
 def test_nullable_legacy_proof_is_rejected_by_actual_constraint(tx, field):
-    from psycopg2.errors import CheckViolation
 
-    with pytest.raises(CheckViolation), tx.savepoint("incomplete_legacy_proof"):
+    with check_violation(), tx.savepoint("incomplete_legacy_proof"):
         incomplete_legacy_fixture(tx, field)
 
 
+@pytest.mark.postgresql_schema_catalog
 def test_corrupt_legacy_timestamp_is_refused_by_public_read(tx):
     import re
 

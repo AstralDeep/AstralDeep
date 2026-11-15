@@ -15,6 +15,7 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 
 from astralplane.contracts import Record, Transaction
+from astralplane.database.dialect import dialect_of
 from astralplane.errors import PlaneError
 from astralplane.repositories.scheduler_models import (
     MAX_SPEND,
@@ -2843,14 +2844,32 @@ def _scan_rows(
     position: tuple[object, str] | None,
     limit: int,
 ) -> list[Record]:
+    sqlite_job_projection = (
+        dialect_of(transaction).is_sqlite and "to_jsonb(job) AS job_record" in query
+    )
+    if sqlite_job_projection:
+        query = query.replace("to_jsonb(job) AS job_record", "job.id AS sqlite_job_id")
     predicate = "" if position is None else f"AND {columns} > (%s, %s)"
     values = parameters if position is None else (*parameters, *position)
     rows = list(transaction.fetch_all(query.format(position=predicate), (*values, limit)))
     if position is not None and len(rows) < limit:
-        rows.extend(transaction.fetch_all(
-            query.format(position=f"AND {columns} <= (%s, %s)"),
-            (*parameters, *position, limit - len(rows)),
-        ))
+        rows.extend(
+            transaction.fetch_all(
+                query.format(position=f"AND {columns} <= (%s, %s)"),
+                (*parameters, *position, limit - len(rows)),
+            )
+        )
+    if sqlite_job_projection:
+        rows = [
+            {
+                **row,
+                "job_record": transaction.fetch_one(
+                    "SELECT * FROM scheduled_job WHERE id=%s AND user_id=%s",
+                    (row["sqlite_job_id"], row["owner_user_id"]),
+                ),
+            }
+            for row in rows
+        ]
     return rows
 
 

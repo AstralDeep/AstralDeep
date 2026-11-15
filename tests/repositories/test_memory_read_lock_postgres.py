@@ -41,6 +41,7 @@ def mutate(repository, tx, source, action):
 
 @pytest.mark.parametrize("action", ("update", "delete", "supersede", "expire"))
 @pytest.mark.parametrize("rollback", (False, True))
+@pytest.mark.postgresql_lock_catalog
 def test_memory_lock_blocks_writers_until_caller_finishes(migrated_clone, action, rollback):
     source = seed(migrated_clone.database)
     repository = PersonalizationRepository()
@@ -88,6 +89,7 @@ def test_memory_lock_blocks_writers_until_caller_finishes(migrated_clone, action
 
 
 @pytest.mark.parametrize("action", ("update", "delete", "supersede", "expire"))
+@pytest.mark.postgresql_lock_catalog
 def test_locked_read_waits_for_writer_and_returns_committed_current_state(migrated_clone, action):
     source = seed(migrated_clone.database)
     repository = PersonalizationRepository()

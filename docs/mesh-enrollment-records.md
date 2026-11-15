@@ -3,7 +3,7 @@
 This repository slice exposes the durable identity/challenge state required by owner-confirmed
 personal-mesh enrollment. It stores only neutral records: possession proof, IAM, QR/network
 handling, and admission policy stay with the host, and private device keys never reach
-AstralPlane. The current Plane schema is `089.020`; the slice's tables arrive in the `089.002`
+AstralPlane. The current Plane schema is `089.022`; the slice's tables arrive in the `089.002`
 edge over six additive tables.
 
 ## Public composition

@@ -12,6 +12,7 @@ from datetime import timedelta
 from typing import Final
 
 from astralplane.contracts import QueryExecutor, Transaction
+from astralplane.database.dialect import dialect_of
 from astralplane.repositories import (
     RepositoryConflictError,
     RepositoryNotFoundError,
@@ -107,7 +108,8 @@ class FrameworkCredentialRepository:
                     "credential_authority_unavailable", code="credential_authority_unavailable"
                 )
             row = transaction.fetch_one(
-                f"""
+                dialect_of(transaction).choose(
+                    postgres=f"""
                 INSERT INTO framework_credential (
                     id, owner_id, name, scopes, token_hash, token_prefix,
                     issuer_kind, issuer_reference, max_admissions,
@@ -118,6 +120,17 @@ class FrameworkCredentialRepository:
                 )
                 RETURNING {self._FIELDS}
                 """,
+                    sqlite=f"""
+                INSERT INTO framework_credential (
+                    id, owner_id, name, scopes, token_hash, token_prefix,
+                    issuer_kind, issuer_reference, max_admissions,
+                    consumed_admissions, created_at, expires_at
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, 0,
+                    clock_timestamp(), astral_add_seconds(clock_timestamp(), %s)
+                ) RETURNING {self._FIELDS}
+                """,
+                ),
                 (
                     credential,
                     owner,

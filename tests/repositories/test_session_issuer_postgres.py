@@ -17,6 +17,7 @@ from astralplane.repositories.history import (
     SessionExecutionObservation,
     SessionRepository,
 )
+from tests.fixtures.database_errors import check_violation
 
 ISSUER = "https://iam.example.test/realms/Astral"
 CLIENT = "astral-mobile"
@@ -211,11 +212,10 @@ def test_new_database_incarnation_can_have_new_issuer_but_old_fence_never_adopts
     ],
 )
 def test_database_constraints_refuse_malformed_pair(tx, issuer, client):
-    import psycopg2
 
     repo = SessionRepository()
     original = repo.put(tx, input_record(tx))
-    with pytest.raises(psycopg2.errors.CheckViolation), tx.savepoint("malformed_issuing_pair"):
+    with check_violation(), tx.savepoint("malformed_issuing_pair"):
         tx.execute(
             "UPDATE web_session SET issuing_issuer=%s, issuing_client_id=%s WHERE sid=%s",
             (issuer, client, original.session_id),
@@ -265,13 +265,12 @@ def test_deferred_revocation_keeps_exact_identity_through_reads_and_attempts(tx,
     ],
 )
 def test_queue_database_constraints_refuse_malformed_bound_identity(tx, issuer, client):
-    import psycopg2
 
     from astralplane.repositories.revocations import RevocationQueueRepository
 
     queue = RevocationQueueRepository()
     item = queue.enqueue(tx, owner_id="owner", refresh_token_ciphertext="cipher", enqueued_at=100)
-    with pytest.raises(psycopg2.errors.CheckViolation), tx.savepoint("malformed_queue_issuer"):
+    with check_violation(), tx.savepoint("malformed_queue_issuer"):
         tx.execute(
             "UPDATE auth_revocation_queue SET issuing_issuer=%s, client_id=%s WHERE id=%s",
             (issuer, client, item.queue_id),
@@ -306,20 +305,33 @@ def test_bound_restored_session_retirement_preserves_queue_and_denies_old_observ
             client_id=CLIENT,
             issuing_issuer=ISSUER,
         )
-        location = tx.fetch_one("SELECT current_database() AS db, current_schema() AS schema")
+        if tx.dialect.is_sqlite:
+            from astralplane.database.sqlite import sqlite_path_from_url
+            from astralplane.database.sqlite_migrations import SQLITE_MIGRATION_DIGEST
+
+            database_url = os.environ["ASTRALPLANE_TEST_POSTGRES_DSN"]
+            selected = dict(
+                database_url=database_url,
+                expected_database=str(sqlite_path_from_url(database_url).resolve()),
+                expected_schema="main",
+                expected_schema_revision=SCHEMA_REVISION,
+                expected_migration_digest=SQLITE_MIGRATION_DIGEST,
+            )
+        else:
+            location = tx.fetch_one("SELECT current_database() AS db, current_schema() AS schema")
+            selected = dict(
+                database_url=make_dsn(
+                    os.environ["ASTRALPLANE_TEST_POSTGRES_DSN"],
+                    options=f"-csearch_path={location['schema']},pg_catalog",
+                ),
+                expected_database=location["db"],
+                expected_schema=location["schema"],
+                expected_schema_revision=SCHEMA_REVISION,
+                expected_migration_digest=MIGRATION_DIGEST,
+            )
         snapshot = dict(
             tx.fetch_one("SELECT * FROM web_session WHERE sid=%s", (original.session_id,))
         )
-    selected = dict(
-        database_url=make_dsn(
-            os.environ["ASTRALPLANE_TEST_POSTGRES_DSN"],
-            options=f"-csearch_path={location['schema']},pg_catalog",
-        ),
-        expected_database=location["db"],
-        expected_schema=location["schema"],
-        expected_schema_revision=SCHEMA_REVISION,
-        expected_migration_digest=MIGRATION_DIGEST,
-    )
     assert retire_restored_sessions(**selected).retired_sessions == 1
     with database.transaction() as tx:
         assert queue.pending_for_administration(tx) == (item,)

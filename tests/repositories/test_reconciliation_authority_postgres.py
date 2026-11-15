@@ -426,6 +426,7 @@ def test_preparation_audit_and_settlement_commit_or_rollback_together(database, 
 
 
 @pytest.mark.parametrize("blocker", ["owner", "session", "assignment", "action", "audit", "logout"])
+@pytest.mark.postgresql_lock_catalog
 def test_real_lock_wait_crosses_observation_expiry_but_charge_still_commits(
     database, repo, blocker
 ):
@@ -518,6 +519,7 @@ def test_caught_storage_failure_rolls_back_final_settlement_savepoint(tx, repo):
     assert repo.reconcile_action(tx, **args).state == "succeeded"
 
 
+@pytest.mark.postgresql_lock_catalog
 def test_final_hold_inventory_delay_cannot_extend_original_observation(tx, repo):
     values, record, action, decision = uncertain(tx, repo)
     observation = replace(values[2], valid_until=values[2].started_at + timedelta(seconds=0.2))
@@ -549,6 +551,7 @@ def test_final_hold_inventory_delay_cannot_extend_original_observation(tx, repo)
     assert after.next_wake_at is None and after.wake_generation == record.wake_generation
 
 
+@pytest.mark.postgresql_lock_catalog
 def test_sorted_action_locks_do_not_deadlock_with_an_existing_result_reader(database, repo):
     from unittest.mock import patch
     from uuid import UUID
@@ -602,6 +605,7 @@ def test_sorted_action_locks_do_not_deadlock_with_an_existing_result_reader(data
         assert future.result(timeout=5).state == "succeeded"
 
 
+@pytest.mark.postgresql_lock_catalog
 def test_production_sql_wait_cap_refuses_without_partial_writes_and_retry_settles(database, repo):
     import psycopg2
 

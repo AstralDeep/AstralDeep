@@ -17,6 +17,7 @@ from enum import StrEnum
 from typing import Any
 
 from astralplane.contracts import Transaction
+from astralplane.database.dialect import dialect_of
 from astralplane.repositories import (
     RepositoryConflictError,
     RepositoryDataError,
@@ -826,7 +827,7 @@ class WorkAdmissionRepository:
         cursor = _StatementSession(transaction)
         for config in ordered:
             cursor.execute(
-                    """
+                """
                     INSERT INTO operation_admission_class (
                         class_name, parent_class_name, active_limit, queue_limit,
                         max_wait_ms, config_revision, updated_at
@@ -839,20 +840,30 @@ class WorkAdmissionRepository:
                         config_revision = EXCLUDED.config_revision,
                         updated_at = CURRENT_TIMESTAMP
                     """,
+                (
+                    config.class_name.value,
                     (
-                        config.class_name.value,
-                        (
-                            config.parent_class_name.value
-                            if config.parent_class_name is not None
-                            else None
-                        ),
-                        config.active_limit,
-                        config.queue_limit,
-                        config.max_wait_ms or 0,
-                        config.config_revision,
+                        config.parent_class_name.value
+                        if config.parent_class_name is not None
+                        else None
                     ),
+                    config.active_limit,
+                    config.queue_limit,
+                    config.max_wait_ms or 0,
+                    config.config_revision,
+                ),
+            )
+            if dialect_of(transaction).is_sqlite:
+                cursor.execute(
+                    "WITH RECURSIVE slots(value) AS ("
+                    "SELECT 1 WHERE 1<=%s UNION ALL SELECT value+1 FROM slots WHERE value<%s) "
+                    "INSERT INTO operation_admission_slot(class_name,slot_number) "
+                    "SELECT %s,value FROM slots WHERE true "
+                    "ON CONFLICT(class_name,slot_number) DO NOTHING",
+                    (config.active_limit, config.active_limit, config.class_name.value),
                 )
-            cursor.execute(
+            else:
+                cursor.execute(
                     """
                     INSERT INTO operation_admission_slot (class_name, slot_number)
                     SELECT %s, generate_series(1, %s)
@@ -861,13 +872,13 @@ class WorkAdmissionRepository:
                     (config.class_name.value, config.active_limit),
                 )
             cursor.execute(
-                    """
+                """
                     DELETE FROM operation_admission_slot
                     WHERE class_name = %s AND slot_number > %s
                       AND operation_id IS NULL
                     """,
-                    (config.class_name.value, config.active_limit),
-                )
+                (config.class_name.value, config.active_limit),
+            )
 
     def _chain(self, class_name: AdmissionClass) -> tuple[AdmissionClass, ...]:
         with self._configuration_lock:

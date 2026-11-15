@@ -6,7 +6,6 @@ and binding never adopts state after a racing retirement.
 from dataclasses import asdict, replace
 
 import pytest
-from psycopg2.errors import CheckViolation
 from test_assignments_postgres import (
     action,
     control,
@@ -38,6 +37,7 @@ from astralplane.repositories.selected_input_models import (
     SelectedAgentReference,
     SelectedInputEnvelope,
 )
+from tests.fixtures.database_errors import check_violation
 
 
 def selected_agent(tx, **changes):
@@ -275,6 +275,7 @@ def test_final_clock_after_completion_uses_current_counters_without_execution_fe
         current(repo, tx, stopped, expected)
 
 
+@pytest.mark.postgresql_lock_catalog
 def test_envelope_is_detached_before_real_owner_lock_wait(database, repo):
     with database.transaction() as tx:
         tx.execute("DELETE FROM assignment_operation_receipt")
@@ -299,7 +300,7 @@ def test_envelope_and_agent_identity_are_database_immutable(tx, repo):
         "UPDATE assignment_guidance_selection SET selected_input=NULL WHERE assignment_id=%s",
         "UPDATE assignment_selected_agent SET agent_id='different' WHERE assignment_id=%s",
     ):
-        with pytest.raises(CheckViolation), tx.savepoint("immutable"):
+        with check_violation(), tx.savepoint("immutable"):
             tx.execute(query, (record.assignment_id,))
 
 
@@ -328,6 +329,7 @@ def test_initial_invalid_agent_refuses_without_any_selection_rows(tx, repo, kind
     assert snapshot(repo, tx, record) is None
 
 
+@pytest.mark.postgresql_lock_catalog
 def test_declarative_command_detaches_before_owner_wait(database):
     cmd = declaration(owner_id="snapshot-owner", agent_id="target-" + uid())
     original = cmd.agent_id
@@ -372,6 +374,7 @@ def test_agent_invalidation_failure_rolls_back_all_assignment_and_agent_changes(
 
 
 @pytest.mark.parametrize("boundary", ["assignment", "action"])
+@pytest.mark.postgresql_lock_catalog
 def test_declaration_locks_work_before_agent_owner_with_real_held_boundary(
     database, repo, boundary
 ):
@@ -429,6 +432,7 @@ def test_declaration_locks_work_before_agent_owner_with_real_held_boundary(
         assert after.lifecycle == "paused"
 
 
+@pytest.mark.postgresql_lock_catalog
 def test_bind_racing_agent_retirement_never_adopts_after_owner_wait(database, repo):
     from concurrent.futures import ThreadPoolExecutor
     from threading import Event
@@ -472,6 +476,7 @@ def test_bind_racing_agent_retirement_never_adopts_after_owner_wait(database, re
         assert snapshot(repo, tx, record) is None
 
 
+@pytest.mark.postgresql_lock_catalog
 def test_expected_snapshot_is_detached_before_owner_wait(database, repo):
     with database.transaction() as tx:
         tx.execute("DELETE FROM assignment_operation_receipt")

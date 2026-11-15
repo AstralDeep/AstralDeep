@@ -20,6 +20,20 @@ from tests.fixtures.migrated_template import (
 from tests.fixtures.pre_split.loader import TEST_DATABASE_ENV
 
 
+@pytest.fixture(autouse=True)
+def backend_specific_assertions(request):
+    if (
+        os.environ.get(TEST_DATABASE_ENV, "").startswith("sqlite:")
+        and request.node.get_closest_marker("postgresql_schema_catalog") is not None
+    ):
+        pytest.skip("PostgreSQL schema/catalog assertion; SQLite has a fresh guarded baseline")
+    if (
+        os.environ.get(TEST_DATABASE_ENV, "").startswith("sqlite:")
+        and request.node.get_closest_marker("postgresql_lock_catalog") is not None
+    ):
+        pytest.skip("PostgreSQL wait catalogs; SQLite locking is verified in test_sqlite.py")
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _session_lineage_templates() -> Iterator[LineageTemplates | None]:
     dsn = os.environ.get(TEST_DATABASE_ENV)

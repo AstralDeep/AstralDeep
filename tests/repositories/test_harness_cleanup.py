@@ -88,3 +88,47 @@ def test_cleanup_rejects_arbitrary_profile_and_invalid_command_metadata() -> Non
             profile=HarnessCleanupProfile.VERIFICATION,
             run_id="run-1",
         )
+
+
+@pytest.mark.parametrize("profile", tuple(HarnessCleanupProfile))
+def test_canonical_issuer_scope_preserves_fixed_manifest_and_literal_boundary(profile):
+    count = 9 if profile is HarnessCleanupProfile.VERIFICATION else 10
+    transaction = ScriptedTransaction(execute=[Result(rowcount=1) for _ in range(count)])
+    report = HarnessCleanupRepository().purge_run(
+        transaction, profile=profile, run_id="run_1", owner_issuer_hash="0123456789abcdef"
+    )
+    namespace = "__verif__run_1_" if count == 9 else "__bench__run_1__"
+    assert report.namespace_prefix == "oidc.0123456789abcdef." + namespace
+    expected = "oidc.0123456789abcdef." + namespace.replace("_", r"\_") + "%"
+    assert all(parameters == (expected,) for _, _, parameters in transaction.calls)
+    assert all("audit" not in statement for _, statement, _ in transaction.calls)
+    assert report.total_deleted == count
+
+
+@pytest.mark.parametrize("profile", tuple(HarnessCleanupProfile))
+@pytest.mark.parametrize(
+    "issuer_hash",
+    [
+        "",
+        "0" * 15,
+        "0" * 17,
+        "A" * 16,
+        "g" * 16,
+        "0" * 15 + "_",
+        "0" * 15 + "%",
+        " " * 16,
+        1,
+        False,
+        [],
+    ],
+)
+def test_invalid_issuer_scope_is_rejected_before_sql(profile, issuer_hash):
+    transaction = ScriptedTransaction()
+    with pytest.raises(RepositoryValidationError, match="issuer hash"):
+        HarnessCleanupRepository().purge_run(
+            transaction,
+            profile=profile,
+            run_id="run_1",
+            owner_issuer_hash=issuer_hash,
+        )
+    assert transaction.calls == []

@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from astralplane.contracts import QueryExecutor, Transaction
+from astralplane.database.dialect import dialect_of
 from astralplane.repositories import (
     RepositoryDataError,
     RepositoryNotFoundError,
@@ -191,6 +192,21 @@ class RevocationQueueRepository:
                 LIMIT %s
             ) AS page ON TRUE
             ORDER BY page.enqueued_at, page.id
+            """
+            if not dialect_of(query).is_sqlite
+            else f"""
+            WITH cycle AS (
+                SELECT COALESCE(%s, (
+                    SELECT id FROM auth_revocation_queue ORDER BY id DESC LIMIT 1
+                )) AS ceiling
+            ), page AS (
+                SELECT {self._FIELDS} FROM auth_revocation_queue CROSS JOIN cycle
+                WHERE id<=cycle.ceiling
+                  AND (%s IS NULL OR (enqueued_at,id)>(%s,%s))
+                ORDER BY enqueued_at,id LIMIT %s
+            )
+            SELECT page.*,cycle.ceiling AS cycle_ceiling FROM cycle
+            LEFT JOIN page ON true ORDER BY page.enqueued_at,page.id
             """,
             (
                 ceiling,

@@ -13,19 +13,11 @@ from decimal import Decimal
 from types import MappingProxyType
 from typing import Any, Final, NoReturn
 
-from astralplane.errors import PlaneError
+from astralplane.errors import RepositoryConflictError, RepositoryError
 
 CANONICAL_JSON_MAX_DEPTH: Final = 128
 CANONICAL_JSON_MAX_NODES: Final = 4096
 CANONICAL_JSON_MAX_BYTES: Final = 1_048_576
-
-
-class RepositoryError(PlaneError):
-    default_code = "repository_error"
-
-
-class RepositoryConflictError(RepositoryError):
-    default_code = "repository_conflict"
 
 
 class RepositoryDataError(RepositoryError):

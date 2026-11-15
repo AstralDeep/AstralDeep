@@ -87,8 +87,12 @@ def test_populated_upgrade_repeat_and_old_reader_denial(predecessor):
             created_at=11,
         )
         before = retained_rows(tx, tables)
-    report = runner(database).run(expected_revision="089.020")
-    assert report.applied_steps == ("astralplane-089-chat-read-receipts",)
+    report = runner(database).run(expected_revision="089.022")
+    assert report.applied_steps == (
+        "astralplane-089-chat-read-receipts",
+        "astralplane-089-mesh-event-store",
+        "astralplane-089-run-and-learning-ledger",
+    )
     with database.transaction() as tx:
         assert retained_rows(tx, tables) == before
         assert tx.fetch_one("SELECT count(*) AS n FROM chat_read_receipt")["n"] == 0
@@ -132,7 +136,7 @@ def test_populated_upgrade_repeat_and_old_reader_denial(predecessor):
         assert (
             repo.get(tx, owner_id="receipt-upgrade-owner", chat_id="receipt-upgrade-chat") is None
         )
-    assert runner(database).run(expected_revision="089.020").applied_steps == ()
+    assert runner(database).run(expected_revision="089.022").applied_steps == ()
     with pytest.raises(SchemaRevisionError):
         prior_runner(database).run(expected_revision="089.019")
 
@@ -153,13 +157,15 @@ def test_interrupted_edge_rolls_back_then_normal_runner_recovers(predecessor):
         predecessor_schema_verifier_checksum=m.PREDECESSOR_SCHEMA_VERIFIER_CHECKSUM,
     )
     with pytest.raises(RuntimeError, match="synthetic interruption"):
-        runner(predecessor.database, registry=registry).run(expected_revision="089.020")
+        runner(predecessor.database, registry=registry).run(expected_revision="089.022")
     with predecessor.database.transaction() as tx:
         assert (
             tx.fetch_one("SELECT to_regclass('chat_read_receipt') AS relation")["relation"] is None
         )
-    assert runner(predecessor.database).run(expected_revision="089.020").applied_steps == (
+    assert runner(predecessor.database).run(expected_revision="089.022").applied_steps == (
         "astralplane-089-chat-read-receipts",
+        "astralplane-089-mesh-event-store",
+        "astralplane-089-run-and-learning-ledger",
     )
 
 
@@ -167,10 +173,10 @@ def test_foreign_namesake_and_current_structure_damage_fail_closed(predecessor, 
     with predecessor.database.transaction() as tx:
         tx.execute("CREATE TABLE chat_read_receipt(wrong TEXT)")
     with pytest.raises(SchemaRevisionError):
-        runner(predecessor.database).run(expected_revision="089.020")
+        runner(predecessor.database).run(expected_revision="089.022")
     with migrated_clone.database.transaction() as tx:
         tx.execute(
             "ALTER TABLE chat_read_receipt DROP CONSTRAINT chat_read_receipt_chat_identity"
         )
     with pytest.raises(SchemaRevisionError):
-        runner(migrated_clone.database).run(expected_revision="089.020")
+        runner(migrated_clone.database).run(expected_revision="089.022")

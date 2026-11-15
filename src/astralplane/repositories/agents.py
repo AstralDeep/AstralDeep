@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from astralplane.contracts import QueryExecutor, Transaction
+from astralplane.database.dialect import dialect_of
 from astralplane.repositories import (
     RepositoryConflictError,
     RepositoryDataError,
@@ -1514,6 +1515,15 @@ class AgentRepository:
             ) AS latest
             ORDER BY latest.agent_id
             LIMIT %s
+            """
+            if not dialect_of(transaction).is_sqlite
+            else """
+            SELECT * FROM (
+                SELECT *,row_number() OVER (
+                    PARTITION BY agent_id
+                    ORDER BY lifecycle_generation DESC,runtime_instance_id DESC
+                ) AS rank FROM agent_runtime_instance WHERE owner_user_id=%s
+            ) AS latest WHERE rank=1 ORDER BY agent_id LIMIT %s
             """,
             (owner_id, limit),
         )

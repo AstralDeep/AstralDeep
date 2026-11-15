@@ -9,16 +9,20 @@ import hashlib
 import json
 import threading
 import uuid
+from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
 
-from astralplane.database.pool import ConnectionPool
 from astralplane.database.transaction import PlaneDatabase
 from astralplane.immutable_bundle_store import FinalizedBundle, canonical_bundle_digest
-from astralplane.repositories import RepositoryConflictError, RepositoryValidationError
+from astralplane.repositories import (
+    RepositoryConflictError,
+    RepositoryNotFoundError,
+    RepositoryValidationError,
+)
 from astralplane.repositories.agents import AgentRepository
 from astralplane.repositories.drafts import (
     DraftAgentRecord,
@@ -45,7 +49,7 @@ from astralplane.repositories.work_admission import (
     WorkAdmissionRepository,
 )
 from tests.fixtures.migrated_template import MigratedDatabase
-from tests.fixtures.pre_split.loader import connect_fixture_database
+from tests.integration.test_lifecycle_acceptance import concurrent_database
 
 OWNER = "owner-generated-publication-integration"
 AGENT_ID = "generated-publication-agent"
@@ -68,26 +72,6 @@ RESULT_METADATA = GeneratedAgentPublicationResultMetadata(
 )
 
 
-class _DedicatedDriverPool:
-    def __init__(self, connection: Any) -> None:
-        self.connection = connection
-        self.borrowed = False
-
-    def getconn(self) -> Any:
-        if self.borrowed:
-            raise RuntimeError("integration connection is already borrowed")
-        self.borrowed = True
-        return self.connection
-
-    def putconn(self, connection: Any, *, close: bool = False) -> None:
-        if connection is not self.connection or not self.borrowed or close:
-            raise RuntimeError("integration connection was returned in an invalid state")
-        self.borrowed = False
-
-    def closeall(self) -> None:
-        return None
-
-
 @dataclass(slots=True)
 class _PublicationFixture:
     database_url: str
@@ -98,6 +82,10 @@ class _PublicationFixture:
     drafts: DraftAgentRepository
     work: WorkAdmissionRepository
     publications: GeneratedAgentPublicationRepository
+
+    @property
+    def dsn(self):
+        return self.database_url
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,21 +106,6 @@ class _SeededPublication:
     prepared: _PreparedPublication
     publication: DraftPublicationRecord
     attempt: ExecutionFence
-
-
-def _quoted_schema(schema: str) -> str:
-    assert schema.startswith("astralplane_fixture_")
-    assert schema.removeprefix("astralplane_fixture_").isalnum()
-    return f'"{schema}"'
-
-
-def _configure_search_path(connection: Any, schema: str) -> None:
-    cursor = connection.cursor()
-    try:
-        cursor.execute(f"SET search_path TO {_quoted_schema(schema)}, pg_catalog")
-        connection.commit()
-    finally:
-        cursor.close()
 
 
 @pytest.fixture
@@ -777,9 +750,8 @@ def test_two_postgres_reconcilers_converge_on_one_designated_child_attempt(
         )
 
     recovery = _attempt(fixture, child_binding)
-    second_connection = connect_fixture_database(fixture.database_url)
-    _configure_search_path(second_connection, fixture.schema)
-    second_database = PlaneDatabase(ConnectionPool(_DedicatedDriverPool(second_connection)))
+    second_scope = ExitStack()
+    second_database = second_scope.enter_context(concurrent_database(fixture))
     second_repository = GeneratedAgentPublicationRepository()
     barrier = threading.Barrier(2)
     successes: list[DraftPublicationRecord] = []
@@ -838,4 +810,109 @@ def test_two_postgres_reconcilers_converge_on_one_designated_child_attempt(
             )
         assert stored == winner
     finally:
-        second_connection.close()
+        second_scope.close()
+
+
+def test_publication_failure_is_atomic_replayable_and_preserves_owner_fences(publication_postgres):
+    fixture = publication_postgres
+    seeded = _seed(fixture)
+    with fixture.database.transaction() as tx:
+        staged = fixture.publications.mark_staged(
+            tx, expected=seeded.publication, attempt=seeded.attempt
+        )
+        failed = fixture.publications.fail(
+            tx,
+            expected=staged,
+            attempt=seeded.attempt,
+            failure_code="validation_failed",
+            safe_error_message="validation failed",
+        )
+        assert failed.state == "failed"
+        assert (
+            fixture.publications.fail(
+                tx,
+                expected=staged,
+                attempt=seeded.attempt,
+                failure_code="validation_failed",
+                safe_error_message="validation failed",
+            )
+            == failed
+        )
+        draft = fixture.drafts.get_draft(tx, owner_id=OWNER, draft_id=seeded.prepared.draft_id)
+        revision = fixture.agents.get_revision(
+            tx,
+            owner_id=OWNER,
+            agent_id=AGENT_ID,
+            revision_id=seeded.prepared.revision_id,
+        )
+        assert draft.status == "error" and draft.generation_claim_id is None
+        assert revision.state == "failed" and revision.failure_code == "validation_failed"
+        with pytest.raises(RepositoryNotFoundError):
+            fixture.publications.fail(
+                tx,
+                expected=replace(staged, owner_id="another-owner"),
+                attempt=seeded.attempt,
+                failure_code="validation_failed",
+                safe_error_message="validation failed",
+            )
+
+
+@pytest.mark.parametrize("fault", ["abort_publication", "ignore_draft", "delete_publication"])
+def test_sqlite_transition_failures_restore_draft_and_publication_inside_caller(
+    publication_postgres,
+    fault,
+):
+    import sqlite3
+
+    fixture = publication_postgres
+    with fixture.database.transaction() as tx:
+        if not tx.dialect.is_sqlite:
+            pytest.skip("SQLite native trigger fault; PostgreSQL CTE atomicity has its own tests")
+    seeded = _seed(fixture)
+    with fixture.database.transaction() as tx:
+        staged = fixture.publications.mark_staged(
+            tx, expected=seeded.publication, attempt=seeded.attempt
+        )
+    before = _load_draft(fixture, seeded.prepared)
+    with fixture.database.transaction() as tx:
+        if fault == "abort_publication":
+            tx.execute(
+                "CREATE TRIGGER reject_publication BEFORE UPDATE ON draft_artifact_publication "
+                "BEGIN SELECT RAISE(ABORT,'publication rejected'); END"
+            )
+            expected_error = sqlite3.IntegrityError
+        elif fault == "ignore_draft":
+            tx.execute(
+                "CREATE TRIGGER reject_draft BEFORE UPDATE ON draft_agents "
+                "BEGIN SELECT RAISE(IGNORE); END"
+            )
+            expected_error = RepositoryConflictError
+        else:
+            tx.execute(
+                "CREATE TRIGGER remove_publication AFTER UPDATE ON draft_agents "
+                "BEGIN DELETE FROM draft_artifact_publication; END"
+            )
+            expected_error = RepositoryConflictError
+        with pytest.raises(expected_error):
+            fixture.publications.mark_validated(
+                tx,
+                expected=staged,
+                attempt=seeded.attempt,
+                artifact_digest=ARTIFACT_DIGEST,
+                manifest_digest=seeded.prepared.bundle.manifest_sha256,
+                generation_result=RESULT_METADATA,
+            )
+        assert (
+            fixture.drafts.get_draft(tx, owner_id=OWNER, draft_id=seeded.prepared.draft_id)
+            == before
+        )
+        assert (
+            fixture.publications.get_by_target_revision(
+                tx,
+                owner_id=OWNER,
+                target_agent_id=AGENT_ID,
+                target_revision_id=seeded.prepared.revision_id,
+            )
+            == staged
+        )
+        assert tx.fetch_one("SELECT 1 AS usable")["usable"] == 1

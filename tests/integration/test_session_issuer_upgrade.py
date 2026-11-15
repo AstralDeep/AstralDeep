@@ -172,6 +172,8 @@ def test_populated_upgrade_preserves_exact_incarnations_and_issued_liabilities(p
         "astralplane-089-computer-use",
         "astralplane-089-verification-credentials",
         "astralplane-089-chat-read-receipts",
+        "astralplane-089-mesh-event-store",
+        "astralplane-089-run-and-learning-ledger",
     )
     with db.transaction() as tx:
         after = retained_rows(tx, tables)

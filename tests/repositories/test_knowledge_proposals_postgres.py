@@ -128,7 +128,16 @@ def test_delimiter_like_identifiers_keep_independent_supersession_pairs(migrated
 
         with migrated_clone.database.transaction() as tx:
             repo.create_for_administration(tx, first)
-            assert workers.submit(create_other).result(timeout=30) == other
+            if tx.dialect.is_sqlite:
+                from astralplane.database.sqlite import SQLiteLockTimeoutError
+
+                with pytest.raises(SQLiteLockTimeoutError):
+                    workers.submit(create_other).result(timeout=30)
+            else:
+                assert workers.submit(create_other).result(timeout=30) == other
             repo.create_for_administration(tx, replace(first, proposal_id=IDS[2]))
+        with migrated_clone.database.transaction() as tx:
+            if tx.dialect.is_sqlite:
+                assert repo.create_for_administration(tx, other) == other
             assert repo.get_for_administration(tx, proposal_id=IDS[1]) == other
             assert repo.pending_count_for_administration(tx) == 2

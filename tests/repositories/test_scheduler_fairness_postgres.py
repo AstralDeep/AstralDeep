@@ -312,6 +312,7 @@ def test_invalid_scan_inputs_are_refused_before_database_access(catalog_database
 
 
 @pytest.mark.parametrize("occurrences", [False, True])
+@pytest.mark.postgresql_lock_catalog
 def test_locked_rows_and_same_cursor_workers_do_not_duplicate_claims(catalog_database, occurrences):
     import os
 
