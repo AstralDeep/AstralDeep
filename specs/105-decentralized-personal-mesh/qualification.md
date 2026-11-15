@@ -1,6 +1,6 @@
 # Spec 105 qualification map
 
-Updated: 2026-11-15. The feature PRs are merged and the current default branches pass hosted CI. This map distinguishes automated qualification, owner-approved acceptance, diagnostic live observations and publication. The remaining institution-loop code obligation and final release are in progress. Live device/environment demonstrations are optional under [the acceptance clarification](clarification-code-qualification.md); physical phone automation remains unauthorized. Earlier source checkpoints are retained below as history, with their original identities and limits.
+Updated: 2026-11-15. The feature PRs are merged and the current default branches pass hosted CI. This map distinguishes automated qualification, owner-approved acceptance, diagnostic live observations and publication. The institution-loop code obligation is implemented and individually qualified; final combined checks, pack regeneration and release are in progress. Live device/environment demonstrations are optional under [the acceptance clarification](clarification-code-qualification.md); physical phone automation remains unauthorized. Earlier source checkpoints are retained below as history, with their original identities and limits.
 
 ## Voice qualification amendment
 
@@ -15,6 +15,14 @@ The owner made all live device/environment demonstrations optional and authorize
 Deep main e541580d passes all 18 hosted CI jobs, including all four backend groups and immutable changed-Python coverage. Kernel ed5 and Vessel 7d CI pass; Projection a8b passes hosted Python/Windows/browser qualification; its NodePack-only pin is also tested by the real local pack. iOS unit/UI checks pass 1,158 with four skips; AstralCore passes 636 with one skip. Mac records 1,711 passes, 23 failures and two skips; five representative AX/window failures reproduce on the byte-verified earlier passing source. A scoped diagnostic returns an empty AX window list on both threads with AXIsProcessTrusted=false. Those permission-dependent window runs remain failed environment diagnostics, not passing tests or a reason to grant permissions automatically.
 
 The matrix below maps each criterion to its required automated evidence or the explicit owner acceptance of code-based model qualification. Code acceptance does not assert physical iPhone memory/airplane-mode behavior, actual cloud adaptive success, APNs deployment/delivery or App Store publication. Final release and website publication still require their normal exact-candidate workflows.
+
+## Institution production-loop closure, 2026-11-15
+
+The integrated runtime now routes institution and personal signed requests through the same Kernel engine. Current institution policy is rechecked within the exact signed admission and before protected effects; ordinary non-mesh machine authority keeps its prior behavior. The normal owner-mediated HTTP attestation flow fixes the previously unreachable self-child permission state, with per-owner issuer ordering and no new trust source. Provider credentials stay in each owner's sealed Kernel book.
+
+Individual real-binding tests pass all eight effect variants and a two-owner test with distinct provider headers. The API passes 43 unit tests; combined issuer/API tests pass 62; two actual HTTP/Kernel tests pass, including a second configured issuer. The calls/chat unit suite passes 117 in the immutable Python3.11 test image. The earlier 299-pass adjacent run exposed an obsolete pre-claim assertion; it now requires one claim and zero runner calls on authority denial. The final integrated run and changed-line report are recorded outside the source freeze.
+
+The durable effect claim is per receiving Kernel store. This does not claim global exactly-once execution across independent offline receivers. Unknown effects retain their uncertainty and are not retried automatically.
 
 ## Default-branch continuation, 2026-11-15
 
@@ -33,7 +41,7 @@ Final iOS unit plus UI qualification on the Apple-identical Projection 589c2f1 s
 
 A further completed Rust debug cache was removed after final artifacts and green Kernel CI were preserved and active users checked. Measured available space increased another 61.72 GiB, about 80.47 GiB across the recorded cleanup checkpoints. Current release artifacts, models, stores, evidence and the four active unrelated containers were preserved.
 
-Before the owner acceptance amendment, this checkpoint had 49 automated criteria and one owner-approved criterion. Those counts and live-gated gaps are superseded by the current matrix: 54 automated, three owner-approved and one partial criterion (3.11). The production institution-loop code obligation remains required; live sampling and device demonstrations are optional diagnostics.
+Before the owner acceptance amendment, this checkpoint had 49 automated criteria and one owner-approved criterion. Those counts and live-gated gaps are superseded by the current matrix: 55 automated and three owner-approved criteria. The production institution-loop obligation is implemented and individually tested; final combined code gates and publication remain distinct. Live sampling and device demonstrations are optional diagnostics.
 
 ## Historical local continuation
 
@@ -130,7 +138,7 @@ Phase 0 checks against real systems: the Keycloak sign-in with the kernel nonce 
 | 3.8 | Untrusted content causing an outward effect prompts, across a fixed corpus of recorded attacks | Proven by automated test | Kernel `prompt_injection_qualification.rs::recorded_prompt_attacks_cannot_send_an_outside_effect_without_consent` replays 32 recorded cases through real history, scripted provider, consent and dispatch gates. No outward effect executes after denial. This is deterministic corpus coverage, not the live adaptive measurement in 3.10. |
 | 3.9 | Untrusted content remembered in one turn still marks a later turn that loads it | Proven by automated test | Kernel `c015c8a` incorporates test-only `e2db832b68d4a0b016b0f2272c2159ace01ac474`; `runs_service.rs::persisted_untrusted_compaction_notes_keep_the_consent_boundary_after_reopen`, uses the real `LogRunStore`, model-driven compaction, a closed/reopened encrypted log and later prompts containing persisted Untrusted notes with the original tool text absent. The later outside effect requires `untrusted_influence` consent; denial dispatches nothing. All 17 runs-service tests pass. This qualifies persisted compaction notes, not an unspecified general memory repository. |
 | 3.10 | Adaptive defense code qualification; live rates diagnostic | Owner approved | Owner 2026-11-15 accepts code qualification without new live sampling. Shared gate/flow/budget/consent and protected dispatch/replay tests remain required and pass. Earlier local 0/54 with one allowed control and cloud 0/3 are retained only as bounded observations; the cloud sample still does not meet its original live minimum. No qualifying cloud rate is claimed. |
-| 3.11 | Production mesh-loop conformance and protected executor equivalence | Partly covered | Kernel pure/composed fixtures and real paired Python executor-boundary tests pass, with changed runtime coverage 127/139=91.37%. The current institution Python mesh runner remains production; its safe Kernel adoption and two-owner allowed/denied/replay/uncertain tests are being implemented. No full separate 32-case Python run is claimed. The owner live-test waiver does not waive this automated obligation. |
+| 3.11 | Production mesh-loop conformance and protected executor equivalence | Proven by automated test | Both production signed-mesh entry points use Kernel, with sealed per-owner providers. The unchanged shared fixture passes 32 pure states and 30 reachable Kernel host cases with its two documented skips. Actual paired Python executor checks cover exact requests, current permission, stop/revoke, replay/concurrency and uncertain effects. Institution tests add distinct owner credentials/chats and all eight allowed/denied/audit/unknown variants; real HTTP/Kernel tests verify owner/nonce binding and the second accepted issuer. No separate 32-case Python model-loop run is claimed. |
 
 ## Phase 4
 
@@ -181,8 +189,8 @@ Phase 0 checks against real systems: the Keycloak sign-in with the kernel nonce 
 
 Total 58 criteria. Status describes the evidence for the criterion, not release authorization.
 
-- Proven by automated test: 54
-- Partly covered: 1
+- Proven by automated test: 55
+- Partly covered: 0
 - Owner approved: 3
 - Live only: 0
 

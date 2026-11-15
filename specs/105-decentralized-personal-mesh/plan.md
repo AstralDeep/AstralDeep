@@ -8,7 +8,7 @@ Read [spec.md](spec.md) first. Section numbers below refer to it.
 
 ## Current qualification checkpoint
 
-The 2026-11-15 code-qualification amendment supersedes the earlier live gates in historical checkpoints below; automated production-loop conformance remains required. Deep main e541580d passes all 18 CI jobs, including four backend groups and changed Python coverage. The next release-preparation candidate must retain its own green code checks. Live results remain diagnostic; release and website publication are not yet claimed.
+The 2026-11-15 code-qualification amendment supersedes the earlier live gates in historical checkpoints below; automated production-loop conformance remains required. Deep main e541580d passes all 18 CI jobs, including four backend groups and changed Python coverage. The next release-preparation candidate must retain its own green code checks. Live results remain diagnostic. Website architecture/discovery is deployed at efd9097 with green site CI/Pages; the new product release remains pending.
 
 ### Historical checkpoints
 
@@ -216,7 +216,7 @@ it.
 | Kernel | The turn engine with a step journal (section 10.1). The provider layer with the clocks, retries and fallback chain of section 10.2 and the argument pipeline of 10.3. The gate stack of section 9.4, tested against vectors derived from `_run_project_bound_gate_stack`. Tickets (8.2). Flow labels and the quarantined reader (9.2). The LETS holder and verifier. An MCP client for remote servers. An adapter interface for on-device models. |
 | LETS | Period budgets derived from a signed policy and the roster. The device profile. |
 | AstralProjection | Host-drawn consent signed by the presence key (Projection #138). On-device model adapters: Apple's Foundation Models, Android's on-device model where present, a local runtime on Windows. Credentials in the device keystore, synced as sealed items. Phone-safe local tools. |
-| AstralDeep | The node verifies tickets from peers and runs its own gates. The Python loop is run against the kernel's conformance vectors. Receipt verification for Mac host effects (Deep #560). |
+| AstralDeep | The node verifies tickets from peers and runs its own gates. Production signed mesh turns share the Kernel engine; real Python executor-boundary and institution isolation tests qualify that integration. Receipt verification for Mac host effects (Deep #560). |
 
 **Exit criteria.**
 

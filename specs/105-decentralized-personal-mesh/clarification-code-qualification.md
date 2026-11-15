@@ -10,9 +10,9 @@ Physical-device and live-environment demonstrations are optional diagnostics. Th
 
 ## Automated conformance remains required
 
-O7 routes personal node-requested turns through the Kernel, which retains the provider key. It does not by itself retire the institution Python runner. The live-test amendment does not waive criterion 3.11's automated shared-loop obligation. Kernel pure/composed fixtures plus Python executor-boundary tests are useful evidence but are not described as a separate 32-case Python-loop pass.
+O7 routes personal and institution node-requested turns through the same Kernel, which retains each owner's provider key. Both production entry points now pass no Python model runner. The live-test amendment does not waive criterion 3.11's automated obligation: the shared pure/composed Kernel fixture and real Python protected-executor tests must pass. This is one production mesh engine, not a claimed separate 32-case Python-loop pass.
 
-Criterion 3.11 stays open until the production mesh paths are proven equivalent by the required conformance checks or genuinely adopt the same Kernel loop with complete protected-boundary and institution isolation tests. No new debug API, fixture skip, weakened authorization or unsupported helper-only claim is permitted.
+Criterion 3.11 uses the shared-engine alternative: real paired-binding tests cover separate owner chats/provider credentials, exact signed calls, current policy, stop/revoke, replay, truthful audit failures and uncertain outcomes without retry. The institution node attests its own peer through authenticated owner-scoped HTTP endpoints backed by the normal Kernel verifier, including the second accepted issuer. No debug API, additional fixture skip or weaker authorization substitutes for those tests.
 
 ## Phase scope and release
 

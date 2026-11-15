@@ -9,7 +9,7 @@
 - [x] Pass all 18 hosted Deep CI jobs at e541580d, including four backend groups, actual Kernel bindings, changed-line coverage and the production image. Kernel, Projection a8b and Vessel default CI also pass.
 - [x] Record code-only acceptance, native results and their diagnostic failures honestly. iOS passes 1,158 tests and AstralCore 636; Mac's 23 environment-dependent failures remain failures, with five reproduced on the earlier source. No permissions or assertions were changed.
 - [x] Qualify the source-bound Mac NodePack's real install/start/health/stop and 14 bundled-tool checks at Deep 540fc9a7/Kernel ed5. Runtime changes require a new pack before release.
-- [ ] Complete the institution node's Kernel-owned production route and actual two-owner allowed/denied/replay/uncertain executor tests for 3.11.
+- [x] Complete the institution node's Kernel-owned production route, normal owner-bound attestation API, second-issuer handling and actual two-owner allowed/denied/replay/uncertain executor tests for 3.11. Final combined gates remain in the next item.
 - [ ] Repin and regenerate the pack from final runtime sources, integrate release tooling, and pass the final default-branch code checks.
 - [ ] Publish the signed/notarized Mac release and its immutable NodePack through the normal release workflow, then update and verify the public website.
 - [ ] Record final source and asset identities, residual limits and publication results in the spec and curated vault.

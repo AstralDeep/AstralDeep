@@ -13,6 +13,18 @@ Set `ASTRAL_NODE_PROFILE=institution`. The node needs your institution's public 
 - Every ticket still goes through the kernel check and the node's tool gates.
 - The descriptor at `/api/node/descriptor` declares the institution key and, when you configure one, the signed approval for this node.
 
+## Attest the node for each owner
+
+Pairing enrolls the node but does not give its local device a Keycloak attestation. Before that node can execute the tool calls authored by its Kernel, the owner completes this flow over the authenticated institution API:
+
+1. Send `POST /api/institution/attestation/challenge` with the owner's normal authentication. It returns the Kernel's device/mesh-bound `nonce`, `issuer`, `client_id` and `mesh_id`.
+2. Complete the normal Keycloak authorization-code/PKCE sign-in for that issuer and client, using the returned nonce and the same owner identity.
+3. Send `POST /api/institution/attestation` with JSON containing only `id_token`, the returned ID token, and the same owner's normal authentication. The node accepts at most 64 KiB of ASCII token data. Kernel verifies the signature, issuer, audience, nonce and validity before updating the local device's roster attestation.
+
+Both endpoints select the mesh from the authenticated owner; neither accepts an owner or device selector. Other owners, delegated members and invalid tokens cannot attest this peer. The responses are not cacheable. Repeat the flow when the attestation expires; until it is current, the node refuses its tool requests with `institution.attestation_stale`.
+
+Signed mesh turns use the Kernel's sealed per-owner provider book. Python hosts the requested agents through normal IAM, institution/PHI policy, current tool permissions, audit and exact-ticket dispatch; it does not receive a leased provider key.
+
 ## Settings
 
 | Name | Meaning |

@@ -56,8 +56,18 @@ Run the composed Kernel host:
 cargo test -p astral-kernel --test composed_gate --locked
 ```
 
-A Python host runs the same cases against a real two-member mesh through the `astral_kernel`
-binding. Its adapter needs the host's operations for each `setup` entry, a hook while the model
-request that proposes the call is in flight, the pending consent prompt with its reasons, a
-presence signer that can sign another action's digest, the tool runner's call log and the
-chat journal's `chat.tool_result` and `chat.tool_authorized` bodies for the call.
+Production personal and institution signed mesh requests use the same Kernel `answer_request`
+turn service. Python hosts ticketed agents through its protected executor; it does not run a
+second production mesh model loop or receive a leased provider key. The Kernel fixture covers
+all 32 pure states and its 30 reachable composed cases, retaining the two documented intrinsic
+host skips. The fixture and gate expectations are unchanged.
+
+Deep's `test_node_mesh_composed_gate.py` checks the actual paired-binding executor boundary,
+including the fixture's all-clear effect, exact action/request/definition binding, current
+permissions, audits, replay, concurrent reuse and uncertain results. The institution binding
+suite adds separate owner chats and provider credentials plus allowed, unattested, stop,
+revocation, replay and audit/unknown outcomes. The normal owner-scoped attestation HTTP suite
+uses real signed tokens, verifies owner/nonce denial and covers a second accepted issuer.
+These tests qualify the shared-engine architecture; they are not a separate 32-case Python
+composed-loop run. Explicit Python runners remain test/integration adapters, and the argument
+and repeat helpers above retain their independent legacy-loop checks.
