@@ -62,6 +62,7 @@ FEATURE_075_DEPENDENCY_AUTHORITIES = {
     ),
 }
 CURRENT_DEPENDENCY_AUTHORITIES = {
+    "scripts/requirements-ios-release.txt": "83d2a399dd082c9b29d8cb067f3ac39ad09efcff1bdd3559a73f7fe836c40e8f",
     "tooling/sandbox-qualification/package.json": "eaaffe389d93fa5368216ea451d94e4c6abb8c9bcd7b81266508c6c86f56b3a3",
     "tooling/sandbox-qualification/package-lock.json": "5b6925032bd3fbda37e7847037a2feb04b485afb7a66a26da57d6c65b7f6664b",
     **FEATURE_075_DEPENDENCY_AUTHORITIES,

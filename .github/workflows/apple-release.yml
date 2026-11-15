@@ -175,10 +175,32 @@ jobs:
           python3 components/AstralProjection/apple-clients/Scripts/render_export_options.py \
             components/AstralProjection/apple-clients/ExportOptions-ios.plist "$RUNNER_TEMP/ExportOptions-ios.plist"
           plutil -lint "$RUNNER_TEMP/ExportOptions-ios.plist"
-      - name: Archive and export iPhone with embedded Watch
+      - name: Prepare exact-certificate production push profile for iPhone
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_PROFILE_IOS: ${{ secrets.APPLE_PROFILE_IOS }}
+          APPLE_PROFILE_WATCH: ${{ secrets.APPLE_PROFILE_WATCH }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 scripts/ios_store_profile.py \
+            --keychain "$RUNNER_TEMP/astral-ios-signing.keychain-db" \
+            --profiles-dir "$HOME/Library/MobileDevice/Provisioning Profiles" \
+            --key "$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8" \
+            --receipt "$RUNNER_TEMP/evidence/ios-push-profile.json" \
+            --name-file "$RUNNER_TEMP/ios-profile-name.txt"
+          APPLE_PROFILE_IOS="$(cat "$RUNNER_TEMP/ios-profile-name.txt")"
+          export APPLE_PROFILE_IOS
+          python3 components/AstralProjection/apple-clients/Scripts/render_export_options.py \
+            components/AstralProjection/apple-clients/ExportOptions-ios.plist "$RUNNER_TEMP/ExportOptions-ios.plist"
+          plutil -lint "$RUNNER_TEMP/ExportOptions-ios.plist"
+          printf 'IOS_RELEASE_PROFILE_NAME=%s\n' "$APPLE_PROFILE_IOS" >> "$GITHUB_ENV"
+      - name: Archive and export iPhone with embedded Watch
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_PROFILE_IOS: ${{ env.IOS_RELEASE_PROFILE_NAME }}
           APPLE_PROFILE_WATCH: ${{ secrets.APPLE_PROFILE_WATCH }}
         run: |
           set -euo pipefail
@@ -224,7 +246,7 @@ jobs:
       - name: Remove signing material
         if: always()
         run: |
-          rm -f "$RUNNER_TEMP/ios-cert.p12" "$RUNNER_TEMP/profiles.blob" "$RUNNER_TEMP"/decoded-profile-*.mobileprovision
+          rm -f "$RUNNER_TEMP/ios-cert.p12" "$RUNNER_TEMP/ios-profile-name.txt" "$RUNNER_TEMP/profiles.blob" "$RUNNER_TEMP"/decoded-profile-*.mobileprovision
           rm -f "$HOME/.appstoreconnect/private_keys/"*.p8
           rm -f "$HOME/Library/MobileDevice/Provisioning Profiles/astral-ios-"*.mobileprovision
           if [[ -f "$RUNNER_TEMP/astral-ios-signing.keychain-db" ]]; then

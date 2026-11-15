@@ -929,6 +929,7 @@ jobs:
             backend/tests/test_macos_release_notes.py
             backend/tests/test_release_macos_workflow.py
             backend/tests/test_ios_store_upload.py
+            backend/tests/test_ios_store_profile.py
           )
           test "${#RELEASE_TOOL_TESTS[@]}" -gt 0
           docker run --rm --init --cpus=2 --memory=4g \
