@@ -14,7 +14,7 @@
     "linux-aarch64": {
       "wheel": {
         "file": "astral_kernel-0.1.0-py3-none-manylinux_2_36_aarch64.whl",
-        "sha256": "5259d97abcb715e8f3672dc0805ce044f546d954c2d044af2643ae65a896b250"
+        "sha256": "e923f61ec3ae3a7e4511b40040d4510af7e39ffc91eb0ee30cf05b3924d8d7a1"
       },
       "mailbox": {
         "file": "astral-mailbox-linux-aarch64",

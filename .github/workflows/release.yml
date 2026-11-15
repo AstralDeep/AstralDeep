@@ -34,6 +34,9 @@ jobs:
 
   kernel-binding:
     runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      actions: read
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -42,9 +45,13 @@ jobs:
           - platform: linux/amd64
             architecture: amd64
             runner: ubuntu-24.04
+            provider_artifact_id: 14148388081
+            provider_artifact_digest: cb63ecb273533802da948cc02bd4fddeab23ed25f0887c4000ffec2f9618a919
           - platform: linux/arm64
             architecture: arm64
             runner: ubuntu-24.04-arm
+            provider_artifact_id: 14148318283
+            provider_artifact_digest: f86f6ab7c166a1e15bc08cf9e5b56564af599fa4057877025d8fc94969f987ce
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -52,10 +59,17 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.11"
-      - name: Build the manifest-pinned Kernel source
+      - name: Restore the exact qualified Kernel provider artifact
         env:
+          GH_TOKEN: ${{ github.token }}
           PLATFORM: ${{ matrix.platform }}
-        run: python scripts/build_kernel_binding.py produce --source "$RUNNER_TEMP/astral-kernel" --output "$RUNNER_TEMP/kernel-artifacts" --platform "$PLATFORM"
+          PROVIDER_ARTIFACT_ID: ${{ matrix.provider_artifact_id }}
+          PROVIDER_ARTIFACT_DIGEST: ${{ matrix.provider_artifact_digest }}
+        run: |
+          python scripts/build_kernel_binding.py fetch \
+            --run-id 43680163653 --artifact-id "$PROVIDER_ARTIFACT_ID" \
+            --expected-digest "$PROVIDER_ARTIFACT_DIGEST" \
+            --output "$RUNNER_TEMP/kernel-artifacts" --platform "$PLATFORM"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         if: always()
         with:
@@ -98,6 +112,8 @@ jobs:
           for arch in linux-amd64 linux-arm64; do
             find "$RUNNER_TEMP/kernel-artifact-inputs/$arch" -maxdepth 1 -type f \
               \( -name 'astral_kernel-*.whl' -o -name 'astral-mailbox-*' \) -exec cp {} "$RUNNER_TEMP/kernel-artifacts/" \;
+            cp "$RUNNER_TEMP/kernel-artifact-inputs/$arch/provider-receipt.json" "$RUNNER_TEMP/kernel-artifacts/$arch-provider-receipt.json"
+            cp "$RUNNER_TEMP/kernel-artifact-inputs/$arch/linux-build-manifest.json" "$RUNNER_TEMP/kernel-artifacts/$arch-build-manifest.json"
           done
       - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6  # v4.7.0
         if: github.event_name == 'push'

@@ -9,11 +9,15 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = (ROOT / ".github" / "workflows" / "release.yml").read_text()
 
 
-def test_release_produces_and_installs_kernel_artifacts_for_both_architectures():
+def test_release_restores_qualified_kernel_artifacts_for_both_architectures():
     assert "kernel-binding:" in WORKFLOW
     assert "platform: linux/amd64" in WORKFLOW
     assert "platform: linux/arm64" in WORKFLOW
-    assert "python scripts/build_kernel_binding.py produce" in WORKFLOW
+    assert "python scripts/build_kernel_binding.py fetch" in WORKFLOW
+    assert "--run-id 43680163653" in WORKFLOW
+    assert "--expected-digest" in WORKFLOW
+    assert "provider_artifact_id: 14148318283" in WORKFLOW
+    assert "provider_artifact_id: 14148388081" in WORKFLOW
     assert "name: kernel-artifacts-linux-${{ matrix.architecture }}" in WORKFLOW
     assert "needs: [check, kernel-binding]" in WORKFLOW
     producer = WORKFLOW.split("  kernel-binding:\n", 1)[1].split("\n  images:\n", 1)[0]
