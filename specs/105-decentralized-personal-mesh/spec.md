@@ -92,6 +92,8 @@ mesh that runs the heavy agents, and the form an institution deploys.
 | O6 | Something must sync data across devices. Its shape was left to this design. Each client must tolerate being cut off, and LETS should supply that logic. |
 | O7 (2026-11-14) | Node-requested turns run in the Kernel, which keeps custody of the saved model credential. Python continues hosting agents behind the normal dispatch gates. Do not export or lease the provider key to Python. |
 
+**Acceptance amendment (2026-11-15):** the owner accepts automated code qualification for every phase; live device/environment demonstrations are optional. [The code-qualification clarification](clarification-code-qualification.md) records the exact instruction, required code checks, Kernel-owned node-loop qualification and release boundaries. It supersedes earlier live exit requirements without changing runtime security gates.
+
 ### 3.2 Calls made in this design, for the owner to check
 
 | # | Call | Alternative that lost, and why |

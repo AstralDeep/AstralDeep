@@ -1,12 +1,16 @@
 # Plan for spec 105
 
-**Updated:** 2026-11-14. **Status:** implementation and qualification resumed; final artifact adoption/native gates, physical-device checks and a complete same-SHA gate set remain pending. See [qualification.md](qualification.md) for criterion-level evidence and [local-integration-handoff.md](local-integration-handoff.md) for current source/pin inventory, commands and retained reports. This is a program plan: phases,
+**Updated:** 2026-11-15. **Status:** final code qualification and release preparation. The owner made live demonstrations optional and authorized release; exact code-check and publication states are tracked separately. See [qualification.md](qualification.md) for criterion-level evidence and [local-integration-handoff.md](local-integration-handoff.md) for current source/pin inventory, commands and retained reports. This is a program plan: phases,
 the work in each repository, and how to tell a phase is finished. A task-level plan for each phase is
 written when that phase is approved, not before.
 
 Read [spec.md](spec.md) first. Section numbers below refer to it.
 
 ## Current qualification checkpoint
+
+The 2026-11-15 code-qualification amendment supersedes the earlier live gates in historical checkpoints below; automated production-loop conformance remains required. Deep main e541580d passes all 18 CI jobs, including four backend groups and changed Python coverage. The next release-preparation candidate must retain its own green code checks. Live results remain diagnostic; release and website publication are not yet claimed.
+
+### Historical checkpoints
 
 Local evidence currently supports 45 automated criteria, six partial criteria, six live-only criteria and the owner's section 17 approval. This does not complete a phase: final exact-source CI and the required live demonstrations remain outstanding. The production compaction-note test at Kernel `c015c8a` (including test-only `e2db832b`) closes 3.9 for persisted Untrusted notes across log reopen, without claiming an unspecified general memory system.
 
@@ -42,12 +46,7 @@ R  Reliability now ────────────────────�
 - Client order inside every phase: macOS, then iOS, then Android and Windows. The watch follows the
   phone. Web is paused.
 
-Each phase lists **exit criteria**. A criterion marked *(live)* can only be shown on real devices or
-with a live model. It is demonstrated and recorded, and is not a CI gate. Every other criterion is an
-automated test. A phase is finished when its automated criteria pass in CI and its live criteria have
-been demonstrated on macOS and iOS. Android and Windows follow inside the phase without gating it, and
-keep working as thin clients of a node until their port lands (spec call C9). "Specified",
-"implemented", "test-passing" and "live-verified" are reported separately.
+Each phase lists **exit criteria**. Under the owner’s 2026-11-15 [code-qualification amendment](clarification-code-qualification.md), automated code checks qualify the feature and entries marked *(live)* are optional diagnostics. Required deterministic safety, failure, binding, dispatch and build checks stay in place; no measured live-model or device result is fabricated. Android and Windows follow without gating the macOS/iOS phase and keep working as thin node clients until their Kernel ports qualify (C9). "Specified", "implemented", "test-passing", "live-verified", "merged" and "released" remain separate states.
 
 ## Defects found during research
 
@@ -237,7 +236,7 @@ it.
 - Untrusted content remembered in one turn still marks a later turn that loads it.
 - *(live)* The same defenses are measured against adaptive attacks with a live model and with a small
   on-device planner. The attack success rate is reported. Its pass threshold is set in phase 0.
-- The Python loop and the kernel loop pass the same conformance vectors.
+- The production Python and Kernel mesh loops must pass the shared conformance vectors, or adopt one actual Kernel-owned mesh loop with complete real executor-boundary and institution isolation tests. The live-test amendment does not waive this automated obligation.
 
 ---
 
