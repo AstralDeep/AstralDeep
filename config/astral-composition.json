@@ -11,7 +11,7 @@
     "astral-kernel": {
       "repository": "https://github.com/AstralDeep/AstralKernel.git",
       "path": "components/AstralKernel",
-      "commit": "ed5ad2231f445497082750103326242b24fcbcb0",
+      "commit": "206c71dc8324dec5f10003e982e7a9b6d43fb2eb",
       "contract_version": "0.1.0"
     },
     "astral-plane": {
