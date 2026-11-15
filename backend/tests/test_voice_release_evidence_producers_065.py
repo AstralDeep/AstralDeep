@@ -136,6 +136,16 @@ def test_projection_ci_owns_active_voice_contract_windows_and_web_checks() -> No
 
 def test_deep_ci_does_not_duplicate_projection_voice_or_client_jobs() -> None:
     workflow = (DEEP_WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+    upload_helper_mount = (
+        '            --volume "$PWD/components/AstralProjection/apple-clients/Scripts/altool_strict.sh:'
+        '/workspace/components/AstralProjection/apple-clients/Scripts/altool_strict.sh:ro" \\\n'
+    )
+    tooling_job = workflow.split("\n  release-tooling-tests:\n", 1)[1].split(
+        "\n  component-contract-tests:\n", 1
+    )[0]
+    assert workflow.count(upload_helper_mount) == 1
+    assert upload_helper_mount in tooling_job
+    client_workflow = workflow.replace(upload_helper_mount, "", 1)
     for stale_job in (
         "voice-contract-validator:",
         "voice-web-conformance:",
@@ -145,7 +155,7 @@ def test_deep_ci_does_not_duplicate_projection_voice_or_client_jobs() -> None:
     ):
         assert f"\n  {stale_job}" not in workflow
     for client in ("apple-clients", "android-client", "windows-client"):
-        assert f"components/AstralProjection/{client}/" not in workflow
+        assert f"components/AstralProjection/{client}/" not in client_workflow
     assert not (DEEP_WORKFLOWS / "android-ci.yml").exists()
     assert not (DEEP_WORKFLOWS / "apple-ci.yml").exists()
 
