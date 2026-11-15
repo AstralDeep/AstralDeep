@@ -70,7 +70,7 @@ Phase 0 checks against real systems: the Keycloak sign-in with the kernel nonce 
 
 | # | Criterion | Status | Evidence and gap |
 |---|---|---|---|
-| 1.1 | With sandbox blocked, Mac and iPhone paired to a node on the owner's network chat with a tool call | Partly covered (live) | Automated: Deep `test_node_mesh_kernel_integration.py::test_the_node_claims_runs_and_answers_a_request_from_another_member`, `test_node_mesh_calls.py`, `evidence/sqlite-node` (node on SQLite ran a tool turn in containers). Kernel mint path: `astral-kernel/tests/node_mint.rs`, `answer_call.rs`. Live so far used the Mac app and a CLI peer, not a node. Gap: no run with a real node, both devices paired and sandbox blocked. |
+| 1.1 | With sandbox blocked, Mac and iPhone paired to a node on the owner's network chat with a tool call | Partly covered (live) | Real paired-Kernel source tests prove requested turns use the sealed provider book and exact signed tool tickets through protected first-party/sandbox dispatch. Removal/Stop/revocation deny actual effects; unknown outcomes do not replay. The final Mac pack runs the real bundled chart agent under a normal owner WebSocket turn. Physical Mac+iPhone LAN use while the sandbox is blocked remains unqualified. |
 | 1.2 | With Keycloak blocked after sign-in, session works and tools dispatch | Proven by automated test | Deep `test_node_keycloak_blocked.py::test_session_keeps_working_and_tools_dispatch_with_the_issuer_blocked` (asserts no Keycloak exchange, node token verifies). Grace limit in `::test_verification_stops_when_the_grace_runs_out`. |
 | 1.3 | Token for one node refused by another | Proven by automated test | `test_node_identity.py::test_a_token_from_one_node_is_refused_by_another`, `test_node_delegation.py::test_a_token_minted_for_this_node_is_refused_by_another`. |
 | 1.4 | Second issuer's token with first issuer's subject refused | Proven by automated test | `test_token_verify.py::test_a_personal_node_bound_to_one_issuer_refuses_the_others_subject`, `::test_same_subject_from_two_issuers_is_two_owners`. |
@@ -132,7 +132,7 @@ Phase 0 checks against real systems: the Keycloak sign-in with the kernel nonce 
 | # | Criterion | Status | Evidence and gap |
 |---|---|---|---|
 | 6.1 | Corpus surfaces parse and validate under the grammar, the validator rejects unresolved bindings and capabilities | Proven by automated test | `astral-ui/tests/grammar.rs::{every_corpus_tree_is_valid_under_the_validator,every_corpus_tree_parses_under_the_gbnf_grammar}`, `strict_profile.rs::{a_binding_must_resolve,an_unknown_capability_is_rejected}`, `generate.rs::an_unknown_binding_handle_or_capability_is_refused`. |
-| 6.2 | (live) Valid-surface rate from live models including the on-device one, reported | Live only | A bounded configured-model diagnostic produced five valid strict primitive trees in five requests; retained output contains counts and hashes, no raw responses or credentials. This is not a full surface rate measurement including the on-device model. |
+| 6.2 | (live) Valid-surface rate from live models including the on-device one, reported | Partly covered | Real Foundation Models at Kernel8993799 produced 50 valid surfaces/50 trials (49 terminal completions). The bounded cloud probe produced one persisted valid surface/two attempted trials before its nine-request cap, with three trials originally planned; report 50% (n=2), not a complete planned run. Both rates are bounded real-model observations, separate from deterministic schema tests and final-source qualification. |
 | 6.3 | A bound value equals the tool result it came from | Proven by automated test | `surface_rules.rs::a_resolved_document_carries_only_returned_values`, `surface_render.rs::an_unresolvable_binding_shows_nothing_and_is_reported`, `surface_generate.rs::a_model_shows_a_bound_surface_and_a_press_runs_its_tool_through_the_gates`. |
 | 6.4 | A button cannot trigger more than the turn's capability | Proven by automated test | `surface_act.rs::a_capability_wider_than_the_originating_turn_is_refused` (`surface.capability_exceeds_turn`), `::an_exhausted_capability_is_refused_even_with_a_forged_or_missing_field`, `surface_generate.rs::a_surface_cannot_hold_a_control_for_a_tool_the_turn_does_not_have`. |
 | 6.5 | Actionable component with no spoken form is rejected | Proven by automated test | `strict_profile.rs::{actionable_components_require_all_three_forms_and_a_capability,a_button_without_a_form_or_capability_is_rejected_with_an_example}`, `surface_rules.rs::actionable_components_need_every_form_and_a_known_capability`. |
@@ -145,7 +145,7 @@ Phase 0 checks against real systems: the Keycloak sign-in with the kernel nonce 
 | # | Criterion | Status | Evidence and gap |
 |---|---|---|---|
 | 7.1 | Devices never online together converge through the mailbox, which holds only ciphertext | Proven by automated test | Kernel `mailbox_sync.rs::persisted_mailbox_storage_contains_ciphertext_without_chat_or_roster_claims` scans the real persisted mailbox store for synthetic chat/title/roster sentinels and then proves successful decrypt/sync. Existing never-online-together tests also pass. No public production mailbox host is claimed. |
-| 7.2 | (live) Backgrounded phone woken by a content-free push, then syncs | Live only | Deep content-free APNs payload tests pass. Projection `7339507` adds the native warm background handler, with 96 focused iOS tests passing. Normal owner-authorized mesh push registration/access custody is still missing. Provisioning is corrected on the connected iPhone, but final rebuilt-app installation, actual APNs registration/delivery and physical background wake/sync remain unqualified. No physical-check deferral is in force. |
+| 7.2 | (live) Backgrounded phone woken by a content-free push, then syncs | Live only | Publisher registration, canonical owner isolation, encrypted APNs custody, signed current-device wake delegations, revision/expiry/Stop/removal checks and node HTTPS routing are implemented and tested. The actual real-binding publisher route/Stop/removal regression passes with the selected mailbox hash verified. Publisher service configuration/deployment, normal phone sign-in/registration and physical APNs background wake/sync remain unqualified. Voice-only acceptance does not waive this criterion. |
 | 7.3 | Removal notice reaches a device that comes online after every other is off | Proven by automated test | `mailbox_sync.rs::a_removal_notice_reaches_a_device_that_comes_online_after_the_remover_is_gone`, `network.rs::a_removal_notice_waits_for_a_device_that_comes_online_after_every_other_is_off`. |
 | 7.4 | Institution node refuses stale attestation and unapproved PHI work | Proven by automated test | Deep `test_institution_policy.py::{test_a_stale_attestation_is_refused_with_a_dotted_code_and_nothing_runs,test_phi_work_from_a_peer_outside_the_phi_group_is_refused}`, `test_institution_kernel_integration.py` (real wheel). No live institution. |
 | 7.5 | Devices keep working through an issuer change | Proven by automated test | Deep `test_keycloak_move_kernel.py::test_a_mesh_keeps_working_while_devices_attest_under_the_old_and_the_new_issuer`, `scenario_tests.rs::a_keycloak_move_adds_an_issuer_and_old_attestations_stay_on_record`. Runbook `docs/keycloak-move.md` not rehearsed on a real realm. |
@@ -155,9 +155,9 @@ Phase 0 checks against real systems: the Keycloak sign-in with the kernel nonce 
 Total 58 criteria. Status describes the evidence for the criterion, not release authorization.
 
 - Proven by automated test: 49
-- Partly covered: 5
+- Partly covered: 6
 - Owner approved: 1
-- Live only: 3
+- Live only: 2
 
 ## Remaining automated gaps
 
@@ -165,10 +165,12 @@ Total 58 criteria. Status describes the evidence for the criterion, not release 
 2. 3.11: shared full composed-gate conformance, beyond argument/repeat vectors.
 3. 2.7/6.7: final combined native gates and owner-device live sync remain; same stored imported event already passes both native renderer unit/UI checks.
 4. 4.6: retain automated hosted-path isolation and paired-watch/local-pipeline gates; live voice testing is not required.
-5. 5.6/1.1: native peer catalog and normal owner node-provider custody, followed by pack regeneration at the final MCP pin; the actual 13b pack/tool-turn evidence is already retained.
+5. 1.1: physical Mac+iPhone LAN tool use with the sandbox blocked. The regenerated final pack and Kernel-owned provider/catalog paths are now qualified separately under5.6.
 6. 0.2: follow-on non-Apple Kernel bindings and hosted timing qualification.
 
-## Composed-loop qualification scope (3.11)
+## Historical composed-loop inspection (3.11)
+
+The current result and approved Kernel-owned personal-node architecture are recorded in row3.11. The older local-loop/provider limitations below are historical; they are not claims about the current implementation.
 
 Read-only inspection found existing shared coverage, not a missing contract: `loop.json` supplies 18 argument and seven repeat scenarios to Deep `scripts/tests/test_loop_conformance.py` and Kernel `astral-engine/tests/loop_vectors.rs`; its `gate_vectors` entry points to the 25 `labels_gate` cases in `labels.json`. Python `contracts/reference/astral_mesh_ref/runner.py` and Rust `astral-authz/tests/authz_vectors.rs` consume the pure decisions. Deep `test_lets_gate_ordering.py` and Kernel `turns_compose.rs` exercise host seams independently, but do not consume one shared host fixture.
 
