@@ -219,6 +219,7 @@ def macos_macho(raw: bytes, lane: str) -> str:
 MACOS_UNIT_WARNING_SOURCES = {
     "ConsoleShellPresentationTests.swift": "[Internal] Thread running at User-interactive quality-of-service class waiting on a lower QoS thread running at Default quality-of-service class. Investigate ways to avoid priority inversions",
     "GuidanceRenderer088Tests.swift": "Accessing FocusState's value outside of the body of a View. This will result in a constant Binding of the initial value and will not update.",
+    "RealMeshKernelTests.swift": "Thread running at User-initiated quality-of-service class waiting on a lower QoS thread running at Default quality-of-service class. Investigate ways to avoid priority inversions",
 }
 MACOS_UNIT_WARNINGS = frozenset(MACOS_UNIT_WARNING_SOURCES.values())
 
