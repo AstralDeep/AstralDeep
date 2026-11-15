@@ -190,21 +190,58 @@ def test_the_destination_id_drops_the_hash_prefix_and_the_store_is_asked_for_tha
     assert pw.DestinationTargets(store).target(OWNER, PHONE)["push_token"] == "t" and asked == [(OWNER, HEX)]
 
 
-def test_a_gateway_exists_only_where_destinations_and_apns_credentials_do(monkeypatch):
-    configured = {"apns": adapter(FakeTransport())}
-    destinations = SimpleNamespace(delivery_target=lambda *a: None)
-    assert pw.gateway_for(SimpleNamespace(), adapters=configured) is None
-    assert pw.gateway_for(SimpleNamespace(push_destinations=destinations), adapters={"apns": ApnsPushAdapter(key_id="", team_id="", private_key="", topic="")}) is None
-    assert pw.gateway_for(SimpleNamespace(push_destinations=destinations), adapters=configured) is not None
-    monkeypatch.setenv(pw.ENABLE_ENV, "off")
-    assert pw.gateway_for(SimpleNamespace(push_destinations=destinations), adapters=configured) is None
+def test_node_factory_uses_only_explicit_publisher_without_reading_apns_keys(monkeypatch):
+    from orchestrator.mesh_push_client import PUBLISHER_URL_ENV, RemoteWakeGateway
 
-
-def test_the_default_adapters_come_from_the_push_environment(monkeypatch):
-    for name in ("PUSH_APNS_KEY_ID", "PUSH_APNS_TEAM_ID", "PUSH_APNS_TOPIC"):
-        monkeypatch.delenv(name, raising=False)
-    monkeypatch.delenv("PUSH_APNS_PRIVATE_KEY", raising=False)
+    monkeypatch.delenv(PUBLISHER_URL_ENV, raising=False)
+    monkeypatch.setattr("orchestrator.push_providers.adapters_from_env", lambda: pytest.fail("node read APNs keys"))
     assert pw.gateway_for(SimpleNamespace(push_destinations=object())) is None
+    monkeypatch.setenv(PUBLISHER_URL_ENV, "http://invalid.example")
+    assert pw.gateway_for(SimpleNamespace()) is None
+    monkeypatch.setenv(PUBLISHER_URL_ENV, "https://publisher.example")
+    assert isinstance(pw.gateway_for(SimpleNamespace()), RemoteWakeGateway)
+    monkeypatch.setenv(pw.ENABLE_ENV, "off")
+    assert pw.gateway_for(SimpleNamespace()) is None
+
+
+def test_limiter_refuses_unseen_devices_at_its_capacity(monkeypatch):
+    monkeypatch.setattr(pw, "MAX_TRACKED_DEVICES", 2)
+    limiter = pw.WakeLimiter(min_interval_seconds=0)
+    assert limiter.admit("one") and limiter.admit("two")
+    assert not limiter.admit("three") and len(limiter._sent) == 2
+
+
+async def test_remote_trigger_reconsiders_pending_work_when_route_becomes_available():
+    mesh, recorder = Mesh([peer(PHONE, connected=False, pending_out=1)]), Recorder("no_destination")
+    recorder.reconsider_pending = True
+    trigger = pw.WakeTrigger(mesh, recorder, lambda: OWNER)
+    await trigger.evaluate()
+    recorder.status = "sent"
+    await trigger.evaluate()
+    assert len(recorder.calls) == 2
+    mesh.peers = []
+    await trigger.evaluate()
+    assert trigger._pending == {}
+
+
+async def test_remote_trigger_retries_pending_work_without_another_kernel_event():
+    mesh, recorder = Mesh([peer(PHONE, connected=False, pending_out=1)]), Recorder("no_destination")
+    recorder.reconsider_pending = True
+    trigger = pw.WakeTrigger(mesh, recorder, lambda: OWNER, retry_seconds=0.01)
+    trigger.start()
+    await settle(lambda: recorder.calls)
+    recorder.status = "sent"
+    await settle(lambda: len(recorder.calls) > 1)
+    await trigger.stop()
+
+
+async def test_mesh_specific_sender_is_bound_when_attaching_trigger():
+    mesh, recorder = Mesh([]), Recorder()
+    gateway = SimpleNamespace(for_mesh=lambda actual: recorder if actual is mesh else pytest.fail("wrong mesh"))
+    triggers = pw.WakeTriggers(gateway)
+    trigger = triggers.attach(mesh, lambda: OWNER)
+    assert trigger._gateway is recorder
+    await triggers.stop()
 
 
 def peer(device_id, *, connected, pending_out):

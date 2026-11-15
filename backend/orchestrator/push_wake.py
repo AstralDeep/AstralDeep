@@ -1,6 +1,5 @@
-"""Content-free wake gateway for a node's mesh: when the node holds events for a device that is not connected and that device's owner registered a push token, it sends one APNs background push that carries no content, at most a few per device per hour.
-It reuses the push destinations and APNs credentials of push_destinations.py and push_providers.py, and the node runtimes in node_mesh_chat.py and institution_runtime.py attach a trigger to each mesh peer.
-"""
+"""Triggers bounded content-free wakes when a mesh peer has pending events.
+Production nodes use the configured publisher client; the direct APNs adapter remains isolated for publisher conformance tests."""
 
 from __future__ import annotations
 
@@ -90,6 +89,8 @@ class WakeLimiter:
             if len(self._sent) >= MAX_TRACKED_DEVICES:
                 for stale in [k for k, hits in self._sent.items() if not hits or now - hits[-1] >= HOUR_SECONDS]:
                     self._sent.pop(stale, None)
+            if key not in self._sent and len(self._sent) >= MAX_TRACKED_DEVICES:
+                return False
             hits = [t for t in self._sent.get(key, []) if now - t < HOUR_SECONDS]
             if hits and now - hits[-1] < self._interval:
                 self._sent[key] = hits
@@ -135,10 +136,12 @@ class WakeGateway:
 
 
 class WakeTrigger:
-    def __init__(self, mesh: Any, gateway: WakeGateway, owner: Callable[[], Optional[str]]):
+    def __init__(self, mesh: Any, gateway: WakeGateway, owner: Callable[[], Optional[str]], *,
+                 retry_seconds: float = DEFAULT_MIN_INTERVAL_SECONDS):
         self._mesh = mesh
         self._gateway = gateway
         self._owner = owner
+        self._retry_seconds = retry_seconds
         self._pending: Dict[str, int] = {}
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._dirty = asyncio.Event()
@@ -164,7 +167,10 @@ class WakeTrigger:
 
     async def _run(self) -> None:
         while True:
-            await self._dirty.wait()
+            try:
+                await asyncio.wait_for(self._dirty.wait(), timeout=self._retry_seconds)
+            except asyncio.TimeoutError:
+                pass
             self._dirty.clear()
             try:
                 await self.evaluate()
@@ -178,11 +184,14 @@ class WakeTrigger:
         if owner is None:
             return []
         sent: List[WakeOutcome] = []
-        for peer in await self._mesh.sync_peers():
+        peers = await self._mesh.sync_peers()
+        current_devices = {peer.device_id for peer in peers}
+        self._pending = {device: count for device, count in self._pending.items() if device in current_devices}
+        for peer in peers:
             waiting = 0 if peer.connected else int(peer.pending_out)
             before = self._pending.get(peer.device_id, 0)
             self._pending[peer.device_id] = waiting
-            if waiting > before:
+            if waiting > before or (waiting > 0 and getattr(self._gateway, "reconsider_pending", False)):
                 outcome = await self._gateway.wake(owner, peer.device_id)
                 if outcome.status == RATE_LIMITED:
                     self._pending[peer.device_id] = before
@@ -196,7 +205,9 @@ class WakeTriggers:
         self._triggers: List[WakeTrigger] = []
 
     def attach(self, mesh: Any, owner: Callable[[], Optional[str]]) -> WakeTrigger:
-        trigger = WakeTrigger(mesh, self._gateway, owner)
+        bind = getattr(self._gateway, "for_mesh", None)
+        gateway = bind(mesh) if callable(bind) else self._gateway
+        trigger = WakeTrigger(mesh, gateway, owner)
         trigger.start()
         self._triggers.append(trigger)
         return trigger
@@ -212,13 +223,12 @@ def enabled(env: Optional[Mapping[str, str]] = None) -> bool:
     return values.get(ENABLE_ENV, "").strip().lower() not in {"0", "false", "no", "off"}
 
 
-def gateway_for(orch: Any, *, adapters: Optional[Mapping[str, Any]] = None) -> Optional[WakeGateway]:
-    destinations = getattr(orch, "push_destinations", None)
-    if destinations is None or not enabled():
-        return None
-    if adapters is None:
-        from orchestrator.push_providers import adapters_from_env
+def gateway_for(orch: Any, *, adapters: Optional[Mapping[str, Any]] = None) -> Any:
+    from orchestrator.mesh_push_client import PUBLISHER_URL_ENV, RemoteWakeGateway
 
-        adapters = adapters_from_env()
-    gateway = WakeGateway(targets=DestinationTargets(destinations), adapters=adapters, limiter=WakeLimiter.from_env())
-    return gateway if gateway.available else None
+    if not enabled():
+        return None
+    try:
+        return RemoteWakeGateway(os.environ.get(PUBLISHER_URL_ENV, ""), limiter=WakeLimiter.from_env())
+    except ValueError:
+        return None
