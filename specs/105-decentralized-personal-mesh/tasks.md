@@ -1,10 +1,22 @@
 # Tasks for spec 105
 
-**Date:** 2026-11-14. **Status:** implementation and qualification continue on local branches Deep `codex/105-finish`, Kernel `codex/105-chat-recovery` and Projection `codex/105-chat-progress`, preserving the earlier integration branches. The owner is away with the phone disconnected; physical checks remain required and have not been waived. New source and CI repairs are local, with no complete final same-SHA gate set, product push, default-branch merge, deployment or release. The exact anchors and bounded evidence are in [local-integration-handoff.md](local-integration-handoff.md). Read [spec.md](spec.md) and [plan.md](plan.md) for intent.
+**Date:** 2026-11-15. **Status:** feature PRs are merged and the current default branches pass hosted CI. The owner authorized push, merge, release and the website update, and made live device/environment demonstrations optional. Deterministic code and security qualification remain required under [the acceptance clarification](clarification-code-qualification.md). Release publication is being prepared; it has not happened yet. Read [spec.md](spec.md), [plan.md](plan.md) and the current [qualification map](qualification.md) for intent and evidence.
 
-## Current qualification queue
+## Current completion queue
 
-This is a local checkpoint, not a completion checklist for an already qualified release. Exact revisions, evidence paths, recorded failures and pending pin updates are in [local-integration-handoff.md](local-integration-handoff.md); criterion counts and the bounded 3.11 assessment are in [qualification.md](qualification.md).
+- [x] Merge the four feature PRs, delete their merged local/remote head branches and preserve unrelated working trees.
+- [x] Qualify Kernel ed5 with 1,310 Rust tests, strict Clippy, all 17 source-bound payloads and hosted CI; adopt it in Deep, Projection and Vessel.
+- [x] Pass all 18 hosted Deep CI jobs at e541580d, including four backend groups, actual Kernel bindings, changed-line coverage and the production image. Kernel, Projection a8b and Vessel default CI also pass.
+- [x] Record code-only acceptance, native results and their diagnostic failures honestly. iOS passes 1,158 tests and AstralCore 636; Mac's 23 environment-dependent failures remain failures, with five reproduced on the earlier source. No permissions or assertions were changed.
+- [x] Qualify the source-bound Mac NodePack's real install/start/health/stop and 14 bundled-tool checks at Deep 540fc9a7/Kernel ed5. Runtime changes require a new pack before release.
+- [ ] Complete the institution node's Kernel-owned production route and actual two-owner allowed/denied/replay/uncertain executor tests for 3.11.
+- [ ] Repin and regenerate the pack from final runtime sources, integrate release tooling, and pass the final default-branch code checks.
+- [ ] Publish the signed/notarized Mac release and its immutable NodePack through the normal release workflow, then update and verify the public website.
+- [ ] Record final source and asset identities, residual limits and publication results in the spec and curated vault.
+
+## Historical qualification queue, 2026-11-14
+
+The queue below preserves the earlier checkpoint. Its physical-test requirements, branch names and authorization statements are superseded by the current queue and acceptance clarification. This is a local checkpoint, not a completion checklist for an already qualified release. Exact revisions, evidence paths, recorded failures and pending pin updates are in [local-integration-handoff.md](local-integration-handoff.md); criterion counts and the bounded 3.11 assessment are in [qualification.md](qualification.md).
 
 - [x] Qualify persisted compaction-note provenance through the production `LogRunStore`, close/reopen, later model prompt and denied outside dispatch: Kernel test-only `e2db832b`, 17 runs-service tests passed. Closes 3.9 for persisted notes only.
 - [x] Retain actual Mac pack proof at Deep `13b96dbb`/Kernel `d02e4ea`: 47 packaging tests, Swift real install/start/health/stop (41.8 s), and an owner-authorized 74-tool WebSocket turn executing the bundled chart tool with credential denials checked.
@@ -57,7 +69,7 @@ but no build ships one.
 | Can a device exchange an authorization code with Keycloak itself, so it holds the ID token that carries its bound nonce? | Yes. `astral-desktop` and `astral-mobile` are public clients: a token request with a bogus code returns `invalid_grant`, not `invalid_client`. |
 | Does the realm sign ID tokens with an algorithm the kernel can verify offline? | The realm advertises RS256, ES256 and EdDSA among others. |
 
-## Repositories and paths
+## Historical repository anchors, 2026-11-14
 
 Resolve active lane checkouts with `git worktree list`; the primary checkout can contain unrelated owner work and need not be the integration checkout. Repository-relative composition pins remain authoritative for adopted sources. The current inspection anchors are:
 
