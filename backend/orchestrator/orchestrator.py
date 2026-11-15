@@ -1560,6 +1560,9 @@ class Orchestrator:
             delivery_policy=self._push_notification_allowed,
         )
 
+        from orchestrator.mesh_push_gateway import publisher_for
+        self.mesh_push_publisher = publisher_for(self)
+
         from orchestrator.notification_routing import NotificationRoutingCoordinator
         self.notification_routing = NotificationRoutingCoordinator(
             plane_runtime=self.runtime_composition.plane.runtime,
@@ -26634,6 +26637,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         from orchestrator.auth import auth_router
         from orchestrator.mesh_api import mesh_router
         from orchestrator.push_api import push_router
+        from orchestrator.mesh_push_api import mesh_push_router
         from orchestrator.notification_api import notification_router
         from orchestrator.web_auth import web_auth_router
         from orchestrator.attachments.router import attachments_router
@@ -26684,6 +26688,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         app.include_router(mesh_web_router)
         app.include_router(node_router)
         app.include_router(push_router)
+        app.include_router(mesh_push_router)
         from orchestrator.harness.selection_api import harness_router
         app.include_router(harness_router)
         app.include_router(web_auth_router)
