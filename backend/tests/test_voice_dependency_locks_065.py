@@ -72,7 +72,7 @@ CURRENT_DEPENDENCY_AUTHORITIES = {
     "backend/requirements.txt": "54ca1ab0277575f4c833a5437fb4e3f9defb49c9382be6b6a6828608ddc3671c",
     "backend/requirements-gaiakeep.txt": "87ea5ed066e8aa376f355df70a4efac295d331c7c77601d277a05c8acb37feea",
     "backend/tests/fixtures/runtime_reliability_060/runtime-lock-contract.json": (
-        "57f37fee4a7481dd8412ac4fb6a74dbc2edd84fa85625153e21b72b8eba71e9e"
+        "669d780b5f58598678f589c140c213c8dfa6e1d253a12d38c6a08291d2fd2afc"
     ),
     "pyproject.toml": "c3b2cf99a06d653be76035e63de05bcadb7a2ed2616bb51e0ec0e96c3afbc495",
     "scripts/openai_agents_example/requirements.in": (
@@ -292,11 +292,11 @@ def test_windows_livekit_direct_pin_and_win_amd64_wheel_are_exact() -> None:
         ),
         "astralprims": (
             "0.13.0",
-            {"08674e5aa5605db3c96db381bc71b6c0d60c7fbbc07f1b1d73c3700f9e4cfa3e"},
+            {"42aa5f519f5840273e9ac03327df5211c5a22049cb5983e5c23f2c75a25447d1"},
         ),
         "astral-rote": (
             "0.1.0",
-            {"35695af9906434fe3c70d30b263e839fa5e454f1c58cbd0ddc0f8888432d00ab"},
+            {"16f8f62428e76d71c2acf82b283fc4714044cad4ffc686da3ca34ee0dea9ed08"},
         ),
         "linkify-it-py": (
             "2.0.3",

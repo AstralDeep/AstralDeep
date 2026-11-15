@@ -20,7 +20,7 @@ from shared.feature_flags import flags
 AGENT = "dice-roller-1"
 TOOL = "roll_dice"
 REPLY = "the node rolled the dice"
-API_KEY = "sk-peer-tool-secret-4412"
+API_KEY = "fixture-node-provider-key"
 
 
 class FakeModel(BaseHTTPRequestHandler):
