@@ -777,13 +777,15 @@ speaker ◀── streaming speech ◀── small on-device model (fast path)  
 
 | Platform | Transcription | Fast model | Speech |
 |---|---|---|---|
-| iOS, macOS | The system's streaming transcriber | The system's on-device model, with constrained output | A compact neural voice. System synthesizer as fallback |
+| iOS, macOS | The installed LFM3-Audio-2B model, with streaming input | An eligible on-device planner, with constrained output | The installed LFM3-Audio-2B model |
 | Android | The system's on-device recognizer where present. A bundled recognizer otherwise | The system's on-device model where present | The system's on-device voice where present. Bundled otherwise |
 | Windows | A bundled streaming recognizer | A local model runtime | A bundled compact voice |
 | watchOS | None | None | Speaks. The watch captures and plays audio and the phone runs the pipeline |
 
-Every device probes what it has and falls back. On hardware with no on-device model, the fast path is
-skipped and the owner's model answers directly.
+The Apple apps require the verified LFM3-Audio-2B 3-bit download before voice starts (owner decision,
+2026-11-12). They use neither hosted speech nor a system-speech fallback. Planner availability is
+separate from recognition and speech: an unavailable fast path is skipped, and the owner's chosen
+model supplies the full answer. The watch sends its audio to the paired phone's on-device pipeline.
 
 ### 12.2 Feeling instant
 

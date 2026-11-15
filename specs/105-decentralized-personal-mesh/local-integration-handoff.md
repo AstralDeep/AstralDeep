@@ -1,6 +1,6 @@
 # Spec 105 integration and qualification handoff
 
-Updated 2026-11-14. The current state is the "Fifth checkpoint" section at the end of this file, which supersedes the text between here and there. Work resumed after the historical stops below. Local implementation and qualification remain in progress. The final candidate is identified by an external exact-SHA evidence inventory after the clean source freeze; no complete final same-SHA gate set exists yet, and the feature is not production-ready. The owner approved spec section 17. Physical iPhone checks are requested and active; the earlier hardware-deferral wording is revoked. No new product push, Kernel publication, merge, deployment or release is authorized by this handoff.
+Updated 2026-11-14. The current work is the "Codex continuation" section at the end of this file; it supersedes earlier checkpoint claims for changed source. The fifth checkpoint remains evidence for its exact earlier revisions. Work resumed after the historical stops below. Local implementation and qualification remain in progress. The final candidate is identified by an external exact-SHA evidence inventory after the clean source freeze; no complete final same-SHA gate set exists yet, and the feature is not production-ready. The owner approved spec section 17. The owner is away with the phone disconnected. Physical checks remain pending; phone mirroring and automation are not authorized. No new product push, Kernel publication, merge, deployment or release is authorized by this handoff.
 
 ## Current source and pending adoption
 
@@ -462,3 +462,42 @@ Chat sync was then checked both ways with the owner. Read-only from the Mac stor
 - **Credentials.** The phone also wrote a `key.credential` event, so it is using the provider credential that was sealed to it on joining.
 
 This live-verifies chat sync between paired physical devices on the same network with internet available. It does not verify sync with the internet off (2.1) or airplane-mode queueing (2.2).
+
+## Codex continuation, 2026-11-14
+
+The owner requested completion of spec 105 and active manual tests on the connected physical iPhone. New work stays local: no product push, merge, deployment or release has been performed. Phone mirroring and Xcode UI automation were briefly authorized, then revoked; subsequent physical checks are manual. No automated phone UI test or install ran.
+
+### Physical results on the existing builds
+
+- Airplane Mode with Wi-Fi off: history remained readable; a new chat/message survived force-quit and reopening while offline. After reconnection, the exact synthetic message appeared in the canonical Mac UI and its phone feed events were accepted into the Mac store. This qualifies persistence/delivery in 2.2, not an offline answer or LAN-only sync.
+- Ordinary chat recovery failed: reopening removed the transient working/queued indicators but left a signed turn start without a turn end. The model did not automatically resume. Native startup resumed Runs only, and the native mapping discarded model notices.
+- The iPhone voice model download succeeded. Offline recognition and a generic spoken acknowledgement worked. Stopping/restarting voice once terminated the app; the specific Jetsam report says per-process-limit at 196,659 pages of 16,384 bytes (about 3.22 GB). A later attempt restarted successfully and the queued question completed after reconnection. No completed offline model answer is qualified.
+- The Mac arithmetic answer was complete in the UI, but speech stopped before its final number. Isolated real-weight synthesis preserved streamed/full PCM lengths; one seed mispronounced the final word. The physical cutoff cause remains unresolved. New playback/control timing instrumentation is diagnostic and must not be described as a measured acoustic interruption result.
+
+### Local source and verification
+
+| Repository | Local branch/checkpoint | Evidence and remaining work |
+|---|---|---|
+| Deep | codex/105-finish, through 456d7a30 | Postcommit answer publication, originating-session correlation, exact granted tool/hash ceiling, per-call tickets, final revocation recheck and delegated-tool attenuation integrated. Fifteen focused suites passed 419 tests, zero failures/errors/skips, using SHA-bound overlays on the bd197b82 qualified test image. This is diagnostic integration evidence, not a new frozen complete backend gate. |
+| Projection | codex/105-chat-progress: 0ce9166 and 4f01659 | Checksum reads release each temporary buffer. Exact weight-file reproduction reduced RSS from about 1.26 GB to 10.8 MB with identical SHA. Progress/notices restore truthful durable state and preserve explicit incomplete warnings. Scoped Mac 104/iOS simulator 101 tests passed; VoiceModelStore 18 passed on each. Source is not installed on either physical client yet. Recovery scheduling and playback instrumentation continue. |
+| Kernel | codex/105-chat-recovery | Resume-only expected-turn API, prompt eligible on-device fallback, deterministic wheel packaging, current verifier authority, denied-consent precedence and composed-host normalization implemented and tested. New verified-principal API and internal signed node-tool routing continue. Artifacts built from 66e10ee and b47d0bf are immutable diagnostic candidates, not final adoption. |
+
+The 66e10ee Apple payload was verified against its 11-file source-bound manifest and copied only into Projection's ignored Artifacts directory for compilation. The prior a499 payload is preserved outside Git. Deep/NodePack production composition pins have not been advanced to an interim build. Requalify and adopt one exact final Kernel source/artifact set before full native/backend qualification.
+
+The full Python reference suite passed 1,344 tests after installing its declared pinned requirements into an isolated evidence-directory environment. The primary .venv lacked biscuit-python; its earlier three collection errors were an environment failure, not a passing suite. Composed fixture changes preserve the pure exhausted code but retain the actual holder journal reason on exactly three rows.
+
+### Owner decision and remaining closure
+
+The owner chose Kernel-run node-requested turns with provider credentials kept inside the Kernel; no Python credential lease/export. Python keeps the agent host, permission/policy/PHI gates, auditing and executor dispatch. Personal mesh authority must come from a live verified admission plus the Kernel's attested principal, not profile/environment strings or per-request Keycloak exchange. Scheduled, persistent and institution-edge behavior retains its existing contracts.
+
+Still required: finish and qualify safe native recovery, Kernel-hosted node turns and credential recipient controls; verify patched physical voice/offline behavior and interruption; complete composed Python-host conformance, generated-surface/model quality measurements, hand-off/crash checks, remote MCP and adaptive attack runs, publisher-operated push wake, final NodePack adoption, clean-source full gates and protected CI. The current installed clients and live state are not the new source qualification.
+
+Durable local evidence: sibling evidence-105/codex-20261114-live, including native-progress, voice-memory, voice-tail, node-integrated-final, node-tool-admission and kernel-rebuild. Raw device data stays outside Git. The curated vault checkpoint was updated and pushed separately at 11b2e80, including wake custody, removal/cancellation repair and the typed local proposal smoke. Product changes remain local.
+
+### Wake and local model continuation
+
+Deep `997ec4db`/`a6cb7da8` integrate the publisher-only encrypted registry/gateway and the verified-route node HTTPS client. The implementation-lane 281-test run has zero skips; exact immutable overlays and invocation are under `publisher-mesh-push/node-wiring-green2`. The publisher is disabled by default and requires explicit HTTPS configuration/APNs publisher deployment; no physical delivery was performed. New audit records use canonical issuer+subject owner IDs; legacy raw-sub listing does not display them.
+
+Kernel `f2a4548`/`5322e18` repair verified own-removal delivery and retain normal removed-feed append refusal for cancellation, with no fake interrupted result. Kernel `8993799` and Projection `7034d9f` add host-local versioned typed tool proposals and a narrow canonical card/text schema. Six deterministic Swift tests pass; engine, UI grammar, normal surface validation/dispatch and strict Clippy pass. A real normal-Kernel smoke at clean `8993799` has one allowed effect, one valid surface and one exposed generated adaptive response with zero outside effects. The first broader replacement diagnostic was interrupted after nine surface trials: all generated valid surfaces, but only three turns completed; a native transcript repair is being verified before a complete rerun. Earlier 0/50 negative measurement remains evidence for its exact older source. New artifacts/pins, native cancellation adoption, final same-source backend/native checks and protected/hardware verification remain unfinished.
+
+Root independently reviewed wake authority/target/current-feed/transaction checks and native queued Stop retirement/join semantics; final compiled API gates remain required. Evidence is retained under `codex-20261114-live/on-device-tools`, `publisher-mesh-push`, `kernel-rebuild` and agent native evidence. No new product push, publication, merge, deployment or release occurred.

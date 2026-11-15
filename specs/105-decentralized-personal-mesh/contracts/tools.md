@@ -53,3 +53,11 @@ Every call to a peer tool still needs a consented grant, passes the gates of `la
 ## 5. Errors
 
 `tools.malformed`, `tools.hash_mismatch`.
+
+## 6. Local model proposals
+
+The Kernel may attach `x-astral-tool-proposals` to the JSON Schema in its host-local on-device request. Version 1 contains `version: 1` and `tools`, with each descriptor carrying only `name`, `description` and `parameters`. This metadata is not a catalog event, a credential, a tool authorization or a cloud-provider request field. The normal response remains `{text, calls: [{tool, arguments_json}]}`; the Kernel bounds and validates it before normal admission, argument validation, consent, ticketing, dispatch and journaling.
+
+A native host may use a model's typed tool interface only to capture an unexecuted proposal and return that envelope. Its callback must not execute the named tool, return a success result for it, expose preliminary proposal text as an answer, or return a captured proposal after cancellation, malformed arguments or conflicting callbacks. Unsupported structured capability is reported explicitly; the existing announced text-only fallback may then apply. Ordinary model refusals and generation failures are not capability fallback.
+
+The optional `x-astral-on-device-schema` annotation supplies a narrower generation schema. It never replaces the authoritative tool input schema or the runtime surface validator and is included in the ordinary definition hash. The built-in local surface profile derives text and card fields from the pinned Primitives profile, with a bounded list of text children and no controls, links, capabilities or bound values. Cloud generation retains the full tool schema. No new primitive or external protocol is introduced.
