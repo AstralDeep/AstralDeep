@@ -159,10 +159,19 @@ def preflight(version, build, key_path):
 def profile_identity(profile, bundle, name, team):
     entitlements = profile.get("Entitlements", {})
     app_id = entitlements.get("application-identifier")
-    require(profile.get("Name") == name and profile.get("TeamIdentifier") == [team]
-            and app_id == f"{team}.{bundle}"
-            and set(profile.get("Platform", [])) <= {"iOS", "watchOS"}
-            and bool(profile.get("Platform")), "provisioning profile identity mismatch")
+    platforms = profile.get("Platform", [])
+    checks = {"name_matches": profile.get("Name") == name,
+              "team_matches": profile.get("TeamIdentifier") == [team],
+              "app_id_matches": app_id == f"{team}.{bundle}",
+              "platform_tags_allowed": set(platforms) <= {"iOS", "watchOS"},
+              "platform_nonempty": bool(profile.get("Platform"))}
+    public_tags = ("iOS", "watchOS", "macOS", "tvOS", "xrOS", "visionOS")
+    print(json.dumps({"profile_identity": checks,
+                      "known_platform_tags": [tag for tag in public_tags if tag in platforms],
+                      "unknown_platform_tags_present": any(tag not in public_tags for tag in platforms)}),
+          flush=True)
+    require(all(checks.values()), "provisioning profile identity mismatch: "
+            + ", ".join(key for key, matches in checks.items() if not matches))
     require(profile["ExpirationDate"].replace(tzinfo=UTC) > datetime.now(UTC)
             and entitlements.get("get-task-allow") is False
             and not profile.get("ProvisionedDevices") and not profile.get("ProvisionsAllDevices"),

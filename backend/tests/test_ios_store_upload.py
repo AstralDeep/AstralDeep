@@ -404,7 +404,7 @@ def test_install_profiles_accepts_valid_appledouble_only(profiles, tmp_path, cap
     upload.install_profiles(blob, tmp_path / 'installed')
     assert len(list((tmp_path / 'installed').iterdir())) == 2
     diagnostics = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
-    summary = diagnostics[-1]
+    summary = next(item for item in diagnostics if "appledouble_skipped" in item)
     assert summary['container'] == kind and summary['entries'] == 4
     assert summary['appledouble_skipped'] == 2 and summary['profile_payloads'] == 2
     assert all(name not in json.dumps(diagnostics) for name, _ in entries)
@@ -468,3 +468,27 @@ def test_appledouble_refuses_malformed_header_and_bounds(mutation):
     '/._profile.mobileprovision', 'folder\\._profile.mobileprovision', '._'])
 def test_appledouble_requires_conventional_metadata_name(name):
     assert not upload.apple_double_metadata(name, apple_double())
+
+
+@pytest.mark.parametrize('change,failed,known,unknown', [
+    ({'Name': 'private mismatched name'}, 'name_matches', ['iOS'], False),
+    ({'TeamIdentifier': ['private mismatched team']}, 'team_matches', ['iOS'], False),
+    ({'Entitlements': {'application-identifier': 'private mismatched app'}}, 'app_id_matches', ['iOS'], False),
+    ({'Platform': ['macOS']}, 'platform_tags_allowed', ['macOS'], False),
+    ({'Platform': []}, 'platform_nonempty', [], False),
+    ({'Platform': ['iOS', 'xrOS']}, 'platform_tags_allowed', ['iOS', 'xrOS'], False),
+    ({'Platform': ['private platform marker']}, 'platform_tags_allowed', [], True),
+])
+def test_profile_identity_reports_only_boolean_checks_and_public_tags(profiles, capsys, change, failed, known, unknown):
+    value = copy.deepcopy(profiles[0])
+    value.update(change)
+    with pytest.raises(ValueError, match=failed):
+        upload.profile_identity(value, upload.BUNDLE, 'phone', 'TEAM')
+    output = capsys.readouterr().out
+    diagnostics = json.loads(output)
+    assert {key for key, passed in diagnostics['profile_identity'].items() if not passed} == {failed}
+    assert all(type(passed) is bool for passed in diagnostics['profile_identity'].values())
+    assert diagnostics['known_platform_tags'] == known
+    assert diagnostics['unknown_platform_tags_present'] is unknown
+    for sensitive in ('private', 'TEAM', upload.BUNDLE, 'phone'):
+        assert sensitive not in output
