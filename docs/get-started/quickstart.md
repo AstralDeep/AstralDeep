@@ -1,61 +1,71 @@
 # Quickstart
 
-This installs a personal node with the example agent. It takes one image build and one command.
+This guide builds a personal AstralDeep node, installs the AstralVessel command, and checks the running node.
 
-## 1. Get a node image
+## Requirements
 
-The node is an AstralDeep image. Build it from the AstralDeep repository with the kernel artifacts that Deep pins in `config/astral-kernel-binding.json`:
+- Python 3.11 or newer, Git, and Docker with Buildx and the Compose v2 plugin.
+- A supported sandbox host: Linux x86_64 or arm64 with kernel 6.12 or newer and Landlock ABI 6; or an Apple silicon Mac with Docker Desktop whose Linux VM provides Landlock ABI 6. Docker Desktop 29.5 with a kernel 6.12 VM was checked; older versions may ship an older kernel. Windows with Docker Desktop is unverified. See [platform support](../security/platforms.md).
+- An AstralDeep Keycloak issuer and client ID. Use the values configured for the AstralDeep app you use. See [realm setup](https://github.com/AstralDeep/AstralDeep/blob/main/docs/keycloak-realm-settings.md) and the relevant [Android and iOS client](https://github.com/AstralDeep/AstralDeep/blob/main/docs/keycloak-android-client-setup.md) or [Windows client](https://github.com/AstralDeep/AstralDeep/blob/main/docs/keycloak-windows-client-setup.md) guide.
 
-```bash
-docker build --build-context kernel-artifacts=<folder with the kernel wheel and mailbox> -t astralvessel-node:local .
-```
+## 1. Build the node image
 
-`astralvessel-node:local` is the default image name. To use another image, pass `--image` or set `image` in the `[node]` section.
-
-## 2. Install the command
+The node image is built from the AstralDeep source and its pinned submodules. These commands use the [source commit qualified for this guide](https://github.com/AstralDeep/AstralDeep/commit/528467d1bd602ab3219a426ac9c82eda3b5bc4d5):
 
 ```bash
-pip install astralvessel
+git clone https://github.com/AstralDeep/AstralDeep.git astraldeep
+cd astraldeep
+git checkout 528467d1bd602ab3219a426ac9c82eda3b5bc4d5
+git submodule update --init --recursive
 ```
 
-From a checkout, use `pip install -e .`. A checkout builds the executor and sandbox images locally. The build needs the pinned kernel wheel and mailbox binary and fails if either is missing or differs. Point the deployment at the folder that holds both:
+Build the pinned Kernel wheel and mailbox for the machine that will run Docker, then pass that directory as the named build context:
 
-```toml
-[executor]
-kernel_artifacts = "/path/to/kernel-artifacts"
+=== "Linux x86_64"
+
+    ```bash
+    python3 scripts/build_kernel_binding.py --root . --output ../kernel-artifacts --platform linux-x86_64
+    docker build --platform linux/amd64 --build-context kernel-artifacts=../kernel-artifacts -t astralvessel-node:local .
+    ```
+
+=== "Linux arm64 or Apple silicon"
+
+    ```bash
+    python3 scripts/build_kernel_binding.py --root . --output ../kernel-artifacts --platform linux-aarch64
+    docker build --platform linux/arm64 --build-context kernel-artifacts=../kernel-artifacts -t astralvessel-node:local .
+    ```
+
+The helper reads `config/astral-kernel-binding.json`, builds from its exact Kernel submodule commit, and checks the wheel and mailbox digests before the image build can use them. `astralvessel-node:local` is the default node image name.
+
+## 2. Install AstralVessel
+
+```bash
+python3 -m pip install astralvessel
 ```
 
-## 3. Start the node
+## 3. Start and check the node
+
+Use your Keycloak realm URL as the issuer and the client ID configured for your AstralDeep app:
 
 ```bash
 mkdir mynode && cd mynode
-astralvessel up --issuer https://keycloak.example.com/realms/astral --client-id astral-app --example
+astralvessel up --issuer https://keycloak.example/realms/astral --client-id astral-mobile --example
 ```
 
-`up` writes `deployment.toml` and a private `.env`, writes the Compose file, starts the containers, waits for the node and the sandboxes, and runs the checks. It prints `ready` when they pass.
+`up` writes a private deployment file, starts the node and executor, waits for them to become ready, and runs the checks. The node listens on `127.0.0.1:8001` by default.
 
-The node listens on `127.0.0.1:8001`. Pass `--port` to change that.
-
-## 4. Check it and talk to it
+For commands that act as the owner, set a current access token issued for that owner by the configured issuer. The CLI reads it from the environment or a file and never prints it or accepts it as a command-line value:
 
 ```bash
+export ASTRAL_OWNER_TOKEN="<current owner access token>"
 astralvessel check
-export ASTRAL_OWNER_TOKEN=<an access token for the owner>
 astralvessel ask "hello"
 astralvessel conformance
 ```
 
-`ASTRAL_OWNER_TOKEN` must be a current token from the issuer you named. The command never prints it and never takes it as an argument. Use `--token-file` to read it from a file.
+See [CLI token handling](../reference/cli.md#the-owners-token) and [pairing](../run/pairing.md).
 
-## 5. Add the node from the app
-
-```bash
-astralvessel pair
-```
-
-See [Pairing](../run/pairing.md).
-
-## Stop it
+## Stop the node
 
 ```bash
 astralvessel down
