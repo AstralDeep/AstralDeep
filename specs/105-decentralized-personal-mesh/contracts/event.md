@@ -154,7 +154,7 @@ The family decides the merge rule. The body of every type is a canonical JSON ob
 | `chat.model_request`, `chat.model_response` | chat | chat id | none |
 | `chat.tool_proposed`, `chat.tool_authorized` | chat | chat id | none |
 | `chat.tool_result` | chat | chat id | the whole body is addressable by surface bindings |
-| `chat.turn_start` | chat | chat id | `continues` (turn id or null), `message` (user message id or null). Optional `request`: the request this turn answers (`requests.md`) |
+| `chat.turn_start` | chat | chat id | `continues` (turn id or null), `message` (user message id or null). Optional `request`: the request this turn answers (`requests.md`). The engine may persist `cancelled: true` for an exact ordinary input stopped before execution, as described below |
 | `chat.turn_end`, `chat.turn_outcome_unknown` | chat | chat id | none |
 | `chat.attachment` | chat | chat id | none. The body names the file and the hashes of its sealed chunks (`attachments.md`) |
 | `chat.spoken` | chat | chat id | none. `kind` is `answer` or `acknowledgement`, `text` is the assistant text a device actually played aloud, and `turn` is optional |
@@ -178,6 +178,10 @@ The family decides the merge rule. The body of every type is a canonical JSON ob
 | `key.credential` | key | `mesh` | `name`, `boxes`, optional `audience` (see `keys.md` section 4.1). The label is always secret |
 
 A `chat.spoken` event records what the person heard in voice mode. It is visible to the owner like an assistant message and carries labels from the chat it was spoken in. A reader that builds model context for a later turn uses the spoken text of a turn in place of that turn's final model text, because the person heard only the spoken text. The complete model output stays in its `chat.model_response` events for audit and is never rewritten.
+
+For an ordinary input stopped before native execution, the engine may write `chat.turn_start` with `cancelled: true`, followed by an interrupted `chat.turn_end`. The input remains in history and is consumed by that exact turn. The first event is durable cancellation intent: after a crash before the end is written, recovery closes it as interrupted without provider credential lookup, model calls, tool enumeration, ticket minting or effects. The two events use the ordinary signed log and publish normal turn progress; cancelling a host task alone is not a durable stop.
+
+This operation holds the same per-chat claim as execution, rereads the exact latest pending input, and requires its signed header to belong to the device's current local feed. It rejects a stale or foreign input, an open or ambiguous turn, unknown effects, and raw request/action/run/round/turn provenance. It may cancel a new ordinary manual input in a chat with historical Run entries, without cancelling that Run. It never selects another input or resumes a halted mesh. A cancellation-marked journal that already contains model rounds or tool steps is inconsistent and is refused without hiding or replaying that work. A storage failure is not reported as a confirmed cancellation.
 
 The mesh family of spec section 5.3 (add or remove a device, a new key epoch, stop) is carried by roster entries, not by feeds. See `roster.md`. A run or learning event is accepted and chained like any other. The merge rules of those two families are in `runs.md` and `learning.md`.
 
