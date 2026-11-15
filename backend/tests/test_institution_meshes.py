@@ -10,9 +10,16 @@ from orchestrator import node_mesh
 from orchestrator.institution_meshes import InstitutionMeshes, Owner
 from orchestrator.node_mesh import NodeMeshError
 from tests import fake_astral_kernel as fake
-from tests.test_node_mesh_chat import no_issuers
 
 ISS = "https://idp.example/realms/a"
+OTHER_ISS = "https://idp.example/realms/b"
+
+
+async def owner_issuers():
+    return [
+        {"issuer": ISS, "client_id": "test-client", "jwks_json": "{}"},
+        {"issuer": OTHER_ISS, "client_id": "test-client", "jwks_json": "{}"},
+    ]
 
 
 @pytest.fixture(autouse=True)
@@ -22,7 +29,8 @@ def clean():
 
 
 def meshes(tmp_path, **kwargs):
-    return InstitutionMeshes(base_dir=tmp_path, binding=fake, issuers=no_issuers, **kwargs)
+    kwargs.setdefault("issuers", owner_issuers)
+    return InstitutionMeshes(base_dir=tmp_path, binding=fake, **kwargs)
 
 
 async def test_each_owner_gets_its_own_peer_data_directory_and_keys(tmp_path):
@@ -53,6 +61,28 @@ async def test_the_same_subject_from_another_issuer_is_a_separate_owner_with_its
     assert first is not second and len(fake.Kernel.instances) == 2
     assert registry.owner_dir(other) != registry.owner_dir(Owner.verified(ISS, "alice"))
     assert len({owner.partition for owner in registry.owners}) == 2
+    await registry.stop()
+
+
+async def test_each_owner_issuer_is_first_while_other_accepted_issuers_remain_trusted(tmp_path):
+    registry = meshes(tmp_path)
+    first = await registry.for_owner(Owner.verified(ISS, "alice"))
+    second = await registry.for_owner(Owner.verified(OTHER_ISS, "bob"))
+    first_issuers = first.kernel.config.issuers
+    second_issuers = second.kernel.config.issuers
+    assert [issuer.issuer for issuer in first_issuers] == [ISS, OTHER_ISS]
+    assert [issuer.issuer for issuer in second_issuers] == [OTHER_ISS, ISS]
+    await registry.stop()
+
+
+async def test_an_owner_with_an_unaccepted_issuer_gets_no_peer_or_owner_record(tmp_path):
+    registry = meshes(tmp_path)
+    owner = Owner.verified("https://idp.example/realms/unknown", "alice")
+    with pytest.raises(NodeMeshError) as info:
+        await registry.for_owner(owner)
+    assert info.value.code == "institution_owner_issuer_unaccepted" and info.value.status == 403
+    assert registry.current(owner) is None and not fake.Kernel.instances
+    assert not registry.owner_dir(owner).exists()
     await registry.stop()
 
 

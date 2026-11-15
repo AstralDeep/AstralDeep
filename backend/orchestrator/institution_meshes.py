@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from orchestrator.node_mailbox import MailboxError, MailboxProcess, MailboxSettings
-from orchestrator.node_mesh import IssuerLoader, MeshSettings, NodeMesh, NodeMeshError
+from orchestrator.node_mesh import IssuerLoader, MeshSettings, NodeMesh, NodeMeshError, default_issuers
 from shared import node_identity
 
 logger = logging.getLogger("Orchestrator.InstitutionMeshes")
@@ -136,11 +136,30 @@ class InstitutionMeshes:
                 return mesh
             if len(self._meshes) >= self._max_owners:
                 raise NodeMeshError("institution_capacity", 429)
+            issuer_loader = self._issuers or default_issuers
+            configured_issuers = await issuer_loader()
+            owner_issuers = []
+            other_issuers = []
+            for issuer in configured_issuers:
+                try:
+                    matches_owner = node_identity.normalize_issuer(issuer.get("issuer")) == owner.issuer
+                except (AttributeError, node_identity.NodeIdentityError):
+                    matches_owner = False
+                (owner_issuers if matches_owner else other_issuers).append(issuer)
+            if not owner_issuers:
+                raise NodeMeshError("institution_owner_issuer_unaccepted", 403)
             directory = self.owner_dir(owner)
             self._record_owner(directory, owner)
-            kwargs: Dict[str, Any] = {"data_dir": directory, "settings": self._settings}
-            if self._issuers is not None:
-                kwargs["issuers"] = self._issuers
+            ordered_issuers = [*owner_issuers, *other_issuers]
+
+            async def load_owner_issuers() -> List[Dict[str, str]]:
+                return list(ordered_issuers)
+
+            kwargs: Dict[str, Any] = {
+                "data_dir": directory,
+                "settings": self._settings,
+                "issuers": load_owner_issuers,
+            }
             if self._binding is not None:
                 kwargs["binding"] = self._binding
             if self._mailbox is not None:

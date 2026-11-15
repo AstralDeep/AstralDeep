@@ -17,12 +17,19 @@ from shared import institution_profile as ip
 from shared import node_identity as ni
 from shared.token_verify import with_owner_identity
 from tests import fake_astral_kernel as fake
-from tests.test_node_mesh_chat import History, answering, no_issuers, settle
+from tests.test_node_mesh_chat import History, answering, settle
 
 KEY = ec.derive_private_key(0x1D2C3B4A5968778695A4B3C2D1E0F00F, ec.SECP256R1())
 ISS = "https://idp.example/realms/a"
 OWNER_A = ni.canonical_owner_id(ISS, "alice")
 OWNER_B = ni.canonical_owner_id(ISS, "bob")
+
+
+async def api_issuers():
+    return [
+        {"issuer": ISS, "client_id": "test-client", "jwks_json": "{}"},
+        {"issuer": "https://idp.example/realms/b", "client_id": "test-client", "jwks_json": "{}"},
+    ]
 
 
 def owner_actor(subject="alice", issuer=ISS):
@@ -66,7 +73,7 @@ def runtime_for(env, **kwargs):
         runner=kwargs.pop("runner", answering()),
         calls=None,
         binding=fake,
-        issuers=no_issuers,
+        issuers=api_issuers,
         settings=node_mesh.MeshSettings(mailbox=node_mesh.MailboxSettings(enabled=False)),
         phi_active=lambda _owner: False,
         **kwargs,
