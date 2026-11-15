@@ -544,6 +544,7 @@ def test_profile_platform_family_rejects_other_or_unanchored_platforms(profiles,
 COMPAT_INFO = 'apple-clients/AstralApp/Info.plist'
 COMPAT_TESTS = 'apple-clients/AstralApp/AstralAppTests/MeshConsentTests.swift'
 COMPAT_LEDGER = 'provenance/transformations.json'
+QUALIFICATION_PATHS = upload.PROJECTION_QUALIFICATION_PATHS
 COMPAT_ANCHOR = 'final class LocalAuthenticatorTests: XCTestCase {\n'
 COMPAT_ADDITION = '''    func testAppBundleDeclaresFaceIDPurposeForBiometricConsent() throws {
         let purpose = try XCTUnwrap(
@@ -585,6 +586,10 @@ def projection_repo(tmp_path, monkeypatch):
                               'resultSha256':hashlib.sha256(info.read_bytes()).hexdigest()},
                              {'path':'other-file', 'resultSha256':'c' * 64, 'active':True}]}
     ledger.write_text(json.dumps(old_ledger, indent=2))
+    for index, relative in enumerate(sorted(QUALIFICATION_PATHS)):
+        path = repo / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f'qualification baseline {index}\n')
     compat_git(repo, 'add', '.')
     compat_git(repo, 'commit', '-qm', 'Original')
     old = compat_git(repo, 'rev-parse', 'HEAD')
@@ -615,10 +620,36 @@ def test_projection_purpose_compatibility_uses_real_git_tree(projection_repo):
     assert proof['info_only_adds_face_id_purpose'] is True
     assert proof['tests_exact_host_bundle_regression'] is True
     assert proof['provenance_only_updates_info_result'] is True
+    assert proof['qualification_only_paths'] == []
     assert upload.projection_compatibility(old, old)['mode'] == 'exact'
 
 
-@pytest.mark.parametrize('mutation', ['outside', 'newline-path', 'gitlink', 'info-executable', 'test-executable',
+def test_projection_qualification_compatibility_keeps_exact_named_path_set():
+    assert QUALIFICATION_PATHS == {
+        'scripts/native_xccov_domain.py',
+        'tests/test_native_xccov_domain.py',
+        'apple-clients/AstralApp/AstralAppTests/AppModelServerCustodyTests.swift',
+    }
+
+
+@pytest.mark.parametrize('relative', sorted(QUALIFICATION_PATHS))
+def test_projection_compatibility_binds_only_named_qualification_inputs(projection_repo, relative):
+    repo, old, _, _ = projection_repo
+    path = repo / relative
+    path.write_text(path.read_text() + 'qualified change\n')
+    new = compat_commit(repo)
+    proof = upload.projection_compatibility(old, new)
+    assert proof['qualification_only_paths'] == [relative]
+    assert proof['changed_paths'] == sorted([COMPAT_TESTS, COMPAT_INFO, COMPAT_LEDGER, relative])
+    assert proof['blob_changes'][relative] == {
+        'original': compat_git(repo, 'rev-parse', old + ':' + relative),
+        'current': compat_git(repo, 'rev-parse', new + ':' + relative),
+    }
+
+
+@pytest.mark.parametrize('mutation', ['outside', 'newline-path', 'qualification-outside', 'qualification-directory',
+    'qualification-executable', 'qualification-symlink', 'qualification-deleted', 'qualification-renamed',
+    'gitlink', 'info-executable', 'test-executable',
     'info-symlink', 'test-symlink', 'deleted', 'renamed', 'no-delta', 'info-other-key', 'info-bool-to-int',
     'purpose-missing', 'purpose-empty', 'purpose-whitespace', 'purpose-number', 'purpose-list', 'purpose-dict',
     'info-invalid', 'info-duplicate-key', 'test-arbitrary-addition', 'test-existing-change', 'test-wrong-bundle'])
@@ -626,10 +657,27 @@ def test_projection_compatibility_denies_other_tree_or_semantic_changes(projecti
     repo, old, old_info, old_test = projection_repo
     info = repo / COMPAT_INFO
     tests = repo / COMPAT_TESTS
+    qualification_path = repo / sorted(QUALIFICATION_PATHS)[0]
     new_info = {**old_info, 'NSFaceIDUsageDescription': 'Verify protected actions.'}
     if mutation in {'outside', 'newline-path'}:
         path = repo / ('unapproved.swift' if mutation == 'outside' else 'unapproved\nfile.swift')
         path.write_text('unapproved')
+    elif mutation == 'qualification-outside':
+        (repo / 'tests' / 'test_other_qualification.py').write_text('unapproved')
+    elif mutation == 'qualification-directory':
+        path = repo / 'tests' / 'nested' / 'test_native_xccov_domain.py'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('unapproved')
+    elif mutation == 'qualification-executable':
+        qualification_path.write_text(qualification_path.read_text() + 'changed\n')
+        qualification_path.chmod(0o755)
+    elif mutation == 'qualification-symlink':
+        qualification_path.unlink()
+        qualification_path.symlink_to('unapproved-target')
+    elif mutation == 'qualification-deleted':
+        qualification_path.unlink()
+    elif mutation == 'qualification-renamed':
+        qualification_path.rename(qualification_path.with_name('renamed-qualification.py'))
     elif mutation == 'gitlink':
         compat_git(repo, 'config', 'diff.ignoreSubmodules', 'all')
         compat_git(repo, 'add', COMPAT_INFO, COMPAT_TESTS, COMPAT_LEDGER)

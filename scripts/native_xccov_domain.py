@@ -258,6 +258,59 @@ def macos_case_warnings(children: Any, lane: str) -> None:
                 require(path.name == source and location["lineNumber"] == line)
 
 
+def macos_case_diagnostics(node: dict[str, Any], lane: str) -> None:
+    children = node.get("children", [])
+    require(isinstance(children, list))
+    if not any(
+        isinstance(child, dict) and child.get("nodeType") == "Repetition" for child in children
+    ):
+        macos_case_warnings(children, lane)
+        return
+    require(lane == "unit" and len(children) == 2)
+    require(
+        set(node)
+        == {
+            "children", "details", "duration", "durationInSeconds", "name", "nodeIdentifier",
+            "nodeIdentifierURL", "nodeType", "result",
+        }
+    )
+    identifier = _text(node["nodeIdentifier"])
+    identity = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*)/([A-Za-z_][A-Za-z0-9_]*)\(\)", identifier)
+    require(identity is not None)
+    require(
+        node["result"] == "Passed"
+        and node["name"] == identity[2] + "()"
+        and node["details"] == "⚠️ Passed after 1 retry"
+        and node["nodeIdentifierURL"] == "test://com.apple.xcode/AstralApp/AstralAppTests/" + identifier[:-2]
+    )
+    for index, attempt in enumerate(children):
+        require(isinstance(attempt, dict))
+        keys = {"duration", "durationInSeconds", "name", "nodeIdentifier", "nodeType", "result"}
+        require(set(attempt) == keys | ({"children"} if index == 0 else set()))
+        require(
+            attempt["nodeType"] == "Repetition"
+            and attempt["nodeIdentifier"] == str(index + 1)
+            and attempt["name"] == ("First Run" if index == 0 else "Retry 1")
+            and attempt["result"] == ("Failed" if index == 0 else "Passed")
+        )
+    failures = children[0]["children"]
+    require(isinstance(failures, list) and len(failures) == 1 and isinstance(failures[0], dict))
+    require(set(failures[0]) == {"name", "nodeType"} and failures[0]["nodeType"] == "Failure Message")
+    require(
+        re.fullmatch(
+            re.escape(identity[1]) + r"\.swift:[1-9][0-9]{0,6}: .+", _text(failures[0]["name"])
+        )
+        is not None
+    )
+    for observation in [node, *children]:
+        duration = observation["durationInSeconds"]
+        require(
+            (type(duration) is int or type(duration) is float and math.isfinite(duration))
+            and duration >= 0
+        )
+        require(re.fullmatch(r"[0-9]+(?:\.[0-9]+)?s", _text(observation["duration"])) is not None)
+
+
 def _macos_test_identity(summary: Any, tests: Any, lane: str, architecture: str) -> None:
     require(
         lane in MACOS_LANES
@@ -336,7 +389,7 @@ def _macos_test_identity(summary: Any, tests: Any, lane: str, architecture: str)
                 dispositions[identifier] = reason
             else:
                 require(node.get("result") == "Passed")
-                macos_case_warnings(children, lane)
+                macos_case_diagnostics(node, lane)
         pending.extend(children)
     require(len(cases) == total and len(dispositions) == skipped)
     staging = "ReleaseEvidenceUITests/testReleaseEvidenceProducesPlatformReport()"

@@ -25,6 +25,11 @@ API = "https://api.appstoreconnect.apple.com/v1/"
 PROJECTION_INFO = "apple-clients/AstralApp/Info.plist"
 PROJECTION_CONSENT_TESTS = "apple-clients/AstralApp/AstralAppTests/MeshConsentTests.swift"
 PROJECTION_LEDGER = "provenance/transformations.json"
+PROJECTION_QUALIFICATION_PATHS = frozenset({
+    "scripts/native_xccov_domain.py",
+    "tests/test_native_xccov_domain.py",
+    "apple-clients/AstralApp/AstralAppTests/AppModelServerCustodyTests.swift",
+})
 FACE_ID_TEST_ANCHOR = b"final class LocalAuthenticatorTests: XCTestCase {\n"
 FACE_ID_HOST_BUNDLE_TEST = b'''    func testAppBundleDeclaresFaceIDPurposeForBiometricConsent() throws {
         let purpose = try XCTUnwrap(
@@ -133,11 +138,14 @@ def projection_compatibility(original, current):
         require(len(fields) == 5 and fields[0] == b":100644" and fields[1] == b"100644" and fields[4] == b"M",
                 "Projection compatibility permits only modified regular nonexecutable files")
         name = path.decode("utf-8")
-        require(name in {PROJECTION_INFO, PROJECTION_CONSENT_TESTS, PROJECTION_LEDGER} and name not in changes,
+        require(name in ({PROJECTION_INFO, PROJECTION_CONSENT_TESTS, PROJECTION_LEDGER}
+                         | PROJECTION_QUALIFICATION_PATHS) and name not in changes,
                 "Projection compatibility includes an unapproved path")
         changes[name] = (fields[2].decode("ascii"), fields[3].decode("ascii"))
-    require(set(changes) == {PROJECTION_INFO, PROJECTION_CONSENT_TESTS, PROJECTION_LEDGER},
-            "Projection compatibility requires exactly the purpose string, host-bundle regression and provenance binding")
+    required_paths = {PROJECTION_INFO, PROJECTION_CONSENT_TESTS, PROJECTION_LEDGER}
+    qualification_paths = set(changes) - required_paths
+    require(required_paths <= set(changes) and qualification_paths <= PROJECTION_QUALIFICATION_PATHS,
+            "Projection compatibility permits only the purpose binding and named qualification inputs")
     info_bytes = [projection_blob(oid) for oid in changes[PROJECTION_INFO]]
     old_info, new_info = [plistlib.loads(payload, dict_type=UniquePlistDictionary) for payload in info_bytes]
     require(isinstance(old_info, dict) and isinstance(new_info, dict), "Projection Info must be a dictionary")
@@ -156,6 +164,7 @@ def projection_compatibility(original, current):
     return {**proof, "mode": "face-id-purpose-addition", "ancestor": True,
             "changed_paths": sorted(changes), "blob_changes": {
                 name: {"original": pair[0], "current": pair[1]} for name, pair in sorted(changes.items())},
+            "qualification_only_paths": sorted(qualification_paths),
             "info_only_adds_face_id_purpose": True, "tests_exact_host_bundle_regression": True,
             "provenance_only_updates_info_result": True, "info_result_sha256": ledger_hashes}
 
