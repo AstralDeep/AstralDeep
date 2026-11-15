@@ -28,6 +28,12 @@ The durable effect claim is per receiving Kernel store. This does not claim glob
 
 The first9917 hosted run found one fixture with no accepted institution issuer in `test_push_wake.py`; the positive wake-isolation test was correctly refused before it could reach its intended assertion. The fixture now declares its accepted issuer, all30 push-wake tests pass, and no production gate or source-equivalence allowance changed. All217 receiver/API checks had already passed from the clean baked9917 image with zero skips and no tree changes. Runtime Python is unchanged at the new bcd91 pack checkpoint; final candidate CI is still required before signing/publication.
 
+## Apple hosted coverage collection repair
+
+The hosted7b23 Apple run executes all1,736 Mac unit cases with two declared skips and zero failures. Its iOS unit summary has1,100 passed, two declared hardware skips and zero final failures; two first-attempt assertions pass on permitted per-test retry and their diagnostics are retained. Completed iOS UI shards and the Mac UI suite also pass Xcode execution, then fail collection. The collector incorrectly requires zero iOS skips and assumes LLVM per-function filename indexes cannot repeat.
+
+Projection069bb579 corrects only evidence collection: exact platform/lane/test/reason dispositions admit the owner-waived installed-model and unsigned-iOS-Keychain diagnostics; all unknown skips, failed/expected-failure cases, count mismatches and invalid source/region mappings still fail. Repeated LLVM filename indexes now retain their index/provenance/region checks. Root independently passes all199 focused tests; changed helper coverage is99%. Actual iOS summary/identity documents and a real LLVM export mapping164 maintained Swift files pass replay. No Swift/product assertions are weakened. Final hosted collection is still required.
+
 ## Default-branch continuation, 2026-11-15
 
 The four feature PRs are merged under the owner's explicit instruction to merge before green CI and repair the default branches. Their four remote and four local head branches were deleted. Scoped cleanup recovered approximately 18.75 GiB of measured host space; current artifacts, models, user stores, backups, evidence and primary dirty checkouts were preserved.
