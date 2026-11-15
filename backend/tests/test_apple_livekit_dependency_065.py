@@ -1,6 +1,5 @@
-"""Tests for the Apple SDK/LiveKit dependency pin: exact target attachment, protection
-against a project team-override, the resolved dependency graph and checksums,
-sandboxed RTC socket binding, and renderer teardown ordering.
+"""Checks retired Apple hosted voice dependencies and the remaining exact native pins.
+It also guards app signing configuration, entitlements, and fail-closed media defaults.
 """
 
 from __future__ import annotations
@@ -44,26 +43,12 @@ DEPENDENCY_APPROVAL_PATH = Path(
         REPO_ROOT / "specs/065-conversational-voice/dependency-approval.md",
     )
 )
-APP_TARGET_ID = "222F50262FFD60D80016B0D6"
-WATCH_TARGET_ID = "AA00000000000000000000B3"
-LIVEKIT_PRODUCT_ID = "AC6500000000000000000002"
-
-
-def _native_target(project: str, target_id: str) -> str:
-    section = project.split("/* Begin PBXNativeTarget section */", 1)[1].split(
-        "/* End PBXNativeTarget section */", 1
-    )[0]
-    return section.split(f"{target_id} /*", 1)[1].split("\n\t\t};", 1)[0]
-
-
-def test_livekit_is_exact_and_attached_only_to_astral_app() -> None:
+def test_hosted_voice_sdk_is_absent_from_apple_targets() -> None:
     project = PROJECT.read_text(encoding="utf-8")
 
-    assert 'repositoryURL = "https://github.com/livekit/client-sdk-swift.git";' in project
-    assert "kind = exactVersion;" in project
-    assert "version = 2.15.3;" in project
-    assert LIVEKIT_PRODUCT_ID in _native_target(project, APP_TARGET_ID)
-    assert LIVEKIT_PRODUCT_ID not in _native_target(project, WATCH_TARGET_ID)
+    assert "LiveKit" not in project
+    assert "client-sdk-swift" not in project
+    assert "webrtc-xcframework" not in project
     assert "LiveKit" not in CORE_PACKAGE.read_text(encoding="utf-8")
 
 
@@ -75,7 +60,7 @@ def test_project_does_not_override_injected_apple_development_team() -> None:
     assert "DEVELOPMENT_TEAM = $(ASTRAL_DEVELOPMENT_TEAM)" in base_config
 
 
-def test_resolved_livekit_graph_is_exact_and_complete() -> None:
+def test_resolved_apple_graph_excludes_hosted_voice_and_keeps_exact_pins() -> None:
     resolution = json.loads(RESOLUTION.read_text(encoding="utf-8"))
     pins = {
         pin["identity"]: (pin["state"]["version"], pin["state"]["revision"])
@@ -84,14 +69,6 @@ def test_resolved_livekit_graph_is_exact_and_complete() -> None:
 
     assert resolution["version"] == 3
     assert pins == {
-        "client-sdk-swift": (
-            "2.15.3",
-            "43ade336353ad12f9ec7fa1e6a51d9b3bd8121f8",
-        ),
-        "livekit-uniffi-xcframework": (
-            "0.0.6",
-            "7c161254ce7cd55debc48023f69a917076b12a26",
-        ),
         "mlx-swift": (
             "0.33.0",
             "7ede4fd6d05f63305c1c0ebf4f8c1909a637c574",
@@ -104,14 +81,6 @@ def test_resolved_livekit_graph_is_exact_and_complete() -> None:
             "1.1.1",
             "0c0290ff6b24942dadb83a929ffaaa1481df04a2",
         ),
-        "swift-protobuf": (
-            "1.38.1",
-            "55d7a1cc5666b85c13464aea1c4b4a90feccb4c8",
-        ),
-        "webrtc-xcframework": (
-            "144.7559.11",
-            "46f2af86f06b9a8a9158d37cadda5cb5a214e4c4",
-        ),
     }
 
 
@@ -122,7 +91,7 @@ def test_approved_binary_target_checksums_are_recorded() -> None:
     assert "0d3f2ce159a224c728f8b131068d53bbf9b13d968cda0edc68a6a2290f2651ed" in approval
 
 
-def test_sandboxed_macos_livekit_can_bind_ephemeral_rtc_sockets() -> None:
+def test_sandboxed_macos_voice_keeps_network_and_audio_entitlements() -> None:
     entitlements = plistlib.loads(MACOS_ENTITLEMENTS.read_bytes())
 
     assert entitlements["com.apple.security.app-sandbox"] is True
@@ -132,15 +101,16 @@ def test_sandboxed_macos_livekit_can_bind_ephemeral_rtc_sockets() -> None:
     assert "com.apple.security.device.camera" not in entitlements
 
 
-def test_audio_renderer_leaves_player_completion_queue_before_teardown() -> None:
+def test_retired_apple_media_defaults_refuse_hosted_voice() -> None:
     source = VOICE_SESSION_CONTROLLER.read_text(encoding="utf-8")
-    finish = source.split(
-        "private func finish(_ requestedPhase: String)", 1
-    )[1].split("private func convertLocked", 1)[0]
+    media = source.split("final class UnavailableAppleVoiceMediaClient", 1)[1].split(
+        "final class RetiredAppleVoiceControlAPI", 1
+    )[0]
 
-    terminal_callback = finish.index("completion(phase)")
-    deferred_cleanup = finish.index("DispatchQueue.main.async")
-    player_stop = finish.index("player.stop()")
-    engine_stop = finish.index("engine.stop()")
-
-    assert terminal_callback < deferred_cleanup < player_stop < engine_stop
+    assert "func connect(_ grant: AppleVoiceRetiredGrant) async throws { throw CompanionVoiceError.rejected }" in media
+    assert "func authorize(_ announcement: VoiceAnnouncementMedia) -> Bool { false }" in media
+    assert "let resolvedMedia = media ?? UnavailableAppleVoiceMediaClient()" in source
+    assert "let resolvedAPI = api ?? RetiredAppleVoiceControlAPI()" in source
+    assert "import LiveKit" not in source
+    assert "URLSession" not in source
+    assert "player.stop()" not in source
