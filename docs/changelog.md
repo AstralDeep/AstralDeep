@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0
+
 AstralVessel becomes the base's headless installation. See [Migration from 0.6.0](run/migration.md).
 
 - `astralvessel up` runs a personal AstralDeep node on SQLite in a named volume, with no PostgreSQL.

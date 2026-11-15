@@ -32,10 +32,42 @@ jobs:
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
-  images:
-    needs: check
+  kernel-binding:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            architecture: amd64
+          - platform: linux/arm64
+            architecture: arm64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.11"
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1  # v4.4.0
+        with:
+          platforms: arm64
+      - name: Build the manifest-pinned Kernel source
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: python scripts/build_kernel_binding.py produce --source "$RUNNER_TEMP/astral-kernel" --output "$RUNNER_TEMP/kernel-artifacts" --platform "$PLATFORM"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: kernel-artifacts-linux-${{ matrix.architecture }}
+          path: ${{ runner.temp }}/kernel-artifacts
+          if-no-files-found: error
+          retention-days: 1
+
+  images:
+    needs: [check, kernel-binding]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     permissions:
       contents: read
       packages: write
@@ -52,6 +84,21 @@ jobs:
           persist-credentials: false
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1  # v4.4.0
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: kernel-artifacts-linux-amd64
+          path: ${{ runner.temp }}/kernel-artifact-inputs/linux-amd64
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: kernel-artifacts-linux-arm64
+          path: ${{ runner.temp }}/kernel-artifact-inputs/linux-arm64
+      - name: Assemble the two source-bound payloads as the named build context
+        run: |
+          mkdir -p "$RUNNER_TEMP/kernel-artifacts"
+          for arch in linux-amd64 linux-arm64; do
+            find "$RUNNER_TEMP/kernel-artifact-inputs/$arch" -maxdepth 1 -type f \
+              \( -name 'astral_kernel-*.whl' -o -name 'astral-mailbox-*' \) -exec cp {} "$RUNNER_TEMP/kernel-artifacts/" \;
+          done
       - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6  # v4.7.0
         if: github.event_name == 'push'
         with:
@@ -61,6 +108,7 @@ jobs:
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
         with:
           context: ${{ matrix.context }}
+          build-contexts: kernel-artifacts=${{ runner.temp }}/kernel-artifacts
           platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name == 'push' }}
           tags: |
