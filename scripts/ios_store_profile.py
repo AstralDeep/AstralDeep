@@ -234,8 +234,8 @@ def renewed_profile(api, certificate, team, directory):
                and base64.b64decode(item["attributes"]["certificateContent"], validate=True) == certificate]
     require(len(matches) == 1, "the imported distribution certificate must match exactly one existing Apple certificate")
     certificate_id = resource_id(matches[0]["id"])
-    capabilities = api.pages(f"bundleIds/{bundle_id}/bundleIdCapabilities", {"limit": 200})
-    profiles = api.pages(f"bundleIds/{bundle_id}/profiles", {"limit": 200})
+    capabilities = api.pages(f"bundleIds/{bundle_id}/bundleIdCapabilities")
+    profiles = api.pages(f"bundleIds/{bundle_id}/profiles")
     reusable = []
     for item in profiles:
         attrs = item["attributes"]
@@ -262,7 +262,7 @@ def renewed_profile(api, certificate, team, directory):
             "relationships": {"bundleId": {"data": {"type": "bundleIds", "id": bundle_id}}},
         })
         created_id = resource_id(created["id"])
-        refreshed = api.pages(f"bundleIds/{bundle_id}/bundleIdCapabilities", {"limit": 200})
+        refreshed = api.pages(f"bundleIds/{bundle_id}/bundleIdCapabilities")
         require(any(item["id"] == created_id and item["attributes"].get("capabilityType") == "PUSH_NOTIFICATIONS"
                     for item in refreshed), "Apple did not confirm push on the exact iPhone bundle")
         enabled = True

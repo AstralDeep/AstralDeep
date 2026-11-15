@@ -67,8 +67,12 @@ class FakeAPI:
         if path == 'certificates':
             return [self.cert]
         if path.endswith('/bundleIdCapabilities'):
+            if params is not None:
+                raise signing.ProvisioningError('Apple API HTTP 400: capability relationship source.parameter=limit')
             return [{'id': 'push', 'attributes': {'capabilityType': 'PUSH_NOTIFICATIONS'}}] if self.push else []
         assert path == 'bundleIds/bundle/profiles'
+        if params is not None:
+            raise signing.ProvisioningError('relationship optional query fields are not used')
         return self.profiles
 
     def create(self, path, data):
@@ -390,3 +394,35 @@ def test_http_error_body_and_resource_classes_stay_bounded(api, capsys):
     error = urllib.error.HTTPError(signing.API+'profiles',400,'private',{},io.BytesIO(json.dumps({'errors':[
         {'code':'PARAMETER_ERROR.MISSING','detail':"A required parameter 'limit' is missing."}]}).encode()))
     assert signing.safe_apple_error(error)['detail'] == 'Missing required parameter: limit; values redacted'
+
+
+@pytest.mark.parametrize('push', [True, False])
+def test_capability_relationship_uses_provider_pagination_defaults_only(context, push):
+    api = FakeAPI(push=push)
+    signing.renewed_profile(api, b'certificate', 'TEAM', context)
+    calls = [(path, params) for path, params in api.reads if path.endswith('/bundleIdCapabilities')]
+    assert calls == [('bundleIds/bundle/bundleIdCapabilities', None)] * (1 if push else 2)
+    assert ('bundleIds/bundle/profiles', None) in api.reads
+    assert ('certificates', {'filter[certificateType]': 'DISTRIBUTION,IOS_DISTRIBUTION', 'limit': 200}) in api.reads
+    assert api.reads[0] == ('profiles', {'limit': 1})
+
+
+@pytest.mark.parametrize('relationship', ['bundleIdCapabilities', 'profiles'])
+def test_relationship_defaults_follow_same_origin_next_links_and_keep_page_bound(api, relationship):
+    path = 'bundleIds/PRIVATE-BUNDLE-ID/' + relationship
+    urls = []
+    def open_page(request, timeout):
+        urls.append(request.full_url)
+        payload = {'data': [{'id': len(urls)}], 'links': {'next': signing.API + path + '?cursor=PRIVATE' if len(urls) == 1 else None}}
+        return io.BytesIO(json.dumps(payload).encode())
+    api.opener = SimpleNamespace(open=open_page)
+    assert api.pages(path) == [{'id': 1}, {'id': 2}]
+    assert urls == [signing.API + path, signing.API + path + '?cursor=PRIVATE']
+    pages = []
+    def endless(url):
+        pages.append(url)
+        return {'data': [], 'links': {'next': signing.API + path + '?cursor=' + str(len(pages))}}
+    api.request = endless
+    with pytest.raises(ValueError, match='pagination'):
+        api.pages(path)
+    assert len(pages) == 25
