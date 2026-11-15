@@ -160,10 +160,12 @@ def profile_identity(profile, bundle, name, team):
     entitlements = profile.get("Entitlements", {})
     app_id = entitlements.get("application-identifier")
     platforms = profile.get("Platform", [])
+    platform_tags = set(platforms)
+    ios_family = "iOS" in platform_tags and platform_tags <= {"iOS", "xrOS", "visionOS"}
     checks = {"name_matches": profile.get("Name") == name,
               "team_matches": profile.get("TeamIdentifier") == [team],
               "app_id_matches": app_id == f"{team}.{bundle}",
-              "platform_tags_allowed": set(platforms) <= {"iOS", "watchOS"},
+              "platform_tags_allowed": platform_tags <= {"iOS", "watchOS"} or ios_family,
               "platform_nonempty": bool(profile.get("Platform"))}
     public_tags = ("iOS", "watchOS", "macOS", "tvOS", "xrOS", "visionOS")
     print(json.dumps({"profile_identity": checks,

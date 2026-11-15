@@ -476,7 +476,7 @@ def test_appledouble_requires_conventional_metadata_name(name):
     ({'Entitlements': {'application-identifier': 'private mismatched app'}}, 'app_id_matches', ['iOS'], False),
     ({'Platform': ['macOS']}, 'platform_tags_allowed', ['macOS'], False),
     ({'Platform': []}, 'platform_nonempty', [], False),
-    ({'Platform': ['iOS', 'xrOS']}, 'platform_tags_allowed', ['iOS', 'xrOS'], False),
+    ({'Platform': ['visionOS']}, 'platform_tags_allowed', ['visionOS'], False),
     ({'Platform': ['private platform marker']}, 'platform_tags_allowed', [], True),
 ])
 def test_profile_identity_reports_only_boolean_checks_and_public_tags(profiles, capsys, change, failed, known, unknown):
@@ -492,3 +492,34 @@ def test_profile_identity_reports_only_boolean_checks_and_public_tags(profiles, 
     assert diagnostics['unknown_platform_tags_present'] is unknown
     for sensitive in ('private', 'TEAM', upload.BUNDLE, 'phone'):
         assert sensitive not in output
+
+
+@pytest.mark.parametrize('target', [0, 1])
+def test_profile_accepts_observed_ios_family_platforms(profiles, target):
+    value = copy.deepcopy(profiles[target])
+    value['Platform'] = ['iOS', 'xrOS', 'visionOS']
+    bundle = upload.BUNDLE + ('.watch' if target else '')
+    upload.profile_identity(value, bundle, 'watch' if target else 'phone', 'TEAM')
+
+
+@pytest.mark.parametrize('platforms', [['iOS'], ['watchOS'], ['iOS', 'watchOS'], ['iOS', 'xrOS'], ['iOS', 'visionOS']])
+@pytest.mark.parametrize('target', [0, 1])
+def test_profile_platform_allowances_preserve_matching_identity(profiles, platforms, target):
+    value = copy.deepcopy(profiles[target])
+    value['Platform'] = platforms
+    bundle = upload.BUNDLE + ('.watch' if target else '')
+    upload.profile_identity(value, bundle, 'watch' if target else 'phone', 'TEAM')
+    with pytest.raises(ValueError, match='app_id_matches'):
+        upload.profile_identity(value, upload.BUNDLE + '.wrong', 'watch' if target else 'phone', 'TEAM')
+    with pytest.raises(ValueError, match='team_matches'):
+        upload.profile_identity(value, bundle, 'watch' if target else 'phone', 'OTHER')
+
+
+@pytest.mark.parametrize('platforms', [['visionOS'], ['xrOS'], ['xrOS', 'visionOS'], ['macOS'], ['tvOS'],
+    ['iOS', 'macOS'], ['iOS', 'tvOS'], ['iOS', 'unknown'], ['watchOS', 'visionOS'], ['iOS', 'watchOS', 'xrOS']])
+@pytest.mark.parametrize('target', [0, 1])
+def test_profile_platform_family_rejects_other_or_unanchored_platforms(profiles, platforms, target):
+    value = copy.deepcopy(profiles[target])
+    value['Platform'] = platforms
+    with pytest.raises(ValueError, match='platform_tags_allowed'):
+        upload.profile_identity(value, upload.BUNDLE + ('.watch' if target else ''), 'watch' if target else 'phone', 'TEAM')
