@@ -13,11 +13,12 @@ from orchestrator import chrome_events as chrome
 from orchestrator.projection_surfaces import connection
 from tests import test_connection_guide as fixtures
 
-mock_auth = fixtures.mock_auth
+signed_in = fixtures.signed_in
+
 
 
 @pytest.fixture
-def watch(mock_auth):
+def watch(signed_in):
     orch = fixtures._PushOrch(device_type="watch")
     orch.ui_sessions[orch.websocket]["realm_access"] = {"roles": ["user"]}
     async def configured(_):
