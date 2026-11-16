@@ -319,7 +319,8 @@ def test_reviewed_probe_sequence_leaves_legacy_fallback_not_ready(tunnel_endpoin
     client, orchestrator = tunnel_endpoint
     profile = TunnelProbeProfile(client)
 
-    ready = profile.reviewed_startup_fallback(fallback_token=_owner_token())
+    token = _owner_token()
+    ready = profile.reviewed_startup_fallback(fallback_token=token)
 
     assert [entry["step"] for entry in profile.transcript.entries] == [
         "metadata",
@@ -347,7 +348,7 @@ def test_reviewed_probe_sequence_leaves_legacy_fallback_not_ready(tunnel_endpoin
     assert body["params"]["_meta"]["io.modelcontextprotocol/protocolVersion"] == "2026-07-28"
 
     assert orchestrator.calls == []
-    assert _owner_token() not in profile.transcript.serialized()
+    assert token not in profile.transcript.serialized()
     assert "Bearer" not in profile.transcript.serialized()
     assert "authorization" not in profile.transcript.serialized()
 
@@ -537,10 +538,11 @@ def test_probe_transcript_never_carries_credentials_or_arguments(tunnel_endpoint
     profile = TunnelProbeProfile(client)
     profile.probe_metadata()
     profile.probe_modern_discovery()
-    profile.probe_legacy_initialize(token=_owner_token())
-    profile.probe_modern_discovery(token=_owner_token())
+    token = _owner_token()
+    profile.probe_legacy_initialize(token=token)
+    profile.probe_modern_discovery(token=token)
     serialized = profile.transcript.serialized()
-    assert _owner_token() not in serialized
+    assert token not in serialized
     assert "Bearer" not in serialized
     assert "authorization" not in serialized
     assert all(

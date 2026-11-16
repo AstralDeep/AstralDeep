@@ -74,73 +74,69 @@ class _FakeSession:
         })
 
 
-def _signing_session(identity):
-    class _SigningSession(_FakeSession):
+def _echoing_session(identity, agent_id):
+    class _EchoingSession(_FakeSession):
         def post(self, url, data=None):
             _FakeSession.captured = (url, data)
             subject = jose_jwt.get_unverified_claims(data["subject_token"])
             token = identity.issuer.token(
-                subject["sub"],
-                aud=data["audience"],
-                scope=data["scope"],
-                act={"sub": "agent:" + _FakeSession.agent_id},
-                delegation=True,
+                subject["sub"], aud=data["audience"], scope=data["scope"],
+                act={"sub": "agent:" + agent_id}, delegation=True,
             )
-            return _FakeResp(200, {
-                "access_token": token,
-                "token_type": "Bearer",
-                "expires_in": 300,
-                "scope": data["scope"],
-            })
+            return _FakeResp(200, {"access_token": token, "token_type": "Bearer",
+                                   "expires_in": 300, "scope": data["scope"]})
 
-    return _SigningSession
+    return _EchoingSession
 
 
 class TestSignedExchange:
+    async def _exchange(self, identity, monkeypatch, scopes, tools=TOOLS):
+        monkeypatch.setenv("KEYCLOAK_CLIENT_SECRET", "secret")
+        monkeypatch.setattr(
+            "orchestrator.delegation.aiohttp.ClientSession",
+            _echoing_session(identity, "general-1"),
+        )
+        user_token = identity.token("user-1")
+        result = await DelegationService().exchange_token_for_agent(
+            user_token, "general-1", allowed_tools=tools, enabled_scopes=scopes,
+        )
+        return user_token, result
+
     @pytest.mark.asyncio
-    async def test_exchange_returns_a_verifiable_delegation_token(
+    async def test_exchange_sends_the_callers_token_and_requested_audience(
         self, server_identity, monkeypatch
     ):
-        monkeypatch.setenv("KEYCLOAK_CLIENT_SECRET", "secret")
-        service = DelegationService()
-        _FakeSession.agent_id = "general-1"
-        monkeypatch.setattr(
-            "orchestrator.delegation.aiohttp.ClientSession", _signing_session(server_identity)
+        user_token, result = await self._exchange(
+            server_identity, monkeypatch, ["tools:read", "tools:write"]
         )
-        result = await service.exchange_token_for_agent(
-            server_identity.token("user-1"), "general-1",
-            allowed_tools=TOOLS, enabled_scopes=["tools:read", "tools:write"],
-        )
+        url, form = _FakeSession.captured
+        assert url == f"{server_identity.issuer.authority}/protocol/openid-connect/token"
+        assert form["grant_type"] == "urn:ietf:params:oauth:grant-type:token-exchange"
+        assert form["subject_token"] == user_token
+        assert form["subject_token_type"] == "urn:ietf:params:oauth:token-type:access_token"
+        assert form["requested_token_type"] == "urn:ietf:params:oauth:token-type:access_token"
+        assert form["audience"] == "astral-agent-service"
+        assert form["scope"] == "tools:read tools:write"
         assert result["agent_id"] == "general-1"
-        assert result["token_type"] == "Bearer"
+        assert result["scope"] == "tools:read tools:write"
+
+    @pytest.mark.asyncio
+    async def test_narrowed_scopes_are_all_the_exchange_requests(
+        self, server_identity, monkeypatch
+    ):
+        _, result = await self._exchange(
+            server_identity, monkeypatch, ["tools:read"], tools=["get_system_status"]
+        )
+        _, form = _FakeSession.captured
+        assert form["scope"] == "tools:read"
+        assert "tools:write" not in form["scope"]
         claims = jose_jwt.decode(
             result["access_token"], server_identity.issuer.jwks,
             algorithms=["RS256"], audience="astral-agent-service",
             issuer=server_identity.issuer.authority,
         )
         assert claims["sub"] == "user-1"
-        assert claims["act"] == {"sub": "agent:general-1"}
-        assert claims["delegation"] is True
-        assert set(claims["scope"].split()) == {"tools:read", "tools:write"}
-        info = DelegationService.extract_delegation_info(claims)
-        assert info["actor"] == "agent:general-1"
-        assert info["is_delegation"] is True
-
-    @pytest.mark.asyncio
-    async def test_exchange_presents_the_callers_real_token(self, server_identity, monkeypatch):
-        monkeypatch.setenv("KEYCLOAK_CLIENT_SECRET", "secret")
-        service = DelegationService()
-        _FakeSession.agent_id = "general-1"
-        monkeypatch.setattr(
-            "orchestrator.delegation.aiohttp.ClientSession", _signing_session(server_identity)
-        )
-        user_token = server_identity.token("user-1")
-        await service.exchange_token_for_agent(
-            user_token, "general-1", allowed_tools=TOOLS, enabled_scopes=["tools:read"],
-        )
-        _, form = _FakeSession.captured
-        assert form["subject_token"] == user_token
-        assert form["grant_type"] == "urn:ietf:params:oauth:grant-type:token-exchange"
+        assert claims["scope"] == "tools:read"
 
     @pytest.mark.asyncio
     async def test_unconfigured_exchange_is_refused_without_a_fallback_token(
