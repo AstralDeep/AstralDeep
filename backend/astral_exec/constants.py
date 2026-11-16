@@ -1,5 +1,5 @@
-"""Fixed values of the execution policy: base roots, limit ranges, codes, ports and user facing messages.
-Every value mirrors the committed policy vectors, and policy.py, select.py and errors.py read them from here.
+"""Fixed values of the execution policy: base roots, Seatbelt profile names, limit ranges, codes, launcher names and user facing messages.
+Every policy value mirrors the committed vectors, and the policy, selection, renderer and launcher modules read them from here.
 """
 
 from __future__ import annotations
@@ -27,6 +27,31 @@ DARWIN_BASE = (
     "/private/var/db/dyld",
     "/dev",
 )
+DARWIN_EXEC_BASE = ("/usr", "/System", "/Library", "/private/var/db/dyld")
+DARWIN_EXEC_ONLY = ("/bin", "/sbin")
+DARWIN_METADATA_ONLY = ("/bin", "/sbin")
+DARWIN_KEYCHAINS = ("/Library/Keychains", "/System/Library/Keychains")
+DENIED_SERVICES = (
+    "com.apple.trustd",
+    "com.apple.trustd.agent",
+    "com.apple.system.notification_center",
+    "com.apple.analyticsd",
+    "com.apple.analyticsd.messagetracer",
+    "com.apple.diagnosticd",
+    "com.apple.osanalytics.osanalyticshelper",
+)
+DENIED_LOG_SERVICES = (
+    "com.apple.logd",
+    "com.apple.logd.events",
+    "com.apple.system.logger",
+)
+SYSLOG_SOCKET = "/private/var/run/syslog"
+DNSSD_SERVICE = "com.apple.dnssd.service"
+SANDBOX_EXEC = "/usr/bin/sandbox-exec"
+LAUNCH_MARKER = "ASTRAL_EXEC_MARKER"
+REFUSED_EXIT_STATUS = 125
+OUTPUT_LIMIT_BYTES = 8 * 1024 * 1024
+TRAMPOLINE_READY = b"exec"
 LINUX_BASE = ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc")
 LANDLOCK_ABI = 6
 BWRAP_PATHS = ("/usr/bin/bwrap", "/bin/bwrap")
