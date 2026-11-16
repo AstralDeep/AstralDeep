@@ -59,6 +59,10 @@ def procargs_strings(raw: bytes) -> list[bytes]:
     return [part for part in raw[4:].split(b"\0") if part]
 
 
+def user_process_count(system: "System | None" = None) -> int:
+    return len((system or Darwin()).pids(PROC_UID_ONLY, os.geteuid()))
+
+
 class Darwin:
     def __init__(self, lib: Any = None) -> None:
         lib = lib or ctypes.CDLL(LIBSYSTEM, use_errno=True)
@@ -144,8 +148,10 @@ class Watch:
         self._killpg = killpg
         self._self = os.getpid()
         first = self._system.usage(root)
-        self._root_start = None if first is None else first.start
-        self._known: dict[int, int] = {} if first is None else {root: first.start}
+        if first is None:
+            raise OSError("the confined child is not visible to the watchdog")
+        self._root_start = first.start
+        self._known: dict[int, int] = {root: first.start}
         self._scanned: set[int] = set()
 
     def _group_is_ours(self) -> bool:

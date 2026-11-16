@@ -1,4 +1,4 @@
-"""Drives the astral_exec launcher without sandbox-exec: refusals and launch failures start no process, the limits applier, the monitoring loop, the watchdog over an injected process table and the run.py command line.
+"""Drives the astral_exec launcher without sandbox-exec: refusals and launch failures start no process, the trampoline, the monitoring loop, the watchdog over an injected process table and the run.py command line.
 The confined runs live in test_exec_seatbelt_live.py, and every test here runs on any platform.
 """
 
@@ -15,12 +15,14 @@ import tempfile
 import time
 from dataclasses import dataclass, field
 
+import logging
+
 import pytest
-from astral_exec import Policy, constants, launch
+from astral_exec import Policy, constants, launch, watchdog
 from astral_exec import run as run_command
 from astral_exec.constants import LAUNCH_MARKER, MESSAGES, REFUSED_EXIT_STATUS
 from astral_exec.facts import Facts
-from astral_exec.launch import Outcome, run
+from astral_exec.launch import Outcome
 from astral_exec.watchdog import (
     CTL_KERN,
     KERN_ARGMAX,
@@ -61,6 +63,23 @@ def darwin_policy(**overrides):
 
 
 @pytest.fixture
+def real_call(tmp_path):
+    data = (tmp_path / "data").resolve()
+    (data / "exec" / "call").mkdir(parents=True)
+    home = (tmp_path / "home").resolve()
+    home.mkdir()
+
+    def make(**limit_overrides):
+        workspace = data / "exec" / "call"
+        document = minimal_policy(workspace=str(workspace))
+        document["limits"].update(limit_overrides)
+        return Policy.load(document, "darwin", str(data), str(home))
+
+    make.data = str(data)
+    return make
+
+
+@pytest.fixture
 def spawns(monkeypatch):
     calls = []
 
@@ -89,7 +108,7 @@ def spawns(monkeypatch):
     ],
 )
 def test_a_selection_refusal_starts_no_process(spawns, facts, code, reason):
-    outcome = run(darwin_policy(), ["/bin/echo"], {}, None, facts=facts)
+    outcome = launch._run(darwin_policy(), ["/bin/echo"], {}, None, facts=facts)
     assert (outcome.code, outcome.exit_code, outcome.refusal.reason) == (
         code,
         None,
@@ -102,7 +121,7 @@ def test_a_selection_refusal_starts_no_process(spawns, facts, code, reason):
 
 def test_a_workspace_holding_the_data_directory_is_refused(spawns):
     policy = loaded(minimal_policy(workspace=HOME), "darwin", DATA, HOME)
-    outcome = run(policy, ["/bin/echo"], {}, None, facts=darwin_facts())
+    outcome = launch._run(policy, ["/bin/echo"], {}, None, facts=darwin_facts())
     assert outcome.code == "exec.policy_overlaps_data"
     assert outcome.message == MESSAGES["exec.policy_overlaps_data"]
     assert spawns == []
@@ -128,7 +147,9 @@ def test_a_workspace_holding_the_data_directory_is_refused(spawns):
     ],
 )
 def test_anything_but_the_seatbelt_backend_is_a_launch_failure(spawns, policy, facts):
-    outcome = run(policy, ["/bin/echo"], {}, None, facts=facts or darwin_facts())
+    outcome = launch._run(
+        policy, ["/bin/echo"], {}, None, facts=facts or darwin_facts()
+    )
     assert (outcome.code, outcome.exit_code, outcome.refusal) == (
         "exec.launch_failed",
         None,
@@ -160,12 +181,15 @@ def test_anything_but_the_seatbelt_backend_is_a_launch_failure(spawns, policy, f
 def test_a_bad_argument_environment_or_stdin_is_a_launch_failure(
     spawns, argv, env, stdin
 ):
-    outcome = run(darwin_policy(), argv, env, stdin, facts=darwin_facts())
+    outcome = launch._run(darwin_policy(), argv, env, stdin, facts=darwin_facts())
     assert outcome.code == "exec.launch_failed"
     assert spawns == []
 
 
-def test_a_spawn_failure_is_a_launch_failure_and_removes_the_profile(monkeypatch):
+def test_a_spawn_failure_is_a_launch_failure_and_removes_the_profile(
+    monkeypatch, real_call
+):
+    policy = real_call()
     created = []
     real_mkstemp = tempfile.mkstemp
 
@@ -195,18 +219,19 @@ def test_a_spawn_failure_is_a_launch_failure_and_removes_the_profile(monkeypatch
         assert argv[22:] == ["--", "/bin/echo", "hi"]
         assert kwargs["env"] == {}
         assert kwargs["start_new_session"] is True and kwargs["close_fds"] is True
-        assert kwargs["cwd"] == WORKSPACE
+        assert kwargs["cwd"] == policy.document["workspace"]
         with open(argv[21], encoding="utf-8") as handle:
             assert handle.read().startswith("(version 1)\n(deny default)\n")
         raise OSError("no interpreter here")
 
     monkeypatch.setattr(launch.tempfile, "mkstemp", recording_mkstemp)
     monkeypatch.setattr(launch.subprocess, "Popen", failing_popen)
-    outcome = run(
-        darwin_policy(), ["/bin/echo", "hi"], {"A": "1"}, None, facts=darwin_facts()
+    outcome = launch._run(
+        policy, ["/bin/echo", "hi"], {"A": "1"}, None, facts=darwin_facts()
     )
     assert outcome.code == "exec.launch_failed"
     assert len(created) == 1 and created[0][1] == 0o600
+    assert created[0][0].startswith(policy.loaded_for[1] + os.sep)
     assert not os.path.exists(created[0][0])
 
 
@@ -242,19 +267,15 @@ class FakeSignals:
 
 
 def trampoline_args(status_fd, env_fd, *command, **overrides):
+    nproc = overrides.pop("nproc", None)
     values = {"core": 0, "fsize": 4096, "nofile": 32, "cpu": 5, **overrides}
     args = []
     for name, value in values.items():
         args += [f"--{name}", str(value)]
-    return [
-        *args,
-        "--status-fd",
-        str(status_fd),
-        "--env-fd",
-        str(env_fd),
-        "--",
-        *command,
-    ]
+    args += ["--status-fd", str(status_fd), "--env-fd", str(env_fd)]
+    if nproc is not None:
+        args += ["--nproc", str(nproc)]
+    return [*args, "--", *command]
 
 
 def env_pipe(data):
@@ -912,18 +933,19 @@ def test_teardown_fails_closed_unless_every_process_is_gone(monkeypatch, caplog)
     def broken_end():
         raise OSError("libproc failed")
 
+    log = launch._log("sha256:x")
     monkeypatch.setattr(launch.os, "killpg", gone_group)
-    assert launch._end(proc, None) is False
+    assert launch._end(proc, None, log) is False
     watch = FakeWatch()
     watch.end = broken_end
-    assert launch._end(proc, watch) is False
+    assert launch._end(proc, watch, log) is False
     assert groups == [proc.pid, proc.pid]
     watch.end = lambda: {proc.pid}
     with caplog.at_level("WARNING", logger="astral_exec.launch"):
-        assert launch._end(proc, watch) is False
+        assert launch._end(proc, watch, log) is False
     assert "survived teardown count=1" in caplog.text
     watch.end = set
-    assert launch._end(proc, watch) is True
+    assert launch._end(proc, watch, log) is True
     assert groups == [proc.pid, proc.pid]
     launch._remove(str(tempfile.gettempdir()) + "/astral-exec-missing.sb")
 
@@ -992,9 +1014,10 @@ def test_a_stream_setup_failure_is_a_launch_failure(monkeypatch):
     assert (outcome.code, outcome.exit_code) == ("exec.launch_failed", None)
 
 
-def test_a_relative_interpreter_is_a_launch_failure(spawns, monkeypatch):
+def test_a_relative_interpreter_is_a_launch_failure(spawns, monkeypatch, real_call):
+    policy = real_call()
     monkeypatch.setattr(launch.sys, "executable", "python3")
-    outcome = run(darwin_policy(), ["/bin/echo"], {}, None, facts=darwin_facts())
+    outcome = launch._run(policy, ["/bin/echo"], {}, None, facts=darwin_facts())
     assert outcome.code == "exec.launch_failed" and spawns == []
 
 
@@ -1012,3 +1035,123 @@ def test_a_call_with_inherited_stdio_waits_on_the_process():
     )
     outcome = supervise(proc, FakeWatch())
     assert outcome == Outcome(None, 0)
+
+
+def test_the_digest_log_prefixes_every_message():
+    adapter = launch._log("sha256:abc")
+    assert adapter.process("hello %s", {}) == ("digest=sha256:abc hello %s", {})
+
+
+def test_every_emitted_launch_line_carries_the_digest(real_call, caplog):
+    policy = real_call()
+    with caplog.at_level(logging.INFO, logger="astral_exec.launch"):
+        launch._run(policy, ["/bin/echo", "hi"], {}, None, facts=darwin_facts())
+        launch._run(policy, ["-bad"], {}, None, facts=darwin_facts())
+        launch._run(policy, ["/bin/echo"], {}, None, facts=darwin_facts(mode="shadow"))
+    assert len(caplog.records) >= 3
+    for record in caplog.records:
+        assert record.getMessage().startswith("digest=sha256:"), record.getMessage()
+
+
+def test_a_watch_over_an_invisible_root_fails_closed():
+    with pytest.raises(OSError):
+        Watch(999999, None, system=FakeSystem({}))
+
+
+def test_a_sandbox_exec_failure_is_a_launch_failure_not_a_tool_exit():
+    code = "import sys\nsys.stderr.write('sandbox-exec: bad profile')\nsys.exit(65)"
+    outcome = supervise(spawn(code), FakeWatch())
+    assert (outcome.code, outcome.exit_code) == ("exec.launch_failed", None)
+    assert b"sandbox-exec:" in outcome.stderr
+
+
+def test_a_plain_tool_exit_of_71_without_the_prefix_stays_a_tool_exit():
+    outcome = supervise(spawn("import sys; sys.exit(71)"), FakeWatch())
+    assert (outcome.code, outcome.exit_code) == (None, 71)
+
+
+def test_a_stop_signal_during_teardown_still_finishes_the_sweep():
+    previous = {sig: signal.signal(sig, launch._stop) for sig in launch.STOP_SIGNALS}
+    proc = spawn("import time; time.sleep(600)")
+    fake = FakeWatch()
+    group_end = fake.end
+
+    def end_with_a_signal():
+        os.kill(os.getpid(), signal.SIGTERM)
+        return group_end()
+
+    fake.end = end_with_a_signal
+    try:
+        with pytest.raises(launch._Stopped):
+            supervise(proc, fake)
+        assert proc.returncode == -signal.SIGKILL
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait()
+
+
+def test_the_command_adds_an_nproc_backstop_only_when_fork_is_allowed(
+    monkeypatch, real_call
+):
+    seen = []
+
+    def record_popen(argv, **kwargs):
+        seen.append(argv)
+        raise OSError("stop")
+
+    monkeypatch.setattr(launch, "user_process_count", lambda: 100)
+    monkeypatch.setattr(launch.subprocess, "Popen", record_popen)
+    launch._run(real_call(processes=2), ["/bin/echo"], {}, None, facts=darwin_facts())
+    argv = seen[-1]
+    assert "--nproc" in argv and argv[argv.index("--nproc") + 1] == "134"
+    launch._run(real_call(processes=1), ["/bin/echo"], {}, None, facts=darwin_facts())
+    assert "--nproc" not in seen[-1]
+
+
+def test_the_profile_is_written_under_the_data_directory_outside_exec(
+    monkeypatch, real_call
+):
+    seen = []
+    real_mkstemp = tempfile.mkstemp
+
+    def recording(*args, **kwargs):
+        fd, path = real_mkstemp(*args, **kwargs)
+        seen.append(path)
+        return fd, path
+
+    monkeypatch.setattr(launch.tempfile, "mkstemp", recording)
+    monkeypatch.setattr(
+        launch.subprocess, "Popen", lambda *a, **k: (_ for _ in ()).throw(OSError("x"))
+    )
+    policy = real_call()
+    launch._run(policy, ["/bin/echo"], {}, None, facts=darwin_facts())
+    data = policy.loaded_for[1]
+    assert len(seen) == 1 and seen[0].startswith(data + os.sep)
+    relative = os.path.relpath(seen[0], data).split(os.sep)
+    assert relative[0] == launch.PROFILE_SUBDIR and relative[0] != "exec"
+    assert not os.path.exists(seen[0])
+
+
+def test_a_fork_loop_cannot_grow_past_the_nproc_backstop():
+    base = watchdog.user_process_count()
+    code = (
+        "import os\nmade = 0\n"
+        "try:\n"
+        "    for _ in range(200):\n"
+        "        if os.fork() == 0:\n"
+        "            import time\n"
+        "            time.sleep(1)\n"
+        "            os._exit(0)\n"
+        "        made += 1\n"
+        "except OSError:\n"
+        "    pass\n"
+        "print(made)\n"
+    )
+    code_rc, status, out, err = real_trampoline(
+        [PYTHON, "-I", "-c", code], {}, nproc=base + 25
+    )
+    assert status == run_command.READY, err
+    assert 0 < int(out) < 200

@@ -59,6 +59,7 @@ def rlimit(
         parser.add_argument(f"--{flag}", type=_limit, required=True)
     parser.add_argument("--status-fd", type=int, required=True)
     parser.add_argument("--env-fd", type=int, required=True)
+    parser.add_argument("--nproc", type=_limit, default=None)
     options = parser.parse_args(args[:split])
     command = args[split + 1 :]
     try:
@@ -68,6 +69,8 @@ def rlimit(
         for flag, name in LIMIT_FLAGS:
             value = getattr(options, flag)
             api.setrlimit(getattr(api, name), (value, value))
+        if options.nproc is not None:
+            api.setrlimit(api.RLIMIT_NPROC, (options.nproc, options.nproc))
         for name in RESTORED_SIGNALS:
             signals.signal(getattr(signals, name), signals.SIG_DFL)
         os.set_inheritable(options.status_fd, False)

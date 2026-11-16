@@ -9,6 +9,7 @@ import os
 import pwd
 import re
 import shutil
+import select
 import signal
 import subprocess
 import sys
@@ -317,29 +318,50 @@ def test_output_past_the_cap_is_kept_to_the_cap_and_flagged(call):
     assert outcome.truncated == ("stdout",)
 
 
+def wait_for_line(stream, token, timeout=30):
+    deadline = time.monotonic() + timeout
+    seen = b""
+    while time.monotonic() < deadline:
+        ready, _, _ = select.select([stream], [], [], deadline - time.monotonic())
+        if not ready:
+            break
+        chunk = os.read(stream.fileno(), 4096)
+        if not chunk:
+            break
+        seen += chunk
+        if token in seen:
+            return True
+    return False
+
+
+def running_child(launcher, stream):
+    assert wait_for_line(stream, b"go"), "the confined tool never started"
+    children = Darwin().pids(PROC_PPID_ONLY, launcher.pid)
+    assert len(children) == 1
+    assert not gone(children[0], tries=1)
+    return children[0]
+
+
 def test_a_busy_tool_dies_by_its_cpu_limit_after_the_launcher_is_killed(tmp_path, call):
+    tool = python("import sys\nprint('go', flush=True)\nwhile True: pass")
     launcher = subprocess.Popen(
-        _files(tmp_path, call, wall_ms=1000) + python("while True: pass"),
-        stdout=subprocess.DEVNULL,
+        _files(tmp_path, call, wall_ms=1000) + tool,
+        stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
     )
-    system = Darwin()
-    children = []
-    for _ in range(1000):
-        children = system.pids(PROC_PPID_ONLY, launcher.pid)
-        if children:
-            break
-        time.sleep(0.01)
-    assert len(children) == 1
-    launcher.kill()
-    launcher.wait(timeout=60)
-    assert gone(children[0], tries=3000)
+    try:
+        child = running_child(launcher, launcher.stdout)
+        launcher.kill()
+        launcher.wait(timeout=60)
+        assert gone(child, tries=3000)
+    finally:
+        launcher.stdout.close()
 
 
-def test_a_tool_sandbox_exec_cannot_start_passes_its_status_through(call):
+def test_a_tool_sandbox_exec_cannot_start_is_a_launch_failure(call):
     outcome = run(call(), [str(call.workspace / "missing")], {}, None)
-    assert (outcome.code, outcome.exit_code) == (None, 71)
-    assert b"execvp" in outcome.stderr
+    assert (outcome.code, outcome.exit_code) == ("exec.launch_failed", None)
+    assert outcome.stderr.startswith(b"sandbox-exec:") and b"execvp" in outcome.stderr
 
 
 def test_an_option_in_place_of_the_tool_never_reaches_sandbox_exec(call):
@@ -354,7 +376,7 @@ def test_an_option_in_place_of_the_tool_never_reaches_sandbox_exec(call):
 def test_real_facts_in_shadow_mode_are_refused(call):
     facts = probe()
     facts["mode"] = "shadow"
-    outcome = run(call(), ["/bin/echo"], {}, None, facts=facts)
+    outcome = launch._run(call(), ["/bin/echo"], {}, None, facts=facts)
     assert outcome.code == "exec.shadow_refused" and outcome.exit_code is None
 
 
@@ -417,22 +439,19 @@ def test_run_py_launches_a_confined_process_with_its_own_stdio(tmp_path, call):
 
 
 def test_run_py_tears_down_its_child_when_terminated(tmp_path, call):
+    tool = ["/bin/sh", "-c", "echo go; exec /bin/sleep 600"]
     launcher = subprocess.Popen(
-        _files(tmp_path, call) + ["/bin/sleep", "600"],
-        stdout=subprocess.DEVNULL,
+        _files(tmp_path, call) + tool,
+        stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
     )
-    system = Darwin()
-    children = []
-    for _ in range(1000):
-        children = system.pids(PROC_PPID_ONLY, launcher.pid)
-        if children:
-            break
-        time.sleep(0.01)
-    assert len(children) == 1
-    launcher.send_signal(signal.SIGTERM)
-    assert launcher.wait(timeout=60) == 128 + signal.SIGTERM
-    assert gone(children[0])
+    try:
+        child = running_child(launcher, launcher.stdout)
+        launcher.send_signal(signal.SIGTERM)
+        assert launcher.wait(timeout=60) == 128 + signal.SIGTERM
+        assert gone(child)
+    finally:
+        launcher.stdout.close()
 
 
 def test_run_py_conformance_is_refused_until_the_suite_exists():

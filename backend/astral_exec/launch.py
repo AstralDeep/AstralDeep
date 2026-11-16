@@ -34,16 +34,28 @@ from .errors import ContextError, ExecRefused, PolicyError, Refusal
 from .facts import probe
 from .policy import Policy
 from .select import Backend, select
-from .watchdog import Watch
+from .watchdog import Watch, user_process_count
 
 POLL_SECONDS = 0.01
 DRAIN_SECONDS = 2.0
 READ_CHUNK = 65536
 STATUS_LIMIT_BYTES = 256
+NPROC_SLACK = 32
+PROFILE_SUBDIR = "exec-profiles"
+SANDBOX_EXEC_FAILURES = frozenset({64, 65, 71})
 RUN_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "run.py")
 STOP_SIGNALS = (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)
 USAGE = "usage: run.py launch --policy FILE --data-dir DIR --home DIR --env-file FILE -- argv..."
 _LOG = logging.getLogger("astral_exec.launch")
+
+
+class _DigestLog(logging.LoggerAdapter):
+    def process(self, msg: str, kwargs: Any) -> tuple[str, Any]:
+        return f"digest={self.extra['digest']} {msg}", kwargs
+
+
+def _log(digest: str) -> _DigestLog:
+    return _DigestLog(_LOG, {"digest": digest})
 
 
 @dataclass(frozen=True)
@@ -128,8 +140,11 @@ def _prepare(
     return _Call(document, _checked_argv(argv), child_env, marker, profile)
 
 
-def _write_profile(text: str) -> str:
-    fd, path = tempfile.mkstemp(prefix="astral-exec-", suffix=".sb")
+def _write_profile(text: str, data_dir: str) -> str:
+    folder = os.path.join(data_dir, PROFILE_SUBDIR)
+    os.makedirs(folder, exist_ok=True)
+    os.chmod(folder, 0o700)
+    fd, path = tempfile.mkstemp(prefix="profile-", suffix=".sb", dir=folder)
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
         handle.write(text)
     return path
@@ -142,18 +157,14 @@ def _remove(path: str) -> None:
         pass
 
 
-def _command(call: _Call, profile: str, status_fd: int, env_fd: int) -> list[str]:
+def _command(
+    call: _Call, profile: str, status_fd: int, env_fd: int, nproc: int | None
+) -> list[str]:
     if not os.path.isabs(sys.executable):
         raise ContextError("the trampoline needs an absolute interpreter path")
     limits = call.document["limits"]
     cpu = math.ceil(call.document["time"]["wall_ms"] / 1000) + 1
-    return [
-        sys.executable,
-        "-I",
-        "-B",
-        "-S",
-        RUN_PY,
-        "rlimit",
+    flags = [
         "--core",
         str(CORE_LIMIT_BYTES),
         "--fsize",
@@ -166,6 +177,17 @@ def _command(call: _Call, profile: str, status_fd: int, env_fd: int) -> list[str
         str(status_fd),
         "--env-fd",
         str(env_fd),
+    ]
+    if nproc is not None:
+        flags += ["--nproc", str(nproc)]
+    return [
+        sys.executable,
+        "-I",
+        "-B",
+        "-S",
+        RUN_PY,
+        "rlimit",
+        *flags,
         "--",
         SANDBOX_EXEC,
         "-f",
@@ -182,11 +204,13 @@ def _spawn(
     if capture:
         stdin = subprocess.DEVNULL if data is None else subprocess.PIPE
     output = subprocess.PIPE if capture else None
+    processes = call.document["limits"]["processes"]
+    nproc = user_process_count() + processes + NPROC_SLACK if processes > 1 else None
     status_read, status_write = os.pipe()
     env_read, env_write = os.pipe()
     try:
         proc = subprocess.Popen(
-            _command(call, profile, status_write, env_read),
+            _command(call, profile, status_write, env_read, nproc),
             env={},
             cwd=call.document["workspace"],
             stdin=stdin,
@@ -291,12 +315,12 @@ class _Streams:
             self.truncated.add(name)
         kept += chunk[:room]
 
-    def drain(self, seconds: float) -> None:
+    def drain(self, seconds: float, log: _DigestLog) -> None:
         end = time.monotonic() + seconds
         while self.reading():
             left = end - time.monotonic()
             if left <= 0:
-                _LOG.warning("exec output stayed open after teardown")
+                log.warning("exec output stayed open after teardown")
                 return
             self.pump(min(left, POLL_SECONDS))
 
@@ -335,20 +359,20 @@ def _monitor(
             return "exec.process_limit"
 
 
-def _end(proc: subprocess.Popen, watch: Any) -> bool:
+def _end(proc: subprocess.Popen, watch: Any, log: _DigestLog) -> bool:
     survivors: set[int] | None = None
     if watch is not None:
         try:
             survivors = watch.end()
         except Exception as error:
-            _LOG.warning("exec teardown failed: %s", type(error).__name__)
+            log.warning("exec teardown failed: %s", type(error).__name__)
     if survivors is None and proc.returncode is None:
         try:
             os.killpg(proc.pid, signal.SIGKILL)
         except (ProcessLookupError, PermissionError):
             pass
     if survivors:
-        _LOG.warning("exec processes survived teardown count=%d", len(survivors))
+        log.warning("exec processes survived teardown count=%d", len(survivors))
     return survivors == set()
 
 
@@ -368,6 +392,7 @@ def _supervise(
     marker: str,
     data: bytes | None,
     watch_factory: Callable[[int, bytes | None], Any] = Watch,
+    log: _DigestLog = _log("none"),
 ) -> Outcome:
     deadline = time.monotonic() + wall_ms / 1000
     entry = f"{LAUNCH_MARKER}={marker}".encode() if limits["processes"] > 1 else None
@@ -382,13 +407,17 @@ def _supervise(
             watch = watch_factory(proc.pid, entry)
             code = _monitor(proc, streams, watch, limits, deadline)
         except Exception as error:
-            _LOG.warning("exec monitor failed: %s", type(error).__name__)
+            log.warning("exec monitor failed: %s", type(error).__name__)
             code = "exec.launch_failed"
         finally:
-            ended = _end(proc, watch)
-        if streams is not None:
-            streams.drain(DRAIN_SECONDS)
-        proc.wait()
+            blocked = signal.pthread_sigmask(signal.SIG_BLOCK, STOP_SIGNALS)
+            try:
+                ended = _end(proc, watch, log)
+                if streams is not None:
+                    streams.drain(DRAIN_SECONDS, log)
+                proc.wait()
+            finally:
+                signal.pthread_sigmask(signal.SIG_SETMASK, blocked)
     finally:
         if streams is not None:
             streams.close()
@@ -403,7 +432,10 @@ def _supervise(
     stdout, stderr = streams.output("stdout"), streams.output("stderr")
     truncated = tuple(sorted(streams.truncated))
     if streams.output("status") != TRAMPOLINE_READY:
-        _LOG.warning("exec trampoline refused: %r", streams.output("status")[:64])
+        log.warning("exec trampoline refused: %r", streams.output("status")[:64])
+        return Outcome("exec.launch_failed", None, stdout, stderr, truncated=truncated)
+    if proc.returncode in SANDBOX_EXEC_FAILURES and stderr.startswith(b"sandbox-exec:"):
+        log.warning("exec sandbox-exec failed exit=%s", proc.returncode)
         return Outcome("exec.launch_failed", None, stdout, stderr, truncated=truncated)
     if not ended:
         code = "exec.launch_failed"
@@ -420,23 +452,24 @@ def _launch(
     capture: bool,
 ) -> Outcome:
     digest = policy.digest() if isinstance(policy, Policy) else "none"
+    log = _log(digest)
     try:
         call = _prepare(policy, argv, env, facts)
         if isinstance(call, Refusal):
-            _LOG.info("exec refused digest=%s code=%s", digest, call.code)
+            log.info("exec refused code=%s", call.code)
             return Outcome(call.code, None, refusal=call)
         data = _checked_stdin(stdin)
-        profile = _write_profile(call.profile)
+        profile = _write_profile(call.profile, policy.loaded_for[1])
     except Exception as error:
-        _LOG.warning("exec launch failed digest=%s error=%s", digest, error)
+        log.warning("exec launch failed before start: %s", type(error).__name__)
         return Outcome("exec.launch_failed", None)
     try:
         try:
             proc, status_fd, env_fd = _spawn(call, profile, capture, data)
         except Exception as error:
-            _LOG.warning("exec launch failed digest=%s error=%s", digest, error)
+            log.warning("exec launch failed at spawn: %s", type(error).__name__)
             return Outcome("exec.launch_failed", None)
-        _LOG.info("exec launch digest=%s backend=seatbelt pid=%d", digest, proc.pid)
+        log.info("exec launch backend=seatbelt pid=%d", proc.pid)
         outcome = _supervise(
             proc,
             status_fd,
@@ -446,16 +479,24 @@ def _launch(
             call.document["time"]["wall_ms"],
             call.marker,
             data,
+            log=log,
         )
-        _LOG.info(
-            "exec outcome digest=%s code=%s exit=%s",
-            digest,
-            outcome.code,
-            outcome.exit_code,
-        )
+        log.info("exec outcome code=%s exit=%s", outcome.code, outcome.exit_code)
         return outcome
     finally:
         _remove(profile)
+
+
+def _run(
+    policy: Policy,
+    argv: Sequence[str],
+    env: Mapping[str, str],
+    stdin: bytes | None = None,
+    *,
+    facts: Mapping[str, Any] | None = None,
+    capture: bool = True,
+) -> Outcome:
+    return _launch(policy, argv, env, stdin, facts, capture)
 
 
 def run(
@@ -463,10 +504,8 @@ def run(
     argv: Sequence[str],
     env: Mapping[str, str],
     stdin: bytes | None = None,
-    *,
-    facts: Mapping[str, Any] | None = None,
 ) -> Outcome:
-    return _launch(policy, argv, env, stdin, facts, True)
+    return _launch(policy, argv, env, stdin, None, True)
 
 
 def _stop(signum: int, _frame: Any) -> None:
@@ -516,7 +555,7 @@ def main(args: Sequence[str]) -> int:
         except PolicyError as error:
             return _refused(error.code, str(error))
         except Exception as error:
-            _LOG.warning("exec launch failed before start: %s", error)
+            _log("none").warning("exec launch failed before start: %s", error)
             return _refused("exec.launch_failed", MESSAGES["exec.launch_failed"])
         return _status(_launch(policy, args[split + 1 :], env, None, facts, False))
     except _Stopped as stopped:
