@@ -546,8 +546,6 @@ def _close(fd: int | None) -> None:
 def _linux_command(
     call: _LinuxCall, script_fd: int, pkg_fd: int, plan_fd: int, env_fd: int, status_fd: int
 ) -> list[str]:
-    if not os.path.isabs(sys.executable):
-        raise ContextError("the sandbox interpreter must be an absolute path")
     return [
         call.bwrap,
         *call.plan["bwrap"],
