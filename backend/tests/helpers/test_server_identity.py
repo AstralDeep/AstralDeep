@@ -80,3 +80,27 @@ def test_installing_restores_the_jwks_cache_and_environment(monkeypatch):
         assert jwks_cache._cache == before
     finally:
         jwks_cache._cache.pop("sentinel", None)
+
+
+async def test_mcp_token_carries_the_mcp_audience_and_scopes(server_identity):
+    from orchestrator import mcp_authz
+
+    claims = await mcp_authz.decode_mcp_token(server_identity.mcp_token("alice"))
+    assert claims["sub"] == server_identity.owner("alice")
+    assert claims["aud"] == mcp_authz.MCP_AUDIENCE
+    assert set(claims["scope"].split()) == set(mcp_authz.MCP_SCOPES)
+
+
+async def test_mcp_token_narrows_scopes_and_headers_wrap_it(server_identity):
+    from orchestrator import mcp_authz
+
+    headers = server_identity.mcp_headers("alice", scopes=("mcp:discover",))
+    claims = await mcp_authz.decode_mcp_token(headers["Authorization"].split()[1])
+    assert claims["scope"] == "mcp:discover"
+
+
+async def test_web_audience_token_is_not_an_mcp_token(server_identity):
+    from orchestrator import mcp_authz
+
+    with pytest.raises(Exception):
+        await mcp_authz.decode_mcp_token(server_identity.token("alice"))
