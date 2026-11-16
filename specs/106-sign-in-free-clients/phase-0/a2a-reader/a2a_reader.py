@@ -14,6 +14,7 @@ from urllib.parse import urlsplit
 import jwt
 
 ALGORITHMS = ("EdDSA", "ES256", "ES384", "ES512", "RS256", "RS384", "RS512", "PS256", "PS384", "PS512")
+AUTH_KEYS = frozenset({"securitySchemes", "securityRequirements", "security"})
 PRESENCE_BOOLS = frozenset({"streaming", "pushNotifications", "extendedAgentCard"})
 
 API_KEY = "api_key"
@@ -161,15 +162,15 @@ def _flow(kind_key: str, body: Any, where: str) -> Flow:
     if type(body) is not dict:
         raise _refuse("wrong_type", f"{where} must be an object.")
     kind = _FLOW_KINDS[kind_key]
-    if kind == OAUTH_DEPRECATED:
-        return Flow(kind=kind)
     pkce = body.get("pkceRequired", False)
     if type(pkce) is not bool:
         raise _refuse("wrong_type", f"{where}.pkceRequired must be true or false.")
     return Flow(
         kind=kind,
-        authorization_url=_https(body.get("authorizationUrl"), f"{where}.authorizationUrl", required=kind == OAUTH_AUTHORIZATION_CODE),
-        token_url=_https(body.get("tokenUrl"), f"{where}.tokenUrl"),
+        authorization_url=_https(
+            body.get("authorizationUrl"), f"{where}.authorizationUrl", required=kind == OAUTH_AUTHORIZATION_CODE
+        ),
+        token_url=_https(body.get("tokenUrl"), f"{where}.tokenUrl", required=kind != OAUTH_DEPRECATED),
         device_authorization_url=_https(
             body.get("deviceAuthorizationUrl"), f"{where}.deviceAuthorizationUrl", required=kind == OAUTH_DEVICE_CODE
         ),
@@ -228,8 +229,8 @@ def _requirement(entry: Any, where: str, schemes: dict[str, Scheme]) -> Requirem
     pairs = []
     for name in sorted(mapping):
         scopes = mapping[name]
-        if type(scopes) is dict and set(scopes) == {"list"}:
-            scopes = scopes["list"]
+        if type(scopes) is dict and set(scopes) <= {"list"}:
+            scopes = scopes.get("list", [])
         if type(scopes) is not list or any(type(item) is not str for item in scopes):
             raise _refuse("wrong_type", f"{where}.{name} must be a list of scope strings.")
         if name not in schemes:
@@ -304,18 +305,20 @@ def read_card(card: Any) -> CardReading:
     )
 
 
-def _prune(value: Any, key: str = "") -> Any:
+def _prune(value: Any, key: str = "", keep_containers: bool = False) -> Any:
     if isinstance(value, float):
         if value != int(value):
             raise _refuse("float_in_card", "The card holds a non-integer number, which this reader cannot canonicalize.")
         return int(value)
     if isinstance(value, dict):
-        kept = {k: _prune(v, k) for k, v in value.items()}
+        keep = keep_containers or key in AUTH_KEYS
+        kept = {k: _prune(v, k, keep) for k, v in value.items()}
         kept = {k: v for k, v in kept.items() if v is not None}
-        return kept or None
+        return kept if kept or keep else None
     if isinstance(value, list):
-        items = [item for item in (_prune(v) for v in value) if item is not None]
-        return items or None
+        keep = keep_containers or key in AUTH_KEYS
+        items = [item for item in (_prune(v, "", keep) for v in value) if item is not None]
+        return items if items or keep else None
     if value == "" or value is None:
         return None
     if value is False and key not in PRESENCE_BOOLS:
@@ -332,9 +335,24 @@ def _jcs(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
-def canonical_card(card: dict[str, Any]) -> bytes:
+def canonical_card(card: dict[str, Any], *, sdk_lenient: bool = False) -> bytes:
     body = {key: value for key, value in card.items() if key != "signatures"}
+    if sdk_lenient:
+        return _jcs(_prune_all(body) or {}).encode("utf-8")
     return _jcs(_prune(body) or {}).encode("utf-8")
+
+
+def _prune_all(value: Any) -> Any:
+    if isinstance(value, dict):
+        kept = {k: _prune_all(v) for k, v in value.items()}
+        kept = {k: v for k, v in kept.items() if v is not None}
+        return kept or None
+    if isinstance(value, list):
+        items = [item for item in (_prune_all(v) for v in value) if item is not None]
+        return items or None
+    if isinstance(value, float):
+        return _prune(value)
+    return None if value == "" or value is None else value
 
 
 def card_digest(card: dict[str, Any]) -> str:
@@ -370,17 +388,18 @@ class SignatureResult:
     kid: str = ""
     digest: str = ""
     detail: str = ""
+    covers_requirements: bool = True
 
     @property
     def accepted(self) -> bool:
-        return self.status == "verified_pinned"
+        return self.status == "verified_pinned" and self.covers_requirements
 
 
 def verify_signed(card: dict[str, Any], keys: list[dict[str, Any]], pin: SignerPin | None) -> SignatureResult:
     signatures = card.get("signatures") or []
     if not signatures:
         return SignatureResult("unsigned")
-    payload = _b64url(canonical_card(card))
+    payloads = [(_b64url(canonical_card(card)), True), (_b64url(canonical_card(card, sdk_lenient=True)), False)]
     failures = []
     for signature in signatures:
         try:
@@ -389,15 +408,21 @@ def verify_signed(card: dict[str, Any], keys: list[dict[str, Any]], pin: SignerP
             if alg not in ALGORITHMS or type(kid) is not str:
                 raise ValueError("algorithm or key id not allowed")
             candidates = [k for k in keys if k.get("kid") in (None, kid) and k.get("kty") in ("EC", "OKP", "RSA")]
-            for jwk in candidates:
-                try:
-                    jwt.PyJWS().decode(f"{signature['protected']}.{payload}.{signature['signature']}", jwt.PyJWK.from_dict(jwk), algorithms=[alg])
-                except jwt.PyJWTError:
-                    continue
-                thumbprint = jwk_thumbprint(jwk)
-                if pin is not None and pin.thumbprint == thumbprint:
-                    return SignatureResult("verified_pinned", thumbprint, kid, card_digest(card))
-                return SignatureResult("verified_new_signer", thumbprint, kid, card_digest(card), "The signer is not the pinned signer.")
+            for payload, strict in payloads:
+                for jwk in candidates:
+                    token = f"{signature['protected']}.{payload}.{signature['signature']}"
+                    try:
+                        jwt.PyJWS().decode(token, jwt.PyJWK.from_dict(jwk), algorithms=[alg])
+                    except jwt.PyJWTError:
+                        continue
+                    thumbprint = jwk_thumbprint(jwk)
+                    pinned = pin is not None and pin.thumbprint == thumbprint
+                    detail = "" if pinned else "The signer is not the pinned signer."
+                    if not strict:
+                        detail = (detail + " The signature does not cover empty requirement entries.").strip()
+                    return SignatureResult(
+                        "verified_pinned" if pinned else "verified_new_signer", thumbprint, kid, card_digest(card), detail, strict
+                    )
             failures.append("no supplied key verifies the signature")
         except (KeyError, ValueError, TypeError) as error:
             failures.append(f"malformed signature ({type(error).__name__})")

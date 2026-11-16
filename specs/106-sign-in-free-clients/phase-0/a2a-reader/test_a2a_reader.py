@@ -302,23 +302,96 @@ def test_signature_does_not_change_the_unsigned_digest():
     assert r.card_digest(base) == r.card_digest(signed)
 
 
-def test_reader_verifies_a_card_signed_by_the_a2a_sdk_and_the_sdk_verifies_ours():
+def _sdk_roundtrip(card_dict):
     signing = pytest.importorskip("a2a.utils.signing")
     from a2a.types import AgentCard
     from google.protobuf.json_format import MessageToDict, ParseDict
 
     key = mf.derive_key("sdk-interop")
     jwk = mf.public_jwk(key, "sdk-kid")
-    card = ParseDict(copy.deepcopy(mf.VALID["extended_card"]), AgentCard())
+    card = ParseDict(copy.deepcopy(card_dict), AgentCard())
     signed = signing.create_agent_card_signer(key, {"kid": "sdk-kid", "alg": "ES256", "jku": None, "typ": "JOSE"})(card)
-    result = r.verify_signed(MessageToDict(signed), [jwk], r.SignerPin(r.jwk_thumbprint(jwk)))
-    assert result.status == "verified_pinned"
+    return signing, AgentCard, ParseDict, key, jwk, MessageToDict(signed)
 
-    ours = ParseDict(mf.sign_card(mf.VALID["extended_card"], key, "sdk-kid"), AgentCard())
+
+def test_reader_verifies_a_card_signed_by_the_a2a_sdk_and_the_sdk_verifies_ours():
+    signing, agent_card, parse_dict, key, jwk, signed = _sdk_roundtrip(mf.VALID["oauth2_auth_code_pkce"])
+    result = r.verify_signed(signed, [jwk], r.SignerPin(r.jwk_thumbprint(jwk)))
+    assert result.status == "verified_pinned" and result.accepted
+
+    ours = parse_dict(mf.sign_card(mf.VALID["oauth2_auth_code_pkce"], key, "sdk-kid"), agent_card())
     signing.create_signature_verifier(lambda kid, jku: jwk_to_pyjwk(jwk), ["ES256"])(ours)
+
+
+def test_sdk_signature_over_a_card_with_empty_scope_lists_verifies_but_is_not_accepted():
+    _, _, _, _, jwk, signed = _sdk_roundtrip(mf.VALID["extended_card"])
+    result = r.verify_signed(signed, [jwk], r.SignerPin(r.jwk_thumbprint(jwk)))
+    assert result.status == "verified_pinned" and not result.covers_requirements and not result.accepted
+    assert "empty requirement" in result.detail
 
 
 def jwk_to_pyjwk(jwk):
     import jwt
 
     return jwt.PyJWK.from_dict(jwk)
+
+
+REQUIREMENT_CHANGES = [
+    ("api_key_header", lambda c: c.update(securityRequirements=[])),
+    ("api_key_header", lambda c: c.pop("securityRequirements")),
+    ("alternatives", lambda c: c["securityRequirements"].pop(1)),
+    ("api_key_header", lambda c: c["securitySchemes"].update(tok={"httpAuthSecurityScheme": {"scheme": "bearer"}})
+     or c["securityRequirements"].append({"schemes": {"tok": {"list": []}}})),
+    ("api_key_header", lambda c: c["securityRequirements"][0]["schemes"].update(key={"list": ["read"]})),
+    ("skill_requirements", lambda c: c["skills"][0].update(securityRequirements=[])),
+]
+
+
+@pytest.mark.parametrize(("fixture", "mutate"), REQUIREMENT_CHANGES)
+def test_a_requirements_only_change_fails_the_unsigned_pin(fixture, mutate):
+    card = load("valid", f"{fixture}.json")
+    pin = r.pin_unsigned(card, ORIGIN_URL)
+    changed = copy.deepcopy(card)
+    mutate(changed)
+    assert r.check_unsigned(pin, changed, ORIGIN_URL) == "card_changed"
+
+
+@pytest.mark.parametrize(("fixture", "mutate"), REQUIREMENT_CHANGES)
+def test_a_requirements_only_change_invalidates_the_signed_card(fixture, mutate):
+    key = mf.derive_key(mf.SIGNER_SEEDS["fixture-signer-one"])
+    signed = mf.sign_card(load("valid", f"{fixture}.json"), key, "fixture-signer-one")
+    assert r.verify_signed(signed, keys(), pin_for("fixture-signer-one")).accepted
+    mutate(signed)
+    assert not r.verify_signed(signed, keys(), pin_for("fixture-signer-one")).accepted
+
+
+def test_empty_scope_object_form_reads_as_no_scopes():
+    card = copy.deepcopy(mf.VALID["api_key_header"])
+    card["securityRequirements"] = [{"schemes": {"key": {}}}]
+    assert r.read_card(card).alternatives[0].scopes_by_scheme == (("key", ()),)
+
+
+DEPRECATED = {
+    "implicit": {"authorizationUrl": "https://login.example.org/authorize", "refreshUrl": "https://login.example.org/refresh", "scopes": {}},
+    "password": {"tokenUrl": "https://login.example.org/token", "scopes": {}},
+}
+
+
+@pytest.mark.parametrize("flow", sorted(DEPRECATED))
+def test_deprecated_flows_report_their_urls_and_hosts(flow):
+    card = copy.deepcopy(mf.VALID["oauth2_implicit_deprecated"])
+    card["securitySchemes"]["oauth"]["oauth2SecurityScheme"]["flows"] = {flow: DEPRECATED[flow]}
+    reading = r.read_card(card)
+    scheme = reading.schemes["oauth"]
+    assert scheme.kind == r.OAUTH_DEPRECATED and not scheme.supported
+    assert scheme.urls() and reading.auth_hosts() == ("login.example.org",)
+
+
+@pytest.mark.parametrize(("flow", "field"), [("implicit", "authorizationUrl"), ("implicit", "refreshUrl"), ("password", "tokenUrl"), ("password", "refreshUrl")])
+def test_deprecated_flows_refuse_plain_http_urls(flow, field):
+    card = copy.deepcopy(mf.VALID["oauth2_implicit_deprecated"])
+    body = {**DEPRECATED[flow], field: "http://login.example.org/x"}
+    card["securitySchemes"]["oauth"]["oauth2SecurityScheme"]["flows"] = {flow: body}
+    with pytest.raises(r.CardRefusal) as refusal:
+        r.read_card(card)
+    assert refusal.value.code == "insecure_url"
