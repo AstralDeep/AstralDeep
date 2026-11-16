@@ -63,6 +63,7 @@ EXPECTED = {
     "proof_ahead_beyond_5s": "caller.proof_stale",
     "proof_just_after_start_pause_accepted": "ok",
     "proof_at_start_pause_end_refused": "caller.proof_stale",
+    "proof_non_canonical_s": "caller.proof_bad_signature",
     "bad_holder_signature": "caller.proof_bad_signature",
     "replayed_nonce": ["ok", "caller.replayed"],
     "same_nonce_on_another_ticket_accepted": ["ok", "ok"],
@@ -122,6 +123,13 @@ EXPECTED = {
     "tool_without_definition": "caller.malformed",
     "a2a_with_definition": "caller.malformed",
     "tool_with_extra_field": "caller.malformed",
+    "holder_key_identity_point": "caller.malformed",
+    "holder_key_order_2_point": "caller.malformed",
+    "holder_key_order_4_point": "caller.malformed",
+    "holder_key_order_8_point": "caller.malformed",
+    "holder_key_non_canonical_encoding": "caller.malformed",
+    "holder_key_off_curve": "caller.malformed",
+    "small_order_holder_forged_proof": "caller.malformed",
     "holder_key_31_bytes": "caller.malformed",
     "header_too_long": "caller.malformed",
     "proof_header_too_long": "caller.proof_malformed",
@@ -156,6 +164,12 @@ EXPECTED = {
     "holder_form_31_bytes": "caller.malformed",
     "holder_form_padded": "caller.malformed",
     "holder_form_wrong_version": "caller.malformed",
+    "holder_form_identity_point": "caller.malformed",
+    "holder_form_order_2_point": "caller.malformed",
+    "holder_form_order_4_point": "caller.malformed",
+    "holder_form_order_8_point": "caller.malformed",
+    "holder_form_non_canonical_encoding": "caller.malformed",
+    "holder_form_off_curve": "caller.malformed",
     "key_form_derives_holder": "ok",
     "key_form_31_bytes": "caller.malformed",
     "holder_form_refused_as_key": "caller.malformed",
@@ -296,3 +310,42 @@ def test_undecodable_input_never_raises() -> None:
             {"state": state, "authorization": header, "proof": "x", "request": {}},
         )
         assert out == {"error": "caller.malformed"}
+
+
+def test_strict_verifier_refuses_what_the_library_alone_accepts() -> None:
+    import ed25519_strict
+
+    identity = bytes([1]) + bytes(31)
+    forged = identity + bytes(32)
+    assert crypto.ed25519_verify(identity, b"any message", forged)
+    assert not ed25519_strict.verify_strict(identity, b"any message", forged)
+
+
+def test_point_decoding_rules() -> None:
+    import ed25519_strict
+
+    base = crypto.ed25519_public(testkit.seed("caller-v1/holder"))
+    assert ed25519_strict.usable_public_key(base)
+    assert not ed25519_strict.usable_public_key(bytes(31))
+    assert (
+        ed25519_strict.decode_point(bytes([1]) + bytes([0]) * 30 + bytes([0x80]))
+        is None
+    )
+    assert ed25519_strict.decode_point(bytes.fromhex("ee" + "ff" * 30 + "7f")) is None
+
+
+def test_strict_verifier_refuses_small_order_r_and_high_s() -> None:
+    import ed25519_strict
+
+    seed = testkit.seed("caller-v1/holder")
+    public = crypto.ed25519_public(seed)
+    sig = crypto.ed25519_sign(seed, b"m")
+    assert ed25519_strict.verify_strict(public, b"m", sig)
+    high = int.from_bytes(sig[32:], "little") + ed25519_strict.L
+    assert not ed25519_strict.verify_strict(
+        public, b"m", sig[:32] + high.to_bytes(32, "little")
+    )
+    assert not ed25519_strict.verify_strict(
+        public, b"m", bytes([1]) + bytes(31) + sig[32:]
+    )
+    assert not ed25519_strict.verify_strict(public, b"m", sig[:63])

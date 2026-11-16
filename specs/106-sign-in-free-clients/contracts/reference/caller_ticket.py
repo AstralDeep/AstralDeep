@@ -17,6 +17,7 @@ sys.path.insert(
         / "105-decentralized-personal-mesh/contracts/reference"
     ),
 )
+import ed25519_strict
 from astral_mesh_ref import crypto, ticket
 from astral_mesh_ref.cj import b64url_decode, b64url_encode, canonical, strict_loads
 from astral_mesh_ref.errors import MeshError
@@ -89,6 +90,13 @@ def _raw(value: Any, size: int) -> bool:
         return False
 
 
+def _holder_ok(value: Any) -> bool:
+    try:
+        return ed25519_strict.usable_public_key(b64url_decode(value))
+    except MeshError:
+        return False
+
+
 def _check_tool(tool: Any) -> str:
     if not isinstance(tool, dict) or set(tool) != {"name", "def"}:
         raise MeshError("caller.malformed", "tool fields")
@@ -114,6 +122,7 @@ def check_ticket(value: Any) -> dict[str, Any]:
         or not _raw(value["id"], 16)
         or not all(crypto.is_id(value[k]) for k in ("mesh", "device", "node"))
         or not _raw(value["holder"], 32)
+        or not _holder_ok(value["holder"])
         or not _raw(value["sig"], 64)
         or not all(_int(value[k]) for k in ("issued_ms", "expires_ms", "stop"))
     )
@@ -205,7 +214,7 @@ def _verify_with(public: bytes, context: str, obj: dict[str, Any], alg: str) -> 
         + canonical({k: v for k, v in obj.items() if k != "sig"})
     )
     raw = b64url_decode(obj["sig"])
-    check = crypto.p256_verify if alg == "p256" else crypto.ed25519_verify
+    check = crypto.p256_verify if alg == "p256" else ed25519_strict.verify_strict
     return check(public, message, raw)
 
 
@@ -316,7 +325,7 @@ def parse_holder_text(text: str) -> str:
     if not isinstance(text, str) or not text.startswith(HOLDER_TEXT):
         raise MeshError("caller.malformed", "holder form")
     body = text[len(HOLDER_TEXT) :]
-    if not _raw(body, 32):
+    if not _raw(body, 32) or not _holder_ok(body):
         raise MeshError("caller.malformed", "holder key")
     return body
 

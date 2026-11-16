@@ -12,6 +12,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 caller_ticket = importlib.import_module("caller_ticket")
 crypto = importlib.import_module("astral_mesh_ref.crypto")
+strict = importlib.import_module("ed25519_strict")
 tools = importlib.import_module("astral_mesh_ref.tools")
 testkit = importlib.import_module("astral_mesh_ref.testkit")
 DetRng, TestDevice, seed, scalar = (
@@ -72,6 +73,37 @@ def _high_s(signature_b64: str) -> str:
     raw = caller_ticket.b64url_decode(signature_b64)
     s = int.from_bytes(raw[32:], "big")
     return b64(raw[:32] + (crypto.P256_ORDER - s).to_bytes(32, "big"))
+
+
+def bad_holder_keys() -> dict[str, bytes]:
+    small = {
+        "identity_point": bytes([1]) + bytes(31),
+        "order_2_point": bytes.fromhex("ec" + "ff" * 30 + "7f"),
+        "order_4_point": bytes(32),
+        "order_8_point": bytes.fromhex(
+            "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a"
+        ),
+    }
+    assert all(
+        (point := strict.decode_point(v)) is not None and strict.small_order(point)
+        for v in small.values()
+    )
+    odd = next(
+        y
+        for y in range(2, 19)
+        if strict.decode_point(y.to_bytes(32, "little")) is not None
+        and strict.usable_public_key(y.to_bytes(32, "little"))
+    )
+    dark = next(
+        y
+        for y in range(2, 200)
+        if strict.decode_point(y.to_bytes(32, "little")) is None
+    )
+    return {
+        **small,
+        "non_canonical_encoding": (odd + strict.P).to_bytes(32, "little"),
+        "off_curve": dark.to_bytes(32, "little"),
+    }
 
 
 def generate() -> dict[str, Any]:
@@ -179,6 +211,7 @@ def generate() -> dict[str, Any]:
     def sequence(name: str, steps: list[dict[str, Any]], want: list[str]) -> None:
         record(name, "caller_verify_sequence", {"state": state, "steps": steps}, want)
 
+    holder_keys = bad_holder_keys()
     ticket = make_ticket()
     verify("valid_mcp_tool", "ok", step(ticket))
     both = make_ticket(
@@ -389,6 +422,17 @@ def generate() -> dict[str, Any]:
         "caller.proof_stale",
         step(ticket),
         started_ms=NOW - 1000 - 5000,
+    )
+    good = make_proof(ticket)
+    raw = caller_ticket.b64url_decode(good["sig"])
+    high = int.from_bytes(raw[32:], "little") + strict.L
+    verify(
+        "proof_non_canonical_s",
+        "caller.proof_bad_signature",
+        step(
+            ticket,
+            {**good, "sig": b64(raw[:32] + high.to_bytes(32, "little"))},
+        ),
     )
     verify(
         "bad_holder_signature",
@@ -645,6 +689,18 @@ def generate() -> dict[str, Any]:
         "caller.malformed",
         step(make_ticket(tools=[{"def": echo, "name": "echo", "x": 1}])),
     )
+    for name, key in holder_keys.items():
+        verify(
+            "holder_key_" + name,
+            "caller.malformed",
+            step(make_ticket(holder=b64(key))),
+        )
+    forger = make_ticket(holder=b64(holder_keys["identity_point"]))
+    forged = caller_ticket.sign_proof(
+        holder, {k: v for k, v in make_proof(forger).items() if k != "sig"}
+    )
+    forged["sig"] = b64(holder_keys["identity_point"] + bytes(32))
+    verify("small_order_holder_forged_proof", "caller.malformed", step(forger, forged))
     verify(
         "holder_key_31_bytes",
         "caller.malformed",
@@ -853,6 +909,13 @@ def generate() -> dict[str, Any]:
         {"text": holder_text.replace(":v1:", ":v2:")},
         "caller.malformed",
     )
+    for name, key in holder_keys.items():
+        record(
+            "holder_form_" + name,
+            "caller_holder_text",
+            {"text": caller_ticket.HOLDER_TEXT + b64(key)},
+            "caller.malformed",
+        )
     record("key_form_derives_holder", "caller_key_text", {"text": key_text}, "ok")
     record(
         "key_form_31_bytes",

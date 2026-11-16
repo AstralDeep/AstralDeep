@@ -17,8 +17,8 @@ A JSON object with exactly these fields. Any other field is `caller.malformed`.
 | `mesh` | The mesh id, `sha256:` and 64 lowercase hex characters |
 | `device` | The minting member, a device id. Its roster kind must be `desktop`, `pocket` or `satellite` |
 | `node` | The target member, a device id of kind `node` |
-| `holder` | base64url of the caller's raw 32 byte Ed25519 public key |
-| `label` | 1 to 64 Unicode code points typed by the owner, no control (Cc) or format (Cf) characters |
+| `holder` | base64url of the caller's raw 32 byte Ed25519 public key. It must be the canonical encoding of a point on the curve that is not of small order |
+| `label` | 1 to 64 Unicode code points typed by the owner, no control (Cc) or format (Cf) characters, with character classes as in Unicode 16.0 |
 | `tools` | 1 to 32 entries sorted by `name` and without repeats, each with exactly `name` and `def` |
 | `issued_ms` | Mint time in milliseconds |
 | `expires_ms` | Expiry in milliseconds |
@@ -50,6 +50,8 @@ Each request carries the header `Astral-Caller-Proof`. Its value is base64url of
 
 `sig` covers `astral.caller-proof/v1\n` followed by the LETS-CJ/1 bytes of the object without `sig`. Any other field is `caller.proof_malformed`.
 
+The holder signature is verified strictly under RFC 8032. `S` must be below the group order, `R` must be a canonical encoding that is not of small order, and the recomputed `R` must equal the signature's `R` bytes. These are the `verify_strict` rules. A verifier whose library is more lenient adds the checks itself. A small-order holder key would otherwise let anyone forge a proof for any message, which is why step 1 refuses such a key.
+
 A proof is in time when `now - 120000 <= ms <= now + 5000` and `ms > started_ms + 5000`, where `now` is the verifier's clock in milliseconds and `started_ms` is the start of the replay store, taken when the store is created and shared by every process that verifies for the node. Both failures are `caller.proof_stale`. The second bound means no proof that a verifier could have accepted before a restart is accepted after it. The cost is a 5 second pause after each restart. A proof dated exactly 5 seconds after the store started is refused.
 
 The replay store is keyed by ticket id and nonce. An entry is held while `now <= ms + 120000`, in memory, and is shared by every process that verifies for the node. A verifier records the key only after the holder signature has verified, so a forged proof cannot use up a nonce. The key does not include the target, the proof time or the signature, so a fresh proof that reuses a ticket id and nonce is a replay. A clock that steps backward is a known limit. A verifier whose clock steps back may accept a proof the store already forgot, and a node should not run with a clock it cannot trust. A leaked ticket alone does nothing, so the ticket is not a secret.
@@ -63,7 +65,7 @@ Ticket and proof bytes must be exact canonical LETS-CJ/1. A verifier decodes the
 Three text forms exist for copying and pasting.
 
 - `astral-caller-ticket:v1:<base64url>` carries the ticket bytes. It is not a secret. Parsing it applies the ticket rules of section 1 and the canonical byte rule, and yields the ticket id and the `Authorization` header value.
-- `astral-caller-holder:v1:<base64url>` carries the raw 32 byte Ed25519 public key of the holder. It is not a secret. Minting takes only this form.
+- `astral-caller-holder:v1:<base64url>` carries the raw 32 byte Ed25519 public key of the holder. It is not a secret. Minting takes only this form and refuses a key that is not a canonical point encoding, is off the curve or is of small order, with `caller.malformed`.
 - `astral-caller-key:v1:<base64url>` carries the 32 byte Ed25519 seed of the holder key. It is a secret. The caller keeps it and never pastes it into a minting device. An editor that mints a ticket accepts only the holder form and refuses the key form with a message that says so.
 
 A text form with another prefix or version, padding, a non-canonical encoding, a ticket over the header limit or the wrong key length is `caller.malformed`. The prefix match is exact and case sensitive. The 8192 character limit of a ticket text form counts the whole text including its prefix. A text form that is canonical but fails the ticket rules, such as one with no tools, is refused. The key form derives the holder form, and the vectors pin that.
@@ -89,7 +91,7 @@ The first failure wins, in this order.
 
 | Step | Check | Code |
 |---|---|---|
-| 1 | Ticket shape, exact canonical bytes, lifetime, header size | `caller.malformed` |
+| 1 | Ticket shape, exact canonical bytes, lifetime, header size, a usable holder key | `caller.malformed` |
 | 2 | Proof shape, exact canonical bytes, header size, presence | `caller.proof_malformed` |
 | 3 | `mesh` equals the verifier's mesh | `caller.mesh_mismatch` |
 | 4 | `node` equals the verifier's node | `caller.wrong_node` |
@@ -154,9 +156,10 @@ Groups of cases:
 | Accepted | `valid_mcp_tool`, `valid_a2a_message`, `pocket_minter_accepted`, `satellite_minter_accepted`, `lifetime_30_days_accepted`, `expiry_one_ms_after_now`, `future_issued_ms_at_limit`, `label_64_code_points_accepted`, `tools_32_accepted`, the tools list cases |
 | Tool | `other_tool_refused`, `a2a_not_covered_refused`, `changed_definition_refused`, `missing_catalog_tool_refused` |
 | Lifetime and time | `expired`, `expiry_exactly_now`, `lifetime_31_days`, `lifetime_30_days_plus_1_ms`, `expires_equal_to_issued`, `expires_before_issued`, `future_issued_ms` |
+| Holder key | `holder_key_identity_point`, the order 2, 4 and 8 points, `holder_key_non_canonical_encoding`, `holder_key_off_curve`, `small_order_holder_forged_proof`, and the same keys as `holder_form_*` text forms |
 | Signer and device | `bad_presence_signature`, `high_s_presence_signature`, `wrong_mesh`, `wrong_node`, `removed_device`, `unknown_minting_device`, `node_minter_refused`, `raised_stop` |
 | Revocation | `revoked`, `revoke_for_one_tool_ignored`, `revoke_for_one_scope_ignored`, `revoke_of_another_caller_ignored`, `later_grant_does_not_restore_revoked`, `caller_revoke_fold`, `caller_revoke_fold_later_grant_keeps_revoke`, `caller_revoke_fold_control_refuses_covered_agent` |
-| Proof | the four `proof_*_mismatch` cases, `stale_proof`, `proof_at_window_start`, `proof_ahead_5s`, `proof_ahead_beyond_5s`, `proof_just_after_start_pause_accepted`, `proof_at_start_pause_end_refused`, `bad_holder_signature`, `method_16_characters_accepted`, `target_2048_characters_accepted`, `tool_name_64_accepted` |
+| Proof | the four `proof_*_mismatch` cases, `stale_proof`, `proof_at_window_start`, `proof_ahead_5s`, `proof_ahead_beyond_5s`, `proof_just_after_start_pause_accepted`, `proof_at_start_pause_end_refused`, `bad_holder_signature`, `proof_non_canonical_s`, `method_16_characters_accepted`, `target_2048_characters_accepted`, `tool_name_64_accepted` |
 | Replay and restart | `replayed_nonce`, `same_nonce_on_another_ticket_accepted`, `restart_refuses_proof_accepted_before`, the three future-dated restart cases, `restart_keeps_earlier_state_patches`, `restart_values_win_over_the_same_steps_state_patch`, the replay store retention case that advances `now_ms`, `replay_key_ignores_the_target`, `replay_key_ignores_the_proof_time`, `failed_signature_does_not_use_the_nonce`, `uncovered_tool_uses_the_nonce` |
 | Order | `order_<a>_before_<b>` for each adjacent pair that can fail together, each with defects at both steps and the earlier code expected, `first_failure_wins` |
 | Shape | ticket fields, version, label length and character classes, tool count, duplicates, order, name grammar, `a2a.message` definition, holder key length, header and proof limits, canonical bytes, base64 and UTF-8 failures, scheme cases including `lowercase_scheme_refused` |
