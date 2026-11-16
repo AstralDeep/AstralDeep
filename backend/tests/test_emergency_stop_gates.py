@@ -5,8 +5,6 @@ router's truthful status, denial, and recovery responses.
 
 from __future__ import annotations
 
-import os
-import subprocess
 import sys
 import asyncio
 import uuid
@@ -42,38 +40,16 @@ OWNER = "11111111-1111-1111-1111-111111111111"
 
 
 @pytest.fixture(autouse=True)
-def mock_auth(monkeypatch):
-    monkeypatch.setenv("USE_MOCK_AUTH", "true")
+def _identity(server_identity, monkeypatch):
+    monkeypatch.setitem(globals(), "_IDENTITY", server_identity)
+    return server_identity
 
 
-@pytest.mark.parametrize("auth_mode", [None, "false"])
-def test_module_import_preserves_caller_auth_mode(auth_mode):
-    environment = os.environ.copy()
-    environment.pop("USE_MOCK_AUTH", None)
-    if auth_mode is not None:
-        environment["USE_MOCK_AUTH"] = auth_mode
-    result = subprocess.run(
-        [sys.executable, "-c",
-         "import os, runpy, sys; before = os.environ.get('USE_MOCK_AUTH'); "
-         "runpy.run_path(sys.argv[1], run_name='emergency_stop_gates_import_probe'); "
-         "assert os.environ.get('USE_MOCK_AUTH') == before",
-         str(Path(__file__).resolve())],
-        env=environment, capture_output=True, text=True, timeout=30,
-    )
-    assert result.returncode == 0, result.stderr
+_IDENTITY = None
 
 
-def _token(sub: str) -> str:
-    import base64
-    import json
-
-    claims = {"sub": sub, "realm_access": {"roles": ["user"]}}
-    body = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
-    return f"header.{body}.signature"
-
-
-def _auth(sub: str = OWNER) -> dict[str, str]:
-    return {"Authorization": f"Bearer {_token(sub)}"}
+def _auth(sub: str = OWNER, roles=("user",), **claims) -> dict[str, str]:
+    return _IDENTITY.headers(sub, roles=roles, **claims)
 
 
 def _config(name: str = "interactive") -> list[AdmissionClassConfig]:
@@ -311,15 +287,19 @@ def test_verify_endpoint_fails_closed_when_durable_read_fails():
 
 
 def test_endpoints_require_an_authenticated_user_role():
-    import base64
-    import json
-
-    claims = {"sub": OWNER, "realm_access": {"roles": ["guest"]}}
-    body = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
     client = _client(EmergencyStopCoordinator())
-    response = client.get("/api/emergency-stop",
-                          headers={"Authorization": f"Bearer header.{body}.signature"})
+    response = client.get("/api/emergency-stop", headers=_auth(roles=("guest",)))
     assert response.status_code == 403
+
+
+def test_unsigned_and_foreign_signed_tokens_are_refused():
+    from tests.helpers.idp_tokens import FakeIssuer
+
+    client = _client(EmergencyStopCoordinator())
+    for bad in ("e30.e30.sig", FakeIssuer().token(OWNER)):
+        headers = {"Authorization": f"Bearer {bad}"}
+        assert client.get("/api/emergency-stop", headers=headers).status_code == 401
+        assert client.post("/api/emergency-stop/stop", headers=headers, json={}).status_code == 401
 
 
 def test_status_endpoint_without_any_orchestrator_is_unavailable():
@@ -331,18 +311,10 @@ def test_status_endpoint_without_any_orchestrator_is_unavailable():
 
 
 def test_delegated_and_machine_principals_cannot_drive_the_stop():
-    import base64
-    import json as jsonlib
-
     client = _client(EmergencyStopCoordinator())
 
-    def _token_with(extra):
-        claims = {"sub": OWNER, "realm_access": {"roles": ["user"]}, **extra}
-        body = base64.urlsafe_b64encode(jsonlib.dumps(claims).encode()).decode().rstrip("=")
-        return f"header.{body}.signature"
-
     for extra in ({"act": {"sub": "agent-1"}}, {"machine_class": "scheduled_turn"}):
-        headers = {"Authorization": f"Bearer {_token_with(extra)}"}
+        headers = _auth(**extra)
         assert client.post("/api/emergency-stop/stop", headers=headers,
                            json={}).status_code in (401, 403)
         assert client.post("/api/emergency-stop/resume", headers=headers,

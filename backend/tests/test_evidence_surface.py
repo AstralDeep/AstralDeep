@@ -682,7 +682,7 @@ async def test_terminal_waits_for_admitted_read_cleanup(inspection, fixture, mon
             await asyncio.wait({work.task})
 
 
-@pytest.mark.parametrize("loss", ["active_chat", "registration", "token", "issuance", "consent", "operation", "provider_flags"])
+@pytest.mark.parametrize("loss", ["active_chat", "registration", "token", "issuance", "consent", "operation"])
 async def test_fresh_metadata_scope_refuses_lifetime_changes_after_admission(inspection, fixture, runtime, monkeypatch, loss):
     state = inspection
     await registered(state)
@@ -712,8 +712,6 @@ async def test_fresh_metadata_scope_refuses_lifetime_changes_after_admission(ins
         elif loss == "operation":
             context = state.orch._connection_contexts[id(state.socket)]
             context.connection_generation = uuid4()
-        else:
-            monkeypatch.setenv("USE_MOCK_AUTH", "true")
         release.set()
         assert (await terminal(state, generation))["state"] == "failed"
     finally:
