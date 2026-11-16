@@ -52,7 +52,7 @@ A `host` is a lowercase ASCII DNS name of at most 253 characters with at least t
 
 A verifier checks in this order and returns the first failure. A failure in an earlier field wins over any failure in a later field, including an unknown key inside a later object. An implementation that checks in another order disagrees with the vectors.
 
-1. Text or bytes parse as strict JSON (LETS-CJ/1 rules: no duplicate keys, no floats, integers within 64 bits, valid UTF-8). Otherwise `policy.malformed`. The input need not be canonical.
+1. Text or bytes parse as strict JSON (LETS-CJ/1 rules: no duplicate keys, no floats, integers within 64 bits). Bytes are UTF-8 with no byte order mark. A UTF-8 byte order mark, UTF-16 or UTF-32 in either byte order, and any byte sequence that is not valid UTF-8 are `policy.malformed`, before any JSON is read. The input need not be canonical.
 2. The root is an object. Otherwise `policy.malformed`.
 3. Any key outside the six fields is `policy.unknown_field`. This check comes before the missing key check.
 4. A missing field is `policy.malformed`. `v` that is not the integer 1 is `policy.malformed`.
@@ -202,7 +202,7 @@ Every message names the missing piece in plain words. The exact texts, including
 `vectors/exec-policy-v1.json` holds six parts.
 
 - `constants`: the base roots, limit ranges, the core limit, codes, ports and messages.
-- `validation`: named cases with a `policy` object or `raw` text, a `platform` (`darwin` when the name ends in `_darwin`, otherwise `linux`) and the expected `code` (`ok` when valid, with the `digest`).
+- `validation`: named cases with a `policy` object, `raw` text or `bytes_hex` (the exact input bytes in lowercase hex), a `platform` (`darwin` when the name ends in `_darwin`, otherwise `linux`) and the expected `code` (`ok` when valid, with the `digest`).
 - `profiles`: valid policies with their context (`home`, `proxy_port`, `egress_socket`), the digest, the exact Seatbelt text and the Linux plan. Cases cover `processes` 1 and 2, empty and non-empty `hosts` and a path that needs quoting.
 - `selection`: policies, facts and data directory with the exact result. Cases cover every refusal reason, both backends, the shadow refusal, data directory overlap (case and Unicode variants, read roots inside and containing, the `exec/` rule both ways) and the order of checks.
 - `context_errors`: facts or data directories the selector refuses as caller errors, such as an unknown key, a missing or null platform or a null probe result.

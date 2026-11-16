@@ -92,7 +92,7 @@ def validation_cases() -> list[dict[str, Any]]:
     def policy(name: str, code: str, value: Any, platform: str = "linux") -> None:
         cases.append((name, code, value, False, platform))
 
-    def raw(name: str, code: str, text: str) -> None:
+    def raw(name: str, code: str, text: str | bytes) -> None:
         cases.append((name, code, text, True, "linux"))
 
     ok, malformed = "ok", "policy.malformed"
@@ -501,10 +501,39 @@ def validation_cases() -> list[dict[str, Any]]:
         ok,
         variant(reads=["/private/tmp/astral/WS/lib"]),
     )
+    minimal_text = json.dumps(MINIMAL, sort_keys=True)
+    raw("utf8_bom_prefix", malformed, b"\xef\xbb\xbf" + minimal_text.encode())
+    raw("utf16le_with_bom", malformed, b"\xff\xfe" + minimal_text.encode("utf-16-le"))
+    raw("utf16le_no_bom", malformed, minimal_text.encode("utf-16-le"))
+    raw("utf16be_with_bom", malformed, b"\xfe\xff" + minimal_text.encode("utf-16-be"))
+    raw("utf16be_no_bom", malformed, minimal_text.encode("utf-16-be"))
+    raw(
+        "utf32le_with_bom",
+        malformed,
+        b"\xff\xfe\x00\x00" + minimal_text.encode("utf-32-le"),
+    )
+    raw(
+        "utf32be_with_bom",
+        malformed,
+        b"\x00\x00\xfe\xff" + minimal_text.encode("utf-32-be"),
+    )
+    raw(
+        "invalid_utf8_continuation",
+        malformed,
+        minimal_text.encode().replace(b"workspace", b"work\x80space"),
+    )
+    raw(
+        "invalid_utf8_overlong",
+        malformed,
+        minimal_text.encode().replace(b"workspace", b"work\xc0\xafspace"),
+    )
     out = []
     for name, code, value, is_raw, platform in cases:
         entry: dict[str, Any] = {"name": name, "code": code}
-        entry["raw" if is_raw else "policy"] = value
+        if isinstance(value, bytes):
+            entry["bytes_hex"] = value.hex()
+        else:
+            entry["raw" if is_raw else "policy"] = value
         entry["platform"] = platform
         try:
             parsed = exec_policy.parse(value, platform)

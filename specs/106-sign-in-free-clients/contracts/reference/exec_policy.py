@@ -268,10 +268,17 @@ def _checked_host(value: Any, where: str) -> dict[str, Any]:
     return value
 
 
+def _plain_text(data: bytes | str) -> str:
+    text = data.decode("utf-8") if isinstance(data, bytes) else data
+    if text.startswith("\ufeff"):
+        raise MeshError("canonical.bom", "byte order mark")
+    return text
+
+
 def parse(data: bytes | str | dict[str, Any], platform: str | None) -> dict[str, Any]:
     if isinstance(data, (bytes, str)):
         try:
-            policy = strict_loads(data)
+            policy = strict_loads(_plain_text(data))
         except (MeshError, UnicodeDecodeError) as error:
             raise PolicyError("policy.malformed", str(error)) from error
     else:
