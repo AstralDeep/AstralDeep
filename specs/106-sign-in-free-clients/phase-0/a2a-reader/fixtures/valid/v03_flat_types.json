@@ -1,0 +1,55 @@
+{
+  "capabilities": {
+    "streaming": true
+  },
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "description": "Fixture card for the reader tests.",
+  "name": "Fixture Agent",
+  "security": [
+    {
+      "key": []
+    },
+    {
+      "oauth": [
+        "read"
+      ]
+    }
+  ],
+  "securitySchemes": {
+    "key": {
+      "in": "header",
+      "name": "X-Api-Key",
+      "type": "apiKey"
+    },
+    "oauth": {
+      "flows": {
+        "authorizationCode": {
+          "authorizationUrl": "https://login.example.org/authorize",
+          "scopes": {
+            "read": "Read"
+          },
+          "tokenUrl": "https://login.example.org/token"
+        }
+      },
+      "type": "oauth2"
+    }
+  },
+  "skills": [
+    {
+      "description": "Echoes text.",
+      "id": "echo",
+      "name": "Echo",
+      "tags": [
+        "echo"
+      ]
+    }
+  ],
+  "supportsAuthenticatedExtendedCard": true,
+  "url": "https://agent.example.org/a2a/v1",
+  "version": "1.0.0"
+}

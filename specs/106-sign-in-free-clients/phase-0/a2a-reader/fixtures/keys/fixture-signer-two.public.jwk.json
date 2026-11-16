@@ -1,0 +1,7 @@
+{
+  "crv": "P-256",
+  "kid": "fixture-signer-two",
+  "kty": "EC",
+  "x": "gp44lRxsKTzwBZPkIvW-klMaAg5u-E4yhbKXFutwmHM",
+  "y": "1v4mwqTAL9ZOlp0EMKSmX2ksQr2FVOV_suVllK8o6yg"
+}
