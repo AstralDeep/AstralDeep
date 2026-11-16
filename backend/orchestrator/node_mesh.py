@@ -1,4 +1,4 @@
-"""The node's peer in its owner's mesh: it opens the pinned kernel binding with the node's own keys, a software signer and a node device kind, shows a pairing offer, reports mesh status for the descriptor, and refuses a mesh listing a seeded development device (shared/dev_mesh_keys.py) unless ASTRAL_ENV is development.
+"""The node's peer in its owner's mesh: it opens the pinned kernel binding with the node's own keys, a software signer and a node device kind, shows a pairing offer, reports mesh status for the descriptor, and refuses to bind, serve or sync a mesh listing a seeded development device (shared/dev_mesh_keys.py) unless ASTRAL_ENV is development.
 node_api.py serves it, node_mailbox.py supervises the node's mailbox beside it, node_mesh_chat.py moves chat activity through it, and nothing else imports the kernel binding.
 """
 
@@ -39,6 +39,7 @@ PUBLISH_EXPORT = "publish_tool_catalog"
 ENROLLED_STATES = frozenset({"ENROLLED", "RESTORED"})
 ENVIRONMENT_ENV = "ASTRAL_ENV"
 DEVELOPMENT = "development"
+DEVELOPMENT_MESH = "node.development_mesh"
 
 
 class NodeMeshError(Exception):
@@ -108,12 +109,19 @@ def _code_of(exc: BaseException) -> str:
     return str(getattr(exc, "code", "") or "kernel_error")
 
 
+def _development_allowed() -> bool:
+    return os.environ.get(ENVIRONMENT_ENV) == DEVELOPMENT
+
+
 def _refuse_development_mesh(roster: Any) -> None:
-    if os.environ.get(ENVIRONMENT_ENV) == DEVELOPMENT:
+    if _development_allowed():
         return
-    listed = {member.device_id for member in roster.members} | {device.device_id for device in roster.removed}
-    if not listed.isdisjoint(dev_mesh_keys.device_ids().values()):
-        raise NodeMeshError("node.development_mesh")
+    try:
+        listed = [member.device_id for member in roster.members] + [device.device_id for device in roster.removed]
+    except (AttributeError, TypeError):
+        raise NodeMeshError(DEVELOPMENT_MESH) from None
+    if any(type(device) is not str for device in listed) or not set(listed).isdisjoint(dev_mesh_keys.device_ids().values()):
+        raise NodeMeshError(DEVELOPMENT_MESH)
 
 
 class _Listener:
@@ -259,6 +267,7 @@ class NodeMesh:
         self._owner_binding = {"state": "setup_required", "code": "mesh.not_enrolled"}
         self._lock = asyncio.Lock()
         self._owner_lock = asyncio.Lock()
+        self._quarantined = False
 
     @property
     def kernel(self) -> Any:
@@ -319,11 +328,16 @@ class NodeMesh:
                 self._kernel = await asyncio.to_thread(
                     binding.Kernel.open, config, _signer(binding, keys), None, None, self._listener.bridge
                 )
-                try:
-                    await self._kernel.start_network()
-                except BaseException:
-                    await self._kernel.stop_network()
-                    raise
+                self._quarantined = False
+                if await self._holds_development_mesh(self._kernel):
+                    self._owner_binding = {"state": "refused", "code": DEVELOPMENT_MESH}
+                    await self._quarantine()
+                else:
+                    try:
+                        await self._kernel.start_network()
+                    except BaseException:
+                        await self._kernel.stop_network()
+                        raise
             except BaseException:
                 await self._stop_mailbox()
                 self._kernel = None
@@ -345,6 +359,25 @@ class NodeMesh:
     async def _stop_mailbox(self) -> None:
         if self._mailbox is not None:
             await self._mailbox.stop()
+
+    async def _holds_development_mesh(self, kernel: Any) -> bool:
+        if _development_allowed() or self._enrollment(await kernel.mesh_status()) not in ENROLLED_STATES:
+            return False
+        try:
+            _refuse_development_mesh(await asyncio.to_thread(kernel.roster))
+        except NodeMeshError:
+            return True
+        return False
+
+    async def _quarantine(self) -> None:
+        if self._quarantined:
+            return
+        logger.warning("node_mesh_development_mesh_refused")
+        try:
+            await self.kernel.stop_network()
+        finally:
+            await self._stop_mailbox()
+        self._quarantined = True
 
     async def stop(self) -> None:
         async with self._lock:
@@ -416,6 +449,8 @@ class NodeMesh:
         except NodeMeshError as exc:
             self._personal_owner = None
             self._owner_binding = {"state": "refused", "code": exc.code}
+            if exc.code == DEVELOPMENT_MESH:
+                await self._quarantine()
             return None
 
     async def status(self) -> Dict[str, Any]:
@@ -598,7 +633,12 @@ class NodeMesh:
                 raise NodeMeshError("node.owner_mismatch")
             return PersonalAuthorityContext(proof.mesh_id, status.device_id, request)
 
-        return await self._request_call(inspect)
+        try:
+            return await self._request_call(inspect)
+        except NodeMeshError as exc:
+            if exc.code == DEVELOPMENT_MESH:
+                await self._quarantine()
+            raise
 
     async def refuse_request(self, request_id: str, code: str) -> str:
         return await self._request_call(self.kernel.refuse_request, request_id, code)
@@ -716,6 +756,8 @@ class NodeMesh:
             raise NodeMeshError(_code_of(exc)) from exc
 
     async def sync_now(self) -> None:
+        if self._quarantined:
+            raise NodeMeshError(DEVELOPMENT_MESH)
         await self.kernel.sync_now()
 
 
