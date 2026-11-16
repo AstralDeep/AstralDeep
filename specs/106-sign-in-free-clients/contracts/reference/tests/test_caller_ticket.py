@@ -195,6 +195,12 @@ EXPECTED = {
     "label_unassigned_code_point": "caller.malformed",
     "label_private_use_code_point": "caller.malformed",
     "label_letter_added_in_unicode_16_accepted": "ok",
+    "label_symbol_added_in_unicode_17_refused": "caller.malformed",
+    "holder_key_identity_point_with_later_expired": "caller.malformed",
+    "holder_key_identity_point_with_later_wrong_mesh": "caller.malformed",
+    "holder_key_identity_point_with_later_bad_presence_signature": "caller.malformed",
+    "holder_key_mixed_order_8_with_later_expired": "caller.malformed",
+    "holder_key_mixed_order_8_with_later_wrong_mesh": "caller.malformed",
 }
 
 

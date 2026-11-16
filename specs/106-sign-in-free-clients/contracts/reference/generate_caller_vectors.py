@@ -1081,6 +1081,27 @@ def generate() -> dict[str, Any]:
         "ok",
         step(make_ticket(label="Garay \U00010d50")),
     )
+    verify(
+        "label_symbol_added_in_unicode_17_refused",
+        "caller.malformed",
+        step(make_ticket(label="a\U0001faeab")),
+    )
+    for key_name, later, change in (
+        ("identity_point", "expired", {"expires_ms": NOW - 1}),
+        ("identity_point", "wrong_mesh", {"mesh": other_mesh}),
+        ("identity_point", "bad_presence_signature", {"signing": stranger_scalar}),
+        ("mixed_order_8", "expired", {"expires_ms": NOW - 1}),
+        ("mixed_order_8", "wrong_mesh", {"mesh": other_mesh}),
+    ):
+        verify(
+            f"holder_key_{key_name}_with_later_{later}",
+            "caller.malformed",
+            step(
+                make_ticket(
+                    holder=b64(({**holder_keys, **mixed_keys})[key_name]), **change
+                )
+            ),
+        )
 
     return {
         "format": "astral.vectors/v1",
