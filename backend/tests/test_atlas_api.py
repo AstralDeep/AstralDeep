@@ -1,5 +1,5 @@
 """Round-trip tests for the authorized Atlas REST surface (personalization/atlas_api.py)
-over a real PostgreSQL-backed AstralPlane runtime and the mock-auth dispatch path:
+over a real PostgreSQL-backed AstralPlane runtime and the signed-token dispatch path:
 create/read/update/delete by slug and id, revision conflicts, wrong-owner denial, PHI
 refusal, generated-import unavailability, bounded results, and audit evidence.
 """
@@ -10,7 +10,6 @@ import asyncio
 import base64
 from contextlib import contextmanager
 from dataclasses import asdict
-import os
 import sys
 import time
 from threading import Event, Thread, get_ident
@@ -25,8 +24,6 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
-os.environ["USE_MOCK_AUTH"] = "true"
-
 from astralplane.repositories.guidance_models import ExplicitNoteRecord  # noqa: E402
 from astralplane.repositories.preferences import MemoryRecord  # noqa: E402
 from audit.repository import AuditRepository  # noqa: E402
@@ -37,25 +34,23 @@ from personalization import phi_gate  # noqa: E402
 from personalization.atlas_promotions import PromotionSourceInput  # noqa: E402
 from personalization.atlas_service import AtlasPageService, AtlasUnavailable  # noqa: E402
 from personalization.explicit_notes import ExplicitNoteMetadata  # noqa: E402
+from shared.node_identity import canonical_owner_id  # noqa: E402
+from tests.helpers.idp_tokens import AUTHORITY  # noqa: E402
 from tests.helpers.voice_plane_runtime import isolated_plane_runtime  # noqa: E402
 
-OWNER_A = "atlas-api-owner-a"
-OWNER_B = "atlas-api-owner-b"
+SUBJECT_A = "atlas-api-owner-a"
+SUBJECT_B = "atlas-api-owner-b"
+OWNER_A = canonical_owner_id(AUTHORITY, SUBJECT_A)
+OWNER_B = canonical_owner_id(AUTHORITY, SUBJECT_B)
+AUTH_A: dict = {}
+AUTH_B: dict = {}
 
 
-def _token(sub: str) -> str:
-    import base64
-    import json
-
-    header = base64.urlsafe_b64encode(b'{"alg":"none"}').decode().rstrip("=")
-    claims = base64.urlsafe_b64encode(
-        json.dumps({"sub": sub, "preferred_username": sub}).encode()
-    ).decode().rstrip("=")
-    return f"{header}.{claims}.signature"
-
-
-AUTH_A = {"Authorization": f"Bearer {_token(OWNER_A)}"}
-AUTH_B = {"Authorization": f"Bearer {_token(OWNER_B)}"}
+@pytest.fixture(autouse=True)
+def _identity(server_identity, monkeypatch):
+    monkeypatch.setitem(globals(), "AUTH_A", server_identity.headers(SUBJECT_A))
+    monkeypatch.setitem(globals(), "AUTH_B", server_identity.headers(SUBJECT_B))
+    return server_identity
 
 
 @pytest.fixture(scope="module")
@@ -223,6 +218,16 @@ def test_wrong_owner_is_denied_through_the_real_dispatch_path(client):
         entry["page_id"] != created["page_id"]
         for entry in foreign_list.json()["pages"]
     )
+
+
+def test_unsigned_and_foreign_signed_tokens_are_rejected(client):
+    from tests.helpers.idp_tokens import FakeIssuer
+
+    for bad in ("e30.e30.sig", FakeIssuer().token(SUBJECT_A)):
+        response = client.get(
+            "/api/atlas/projects/atlas-api/pages", headers={"Authorization": f"Bearer {bad}"}
+        )
+        assert response.status_code == 401
 
 
 def test_unauthenticated_requests_are_rejected(client):
