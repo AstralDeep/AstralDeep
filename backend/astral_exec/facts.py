@@ -12,11 +12,10 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from .constants import BWRAP_PATHS
+from .constants import BWRAP_PATHS, SANDBOX_EXEC
 
 SYS_LANDLOCK_CREATE_RULESET = 444
 LANDLOCK_CREATE_RULESET_VERSION = 1
-SANDBOX_EXEC = "/usr/bin/sandbox-exec"
 TRUE_BINARIES = ("/usr/bin/true", "/bin/true")
 USERNS_SYSCTLS = (
     "/proc/sys/user/max_user_namespaces",
