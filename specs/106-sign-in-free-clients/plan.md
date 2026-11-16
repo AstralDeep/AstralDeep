@@ -50,8 +50,9 @@ The "needed by" column is this plan's proposal.
 - **Contract rule.** 105's contracts README says a format change raises its version and that the
   document, its vectors and its reference module change together. Every contract task here closes only
   when all three are in one change and the reference tests pass.
-- **Open item.** The spec does not say whether revised and new contract documents live in 105's
-  `contracts/` folder or under spec 106. Task T1.1 decides and every later phase follows it.
+- **Contract location.** Revised and new contracts live in
+  [`contracts/`](contracts/README.md) under this spec, with `reference/` and `vectors/`. 105's contracts
+  are history.
 
 ## Phase 0: spikes
 

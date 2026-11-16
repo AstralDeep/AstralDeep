@@ -1,3 +1,5 @@
+> Superseded by [roster v2](../../106-sign-in-free-clients/contracts/roster-v2.md). This version 1 document is kept as history.
+
 # Roster contract, `astral.roster/v1`
 
 The roster is the signed record of who belongs to a mesh. It is a set of entries that each name the entries they follow, so it forms a directed acyclic graph and merges without a coordinator. This document fixes the entry format, every entry type, the merge into state, outside attestations (the identity statement from Keycloak and the PHI approval), unattested devices and pairing.
