@@ -86,6 +86,8 @@ def _checked_argv(argv: Any) -> list[str]:
         raise ValueError("argv must be a non-empty list of strings")
     if not all(isinstance(arg, str) and "\0" not in arg for arg in argv):
         raise ValueError("argv must hold strings without NUL")
+    if argv[0].startswith("-"):
+        raise ValueError("the tool path must not look like an option")
     return list(argv)
 
 
@@ -151,7 +153,7 @@ def _spawn(
         stdin = subprocess.DEVNULL if data is None else subprocess.PIPE
     output = subprocess.PIPE if capture else None
     return subprocess.Popen(
-        [SANDBOX_EXEC, "-f", profile, *call.argv],
+        [SANDBOX_EXEC, "-f", profile, "--", *call.argv],
         executable=SANDBOX_EXEC,
         env=call.env,
         cwd=call.document["workspace"],
@@ -303,6 +305,8 @@ def run(
 
 
 def _stop(signum: int, _frame: Any) -> None:
+    for each in STOP_SIGNALS:
+        signal.signal(each, signal.SIG_IGN)
     raise _Stopped(signum)
 
 

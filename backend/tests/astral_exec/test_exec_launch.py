@@ -145,6 +145,8 @@ def test_anything_but_the_seatbelt_backend_is_a_launch_failure(spawns, policy, f
         ("/bin/echo", {}, None),
         (["/bin/echo", 1], {}, None),
         (["/bin/ec\0ho"], {}, None),
+        (["-D", "X=Y", "/bin/echo"], {}, None),
+        (["-p", "(version 1)(allow default)", "/bin/echo"], {}, None),
         (["/bin/echo"], {"A": 1}, None),
         (["/bin/echo"], {"": "x"}, None),
         (["/bin/echo"], {"A=B": "x"}, None),
@@ -173,7 +175,7 @@ def test_a_spawn_failure_is_a_launch_failure_and_removes_the_profile(monkeypatch
 
     def failing_popen(argv, **kwargs):
         assert argv[:2] == [constants.SANDBOX_EXEC, "-f"]
-        assert argv[3:] == ["/bin/echo", "hi"]
+        assert argv[3:] == ["--", "/bin/echo", "hi"]
         assert kwargs["executable"] == constants.SANDBOX_EXEC
         assert kwargs["start_new_session"] is True and kwargs["close_fds"] is True
         assert kwargs["cwd"] == WORKSPACE
@@ -602,8 +604,16 @@ def test_launch_main_returns_the_signal_status_when_stopped(monkeypatch, cli):
 
     monkeypatch.setattr(launch, "_launch", stopped)
     assert launch.main([*launch_args(cli), "--", "/bin/echo"]) == 128 + signal.SIGTERM
-    with pytest.raises(launch._Stopped):
-        launch._stop(signal.SIGHUP, None)
+    saved = {sig: signal.getsignal(sig) for sig in launch.STOP_SIGNALS}
+    try:
+        with pytest.raises(launch._Stopped):
+            launch._stop(signal.SIGHUP, None)
+        assert all(
+            signal.getsignal(sig) == signal.SIG_IGN for sig in launch.STOP_SIGNALS
+        )
+    finally:
+        for sig, handler in saved.items():
+            signal.signal(sig, handler)
 
 
 def test_launch_main_refuses_bad_inputs_before_any_launch(monkeypatch, cli, capsys):

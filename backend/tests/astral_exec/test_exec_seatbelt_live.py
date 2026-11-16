@@ -283,6 +283,15 @@ def test_a_tool_sandbox_exec_cannot_start_passes_its_status_through(call):
     assert b"execvp" in outcome.stderr
 
 
+def test_an_option_in_place_of_the_tool_never_reaches_sandbox_exec(call):
+    target = call.outside / "injected"
+    argv = ["-p", "(version 1)(allow default)", "/usr/bin/touch", str(target)]
+    assert run(call(), argv, {}, None).code == "exec.launch_failed"
+    outcome = run(call(), ["/usr/bin/touch", str(target)], {}, None)
+    assert outcome.code is None and outcome.exit_code != 0
+    assert not target.exists()
+
+
 def test_real_facts_in_shadow_mode_are_refused(call):
     facts = probe()
     facts["mode"] = "shadow"
