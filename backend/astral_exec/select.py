@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .constants import (
+    BWRAP_PATHS,
     DARWIN_BASE,
     EXEC_SUBDIRECTORY,
     FACT_KEYS,
@@ -83,7 +84,26 @@ def select(
     policy: Policy, facts: Mapping[str, Any], data_dir: str
 ) -> Backend | Refusal:
     if not isinstance(policy, Policy):
-        raise TypeError("select takes a Policy, parse the document first")
+        raise TypeError("select takes a Policy loaded with Policy.load")
+    if policy.loaded_for is None:
+        raise ContextError("select needs a policy loaded with Policy.load")
+    loaded_platform, loaded_dir, _home = policy.loaded_for
+    if not isinstance(facts, Mapping) or facts.get("platform") != loaded_platform:
+        raise ContextError("the policy was loaded for another platform")
+    if data_dir != loaded_dir:
+        raise ContextError("the policy was loaded for another data directory")
+    outcome = _decide(policy, facts, data_dir)
+    if isinstance(outcome, Backend) and outcome.name == "linux":
+        path = getattr(facts, "bwrap_path", None)
+        if path not in BWRAP_PATHS:
+            return refuse("exec.backend_unavailable", "bwrap_missing")
+        return Backend("linux", path)
+    return outcome
+
+
+def _decide(
+    policy: Policy, facts: Mapping[str, Any], data_dir: str
+) -> Backend | Refusal:
     checked = _facts(facts)
     platform = checked["platform"]
     document = Policy.parse(policy.canonical_bytes(), platform).document
@@ -104,7 +124,7 @@ def select(
             return refuse("exec.backend_unavailable", "bwrap_missing")
         if not checked["userns"]:
             return refuse("exec.backend_unavailable", "userns_denied")
-        return Backend("linux", getattr(facts, "bwrap_path", None))
+        return Backend("linux")
     if platform == "darwin":
         if not checked["sandbox_exec"]:
             return refuse("exec.backend_unavailable", "sandbox_exec_missing")

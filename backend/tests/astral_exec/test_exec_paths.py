@@ -23,8 +23,14 @@ from exec_vectors import minimal_policy
 IS_DARWIN = sys.platform == "darwin"
 
 
-def _load(data, platform, resolve, data_dir=None, stat=os.stat):
-    return Policy._load(data, platform, data_dir, resolve, stat)
+def _no_stat(path):
+    raise FileNotFoundError(path)
+
+
+def _load(
+    data, platform, resolve, data_dir="/var/lib/node", stat=_no_stat, home="/home/t"
+):
+    return Policy._load(data, platform, data_dir, home, resolve, stat)
 
 
 def _policy(reads, workspace="/w/ws"):
@@ -82,7 +88,12 @@ def test_load_resolves_each_path_with_the_platform_given():
         return path
 
     _load(_policy(["/a"]), "darwin", resolve)
-    assert seen == [("/a", "darwin"), ("/w/ws", "darwin")]
+    assert seen == [
+        ("/a", "darwin"),
+        ("/w/ws", "darwin"),
+        ("/var/lib/node", "darwin"),
+        ("/home/t", "darwin"),
+    ]
 
 
 def test_real_symlinks_are_refused_and_real_directories_accepted(tmp_path):
@@ -93,13 +104,16 @@ def test_real_symlinks_are_refused_and_real_directories_accepted(tmp_path):
     work = tmp_path / "work"
     work.mkdir()
     platform = "darwin" if IS_DARWIN else "linux"
-    ok = Policy.load(_policy([str(real)], str(work)), platform)
+    data = tmp_path / "data"
+    data.mkdir()
+    args = (platform, str(data), str(tmp_path))
+    ok = Policy.load(_policy([str(real)], str(work)), *args)
     assert ok.document["reads"] == [str(real)]
     with pytest.raises(PolicyError) as caught:
-        Policy.load(_policy([str(link)], str(work)), platform)
+        Policy.load(_policy([str(link)], str(work)), *args)
     assert caught.value.code == "policy.path_invalid"
     with pytest.raises(PolicyError):
-        Policy.load(_policy([str(tmp_path / "missing")], str(work)), platform)
+        Policy.load(_policy([str(tmp_path / "missing")], str(work)), *args)
 
 
 def test_canonical_path_resolves_symlinks_and_dotdot_free_paths(tmp_path):
@@ -170,7 +184,16 @@ def test_context_path_refuses_an_unassigned_code_point_on_darwin():
 
 
 def test_the_public_loader_and_context_helper_take_no_resolver():
-    assert "resolve" not in inspect.signature(Policy.load).parameters
+    assert list(inspect.signature(Policy.load).parameters) == [
+        "data",
+        "platform",
+        "data_dir",
+        "home",
+    ]
+    assert all(
+        p.default is inspect.Parameter.empty
+        for p in inspect.signature(Policy.load).parameters.values()
+    )
     assert "resolve" not in inspect.signature(canonical_context_path).parameters
 
 
@@ -309,6 +332,40 @@ def test_real_load_with_a_data_dir_accepts_a_sibling_and_refuses_the_same_direct
     other.mkdir()
     work = tmp_path / "work"
     work.mkdir()
-    Policy.load(_policy([str(other)], str(work)), platform, str(data))
+    args = (platform, str(data), str(tmp_path))
+    loaded_policy = Policy.load(_policy([str(other)], str(work)), *args)
+    assert loaded_policy.loaded_for == args
     with pytest.raises(ExecRefused):
-        Policy.load(_policy([str(data)], str(work)), platform, str(data))
+        Policy.load(_policy([str(data)], str(work)), *args)
+
+
+def test_load_canonicalizes_home_too():
+    resolve = lambda p, pl: "/elsewhere" if p == "/home/t" else p  # noqa: E731
+    with pytest.raises(ContextError, match="home"):
+        _load(_policy([]), "linux", resolve)
+    with pytest.raises(ContextError, match="home"):
+        Policy._load(
+            _policy([]), "linux", "/var/lib/node", "relative", lambda p, pl: p, _no_stat
+        )
+
+
+def test_load_records_where_it_was_checked():
+    policy = _load(_policy([]), "linux", lambda p, pl: p)
+    assert policy.loaded_for == ("linux", "/var/lib/node", "/home/t")
+
+
+def test_a_loop_bind_back_to_the_data_dir_is_not_an_exec_workspace():
+    base = {
+        "/mnt": 7,
+        "/mnt/alias": 4,
+        "/mnt/alias/exec": 10,
+        "/mnt/alias/exec/loop": 4,
+        "/mnt/alias/exec/loop/x": 11,
+        "/var/lib/node/exec": 10,
+    }
+    disk = _disk(**base)
+    doc = _policy([], "/mnt/alias/exec/loop/x")
+    assert aliases_data_dir(doc, "linux", "/var/lib/node", disk) is True
+    fine = _policy([], "/mnt/alias/exec/job")
+    ok = _disk(**{**base, "/mnt/alias/exec/job": 12})
+    assert aliases_data_dir(fine, "linux", "/var/lib/node", ok) is False

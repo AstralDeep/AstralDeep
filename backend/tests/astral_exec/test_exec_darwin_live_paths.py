@@ -26,6 +26,9 @@ def test_darwin_canonical_path_returns_the_on_disk_case(tmp_path):
     assert canonical_path(probe, "darwin") == str(real)
     with pytest.raises(PolicyError) as caught:
         Policy.load(
-            minimal_policy(reads=[probe], workspace=str(tmp_path / "ws")), "darwin"
+            minimal_policy(reads=[probe], workspace=str(tmp_path / "ws")),
+            "darwin",
+            str(tmp_path),
+            str(tmp_path),
         )
     assert caught.value.code == "policy.path_invalid"

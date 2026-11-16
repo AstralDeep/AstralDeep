@@ -103,6 +103,9 @@ def aliases_data_dir(
         return True
     if data_id not in chain:
         return False
+    last = max(index for index, entry in enumerate(chain) if entry == data_id)
     exec_chain = _identities(f"{data_dir}/{EXEC_SUBDIRECTORY}", stat)
-    exec_id = exec_chain[-1] if len(exec_chain) > len(data_chain) else None
-    return exec_id is None or exec_id not in chain or exec_id == chain[-1]
+    if len(exec_chain) <= len(data_chain):
+        return True
+    below = last + 1
+    return not (below < len(chain) - 1 and chain[below] == exec_chain[-1])

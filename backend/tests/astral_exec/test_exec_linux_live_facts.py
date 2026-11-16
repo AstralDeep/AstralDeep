@@ -27,13 +27,17 @@ def test_the_real_probe_finds_landlock_bwrap_and_user_namespaces():
     assert facts["sandbox_exec"] is False and facts["app_sandboxed"] is False
 
 
-def test_the_real_facts_select_the_linux_backend():
+def test_the_real_facts_select_the_linux_backend(tmp_path):
     facts = probe()
-    outcome = select(
-        Policy.parse(minimal_policy(), "linux"), facts, "/var/lib/astral/node"
+    data = tmp_path / "data"
+    workspace = data / "exec" / "job"
+    home = tmp_path / "home"
+    for directory in (workspace, home):
+        directory.mkdir(parents=True)
+    policy = Policy.load(
+        minimal_policy(workspace=str(workspace)), "linux", str(data), str(home)
     )
+    outcome = select(policy, facts, str(data))
     assert outcome == Backend("linux")
-    assert outcome.bwrap == facts.bwrap_path and outcome.bwrap in (
-        "/usr/bin/bwrap",
-        "/bin/bwrap",
-    )
+    assert outcome.bwrap == facts.bwrap_path
+    assert outcome.bwrap in ("/usr/bin/bwrap", "/bin/bwrap")

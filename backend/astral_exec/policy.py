@@ -159,12 +159,18 @@ _VALIDATED = object()
 
 
 class Policy:
-    __slots__ = ("_canonical",)
+    __slots__ = ("_canonical", "_origin")
 
-    def __init__(self, token: object, canonical_bytes: bytes) -> None:
+    def __init__(
+        self,
+        token: object,
+        canonical_bytes: bytes,
+        origin: tuple[str, str, str] | None = None,
+    ) -> None:
         if token is not _VALIDATED:
             raise TypeError("build a Policy with Policy.parse or Policy.load")
         self._canonical = canonical_bytes
+        self._origin = origin
 
     @classmethod
     def parse(
@@ -182,16 +188,18 @@ class Policy:
         cls,
         data: bytes | str | Mapping[str, Any],
         platform: str,
-        data_dir: str | None = None,
+        data_dir: str,
+        home: str,
     ) -> Policy:
-        return cls._load(data, platform, data_dir, paths.canonical_path, os.stat)
+        return cls._load(data, platform, data_dir, home, paths.canonical_path, os.stat)
 
     @classmethod
     def _load(
         cls,
         data: bytes | str | Mapping[str, Any],
         platform: str,
-        data_dir: str | None,
+        data_dir: str,
+        home: str,
         resolve: Callable[[str, str], str],
         stat: Callable[[str], Any],
     ) -> Policy:
@@ -209,11 +217,19 @@ class Policy:
                 raise PolicyError(
                     "policy.path_invalid", f"{where}: not the canonical path"
                 )
-        if data_dir is not None:
-            checked = paths._check_context_path(data_dir, "data_dir", platform, resolve)
-            if paths.aliases_data_dir(document, platform, checked, stat):
-                raise ExecRefused(refuse("exec.policy_overlaps_data"))
-        return policy
+        checked_dir = paths._check_context_path(data_dir, "data_dir", platform, resolve)
+        checked_home = paths._check_context_path(home, "home", platform, resolve)
+        if paths.aliases_data_dir(document, platform, checked_dir, stat):
+            raise ExecRefused(refuse("exec.policy_overlaps_data"))
+        return cls(
+            _VALIDATED,
+            policy.canonical_bytes(),
+            (platform, checked_dir, checked_home),
+        )
+
+    @property
+    def loaded_for(self) -> tuple[str, str, str] | None:
+        return self._origin
 
     @property
     def document(self) -> dict[str, Any]:

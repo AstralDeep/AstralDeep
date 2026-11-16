@@ -29,6 +29,7 @@ DARWIN_BASE = (
 )
 LINUX_BASE = ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc")
 LANDLOCK_ABI = 6
+BWRAP_PATHS = ("/usr/bin/bwrap", "/bin/bwrap")
 EXEC_SUBDIRECTORY = "exec"
 FACT_KEYS = (
     "platform",

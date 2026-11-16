@@ -8,12 +8,10 @@ import os
 import types
 
 import pytest
-from astral_exec import Backend, Policy, Refusal, select
+from astral_exec import Backend, Refusal, select
 from astral_exec.constants import FACT_KEYS
 from astral_exec.facts import Hooks, probe, resolve_bwrap
-from exec_vectors import minimal_policy
-
-DATA_DIR = "/var/lib/astral/node"
+from exec_vectors import DATA_DIR, loaded, minimal_policy
 
 
 def _stat(mode=0o100755, uid=0):
@@ -41,8 +39,7 @@ def _hooks(**overrides):
 
 def _select(hooks):
     facts = probe(hooks)
-    policy = Policy.parse(minimal_policy(), facts["platform"])
-    return select(policy, facts, DATA_DIR)
+    return select(loaded(minimal_policy(), facts["platform"]), facts, DATA_DIR)
 
 
 def test_probe_returns_exactly_the_documented_keys_without_mode():
@@ -122,6 +119,14 @@ def test_a_stat_that_raises_counts_as_absent():
     assert probe(_hooks(stat=stat))["bwrap"] is False
 
 
+def test_a_setuid_root_bwrap_is_accepted_on_purpose():
+    for mode in (0o104755, 0o104555):
+        facts = probe(_hooks(stat=lambda path, mode=mode: _stat(mode=mode)))
+        assert facts["bwrap"] is True and facts.bwrap_path == "/usr/bin/bwrap"
+    assert probe(_hooks(stat=lambda path: _stat(mode=0o104775)))["bwrap"] is False
+    assert probe(_hooks(stat=lambda path: _stat(mode=0o104757)))["bwrap"] is False
+
+
 @pytest.mark.parametrize(
     "info",
     [
@@ -177,7 +182,7 @@ def test_the_trial_and_the_selected_backend_use_the_resolved_binary():
     hooks = _hooks(run=run)
     facts = probe(hooks)
     assert facts.bwrap_path == "/usr/bin/bwrap" and seen == ["/usr/bin/bwrap"]
-    outcome = select(Policy.parse(minimal_policy(), "linux"), facts, DATA_DIR)
+    outcome = select(loaded(minimal_policy()), facts, DATA_DIR)
     assert outcome == Backend("linux") and outcome.bwrap == "/usr/bin/bwrap"
 
 
@@ -436,7 +441,7 @@ def test_other_platforms_report_no_probe_results():
 
 
 def test_default_hooks_describe_this_machine():
-    facts = probe()
+    facts = probe(Hooks(run=lambda argv: 1))
     assert set(facts) == set(FACT_KEYS) - {"mode"}
     assert isinstance(facts["landlock_abi"], int) and not isinstance(
         facts["landlock_abi"], bool

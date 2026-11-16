@@ -52,7 +52,9 @@ def _import_offenders(source: str, name: str):
         offenders += [
             (name, root)
             for root in roots
-            if root not in sys.stdlib_module_names and root != "astral_exec"
+            if root not in sys.stdlib_module_names
+            and root != "astral_exec"
+            or root == "importlib"
         ]
     return offenders
 
@@ -70,6 +72,10 @@ def test_the_import_scanner_flags_dynamic_third_party_and_escaping_imports():
         "from yaml import x",
         "import importlib\nimportlib.import_module('x')",
         "__import__('x')",
+        "import importlib",
+        "import importlib.util",
+        "from importlib import import_module",
+        "from importlib.util import find_spec",
         "from .. import x",
         "from ..other import x",
     ):
@@ -259,5 +265,12 @@ def test_each_module_and_test_file_opens_with_a_short_header_naming_no_feature()
         sentences = [s for s in header.replace("\n", " ").split(". ") if s.strip()]
         assert len(sentences) <= 3, path.name
         lowered = header.lower()
-        for banned in ("spec 106", "task ", "phase ", "feature "):
+        for banned in (
+            "spec 106",
+            "task ",
+            "phase ",
+            "feature ",
+            "specs/",
+            "at commit",
+        ):
             assert banned not in lowered, (path.name, banned)
