@@ -154,7 +154,7 @@ class LinuxSystem:
             except (OSError, IndexError, ValueError):
                 continue
             table[int(entry)] = LProc(
-                int(after[1]), int(after[19]), after[0:1] in (b"Z", b"X", b"x")
+                int(after[1]), int(after[19]), after[0] in (b"Z", b"X", b"x")
             )
         return table
 

@@ -130,9 +130,7 @@ def _translate(data_dir: str, mounts: list[tuple[str, str, str]]) -> tuple[str, 
     return device, in_fs
 
 
-def mount_exposes_data_dir(
-    text: str, roots: tuple[str, ...], data_dir: str
-) -> bool:
+def mount_exposes_data_dir(text: str, roots: tuple[str, ...], data_dir: str) -> bool:
     mounts = _parse_mountinfo(text)
     device, in_fs = _translate(data_dir, mounts)
     for mount_device, mount_root, mount_point in mounts:
@@ -151,9 +149,8 @@ def _mountinfo_refuses(document: dict[str, Any], data_dir: str) -> bool:
     try:
         with open(MOUNTINFO, encoding="utf-8") as handle:
             text = handle.read()
-        return mount_exposes_data_dir(
-            text, (*LINUX_BASE, *document["reads"]), data_dir
-        )
+        roots = (*LINUX_BASE, *document["reads"], document["workspace"])
+        return mount_exposes_data_dir(text, roots, data_dir)
     except OSError:
         return True
 
