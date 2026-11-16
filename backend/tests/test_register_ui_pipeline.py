@@ -6,7 +6,6 @@ delivery ordering, and off-critical-path profile save and audit events completin
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import sys
 import uuid
@@ -27,21 +26,11 @@ from orchestrator.plane_repository_context import (  # noqa: E402
 
 
 @pytest.fixture()
-def isolated_mock_identity():
-    user_id = f"pytest-register-ui-{uuid.uuid4().hex}"
-    claims = {
-        "sub": user_id,
-        "preferred_username": user_id,
-        "email": f"{user_id}@invalid.example",
-        "realm_access": {"roles": ["admin", "user"]},
-        "resource_access": {
-            "astral-frontend": {"roles": ["admin", "user"]}
-        },
-    }
-    payload = base64.b64encode(
-        json.dumps(claims, separators=(",", ":")).encode("utf-8")
-    ).decode("ascii").rstrip("=")
-    return {"user_id": user_id, "token": f"mock.{payload}.signature"}
+def signed_identity(server_identity):
+    subject = f"pytest-register-ui-{uuid.uuid4().hex}"
+    token = server_identity.token(
+        subject, roles=("admin", "user"), email=f"{subject}@invalid.example")
+    return {"user_id": server_identity.owner(subject), "subject": subject, "token": token}
 
 
 def _fresh_socket():
@@ -97,14 +86,13 @@ async def _register_and_observe(orch, identity, payload):
 
 
 @pytest.fixture()
-async def orch(monkeypatch, isolated_mock_identity):
-    monkeypatch.setenv("USE_MOCK_AUTH", "true")
+async def orch(signed_identity):
     from orchestrator.orchestrator import Orchestrator
     try:
         o = await asyncio.to_thread(Orchestrator)
     except Exception as exc:
         pytest.skip(f"orchestrator/database unavailable: {exc}")
-    user_id = isolated_mock_identity["user_id"]
+    user_id = signed_identity["user_id"]
     try:
         await o._llm_store.set(
             user_id,
@@ -134,14 +122,14 @@ async def orch(monkeypatch, isolated_mock_identity):
 
 
 async def test_register_ui_delivers_welcome_and_dashboard(
-    orch, isolated_mock_identity
+    orch, signed_identity
 ):
     ws, _profile, _actions = await _register_and_observe(
         orch,
-        isolated_mock_identity,
+        signed_identity,
         {
             "type": "register_ui",
-            "token": isolated_mock_identity["token"],
+            "token": signed_identity["token"],
             "device": {},
         },
     )
@@ -170,14 +158,14 @@ async def test_register_ui_delivers_welcome_and_dashboard(
 
 
 async def test_register_ui_audit_events_recorded_in_order(
-    orch, isolated_mock_identity
+    orch, signed_identity
 ):
     _ws, _profile, actions = await _register_and_observe(
         orch,
-        isolated_mock_identity,
+        signed_identity,
         {
             "type": "register_ui",
-            "token": isolated_mock_identity["token"],
+            "token": signed_identity["token"],
             "device": {},
             "resumed": False,
         },
@@ -186,19 +174,19 @@ async def test_register_ui_audit_events_recorded_in_order(
     assert actions.index("auth.ws_register") < actions.index("auth.login_interactive")
 
 
-async def test_register_ui_persists_user_profile(orch, isolated_mock_identity):
+async def test_register_ui_persists_user_profile(orch, signed_identity):
     _ws, profile, _actions = await _register_and_observe(
         orch,
-        isolated_mock_identity,
+        signed_identity,
         {
             "type": "register_ui",
-            "token": isolated_mock_identity["token"],
+            "token": signed_identity["token"],
             "device": {},
         },
     )
 
-    assert profile.owner_id == isolated_mock_identity["user_id"]
-    assert profile.username == isolated_mock_identity["user_id"]
+    assert profile.owner_id == signed_identity["user_id"]
+    assert profile.username == signed_identity["subject"]
 
 
 @pytest.mark.parametrize(("capabilities", "flag", "expected"), [
@@ -207,14 +195,14 @@ async def test_register_ui_persists_user_profile(orch, isolated_mock_identity):
     (["render", "turn_steer_v1"], False, None),
 ])
 async def test_register_ui_acknowledges_web_steering_only_when_asked(
-    orch, isolated_mock_identity, capabilities, flag, expected
+    orch, signed_identity, capabilities, flag, expected
 ):
     ws, _profile, _actions = await _register_and_observe(
         orch,
-        isolated_mock_identity,
+        signed_identity,
         {
             "type": "register_ui",
-            "token": isolated_mock_identity["token"],
+            "token": signed_identity["token"],
             "capabilities": capabilities,
             "device": {"device_type": "browser", "turn_steer_v1": flag},
         },
@@ -231,13 +219,13 @@ def _web_device(width, device_type):
             "screen_width": 1920, "screen_height": 1080}
 
 
-async def test_a_web_resize_to_watch_width_keeps_the_steering_acknowledgment(orch, isolated_mock_identity):
+async def test_a_web_resize_to_watch_width_keeps_the_steering_acknowledgment(orch, signed_identity):
     ws, _profile, _actions = await _register_and_observe(
         orch,
-        isolated_mock_identity,
+        signed_identity,
         {
             "type": "register_ui",
-            "token": isolated_mock_identity["token"],
+            "token": signed_identity["token"],
             "capabilities": ["render", "turn_steer_v1"],
             "device": {**_web_device(1400, "browser"), "turn_steer_v1": True},
         },

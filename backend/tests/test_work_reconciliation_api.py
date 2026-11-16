@@ -4,8 +4,6 @@ typed error mapping, with the reconciliation service boundary kept fake-backed.
 
 from __future__ import annotations
 
-import base64
-import json
 import os
 import sys
 from unittest.mock import MagicMock, AsyncMock
@@ -15,7 +13,6 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-os.environ["USE_MOCK_AUTH"] = "true"
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from orchestrator.api import async_task_router  # noqa: E402
@@ -23,21 +20,24 @@ from orchestrator.work_reconciliation import (  # noqa: E402
     ReconciliationRefused,
 )
 
-OWNER = "owner-user-id"
-STRANGER = "stranger-user-id"
+OWNER_SUBJECT = "owner-user-id"
+STRANGER_SUBJECT = "stranger-user-id"
+OWNER = ""
+STRANGER = ""
+_IDENTITY = None
 
 
-def _token(sub: str) -> str:
-    body = base64.b64encode(json.dumps({
-        "sub": sub,
-        "preferred_username": sub,
-        "realm_access": {"roles": ["user"]},
-    }).encode()).decode().rstrip("=")
-    return f"header.{body}.signature"
+@pytest.fixture(autouse=True)
+def _identity(server_identity, monkeypatch):
+    monkeypatch.setitem(globals(), "_IDENTITY", server_identity)
+    monkeypatch.setitem(globals(), "OWNER", server_identity.owner(OWNER_SUBJECT))
+    monkeypatch.setitem(globals(), "STRANGER", server_identity.owner(STRANGER_SUBJECT))
+    return server_identity
 
 
 def _auth(sub: str) -> dict:
-    return {"Authorization": f"Bearer {_token(sub)}"}
+    subject = OWNER_SUBJECT if sub == OWNER else STRANGER_SUBJECT
+    return _IDENTITY.headers(subject)
 
 
 BODY = {
@@ -63,7 +63,7 @@ def _service():
 
 
 @pytest.fixture(autouse=True)
-def current_human(monkeypatch):
+def current_human(monkeypatch, _identity):
     monkeypatch.setattr("orchestrator.human_request_authority.authenticate_current_human_request",
                         AsyncMock(return_value=SimpleNamespace(owner_id=OWNER)))
 
@@ -75,6 +75,13 @@ def _app(service) -> TestClient:
     app.state.orchestrator = orch
     app.include_router(async_task_router)
     return TestClient(app)
+
+
+def test_route_refuses_an_unsigned_token():
+    response = _app(_service()).post(
+        "/api/async-tasks/task-1/effect-reconcile", json=BODY,
+        headers={"Authorization": "Bearer e30.e30.sig"})
+    assert response.status_code == 401
 
 
 def test_route_requires_authentication():

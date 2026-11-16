@@ -136,7 +136,7 @@ async def test_invalid_request_generation_never_reads_or_delivers(surface, gener
 @pytest.mark.asyncio
 @pytest.mark.parametrize("change", ["owner", "same_owner_registration", "mutate_claims", "logout",
     "cookie_replaced", "policy", "feature", "composition", "store", "adapter", "session_store",
-    "navigation", "expiry", "mock"])
+    "navigation", "expiry"])
 async def test_changed_caller_or_composition_after_database_read_never_delivers(
     surface, fixture, runtime, monkeypatch, change,
 ):
@@ -171,8 +171,6 @@ async def test_changed_caller_or_composition_after_database_read_never_delivers(
             invalidate(orch, socket)
         elif change == "expiry":
             read.delivery = replace(read.delivery, expires_at=time.time() - 1)
-        elif change == "mock":
-            monkeypatch.setenv("USE_MOCK_AUTH", "true")
         return value
 
     monkeypatch.setattr(work, "_state", state)

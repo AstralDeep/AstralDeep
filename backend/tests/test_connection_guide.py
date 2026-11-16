@@ -6,7 +6,6 @@ the /api/connection/status route, surface delivery, and the registration-time pu
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import os
 from types import SimpleNamespace
@@ -24,10 +23,6 @@ from orchestrator.projection_surfaces import connection as connection_surface
 def configured_guide_database():
     if not any(os.getenv(name) for name in ("DATABASE_URL", "ASTRALPLANE_TEST_DATABASE_URL", "DB_HOST")):
         pytest.skip("PostgreSQL connection is not configured for registration integration")
-
-
-def _b64(payload: dict) -> str:
-    return base64.b64encode(json.dumps(payload).encode()).decode().rstrip("=")
 
 
 def _worker_readiness(**overrides):
@@ -66,15 +61,18 @@ def _publication_service(ready: bool):
 
 
 @pytest.fixture()
-def mock_auth(monkeypatch):
-    monkeypatch.setenv("USE_MOCK_AUTH", "true")
+def signed_in(server_identity, monkeypatch):
+    async def _reachable(authority: str) -> bool:
+        return True
+
+    monkeypatch.setattr(cg, "_keycloak_reachable", _reachable)
     monkeypatch.delenv("PUBLIC_BASE_URL", raising=False)
     monkeypatch.delenv("BACKEND_PUBLIC_URL", raising=False)
+    return server_identity
 
 
 @pytest.fixture()
 def production_auth(monkeypatch):
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
     monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://sso.example/realms/Astral")
     monkeypatch.delenv("PUBLIC_BASE_URL", raising=False)
     monkeypatch.delenv("BACKEND_PUBLIC_URL", raising=False)
@@ -84,7 +82,7 @@ def _check(checks, key):
     return next(c for c in checks if c["key"] == key)
 
 
-async def test_all_required_services_ready_reports_ready(mock_auth):
+async def test_all_required_services_ready_reports_ready(signed_in):
     orch = FakeOrch()
     checks = await cg.service_checks(orch)
     assert _check(checks, "database")["status"] == cg.STATUS_READY
@@ -93,7 +91,7 @@ async def test_all_required_services_ready_reports_ready(mock_auth):
     assert cg._overall(checks) == cg.STATUS_READY
 
 
-async def test_database_failure_reports_unavailable_with_remediation(mock_auth):
+async def test_database_failure_reports_unavailable_with_remediation(signed_in):
     orch = FakeOrch(plane_ok=False)
     checks = await cg.service_checks(orch)
     database = _check(checks, "database")
@@ -103,7 +101,7 @@ async def test_database_failure_reports_unavailable_with_remediation(mock_auth):
     assert cg._overall(checks) == cg.STATUS_UNAVAILABLE
 
 
-async def test_database_failure_recovers_when_probe_passes_again(mock_auth):
+async def test_database_failure_recovers_when_probe_passes_again(signed_in):
     orch = FakeOrch(plane_ok=False)
     first = _check(await cg.service_checks(orch), "database")
     assert first["status"] == cg.STATUS_UNAVAILABLE
@@ -111,13 +109,6 @@ async def test_database_failure_recovers_when_probe_passes_again(mock_auth):
     second = _check(await cg.service_checks(orch), "database")
     assert second["status"] == cg.STATUS_READY
     assert cg._overall(await cg.service_checks(orch)) == cg.STATUS_READY
-
-
-async def test_mock_authentication_is_labeled_development_only(mock_auth):
-    check = await cg._auth_check(FakeOrch())
-    assert check["status"] == cg.STATUS_READY
-    assert "mock" in check["detail"].lower()
-    assert "never used in production" in check["detail"]
 
 
 async def test_unconfigured_identity_provider_reports_unavailable(production_auth, monkeypatch):
@@ -152,7 +143,7 @@ async def test_reachable_identity_provider_reports_ready(production_auth, monkey
     assert seen == ["https://sso.example/realms/Astral"]
 
 
-async def test_voice_flag_off_reports_optional_off(mock_auth, monkeypatch):
+async def test_voice_flag_off_reports_optional_off(signed_in, monkeypatch):
     from shared.feature_flags import flags
 
     monkeypatch.setitem(flags._flags, "conversational_voice", False)
@@ -161,13 +152,13 @@ async def test_voice_flag_off_reports_optional_off(mock_auth, monkeypatch):
     assert check["required"] is False
 
 
-async def test_voice_enabled_without_services_reports_unavailable(mock_auth):
+async def test_voice_enabled_without_services_reports_unavailable(signed_in):
     check = cg._worker_check(FakeOrch(voice_services=None))
     assert check["status"] == cg.STATUS_UNAVAILABLE
     assert check["remediation"]
 
 
-async def test_client_local_speech_needs_no_worker(mock_auth):
+async def test_client_local_speech_needs_no_worker(signed_in):
     services = SimpleNamespace(
         backend_selection=SimpleNamespace(value="client_local", valid=True),
         worker_pool=None,
@@ -177,7 +168,7 @@ async def test_client_local_speech_needs_no_worker(mock_auth):
     assert "no server voice worker" in check["detail"]
 
 
-async def test_invalid_speech_backend_fails_voice_closed(mock_auth):
+async def test_invalid_speech_backend_fails_voice_closed(signed_in):
     services = SimpleNamespace(
         backend_selection=SimpleNamespace(value=None, valid=False),
         worker_pool=None,
@@ -187,7 +178,7 @@ async def test_invalid_speech_backend_fails_voice_closed(mock_auth):
     assert "typed chat is unaffected" in check["detail"]
 
 
-async def test_connected_voice_workers_report_counts(mock_auth):
+async def test_connected_voice_workers_report_counts(signed_in):
     services = SimpleNamespace(
         backend_selection=SimpleNamespace(value="llm_factory", valid=True),
         worker_pool=SimpleNamespace(readiness=lambda: _worker_readiness()),
@@ -197,7 +188,7 @@ async def test_connected_voice_workers_report_counts(mock_auth):
     assert "2 voice worker(s)" in check["detail"]
 
 
-async def test_voice_workers_at_capacity_report_degraded(mock_auth):
+async def test_voice_workers_at_capacity_report_degraded(signed_in):
     services = SimpleNamespace(
         backend_selection=SimpleNamespace(value="llm_factory", valid=True),
         worker_pool=SimpleNamespace(readiness=lambda: _worker_readiness(
@@ -208,7 +199,7 @@ async def test_voice_workers_at_capacity_report_degraded(mock_auth):
     assert "capacity" in check["detail"]
 
 
-async def test_missing_voice_worker_reports_degraded_with_remediation(mock_auth):
+async def test_missing_voice_worker_reports_degraded_with_remediation(signed_in):
     services = SimpleNamespace(
         backend_selection=SimpleNamespace(value="llm_factory", valid=True),
         worker_pool=SimpleNamespace(readiness=lambda: _worker_readiness(
@@ -220,7 +211,7 @@ async def test_missing_voice_worker_reports_degraded_with_remediation(mock_auth)
     assert "docker compose up voice-worker" in check["remediation"]
 
 
-async def test_worker_problem_does_not_block_required_overall(mock_auth):
+async def test_worker_problem_does_not_block_required_overall(signed_in):
     services = SimpleNamespace(
         backend_selection=SimpleNamespace(value="llm_factory", valid=True),
         worker_pool=SimpleNamespace(readiness=lambda: _worker_readiness(
@@ -232,7 +223,7 @@ async def test_worker_problem_does_not_block_required_overall(mock_auth):
     assert cg._overall(checks) == cg.STATUS_READY
 
 
-async def test_publication_not_ready_reports_unavailable(mock_auth, monkeypatch):
+async def test_publication_not_ready_reports_unavailable(signed_in, monkeypatch):
     monkeypatch.setattr(
         FakeOrch, "generated_agent_publication_service", _publication_service(False))
     checks = await cg.service_checks(FakeOrch())
@@ -240,7 +231,7 @@ async def test_publication_not_ready_reports_unavailable(mock_auth, monkeypatch)
     assert cg._overall(checks) == cg.STATUS_UNAVAILABLE
 
 
-async def test_publication_failure_probe_reports_unavailable(mock_auth, monkeypatch):
+async def test_publication_failure_probe_reports_unavailable(signed_in, monkeypatch):
     class _Service:
         @staticmethod
         async def readiness():
@@ -251,14 +242,14 @@ async def test_publication_failure_probe_reports_unavailable(mock_auth, monkeypa
     assert _check(checks, "publication")["status"] == cg.STATUS_UNAVAILABLE
 
 
-async def test_missing_publication_service_reports_unavailable(mock_auth, monkeypatch):
+async def test_missing_publication_service_reports_unavailable(signed_in, monkeypatch):
     orch = FakeOrch()
     orch.generated_agent_publication_service = None
     checks = await cg.service_checks(orch)
     assert _check(checks, "publication")["status"] == cg.STATUS_UNAVAILABLE
 
 
-async def test_lets_off_reports_optional_off(mock_auth, monkeypatch):
+async def test_lets_off_reports_optional_off(signed_in, monkeypatch):
     from types import SimpleNamespace as _NS
 
     monkeypatch.setattr(
@@ -273,7 +264,7 @@ async def test_lets_off_reports_optional_off(mock_auth, monkeypatch):
     assert check["status"] == cg.STATUS_OFF
 
 
-async def test_lets_healthy_enforce_reports_ready(mock_auth, monkeypatch):
+async def test_lets_healthy_enforce_reports_ready(signed_in, monkeypatch):
     from types import SimpleNamespace as _NS
 
     monkeypatch.setattr(
@@ -288,7 +279,7 @@ async def test_lets_healthy_enforce_reports_ready(mock_auth, monkeypatch):
     assert check["status"] == cg.STATUS_READY
 
 
-async def test_lets_blocked_reports_unavailable(mock_auth, monkeypatch):
+async def test_lets_blocked_reports_unavailable(signed_in, monkeypatch):
     from types import SimpleNamespace as _NS
 
     monkeypatch.setattr(
@@ -304,7 +295,7 @@ async def test_lets_blocked_reports_unavailable(mock_auth, monkeypatch):
     assert "warden_unreachable" in check["detail"]
 
 
-async def test_lets_snapshot_failure_reports_required_unavailable(mock_auth, monkeypatch):
+async def test_lets_snapshot_failure_reports_required_unavailable(signed_in, monkeypatch):
     def _boom(orch):
         raise RuntimeError("posture unavailable")
 
@@ -362,7 +353,7 @@ def test_endpoint_report_uses_both_configured_variables(monkeypatch):
     assert report["configured"] == ["https://astral.example", "http://localhost:8001"]
 
 
-async def test_guide_payload_shape_and_user_key_guidance(mock_auth):
+async def test_guide_payload_shape_and_user_key_guidance(signed_in):
     payload = await cg.guide_payload(FakeOrch(), "http://localhost:8001")
     assert payload["contract"] == cg.CONTRACT
     assert payload["surface_key"] == cg.SURFACE_KEY
@@ -381,16 +372,26 @@ def _status_app(orch) -> TestClient:
     return TestClient(app)
 
 
-def test_connection_status_requires_authentication(mock_auth):
+def test_connection_status_requires_authentication(signed_in):
     with _status_app(FakeOrch()) as client:
         response = client.get("/api/connection/status")
     assert response.status_code == 401
 
 
-def test_connection_status_success(mock_auth):
+def test_connection_status_refuses_unsigned_and_foreign_tokens(signed_in):
+    from tests.helpers.idp_tokens import FakeIssuer
+
+    for bad in ("not-a-token", FakeIssuer().token("guide-user")):
+        with _status_app(FakeOrch()) as client:
+            response = client.get(
+                "/api/connection/status", headers={"Authorization": f"Bearer {bad}"})
+        assert response.status_code == 401
+
+
+def test_connection_status_success(signed_in):
     with _status_app(FakeOrch()) as client:
         response = client.get(
-            "/api/connection/status", headers={"Authorization": "Bearer dev-token"})
+            "/api/connection/status", headers=signed_in.headers("guide-user"))
     assert response.status_code == 200
     body = response.json()
     assert body["overall"] == cg.STATUS_READY
@@ -399,30 +400,30 @@ def test_connection_status_success(mock_auth):
         "database", "auth", "worker", "publication", "lets"}
 
 
-def test_connection_status_reports_failure_as_503_with_honest_body(mock_auth):
+def test_connection_status_reports_failure_as_503_with_honest_body(signed_in):
     with _status_app(FakeOrch(plane_ok=False)) as client:
         response = client.get(
-            "/api/connection/status", headers={"Authorization": "Bearer dev-token"})
+            "/api/connection/status", headers=signed_in.headers("guide-user"))
     assert response.status_code == 503
     body = response.json()
     assert body["overall"] == cg.STATUS_UNAVAILABLE
     assert _check(body["checks"], "database")["status"] == cg.STATUS_UNAVAILABLE
 
 
-def test_connection_status_recovers_after_service_returns(mock_auth):
+def test_connection_status_recovers_after_service_returns(signed_in):
     orch = FakeOrch(plane_ok=False)
     with _status_app(orch) as client:
         failed = client.get(
-            "/api/connection/status", headers={"Authorization": "Bearer dev-token"})
+            "/api/connection/status", headers=signed_in.headers("guide-user"))
         assert failed.status_code == 503
         orch.plane_ok = True
         recovered = client.get(
-            "/api/connection/status", headers={"Authorization": "Bearer dev-token"})
+            "/api/connection/status", headers=signed_in.headers("guide-user"))
     assert recovered.status_code == 200
     assert recovered.json()["overall"] == cg.STATUS_READY
 
 
-async def test_surface_render_ready_payload_has_no_banner(mock_auth):
+async def test_surface_render_ready_payload_has_no_banner(signed_in):
     payload = await cg.guide_payload(FakeOrch())
     html = await connection_surface.render_from_payload(payload)
     assert "Database" in html
@@ -431,14 +432,14 @@ async def test_surface_render_ready_payload_has_no_banner(mock_auth):
     assert "required service is not ready" not in html
 
 
-async def test_surface_render_failure_payload_shows_banner_and_remediation(mock_auth):
+async def test_surface_render_failure_payload_shows_banner_and_remediation(signed_in):
     payload = await cg.guide_payload(FakeOrch(plane_ok=False))
     html = await connection_surface.render_from_payload(payload)
     assert "required service is not ready" in html
     assert "docker compose ps postgres" in html
 
 
-async def test_surface_components_carry_checks_and_refresh_action(mock_auth):
+async def test_surface_components_carry_checks_and_refresh_action(signed_in):
     payload = await cg.guide_payload(FakeOrch(plane_ok=False))
     comps = await connection_surface.components_from_payload(payload)
     types = [c.get("type") for c in comps]
@@ -450,7 +451,7 @@ async def test_surface_components_carry_checks_and_refresh_action(mock_auth):
     assert any("Database" in label for label in labels)
 
 
-async def test_surface_components_for_ready_payload_skip_banner(mock_auth):
+async def test_surface_components_for_ready_payload_skip_banner(signed_in):
     payload = await cg.guide_payload(FakeOrch())
     comps = await connection_surface.components_from_payload(payload)
     assert all(
@@ -458,7 +459,7 @@ async def test_surface_components_for_ready_payload_skip_banner(mock_auth):
         for c in comps)
 
 
-async def test_surface_render_and_components_use_params_origin(mock_auth):
+async def test_surface_render_and_components_use_params_origin(signed_in):
     payload_origin = None
 
     async def _spy(orch, origin=None):
@@ -479,7 +480,7 @@ async def test_surface_render_and_components_use_params_origin(mock_auth):
         monkeypatched.guide_payload = original
 
 
-async def test_recheck_button_uses_manifested_chrome_open_action(mock_auth):
+async def test_recheck_button_uses_manifested_chrome_open_action(signed_in):
     payload = await cg.guide_payload(FakeOrch())
     comps = await connection_surface.components_from_payload(payload)
     buttons = [c for c in comps if c.get("type") == "button"]
@@ -524,7 +525,7 @@ class _PushOrch:
         return DeviceProfile.from_dict({"device_type": self.device_type})
 
 
-async def test_push_connection_guide_delivers_web_modal(mock_auth):
+async def test_push_connection_guide_delivers_web_modal(signed_in):
     orch = _PushOrch()
     payload = await cg.guide_payload(orch)
     delivered = await cg.push_connection_guide(orch, orch.websocket, "user", payload=payload)
@@ -537,7 +538,7 @@ async def test_push_connection_guide_delivers_web_modal(mock_auth):
     assert "Database" in frame["html"]
 
 
-async def test_push_connection_guide_delivers_native_surface(mock_auth):
+async def test_push_connection_guide_delivers_native_surface(signed_in):
     orch = _PushOrch(device_type="windows")
     payload = await cg.guide_payload(orch)
     delivered = await cg.push_connection_guide(orch, orch.websocket, "user", payload=payload)
@@ -549,7 +550,7 @@ async def test_push_connection_guide_delivers_native_surface(mock_auth):
     assert any(c.get("type") == "card" for c in frame["components"])
 
 
-async def test_push_connection_guide_notes_open_surface(mock_auth):
+async def test_push_connection_guide_notes_open_surface(signed_in):
     orch = _PushOrch()
     websocket = orch.websocket
     await cg.push_connection_guide(orch, websocket, "user")
@@ -557,7 +558,7 @@ async def test_push_connection_guide_notes_open_surface(mock_auth):
         id(websocket)) == cg.SURFACE_KEY
 
 
-async def test_push_connection_guide_without_delivery_notes_nothing(mock_auth):
+async def test_push_connection_guide_without_delivery_notes_nothing(signed_in):
     orch = _PushOrch(delivered=False)
     websocket = orch.websocket
     delivered = await cg.push_connection_guide(orch, websocket, "user")
@@ -565,7 +566,7 @@ async def test_push_connection_guide_without_delivery_notes_nothing(mock_auth):
     assert id(websocket) not in orch.open_surfaces
 
 
-async def test_maybe_push_on_register_skips_when_llm_gate_owns_the_modal(mock_auth):
+async def test_maybe_push_on_register_skips_when_llm_gate_owns_the_modal(signed_in):
 
     orch = _PushOrch()
     websocket = orch.websocket
@@ -575,7 +576,7 @@ async def test_maybe_push_on_register_skips_when_llm_gate_owns_the_modal(mock_au
     assert orch.sent == []
 
 
-async def test_maybe_push_on_register_skips_with_active_chat(mock_auth):
+async def test_maybe_push_on_register_skips_with_active_chat(signed_in):
     orch = _PushOrch()
     websocket = orch.websocket
     orch._ws_active_chat = {id(websocket): "chat-1"}
@@ -583,13 +584,13 @@ async def test_maybe_push_on_register_skips_with_active_chat(mock_auth):
     assert orch.sent == []
 
 
-async def test_maybe_push_on_register_skips_when_services_ready(mock_auth):
+async def test_maybe_push_on_register_skips_when_services_ready(signed_in):
     orch = _PushOrch()
     assert await cg.maybe_push_on_register(orch, orch.websocket, "user") is False
     assert orch.sent == []
 
 
-async def test_maybe_push_on_register_pushes_when_required_service_fails(mock_auth):
+async def test_maybe_push_on_register_pushes_when_required_service_fails(signed_in):
     orch = _PushOrch()
     orch._probe_plane_readiness = lambda: (_ for _ in ()).throw(
         RuntimeError("AstralPlane runtime is not ready"))
@@ -598,7 +599,7 @@ async def test_maybe_push_on_register_pushes_when_required_service_fails(mock_au
     assert len(orch.sent) == 1
 
 
-async def test_maybe_push_on_register_swallows_push_failures(mock_auth):
+async def test_maybe_push_on_register_swallows_push_failures(signed_in):
     orch = _PushOrch()
     orch._probe_plane_readiness = lambda: (_ for _ in ()).throw(
         RuntimeError("AstralPlane runtime is not ready"))
@@ -612,10 +613,10 @@ async def test_maybe_push_on_register_swallows_push_failures(mock_auth):
 
 @pytest.mark.parametrize("resume_chat", [None, "owned-guide-chat"])
 async def test_register_ui_pushes_connection_guide_when_required_service_fails(
-    monkeypatch, configured_guide_database, resume_chat,
+    monkeypatch, configured_guide_database, resume_chat, server_identity,
 ):
-    user_id = f"pytest-connection-guide-{__import__('uuid').uuid4().hex}"
-    monkeypatch.setenv("USE_MOCK_AUTH", "true")
+    subject = f"pytest-connection-guide-{__import__('uuid').uuid4().hex}"
+    user_id = server_identity.owner(subject)
     from orchestrator.orchestrator import Orchestrator
 
     orch = await asyncio.to_thread(Orchestrator)
@@ -643,13 +644,9 @@ async def test_register_ui_pushes_connection_guide_when_required_service_fails(
         task = BackgroundTask(task_id=user_id, chat_id="", user_id=user_id)
         ws = VirtualWebSocket(task)
         orch._registered_events[id(ws)] = asyncio.Event()
-        payload = base64.b64encode(json.dumps({
-            "sub": user_id, "preferred_username": user_id,
-            "realm_access": {"roles": ["admin", "user"]},
-        }).encode()).decode().rstrip("=")
         context = orch._new_connection_context(ws)
         await orch._route_ui_frame(context, json.dumps({
-            "type": "register_ui", "token": f"mock.{payload}.signature",
+            "type": "register_ui", "token": server_identity.token(subject, roles=("admin", "user")),
             "device": {},
             "session_id": resume_chat,
         }))
@@ -673,11 +670,13 @@ async def test_register_ui_pushes_connection_guide_when_required_service_fails(
             await asyncio.wait_for(orch._close_started_services(), timeout=30.0)
 
 
-async def test_register_ui_connection_guide_push_failure_is_non_fatal(monkeypatch, configured_guide_database):
+async def test_register_ui_connection_guide_push_failure_is_non_fatal(
+    monkeypatch, configured_guide_database, server_identity,
+):
     import uuid
 
-    user_id = f"pytest-connection-guide-{uuid.uuid4().hex}"
-    monkeypatch.setenv("USE_MOCK_AUTH", "true")
+    subject = f"pytest-connection-guide-{uuid.uuid4().hex}"
+    user_id = server_identity.owner(subject)
     from orchestrator import connection_guide
     from orchestrator.orchestrator import Orchestrator
 
@@ -697,13 +696,9 @@ async def test_register_ui_connection_guide_push_failure_is_non_fatal(monkeypatc
         task = BackgroundTask(task_id=user_id, chat_id="", user_id=user_id)
         ws = VirtualWebSocket(task)
         orch._registered_events[id(ws)] = asyncio.Event()
-        payload = base64.b64encode(json.dumps({
-            "sub": user_id, "preferred_username": user_id,
-            "realm_access": {"roles": ["admin", "user"]},
-        }).encode()).decode().rstrip("=")
         context = orch._new_connection_context(ws)
         await orch._route_ui_frame(context, json.dumps({
-            "type": "register_ui", "token": f"mock.{payload}.signature",
+            "type": "register_ui", "token": server_identity.token(subject, roles=("admin", "user")),
             "device": {},
         }))
         await asyncio.wait_for(asyncio.gather(*tuple(context.tracked_tasks)), timeout=30)
@@ -734,7 +729,7 @@ def test_endpoint_origin_without_host_is_empty():
 
 
 async def test_push_connection_guide_withholds_delivery_on_profile_error(
-    mock_auth,
+    signed_in,
 ):
     orch = _PushOrch()
     orch.rote = SimpleNamespace(
@@ -744,7 +739,7 @@ async def test_push_connection_guide_withholds_delivery_on_profile_error(
     assert orch.sent == []
 
 
-async def test_push_connection_guide_native_adaptation_failure_delivers_alert(mock_auth):
+async def test_push_connection_guide_native_adaptation_failure_delivers_alert(signed_in):
     orch = _PushOrch(device_type="windows")
     from rote.adapter import ComponentAdapter
 
@@ -766,7 +761,7 @@ async def test_push_connection_guide_native_adaptation_failure_delivers_alert(mo
     assert "could not be adapted" in frame["components"][0]["message"]
 
 
-async def test_maybe_push_on_register_swallows_readiness_failures(mock_auth):
+async def test_maybe_push_on_register_swallows_readiness_failures(signed_in):
     orch = _PushOrch()
 
     async def _boom(orchestrator, origin=None):
@@ -781,14 +776,14 @@ async def test_maybe_push_on_register_swallows_readiness_failures(mock_auth):
     assert orch.sent == []
 
 
-async def test_surface_render_degraded_payload_shows_attention_banner(mock_auth):
+async def test_surface_render_degraded_payload_shows_attention_banner(signed_in):
     payload = await cg.guide_payload(FakeOrch())
     payload["overall"] = cg.STATUS_DEGRADED
     html = await connection_surface.render_from_payload(payload)
     assert "one or more checks need attention" in html
 
 
-async def test_surface_components_degraded_payload_shows_warning_alert(mock_auth):
+async def test_surface_components_degraded_payload_shows_warning_alert(signed_in):
     payload = await cg.guide_payload(FakeOrch())
     payload["overall"] = cg.STATUS_DEGRADED
     comps = await connection_surface.components_from_payload(payload)
