@@ -26234,221 +26234,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         finally:
             await self._close_started_services()
 
-    async def _run_started_server(self):
-        logger.info(f"Orchestrator starting on port {PORT}")
-
-        # Mock auth outside dev is fatal; refuse rather than run open
-        from orchestrator.session_store import assert_production_posture
-        assert_production_posture()
-
-        self.runtime_composition.start()
-        publication_recovery = (
-            await self.generated_agent_publication_service.recover_once()
-        )
-        if publication_recovery.degraded_publication_ids:
-            logger.error(
-                "generated_agent_publication_startup_recovery_degraded count=%d",
-                len(publication_recovery.degraded_publication_ids),
-            )
-        self.generated_agent_publication_service.start()
-        self._track_startup_background_task(
-            self.explicit_notes.expiry_loop(), name="explicit-note-expiry",
-        )
-
-        try:
-            from shared.feature_flags import flags
-            if flags.is_enabled("safe_agents"):
-                from orchestrator import agent_trust
-                seed_ids = tuple(a for a in FIRST_PARTY_PUBLIC_AGENT_IDS if a != "gaiakeep-1")
-                # Cresco must never be auto-marked safe: owner approval is required by the bridge's charter
-                seed_ids = tuple(a for a in seed_ids if a != "cresco-1")
-                if not flags.is_enabled("remote_compute"):
-                    seed_ids = tuple(a for a in seed_ids if a != "remote-compute-1")
-                if not flags.is_enabled("computer_use"):
-                    seed_ids = tuple(a for a in seed_ids if a != "computer-use-1")
-                if not flags.is_enabled("terminal_shell"):
-                    seed_ids = tuple(a for a in seed_ids if a != "terminal-shell-1")
-                if not flags.is_enabled("fhir"):
-                    seed_ids = tuple(a for a in seed_ids if a != "fhir-1")
-                if not flags.is_enabled("artifact_frame"):
-                    seed_ids = tuple(a for a in seed_ids if a != "artifacts-1")
-                await agent_trust.seed_safe(self.user_agent_registry, seed_ids)
-        except Exception:
-            logger.debug("Feature 040 safe seed failed (non-fatal)", exc_info=True)
-
-        try:
-            if flags.is_enabled("inprocess_agents"):
-                from orchestrator import local_agents
-                from orchestrator.terminal_host_review import review_registered_computer_use
-
-                await local_agents.register_built_ins(self)
-                review_registered_computer_use(self)
-        except Exception:
-            logger.exception("Feature 040: in-process agent registration failed")
-
-        async def _revocation_queue_loop():
-            from orchestrator.web_auth import process_revocation_queue_once
-            interval = int(os.getenv("AUTH_REVOCATION_RETRY_SECONDS", "60"))
-            while True:
-                try:
-                    resolved = await process_revocation_queue_once()
-                    if resolved:
-                        logger.info("auth: resolved %d queued credential revocation(s)", resolved)
-                except Exception:
-                    logger.debug("auth: revocation queue pass failed", exc_info=True)
-                await asyncio.sleep(interval)
-
-        self._track_startup_background_task(
-            _revocation_queue_loop(),
-            name="auth-revocation-queue",
-        )
-
-        self._track_startup_background_task(
-            self._jwks_warm_loop(),
-            name="jwks-warm-loop",
-        )
-
-        self._track_startup_background_task(
-            self._work_recovery_loop(),
-            name="work-recovery-loop",
-        )
-
-        if (
-            self._personal_agent_watchdog_task is None
-            or self._personal_agent_watchdog_task.done()
-        ):
-            self._personal_agent_watchdog_task = asyncio.create_task(
-                self._personal_agent_watchdog_loop(),
-                name="personal-agent-runtime-watchdog",
-            )
-
-        if flags.is_enabled("remote_compute") and (
-            self._remote_job_poll_task is None or self._remote_job_poll_task.done()
-        ):
-            self._remote_job_poll_task = asyncio.create_task(
-                self._remote_job_poll_loop(), name="remote-cluster-job-poller")
-
-        if flags.is_enabled("push_delivery"):
-            self._track_startup_background_task(
-                self.push_delivery.run_loop(), name="push-delivery-dispatcher",
-            )
-
-        self._start_phi_warm()
-
-        try:
-            purged = await asyncio.to_thread(
-                self.lifecycle_manager.reconcile_orphaned_draft_permissions)
-            if purged:
-                logger.info("Startup sweep purged leaked draft permissions "
-                            f"for {purged} agent id(s)")
-        except Exception:
-            logger.debug("draft permission sweep failed (non-fatal)", exc_info=True)
-
-        try:
-            await asyncio.to_thread(
-                self.lifecycle_manager.reconcile_legacy_directory_ownership)
-        except Exception:
-            logger.debug("legacy directory-id sweep failed (non-fatal)", exc_info=True)
-
-        agent_port = int(os.getenv("AGENT_PORT", 8003))
-        max_agents = int(os.getenv("MAX_AGENTS", 10))
-        self._track_startup_background_task(
-            self._monitor_agents(agent_port, max_agents),
-            name="local-agent-monitor",
-        )
-
-        if flags.is_enabled("knowledge_synthesis") and hasattr(self, '_knowledge_synthesizer'):
-            self._track_startup_background_task(
-                self._knowledge_synthesizer.run_loop(),
-                name="knowledge-synthesis-loop",
-            )
-
-        async def _feedback_quality_loop():
-            from feedback.quality import compute_for_window
-            from feedback.proposals import generate_for_underperforming
-            interval_seconds = int(os.getenv("FEEDBACK_QUALITY_JOB_INTERVAL", str(24 * 3600)))
-            await asyncio.sleep(int(os.getenv("FEEDBACK_QUALITY_JOB_WARMUP", "60")))
-            while True:
-                try:
-                    await compute_for_window(self.feedback_repo)
-                    refine = None
-                    if flags.is_enabled("knowledge_synthesis") and getattr(self, "_knowledge_synthesizer", None):
-                        refine = getattr(self._knowledge_synthesizer, "refine_proposal", None)
-                    await generate_for_underperforming(self.feedback_repo, refine_with_llm=refine)
-                except Exception as exc:
-                    logger.warning("feedback quality loop iteration failed: %s", exc)
-                await asyncio.sleep(interval_seconds)
-
-        self._track_startup_background_task(
-            _feedback_quality_loop(),
-            name="feedback-quality-loop",
-        )
-
-        self.persistent_assignments = None
-        self.persistent_assignment_runner = None
-        if flags.is_enabled("persistent_agents"):
-            from persistent_agents.runtime import start_assignment_runtime
-            start_assignment_runtime(self)
-
-        from orchestrator.framework_runtime import start_framework_runtime
-        start_framework_runtime(self)
-
-        if flags.is_enabled("scheduler_execution"):
-            try:
-                from scheduler.loop import SchedulerLoop
-                from scheduler.runner import JobRunner
-                from scheduler.store import ScheduledJobStore
-                from orchestrator.plane_repository_context import (
-                    plane_source_from_orchestrator,
-                )
-                _plane_source = plane_source_from_orchestrator(self)
-                _job_store = ScheduledJobStore(
-                    coordinator=self.work_admission,
-                    plane_runtime=_plane_source.plane_runtime,
-                    plane_repositories=_plane_source.plane_repositories,
-                )
-                _job_runner = JobRunner(self, _job_store, self.offline_grants)
-                self._scheduler_loop = SchedulerLoop(
-                    _job_store,
-                    _job_runner,
-                    self.async_task_manager,
-                    coordinator=self.work_admission,
-                )
-                self._scheduler_loop.start()
-                logger.info("scheduler.execution_loop_started (FF_SCHEDULER_EXECUTION=on)")
-            except Exception:
-                logger.exception("scheduler loop failed to start (jobs will not dispatch)")
-        else:
-            self._scheduler_loop = None
-            logger.info(
-                "scheduler.execution_loop_disabled (FF_SCHEDULER_EXECUTION=off) — "
-                "unattended job execution is gated off pending the offline-grant "
-                "security review (030 FR-004/FR-005; 025 T057)"
-            )
-
-        async def _relaunch_generated_agents():
-            await asyncio.sleep(5)
-            try:
-                rows = await asyncio.to_thread(
-                    self.lifecycle_manager.draft_store.list_relaunchable_drafts
-                )
-            except Exception:
-                logger.exception("relaunch: could not list live generated agents")
-                return
-            for row in rows:
-                try:
-                    await self.lifecycle_manager.start_draft_agent(
-                        row["id"], align_scopes=False)
-                    logger.info("relaunch: %s (%s) restarted", row["agent_name"], row["id"])
-                except Exception as exc:
-                    logger.warning("relaunch: %s (%s) failed: %s",
-                                   row["agent_name"], row["id"], exc)
-
-        self._track_startup_background_task(
-            _relaunch_generated_agents(),
-            name="generated-agent-relaunch",
-        )
-
+    def build_http_app(self) -> FastAPI:
         from orchestrator.models import WS_PROTOCOL_DOCS
 
         tags_metadata = [
@@ -26778,6 +26564,224 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 )
             except Exception as e:
                 logger.warning(f"A2A server setup skipped: {e}")
+        return app
+
+    async def _run_started_server(self):
+        logger.info(f"Orchestrator starting on port {PORT}")
+
+        # Mock auth outside dev is fatal; refuse rather than run open
+        from orchestrator.session_store import assert_production_posture
+        assert_production_posture()
+
+        self.runtime_composition.start()
+        publication_recovery = (
+            await self.generated_agent_publication_service.recover_once()
+        )
+        if publication_recovery.degraded_publication_ids:
+            logger.error(
+                "generated_agent_publication_startup_recovery_degraded count=%d",
+                len(publication_recovery.degraded_publication_ids),
+            )
+        self.generated_agent_publication_service.start()
+        self._track_startup_background_task(
+            self.explicit_notes.expiry_loop(), name="explicit-note-expiry",
+        )
+
+        try:
+            from shared.feature_flags import flags
+            if flags.is_enabled("safe_agents"):
+                from orchestrator import agent_trust
+                seed_ids = tuple(a for a in FIRST_PARTY_PUBLIC_AGENT_IDS if a != "gaiakeep-1")
+                # Cresco must never be auto-marked safe: owner approval is required by the bridge's charter
+                seed_ids = tuple(a for a in seed_ids if a != "cresco-1")
+                if not flags.is_enabled("remote_compute"):
+                    seed_ids = tuple(a for a in seed_ids if a != "remote-compute-1")
+                if not flags.is_enabled("computer_use"):
+                    seed_ids = tuple(a for a in seed_ids if a != "computer-use-1")
+                if not flags.is_enabled("terminal_shell"):
+                    seed_ids = tuple(a for a in seed_ids if a != "terminal-shell-1")
+                if not flags.is_enabled("fhir"):
+                    seed_ids = tuple(a for a in seed_ids if a != "fhir-1")
+                if not flags.is_enabled("artifact_frame"):
+                    seed_ids = tuple(a for a in seed_ids if a != "artifacts-1")
+                await agent_trust.seed_safe(self.user_agent_registry, seed_ids)
+        except Exception:
+            logger.debug("Feature 040 safe seed failed (non-fatal)", exc_info=True)
+
+        try:
+            if flags.is_enabled("inprocess_agents"):
+                from orchestrator import local_agents
+                from orchestrator.terminal_host_review import review_registered_computer_use
+
+                await local_agents.register_built_ins(self)
+                review_registered_computer_use(self)
+        except Exception:
+            logger.exception("Feature 040: in-process agent registration failed")
+
+        async def _revocation_queue_loop():
+            from orchestrator.web_auth import process_revocation_queue_once
+            interval = int(os.getenv("AUTH_REVOCATION_RETRY_SECONDS", "60"))
+            while True:
+                try:
+                    resolved = await process_revocation_queue_once()
+                    if resolved:
+                        logger.info("auth: resolved %d queued credential revocation(s)", resolved)
+                except Exception:
+                    logger.debug("auth: revocation queue pass failed", exc_info=True)
+                await asyncio.sleep(interval)
+
+        self._track_startup_background_task(
+            _revocation_queue_loop(),
+            name="auth-revocation-queue",
+        )
+
+        self._track_startup_background_task(
+            self._jwks_warm_loop(),
+            name="jwks-warm-loop",
+        )
+
+        self._track_startup_background_task(
+            self._work_recovery_loop(),
+            name="work-recovery-loop",
+        )
+
+        if (
+            self._personal_agent_watchdog_task is None
+            or self._personal_agent_watchdog_task.done()
+        ):
+            self._personal_agent_watchdog_task = asyncio.create_task(
+                self._personal_agent_watchdog_loop(),
+                name="personal-agent-runtime-watchdog",
+            )
+
+        if flags.is_enabled("remote_compute") and (
+            self._remote_job_poll_task is None or self._remote_job_poll_task.done()
+        ):
+            self._remote_job_poll_task = asyncio.create_task(
+                self._remote_job_poll_loop(), name="remote-cluster-job-poller")
+
+        if flags.is_enabled("push_delivery"):
+            self._track_startup_background_task(
+                self.push_delivery.run_loop(), name="push-delivery-dispatcher",
+            )
+
+        self._start_phi_warm()
+
+        try:
+            purged = await asyncio.to_thread(
+                self.lifecycle_manager.reconcile_orphaned_draft_permissions)
+            if purged:
+                logger.info("Startup sweep purged leaked draft permissions "
+                            f"for {purged} agent id(s)")
+        except Exception:
+            logger.debug("draft permission sweep failed (non-fatal)", exc_info=True)
+
+        try:
+            await asyncio.to_thread(
+                self.lifecycle_manager.reconcile_legacy_directory_ownership)
+        except Exception:
+            logger.debug("legacy directory-id sweep failed (non-fatal)", exc_info=True)
+
+        agent_port = int(os.getenv("AGENT_PORT", 8003))
+        max_agents = int(os.getenv("MAX_AGENTS", 10))
+        self._track_startup_background_task(
+            self._monitor_agents(agent_port, max_agents),
+            name="local-agent-monitor",
+        )
+
+        if flags.is_enabled("knowledge_synthesis") and hasattr(self, '_knowledge_synthesizer'):
+            self._track_startup_background_task(
+                self._knowledge_synthesizer.run_loop(),
+                name="knowledge-synthesis-loop",
+            )
+
+        async def _feedback_quality_loop():
+            from feedback.quality import compute_for_window
+            from feedback.proposals import generate_for_underperforming
+            interval_seconds = int(os.getenv("FEEDBACK_QUALITY_JOB_INTERVAL", str(24 * 3600)))
+            await asyncio.sleep(int(os.getenv("FEEDBACK_QUALITY_JOB_WARMUP", "60")))
+            while True:
+                try:
+                    await compute_for_window(self.feedback_repo)
+                    refine = None
+                    if flags.is_enabled("knowledge_synthesis") and getattr(self, "_knowledge_synthesizer", None):
+                        refine = getattr(self._knowledge_synthesizer, "refine_proposal", None)
+                    await generate_for_underperforming(self.feedback_repo, refine_with_llm=refine)
+                except Exception as exc:
+                    logger.warning("feedback quality loop iteration failed: %s", exc)
+                await asyncio.sleep(interval_seconds)
+
+        self._track_startup_background_task(
+            _feedback_quality_loop(),
+            name="feedback-quality-loop",
+        )
+
+        self.persistent_assignments = None
+        self.persistent_assignment_runner = None
+        if flags.is_enabled("persistent_agents"):
+            from persistent_agents.runtime import start_assignment_runtime
+            start_assignment_runtime(self)
+
+        from orchestrator.framework_runtime import start_framework_runtime
+        start_framework_runtime(self)
+
+        if flags.is_enabled("scheduler_execution"):
+            try:
+                from scheduler.loop import SchedulerLoop
+                from scheduler.runner import JobRunner
+                from scheduler.store import ScheduledJobStore
+                from orchestrator.plane_repository_context import (
+                    plane_source_from_orchestrator,
+                )
+                _plane_source = plane_source_from_orchestrator(self)
+                _job_store = ScheduledJobStore(
+                    coordinator=self.work_admission,
+                    plane_runtime=_plane_source.plane_runtime,
+                    plane_repositories=_plane_source.plane_repositories,
+                )
+                _job_runner = JobRunner(self, _job_store, self.offline_grants)
+                self._scheduler_loop = SchedulerLoop(
+                    _job_store,
+                    _job_runner,
+                    self.async_task_manager,
+                    coordinator=self.work_admission,
+                )
+                self._scheduler_loop.start()
+                logger.info("scheduler.execution_loop_started (FF_SCHEDULER_EXECUTION=on)")
+            except Exception:
+                logger.exception("scheduler loop failed to start (jobs will not dispatch)")
+        else:
+            self._scheduler_loop = None
+            logger.info(
+                "scheduler.execution_loop_disabled (FF_SCHEDULER_EXECUTION=off) — "
+                "unattended job execution is gated off pending the offline-grant "
+                "security review (030 FR-004/FR-005; 025 T057)"
+            )
+
+        async def _relaunch_generated_agents():
+            await asyncio.sleep(5)
+            try:
+                rows = await asyncio.to_thread(
+                    self.lifecycle_manager.draft_store.list_relaunchable_drafts
+                )
+            except Exception:
+                logger.exception("relaunch: could not list live generated agents")
+                return
+            for row in rows:
+                try:
+                    await self.lifecycle_manager.start_draft_agent(
+                        row["id"], align_scopes=False)
+                    logger.info("relaunch: %s (%s) restarted", row["agent_name"], row["id"])
+                except Exception as exc:
+                    logger.warning("relaunch: %s (%s) failed: %s",
+                                   row["agent_name"], row["id"], exc)
+
+        self._track_startup_background_task(
+            _relaunch_generated_agents(),
+            name="generated-agent-relaunch",
+        )
+
+        app = self.build_http_app()
 
         external_agents = os.getenv("A2A_EXTERNAL_AGENTS", "")
         if external_agents:
