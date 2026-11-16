@@ -34,6 +34,9 @@ tasks in part. Nothing below is checked off until its own closing condition is s
 | T1.17 | Partly done | The `AGENTS.md` security row is reworded (Deep `73debd1b`). The other five section 13 rows are not applied |
 | T1.7, T1.11 to T1.15, T1.19 | Open | Mock auth (about 100 backend files), the bearer path, Vessel's `KEYCLOAK_*` pairing and the watch device grant remain |
 
+**Phase 0** is done in code. Every result is in [phase-0/README.md](phase-0/README.md). T0.6 and T0.9
+keep their live parts for T8.7. T0.13 is live on the site.
+
 Owner direction, 2026-11-15: CI wiring and live device checks wait until the very end, and the
 program closes with a UI/UX and agent-experience pass on the Mac, iPhone and watch apps. Phase 8
 holds both. A *(live)* task in phases 0 to 7 is done in code when its automated part passes, and its
