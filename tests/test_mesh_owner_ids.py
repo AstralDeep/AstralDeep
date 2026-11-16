@@ -1,4 +1,4 @@
-"""Proves mesh-id owners (sha256 plus 64 hex) store, read and isolate like any owner id through
+"""Proves mesh-id owners (mesh. plus 64 hex) store, read and isolate like any owner id through
 the mesh, notification, chat queue, atlas and harness cleanup repositories with no schema change.
 Runs on SQLite or PostgreSQL through the shared migrated_clone fixture and its DSN variable.
 """
@@ -7,9 +7,14 @@ from __future__ import annotations
 
 import hashlib
 import uuid
+from datetime import UTC, datetime
+
+import pytest
 
 from astralplane import SCHEMA_REVISION, create_chat_queue_repository, create_event_log_repository
 from astralplane.api import create_repository_catalog
+from astralplane.errors import SQLContractError
+from astralplane.purge import PostgresPurgeStore, PurgeTargetScope
 from astralplane.repositories.atlas_pages import AtlasPageCreateCommand
 from astralplane.repositories.harness_cleanup import (
     HarnessCleanupProfile,
@@ -19,8 +24,10 @@ from astralplane.repositories.history import ConversationRepository
 from astralplane.repositories.notifications import NotificationRepository
 from tests.repositories._mesh_support import FEED, append_chain, genesis
 
-MESH_OWNER = "sha256:" + hashlib.sha256(b"synthetic-mesh-owner").hexdigest()
-OTHER_MESH_OWNER = "sha256:" + hashlib.sha256(b"synthetic-other-owner").hexdigest()
+MESH_OWNER = "mesh." + hashlib.sha256(b"synthetic-mesh-owner").hexdigest()
+OTHER_MESH_OWNER = "mesh." + hashlib.sha256(b"synthetic-other-owner").hexdigest()
+RAW_KERNEL_ID = "sha256:" + hashlib.sha256(b"synthetic-mesh-owner").hexdigest()
+NOW = datetime(2026, 11, 15, 12, tzinfo=UTC)
 LEGACY_OWNER = "oidc.0123456789abcdef.synthetic-subject"
 CHAT = "owner-id-chat"
 LEGACY_CHAT = "owner-id-legacy-chat"
@@ -133,6 +140,38 @@ def test_mesh_owner_atlas_page_round_trips_beside_legacy_owner(migrated_clone):
         assert repo.get_page(tx, owner_id=MESH_OWNER, page_id=PAGE) == created
         assert repo.get_page(tx, owner_id=OTHER_MESH_OWNER, page_id=PAGE) is None
         assert repo.get_page(tx, owner_id=LEGACY_OWNER, page_id=PAGE) == legacy
+
+
+def test_mesh_owner_purge_tombstone_round_trips_and_spares_legacy_owner(migrated_clone):
+    store = PostgresPurgeStore()
+    with migrated_clone.database.transaction() as tx:
+        scheduled = store.schedule_owner_namespace(
+            tx, owner_id=MESH_OWNER, requested_at=NOW, deleted_at=100
+        )
+        tombstone = scheduled.tombstone
+        assert tombstone.owner_id == MESH_OWNER
+        assert tombstone.target_scope is PurgeTargetScope.OWNER_NAMESPACE
+        assert store.load(tx, owner_id=MESH_OWNER, tombstone_id=tombstone.tombstone_id) == tombstone
+        assert (
+            store.load(tx, owner_id=OTHER_MESH_OWNER, tombstone_id=tombstone.tombstone_id) is None
+        )
+        assert store.load(tx, owner_id=LEGACY_OWNER, tombstone_id=tombstone.tombstone_id) is None
+        legacy = store.schedule_owner_namespace(
+            tx, owner_id=LEGACY_OWNER, requested_at=NOW, deleted_at=100
+        ).tombstone
+        assert legacy.owner_id == LEGACY_OWNER
+        assert legacy.tombstone_id != tombstone.tombstone_id
+        assert store.load(tx, owner_id=MESH_OWNER, tombstone_id=tombstone.tombstone_id) == tombstone
+
+
+def test_raw_kernel_id_owner_is_refused_and_writes_nothing(migrated_clone):
+    with migrated_clone.database.transaction() as tx:
+        with pytest.raises(SQLContractError):
+            PostgresPurgeStore().schedule_owner_namespace(
+                tx, owner_id=RAW_KERNEL_ID, requested_at=NOW, deleted_at=100
+            )
+        rows = tx.fetch_all("SELECT owner_id FROM astralplane_purge_tombstone", ())
+        assert [row["owner_id"] for row in rows] == []
 
 
 def test_harness_cleanup_without_issuer_hash_spares_mesh_and_legacy_owners(migrated_clone):
