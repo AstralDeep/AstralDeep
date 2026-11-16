@@ -1,3 +1,4 @@
+from typing import Dict
 from .claude_native import ClaudeNativeAdapter
 
 def get_provider(provider_type: str, credentials: Dict[str, str]):
@@ -11,3 +12,4 @@ def get_provider(provider_type: str, credentials: Dict[str, str]):
         return ClaudeNativeAdapter(api_key=credentials["api_key"])
     
     # ... existing logic for openai/other providers ...
+    return None
