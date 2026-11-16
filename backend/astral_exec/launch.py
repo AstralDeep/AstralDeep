@@ -162,13 +162,18 @@ def _write_profile(text: str, data_dir: str) -> str:
     folder = _profile_folder(data_dir)
     fd, path = tempfile.mkstemp(prefix="profile-", suffix=".sb", dir=folder)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(text)
+        handle = os.fdopen(fd, "w", encoding="utf-8")
     except BaseException:
         try:
             os.close(fd)
         except OSError:
             pass
+        _remove(path)
+        raise
+    try:
+        with handle:
+            handle.write(text)
+    except BaseException:
         _remove(path)
         raise
     return path
@@ -391,10 +396,11 @@ def _end(proc: subprocess.Popen, watch: Any, log: _DigestLog) -> bool:
         except Exception as error:
             log.warning("exec teardown failed: %s", type(error).__name__)
     if survivors is None:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass
+        if proc.returncode is None:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
         return False
     if survivors:
         log.warning("exec processes survived teardown count=%d", len(survivors))
