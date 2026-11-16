@@ -27031,7 +27031,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         )
 
     async def _jwks_warm_loop(self):
-        from shared import jwks_cache
+        from shared import jwks_cache, node_identity
+        if node_identity.is_personal():
+            logger.info("jwks warm: skipped (a personal node trusts no identity server)")
+            return
         authority = (os.getenv("KEYCLOAK_AUTHORITY") or "").strip()
         if not authority or os.getenv("USE_MOCK_AUTH", "").lower() == "true":
             logger.info("jwks warm: skipped (mock auth or no authority configured)")

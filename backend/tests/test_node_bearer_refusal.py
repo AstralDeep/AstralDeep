@@ -225,6 +225,7 @@ def _a2a_probe(node):
         response = node.client.post("/a2a", json=A2A_BODY, headers={"Authorization": f"Bearer {token}"})
         assert response.status_code == 401
         assert response.json()["error"]["message"] == BEARER
+        assert response.headers["www-authenticate"] == f'AstralCaller realm="astral-a2a", error="{BEARER}"'
 
 
 def _mcp_probe(node):
@@ -234,7 +235,7 @@ def _mcp_probe(node):
             headers={"Authorization": f"Bearer {token}", "MCP-Protocol-Version": "2026-07-28",
                      "Mcp-Method": "server/discover"})
         assert response.status_code == 401
-        assert f'error="{BEARER}"' in response.headers["www-authenticate"]
+        assert response.headers["www-authenticate"] == f'AstralCaller realm="astral-mcp", error="{BEARER}"'
 
 
 def _worker_probe(node):
@@ -357,3 +358,93 @@ def test_the_same_token_passes_the_a2a_and_mcp_doors_on_the_server_profile(serve
     assert mcp_response.status_code != 401, mcp_response.text
     assert "www-authenticate" not in mcp_response.headers
     assert server.spies["jwks"] > fetched
+
+
+PERSONAL_METADATA = {
+    "resource": orchestrator_app.PUBLIC_BASE_URL + "/mcp",
+    "scopes_supported": list(mcp_authz.MCP_SCOPES),
+    "bearer_methods_supported": [],
+}
+
+
+def _no_identity_server(client, authority):
+    metadata = client.get("/.well-known/oauth-protected-resource/mcp")
+    assert metadata.status_code == 200 and metadata.json() == PERSONAL_METADATA
+    card = client.get("/a2a/.well-known/agent-card.json")
+    assert card.status_code == 200
+    for text in (metadata.text, card.text):
+        assert "openid" not in text.lower() and "keycloak" not in text.lower()
+        assert authority is None or authority not in text
+
+
+def test_a_personal_node_names_no_identity_server_while_keycloak_is_still_configured(node, server_identity):
+    _no_identity_server(node.client, server_identity.issuer.authority)
+    _untouched(node)
+
+
+def test_a_personal_node_with_no_keycloak_setting_mounts_and_refuses_mcp_and_a2a(plane_runtime, spies, monkeypatch):
+    monkeypatch.setenv("ASTRAL_ENV", "production")
+    monkeypatch.setenv(ni.PROFILE_ENV, ni.PERSONAL)
+    for name in ("KEYCLOAK_AUTHORITY", "KEYCLOAK_CLIENT_ID", "KEYCLOAK_CLIENT_SECRET", ni.ISSUERS_ENV):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("WEB_SESSION_ENC_KEY", Fernet.generate_key().decode())
+    app = orchestrator_app.build(monkeypatch, orchestrator_app.host(plane_runtime))
+    with TestClient(app, base_url=orchestrator_app.PUBLIC_BASE_URL, raise_server_exceptions=False) as client:
+        _no_identity_server(client, None)
+        probe = NS(client=client, token="not-a-token", mcp_token="not-a-token")
+        _a2a_probe(probe)
+        _mcp_probe(probe)
+    assert spies == {"jwks": 0, "parse": 0}
+
+
+def test_the_server_profile_keeps_its_identity_server_metadata_and_bearer_challenges(server):
+    authority = server.identity.issuer.authority
+    metadata = server.client.get("/.well-known/oauth-protected-resource/mcp").json()
+    assert metadata["authorization_servers"] == [authority] and metadata["bearer_methods_supported"] == ["header"]
+    card = server.client.get("/a2a/.well-known/agent-card.json").json()
+    assert f"{authority}/.well-known/openid-configuration" in json.dumps(card)
+    refused = server.client.post("/a2a", json=A2A_BODY)
+    assert refused.status_code == 401 and refused.headers["www-authenticate"] == 'Bearer realm="astral-a2a"'
+    challenged = server.client.post("/mcp", json={
+        "jsonrpc": "2.0", "id": 1, "method": "server/discover", "params": {"_meta": MCP_META}},
+        headers={"MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "server/discover"})
+    assert challenged.status_code == 401 and challenged.headers["www-authenticate"].startswith("Bearer resource_metadata=")
+
+
+def test_the_mcp_server_still_needs_keycloak_on_the_server_profile(monkeypatch):
+    from orchestrator import mcp_server_endpoint
+
+    monkeypatch.delenv(ni.PROFILE_ENV, raising=False)
+    monkeypatch.delenv("KEYCLOAK_AUTHORITY", raising=False)
+    with pytest.raises(RuntimeError, match="KEYCLOAK_AUTHORITY"):
+        mcp_server_endpoint.install_mcp_server(NS(), object(), public_base_url=orchestrator_app.PUBLIC_BASE_URL)
+
+
+async def test_the_jwks_warm_loop_never_fetches_on_a_personal_node(monkeypatch):
+    import asyncio
+
+    fetched = []
+
+    async def fetch(url, *args, **kwargs):
+        fetched.append(url)
+        return {"keys": []}
+
+    monkeypatch.setattr(jwks_cache, "get_jwks", fetch)
+    monkeypatch.setattr(jwks_cache, "_fetch", fetch)
+    monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://idp.example/realms/r")
+    monkeypatch.setenv("USE_MOCK_AUTH", "false")
+    monkeypatch.setenv(ni.PROFILE_ENV, ni.PERSONAL)
+    orch = orchestrator_app.host()
+    async with asyncio.timeout(5):
+        await orch._jwks_warm_loop()
+    assert fetched == []
+    monkeypatch.delenv(ni.PROFILE_ENV)
+    task = asyncio.create_task(orch._jwks_warm_loop())
+    try:
+        async with asyncio.timeout(5):
+            while not fetched:
+                await asyncio.sleep(0.01)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    assert fetched == ["https://idp.example/realms/r/protocol/openid-connect/certs"]
