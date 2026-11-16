@@ -18,7 +18,6 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-import orchestrator.mcp_authz as mcp_authz_module
 from orchestrator.mcp_server_endpoint import (
     MCP_BODY_LIMIT,
     _admitted_request,
@@ -62,7 +61,16 @@ _RECORDED_REQUEST_HEADERS = frozenset(
 )
 
 
-def _modern_request(method, params=None, *, token="dev-mcp-token", request_id=1):
+_identity = None
+
+
+def _owner_token():
+    return _identity.mcp_token("test_user")
+
+
+def _modern_request(method, params=None, *, token="owner", request_id=1):
+    if token == "owner":
+        token = _owner_token()
     body = {
         "jsonrpc": "2.0",
         "id": request_id,
@@ -269,46 +277,14 @@ class _Orchestrator:
 
 
 @pytest.fixture
-def tunnel_endpoint(monkeypatch):
+def tunnel_endpoint(monkeypatch, server_identity):
     monkeypatch.setenv("ASTRAL_ENV", "development")
-    monkeypatch.setenv("USE_MOCK_AUTH", "true")
-    monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://idp.test/realms/astral")
+    monkeypatch.setitem(globals(), "_identity", server_identity)
     monkeypatch.setitem(flags._flags, "mcp_server", False)
     orchestrator = _Orchestrator()
     app = FastAPI()
     install_mcp_server(app, orchestrator, public_base_url=BASE)
     return TestClient(app), orchestrator
-
-
-@pytest.fixture
-def principals(tunnel_endpoint, monkeypatch):
-    client, orchestrator = tunnel_endpoint
-    claims_by_token = {
-        "alice-token": {
-            "sub": "alice",
-            "iss": "https://idp.test/realms/astral",
-            "aud": "astral-mcp",
-            "scope": "mcp:discover mcp:tools:read mcp:tools:invoke",
-            "realm_access": {"roles": ["user"]},
-        },
-        "bob-token": {
-            "sub": "bob",
-            "iss": "https://idp.test/realms/astral",
-            "aud": "astral-mcp",
-            "scope": "mcp:discover mcp:tools:read mcp:tools:invoke",
-            "realm_access": {"roles": ["user"]},
-        },
-    }
-
-    async def decode_deterministic_token(token):
-        if token in claims_by_token:
-            return dict(claims_by_token[token])
-        raise ValueError("token rejected by the issuer")
-
-    monkeypatch.setattr(
-        mcp_authz_module, "decode_mcp_token", decode_deterministic_token
-    )
-    return client, orchestrator
 
 
 def test_tunnel_client_pins_manifest_matches_reviewed_sources():
@@ -343,7 +319,7 @@ def test_reviewed_probe_sequence_leaves_legacy_fallback_not_ready(tunnel_endpoin
     client, orchestrator = tunnel_endpoint
     profile = TunnelProbeProfile(client)
 
-    ready = profile.reviewed_startup_fallback(fallback_token="dev-mcp-token")
+    ready = profile.reviewed_startup_fallback(fallback_token=_owner_token())
 
     assert [entry["step"] for entry in profile.transcript.entries] == [
         "metadata",
@@ -358,7 +334,7 @@ def test_reviewed_probe_sequence_leaves_legacy_fallback_not_ready(tunnel_endpoin
     metadata = client.get(METADATA_PATH)
     assert metadata.status_code == 200
     assert metadata.json()["resource"] == f"{BASE}/mcp"
-    assert metadata.json()["authorization_servers"] == ["https://idp.test/realms/astral"]
+    assert metadata.json()["authorization_servers"] == [_identity.issuer.authority]
 
     body, headers = _modern_request("server/discover", token=None)
     modern_unauthenticated = client.post("/mcp", json=body, headers=headers)
@@ -371,7 +347,7 @@ def test_reviewed_probe_sequence_leaves_legacy_fallback_not_ready(tunnel_endpoin
     assert body["params"]["_meta"]["io.modelcontextprotocol/protocolVersion"] == "2026-07-28"
 
     assert orchestrator.calls == []
-    assert "dev-mcp-token" not in profile.transcript.serialized()
+    assert _owner_token() not in profile.transcript.serialized()
     assert "Bearer" not in profile.transcript.serialized()
     assert "authorization" not in profile.transcript.serialized()
 
@@ -387,7 +363,7 @@ def test_legacy_initialize_is_refused_before_dispatch_with_or_without_credential
     assert refused.status_code == 400
     assert refused.json()["error"]["code"] == -32602
 
-    authenticated, authenticated_headers = _legacy_initialize(token="dev-mcp-token")
+    authenticated, authenticated_headers = _legacy_initialize(token=_owner_token())
     still_refused = client.post(
         "/mcp", content=json.dumps(authenticated), headers=authenticated_headers
     )
@@ -411,9 +387,16 @@ def test_valid_owner_token_completes_modern_discovery(tunnel_endpoint):
     assert response.headers["MCP-Protocol-Version"] == "2026-07-28"
 
 
-def test_expired_and_revoked_tokens_are_denied_with_challenge(principals):
-    client, _ = principals
-    for denied_token in ("expired-owner-token", "revoked-owner-token"):
+def test_expired_and_unverifiable_tokens_are_denied_with_challenge(tunnel_endpoint):
+    from tests.helpers.idp_tokens import FakeIssuer
+
+    client, _ = tunnel_endpoint
+    foreign_key = FakeIssuer(_identity.issuer.authority)
+    denied_tokens = (
+        _identity.mcp_token("test_user", exp=1),
+        foreign_key.token("test_user", aud="astral-mcp"),
+    )
+    for denied_token in denied_tokens:
         body, headers = _modern_request("server/discover", token=denied_token)
         response = client.post("/mcp", json=body, headers=headers)
         assert response.status_code == 401
@@ -423,28 +406,29 @@ def test_expired_and_revoked_tokens_are_denied_with_challenge(principals):
         assert 'error="invalid_token"' in challenge
         assert denied_token not in response.text
         assert "expired" not in response.text
-        assert "revoked" not in response.text
+        assert "signature" not in response.text
 
 
-def test_cross_owner_tool_projection_is_isolated(principals):
-    client, orchestrator = principals
+def test_cross_owner_tool_projection_is_isolated(tunnel_endpoint):
+    client, orchestrator = tunnel_endpoint
+    alice = _identity.owner("alice")
     orchestrator.tool_permissions.allowed = False
     orchestrator.tool_permissions.allowed_by_identity = {
-        ("alice", "reader-1", "read_value"): True,
+        (alice, "reader-1", "read_value"): True,
     }
 
-    body, headers = _modern_request("tools/list", token="alice-token")
+    body, headers = _modern_request("tools/list", token=_identity.mcp_token("alice"))
     alice_tools = client.post("/mcp", json=body, headers=headers)
     assert [tool["name"] for tool in alice_tools.json()["result"]["tools"]] == ["read_value"]
 
-    body, headers = _modern_request("tools/list", token="bob-token")
+    body, headers = _modern_request("tools/list", token=_identity.mcp_token("bob"))
     bob_tools = client.post("/mcp", json=body, headers=headers)
     assert bob_tools.json()["result"]["tools"] == []
 
     body, headers = _modern_request(
         "tools/call",
         {"name": "read_value", "arguments": {"value": "cross"}},
-        token="bob-token",
+        token=_identity.mcp_token("bob"),
         request_id=7,
     )
     headers["Mcp-Name"] = "read_value"
@@ -459,7 +443,7 @@ def test_cross_owner_tool_projection_is_isolated(principals):
     body, headers = _modern_request(
         "tools/call",
         {"name": "read_value", "arguments": {"value": "own"}},
-        token="alice-token",
+        token=_identity.mcp_token("alice"),
         request_id=8,
     )
     headers["Mcp-Name"] = "read_value"
@@ -467,7 +451,7 @@ def test_cross_owner_tool_projection_is_isolated(principals):
     assert allowed_call.status_code == 200
     assert allowed_call.json()["result"]["isError"] is False
     assert len(orchestrator.calls) == 1
-    assert orchestrator.calls[0]["user_id"] == "alice"
+    assert orchestrator.calls[0]["user_id"] == alice
 
 
 def test_bounded_payload_and_error_refusals(tunnel_endpoint):
@@ -476,14 +460,14 @@ def test_bounded_payload_and_error_refusals(tunnel_endpoint):
     wrong_media = client.post(
         "/mcp",
         content=b"{}",
-        headers={"Content-Type": "text/plain", "Authorization": "Bearer dev-mcp-token"},
+        headers={"Content-Type": "text/plain", "Authorization": f"Bearer {_owner_token()}"},
     )
     assert wrong_media.status_code == 415
 
     oversized = client.post(
         "/mcp",
         content=b"0" * (MCP_BODY_LIMIT + 1),
-        headers={"Content-Type": "application/json", "Authorization": "Bearer dev-mcp-token"},
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {_owner_token()}"},
     )
     assert oversized.status_code == 413
     assert "MCP request body exceeds 1 MiB" in oversized.json()["error"]["message"]
@@ -491,7 +475,7 @@ def test_bounded_payload_and_error_refusals(tunnel_endpoint):
     malformed = client.post(
         "/mcp",
         content=b"{not json",
-        headers={"Content-Type": "application/json", "Authorization": "Bearer dev-mcp-token"},
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {_owner_token()}"},
     )
     assert malformed.status_code == 400
     assert malformed.json()["error"]["code"] == -32600
@@ -553,10 +537,10 @@ def test_probe_transcript_never_carries_credentials_or_arguments(tunnel_endpoint
     profile = TunnelProbeProfile(client)
     profile.probe_metadata()
     profile.probe_modern_discovery()
-    profile.probe_legacy_initialize(token="dev-mcp-token")
-    profile.probe_modern_discovery(token="dev-mcp-token")
+    profile.probe_legacy_initialize(token=_owner_token())
+    profile.probe_modern_discovery(token=_owner_token())
     serialized = profile.transcript.serialized()
-    assert "dev-mcp-token" not in serialized
+    assert _owner_token() not in serialized
     assert "Bearer" not in serialized
     assert "authorization" not in serialized
     assert all(
@@ -570,7 +554,7 @@ def test_probe_transcript_never_carries_credentials_or_arguments(tunnel_endpoint
 def test_modern_readiness_verdict_is_ready_for_conforming_clients(tunnel_endpoint):
     client, orchestrator = tunnel_endpoint
     profile = TunnelProbeProfile(client)
-    authorized = profile.probe_modern_discovery(token="dev-mcp-token")
+    authorized = profile.probe_modern_discovery(token=_owner_token())
     assert authorized.status_code == 200
     modern_ready = any(
         entry["status"] // 100 == 2 for entry in profile.transcript.entries

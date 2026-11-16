@@ -92,16 +92,29 @@ async def test_role_gate_precedes_scope_gate(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_mock_dev_token_still_passes_role_gate(monkeypatch):
-    monkeypatch.setenv("USE_MOCK_AUTH", "true")
+async def test_real_user_token_passes_role_gate(server_identity):
     claims = await mcp_authz.authorize_mcp_request(
-        headers={"authorization": "Bearer dev-mcp-token"},
+        headers={k.lower(): v for k, v in server_identity.mcp_headers("alice").items()},
         query_params={},
         cookies={},
         required_scopes=mcp_authz.MCP_SCOPES,
     )
-    assert claims["sub"] == "test_user"
+    assert claims["sub"] == server_identity.owner("alice")
     assert mcp_authz.has_mcp_entry_role(claims)
+
+
+@pytest.mark.asyncio
+async def test_real_roleless_token_is_refused_at_the_role_gate(server_identity):
+    with pytest.raises(mcp_authz.MCPAuthError) as raised:
+        await mcp_authz.authorize_mcp_request(
+            headers={
+                k.lower(): v for k, v in server_identity.mcp_headers("alice", roles=()).items()
+            },
+            query_params={},
+            cookies={},
+            required_scopes=mcp_authz.MCP_SCOPES,
+        )
+    assert raised.value.description == "account lacks the required realm role"
 
 
 def test_realm_roles_helper_is_defensive():
@@ -123,7 +136,6 @@ async def test_endpoint_returns_403_and_challenge_for_roleless_token(monkeypatch
     monkeypatch.setenv("ASTRAL_ENV", "development")
     monkeypatch.setenv("PUBLIC_BASE_URL", "http://mcp.test")
     monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://idp.test/realm")
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
 
     async def decode(_token):
         return {"sub": "secret-subject", "scope": "mcp:tools:invoke"}

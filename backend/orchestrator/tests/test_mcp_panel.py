@@ -27,6 +27,7 @@ from orchestrator.mcp_panel import (
 from orchestrator.mcp_server_endpoint import create_mcp_router
 from orchestrator.mcp_work_resources import WorkResourceAuthority, resource_scope
 from shared.feature_flags import flags
+from tests.helpers.server_identity import ServerIdentity
 from tests.test_mcp_endpoint_064 import META, _Orchestrator
 
 OWNER_ID = "owner-2f1c"
@@ -257,13 +258,13 @@ def test_status_and_result_reads_keep_their_existing_envelopes(monkeypatch):
     assert result["boundedViewModel"] == retained
 
 
-def _panel_request(method, uri):
+def _panel_request(method, uri, token):
     params = {"_meta": dict(META)}
     if uri is not None:
         params["uri"] = uri
     return {
         "json": {"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
-        "headers": {"Authorization": "Bearer dev-mcp-token",
+        "headers": {"Authorization": f"Bearer {token}",
                     "MCP-Protocol-Version": "2026-07-28", "Mcp-Method": method},
     }
 
@@ -285,14 +286,16 @@ class _StubAuthority:
 
 
 @pytest.mark.parametrize("uri,with_meta", [(PANEL_URI, True), (STATUS_URI, False)])
-def test_resources_read_carries_meta_only_for_panel_resources(monkeypatch, uri, with_meta):
+def test_resources_read_carries_meta_only_for_panel_resources(
+    monkeypatch, tmp_path, uri, with_meta
+):
     from orchestrator import mcp_server_endpoint
 
-    monkeypatch.setenv("USE_MOCK_AUTH", "true")
+    identity = ServerIdentity.install(monkeypatch, data_dir=tmp_path / "node")
     monkeypatch.setattr(mcp_server_endpoint, "WorkResourceAuthority", _StubAuthority)
     app = FastAPI()
     app.include_router(create_mcp_router(_Orchestrator(), public_base_url="https://mcp.invalid"))
-    response = TestClient(app).post("/mcp", **_panel_request("resources/read", uri))
+    response = TestClient(app).post("/mcp", **_panel_request("resources/read", uri, identity.mcp_token("test_user")))
     assert response.status_code == 200
     result = response.json()["result"]
     assert response.headers["cache-control"] == "no-store"
