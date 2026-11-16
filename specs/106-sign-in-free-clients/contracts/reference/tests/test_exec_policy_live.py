@@ -4,6 +4,7 @@ It runs only on macOS, because no other platform can apply a Seatbelt profile.
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -87,3 +88,58 @@ def test_every_denied_service_refuses_lookup(tmp_path: Path) -> None:
 
 def test_python_and_shell_features_still_work(tmp_path: Path) -> None:
     assert run(tmp_path, FEATURES).strip().startswith("features 0 ['/usr',")
+
+
+SYSTEM_SB = Path("/System/Library/Sandbox/Profiles/system.sb")
+SYSTEM_SB_NAMES = {
+    "com.apple.AppSSO.service-xpc",
+    "com.apple.CARenderServer",
+    "com.apple.CoreDisplay.Notification",
+    "com.apple.CoreDisplay.master",
+    "com.apple.analyticsd",
+    "com.apple.analyticsd.messagetracer",
+    "com.apple.appsleep",
+    "com.apple.bsd.dirhelper",
+    "com.apple.cfnetwork.cfnetworkagent",
+    "com.apple.cfprefsd.agent",
+    "com.apple.cfprefsd.daemon",
+    "com.apple.cvmsServ",
+    "com.apple.diagnosticd",
+    "com.apple.dt.automationmode.reader",
+    "com.apple.gpumemd.source",
+    "com.apple.internal.objc_trace",
+    "com.apple.logd",
+    "com.apple.logd.events",
+    "com.apple.lsd.mapdb",
+    "com.apple.osanalytics.osanalyticshelper",
+    "com.apple.runningboard",
+    "com.apple.secinitd",
+    "com.apple.system.DirectoryService.libinfo_v1",
+    "com.apple.system.logger",
+    "com.apple.system.notification_center",
+    "com.apple.system.opendirectoryd.libinfo",
+    "com.apple.system.opendirectoryd.membership",
+    "com.apple.trustd",
+    "com.apple.trustd.agent",
+    "com.apple.xpc.activity.unmanaged",
+}
+REACHABLE = {
+    "com.apple.appsleep",
+    "com.apple.bsd.dirhelper",
+    "com.apple.cfprefsd.agent",
+    "com.apple.cfprefsd.daemon",
+    "com.apple.dt.automationmode.reader",
+    "com.apple.runningboard",
+    "com.apple.secinitd",
+    "com.apple.system.DirectoryService.libinfo_v1",
+    "com.apple.system.opendirectoryd.libinfo",
+    "com.apple.system.opendirectoryd.membership",
+    "com.apple.xpc.activity.unmanaged",
+}
+
+
+def test_reachable_global_names_are_pinned(tmp_path: Path) -> None:
+    found = set(re.findall(r'\(global-name "([^"]*)"\)', SYSTEM_SB.read_text()))
+    assert found == SYSTEM_SB_NAMES, "system.sb names changed"
+    codes = json.loads(run(tmp_path, LOOKUPS, json.dumps(sorted(found))))
+    assert {name for name, code in codes.items() if code == 0} == REACHABLE

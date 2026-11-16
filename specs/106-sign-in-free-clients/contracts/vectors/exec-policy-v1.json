@@ -365,6 +365,7 @@
         },
         "rlimits": {
           "RLIMIT_AS": 536870912,
+          "RLIMIT_CORE": 0,
           "RLIMIT_FSIZE": 104857600,
           "RLIMIT_NOFILE": 256
         },
@@ -515,6 +516,7 @@
         },
         "rlimits": {
           "RLIMIT_AS": 536870912,
+          "RLIMIT_CORE": 0,
           "RLIMIT_FSIZE": 104857600,
           "RLIMIT_NOFILE": 256
         },
@@ -657,6 +659,7 @@
         },
         "rlimits": {
           "RLIMIT_AS": 536870912,
+          "RLIMIT_CORE": 0,
           "RLIMIT_FSIZE": 104857600,
           "RLIMIT_NOFILE": 256
         },
@@ -798,6 +801,7 @@
         },
         "rlimits": {
           "RLIMIT_AS": 536870912,
+          "RLIMIT_CORE": 0,
           "RLIMIT_FSIZE": 104857600,
           "RLIMIT_NOFILE": 256
         },
@@ -938,6 +942,7 @@
         },
         "rlimits": {
           "RLIMIT_AS": 536870912,
+          "RLIMIT_CORE": 0,
           "RLIMIT_FSIZE": 104857600,
           "RLIMIT_NOFILE": 256
         },
@@ -1086,6 +1091,7 @@
         },
         "rlimits": {
           "RLIMIT_AS": 536870912,
+          "RLIMIT_CORE": 0,
           "RLIMIT_FSIZE": 104857600,
           "RLIMIT_NOFILE": 256
         },
@@ -1247,6 +1253,7 @@
         },
         "rlimits": {
           "RLIMIT_AS": 536870912,
+          "RLIMIT_CORE": 0,
           "RLIMIT_FSIZE": 104857600,
           "RLIMIT_NOFILE": 256
         },
@@ -1411,6 +1418,7 @@
         },
         "rlimits": {
           "RLIMIT_AS": 536870912,
+          "RLIMIT_CORE": 0,
           "RLIMIT_FSIZE": 104857600,
           "RLIMIT_NOFILE": 256
         },
@@ -2729,6 +2737,73 @@
       }
     },
     {
+      "data_dir": "/Users/test/éͅ/node",
+      "facts": {
+        "app_sandboxed": false,
+        "bwrap": false,
+        "landlock_abi": 0,
+        "platform": "darwin",
+        "sandbox_exec": true,
+        "userns": false
+      },
+      "name": "ypogegrammeni_pair_read_root_darwin",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [
+          "/Users/test/éͅ"
+        ],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      },
+      "result": {
+        "code": "exec.policy_overlaps_data",
+        "message": "A read root or the workspace contains the node data directory.",
+        "ok": false
+      }
+    },
+    {
+      "data_dir": "/Users/test/éͅ/node",
+      "facts": {
+        "app_sandboxed": false,
+        "bwrap": true,
+        "landlock_abi": 6,
+        "platform": "linux",
+        "sandbox_exec": false,
+        "userns": true
+      },
+      "name": "ypogegrammeni_pair_read_root_linux_ok",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [
+          "/Users/test/éͅ"
+        ],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      },
+      "result": {
+        "backend": "linux",
+        "ok": true
+      }
+    },
+    {
       "data_dir": "/Users/test/Library/Application Support/Astral/node",
       "facts": {
         "app_sandboxed": false,
@@ -2868,6 +2943,7 @@
       "code": "ok",
       "digest": "sha256:ee687d5d6849b08f724a983736903a8a725dcef1e00be37f69e4ddafc86e3a9b",
       "name": "minimal_valid",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -2888,6 +2964,7 @@
       "code": "ok",
       "digest": "sha256:e384cb56327a672d609aceff9f5e8af85d4ad613aae60c8ff323093a9f4b1a85",
       "name": "full_valid",
+      "platform": "linux",
       "policy": {
         "hosts": [
           {
@@ -2924,6 +3001,7 @@
       "code": "ok",
       "digest": "sha256:f052a2de9641b6a758d2b96bf543ce1586a71b73b457e513f2d603a5b4cbba51",
       "name": "reads_64_accepted",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -3008,6 +3086,7 @@
     {
       "code": "policy.too_many_entries",
       "name": "reads_65",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -3094,6 +3173,7 @@
       "code": "ok",
       "digest": "sha256:49809e5c1cc567f4f8b0a7c79c08780c9f415a825637653a8018be952a5395ae",
       "name": "hosts_64_accepted",
+      "platform": "linux",
       "policy": {
         "hosts": [
           {
@@ -3370,6 +3450,7 @@
     {
       "code": "policy.too_many_entries",
       "name": "hosts_65",
+      "platform": "linux",
       "policy": {
         "hosts": [
           {
@@ -3651,6 +3732,7 @@
       "code": "ok",
       "digest": "sha256:f64d9d5254f8bce01c9ab7ce36e37762270000eade5c1c2ee92e0cc7c4e2a90d",
       "name": "hosts_punycode_and_port_80",
+      "platform": "linux",
       "policy": {
         "hosts": [
           {
@@ -3676,6 +3758,7 @@
       "code": "ok",
       "digest": "sha256:1fb97f22455a2cb8e9de6037a3a72afa92e44ff9eb11b962edd93b1a4e9788a4",
       "name": "limits_at_minimum",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -3696,6 +3779,7 @@
       "code": "ok",
       "digest": "sha256:04560274ccc61f3d161b0f5be83e840bb2c49009f471e0efd6fef886747b6083",
       "name": "limits_at_maximum",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -3716,6 +3800,7 @@
       "code": "ok",
       "digest": "sha256:418e0aa5a60c5f995837e156644e5cbbc01530747e75e5a1f36df86c3b2d149e",
       "name": "wall_ms_at_minimum",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -3736,6 +3821,7 @@
       "code": "ok",
       "digest": "sha256:e753261e9e5f95f2454ee1450127ef3a50cb86e54ecfc070f94bd8bafd2e4c1a",
       "name": "wall_ms_at_maximum",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -3755,21 +3841,25 @@
     {
       "code": "policy.malformed",
       "name": "not_json",
+      "platform": "linux",
       "raw": "{"
     },
     {
       "code": "policy.malformed",
       "name": "duplicate_key",
+      "platform": "linux",
       "raw": "{\"v\":1,\"v\":1,\"reads\":[],\"workspace\":\"/w/x\",\"hosts\":[],\"limits\":{\"memory_bytes\":536870912,\"processes\":1,\"open_files\":256,\"file_bytes\":104857600},\"time\":{\"wall_ms\":30000}}"
     },
     {
       "code": "policy.malformed",
       "name": "float_number",
+      "platform": "linux",
       "raw": "{\"hosts\": [], \"limits\": {\"file_bytes\": 104857600, \"memory_bytes\": 536870912, \"open_files\": 256, \"processes\": 1}, \"reads\": [], \"time\": {\"wall_ms\": 30000}, \"v\": 1.0, \"workspace\": \"/private/tmp/astral/ws\"}"
     },
     {
       "code": "policy.malformed",
       "name": "array_root",
+      "platform": "linux",
       "policy": [
         {
           "hosts": [],
@@ -3791,6 +3881,7 @@
     {
       "code": "policy.malformed",
       "name": "version_missing",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -3809,6 +3900,7 @@
     {
       "code": "policy.malformed",
       "name": "version_two",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -3828,6 +3920,7 @@
     {
       "code": "policy.malformed",
       "name": "version_true",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -3847,6 +3940,7 @@
     {
       "code": "policy.malformed",
       "name": "reads_missing",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -3865,6 +3959,7 @@
     {
       "code": "policy.malformed",
       "name": "reads_not_list",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -3884,6 +3979,7 @@
     {
       "code": "policy.malformed",
       "name": "read_not_string",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -3905,6 +4001,7 @@
     {
       "code": "policy.malformed",
       "name": "workspace_not_string",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -3924,6 +4021,7 @@
     {
       "code": "policy.malformed",
       "name": "hosts_not_list",
+      "platform": "linux",
       "policy": {
         "hosts": {},
         "limits": {
@@ -3943,6 +4041,7 @@
     {
       "code": "policy.malformed",
       "name": "host_entry_not_object",
+      "platform": "linux",
       "policy": {
         "hosts": [
           "api.example.com"
@@ -3964,6 +4063,7 @@
     {
       "code": "policy.malformed",
       "name": "host_missing_port",
+      "platform": "linux",
       "policy": {
         "hosts": [
           {
@@ -3987,6 +4087,7 @@
     {
       "code": "policy.malformed",
       "name": "host_port_not_integer",
+      "platform": "linux",
       "policy": {
         "hosts": [
           {
@@ -4011,6 +4112,7 @@
     {
       "code": "policy.malformed",
       "name": "limits_not_object",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": [],
@@ -4025,6 +4127,7 @@
     {
       "code": "policy.malformed",
       "name": "limits_missing_key",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -4043,6 +4146,7 @@
     {
       "code": "policy.malformed",
       "name": "limit_not_integer",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -4062,6 +4166,7 @@
     {
       "code": "policy.malformed",
       "name": "limit_bool",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -4081,6 +4186,7 @@
     {
       "code": "policy.malformed",
       "name": "time_not_object",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -4098,6 +4204,7 @@
     {
       "code": "policy.malformed",
       "name": "time_missing_wall_ms",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -4115,6 +4222,7 @@
     {
       "code": "policy.unknown_field",
       "name": "unknown_top_level_key",
+      "platform": "linux",
       "policy": {
         "extra": 1,
         "hosts": [],
@@ -4135,6 +4243,7 @@
     {
       "code": "policy.unknown_field",
       "name": "unknown_listen_field",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -4155,6 +4264,7 @@
     {
       "code": "policy.unknown_field",
       "name": "unknown_host_key",
+      "platform": "linux",
       "policy": {
         "hosts": [
           {
@@ -4180,6 +4290,7 @@
     {
       "code": "policy.unknown_field",
       "name": "unknown_limits_key",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -4200,6 +4311,7 @@
     {
       "code": "policy.unknown_field",
       "name": "unknown_time_key",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -4220,6 +4332,7 @@
     {
       "code": "policy.unknown_field",
       "name": "unknown_beats_missing",
+      "platform": "linux",
       "policy": {
         "extra": 1,
         "hosts": [],
@@ -4239,6 +4352,7 @@
     {
       "code": "policy.path_invalid",
       "name": "read_relative",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -4260,6 +4374,7 @@
     {
       "code": "policy.path_invalid",
       "name": "read_root",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -4281,6 +4396,7 @@
     {
       "code": "policy.path_invalid",
       "name": "read_dotdot",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -4302,6 +4418,7 @@
     {
       "code": "policy.path_invalid",
       "name": "read_dot_component",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -4323,6 +4440,7 @@
     {
       "code": "policy.path_invalid",
       "name": "read_trailing_slash",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -4344,6 +4462,7 @@
     {
       "code": "policy.path_invalid",
       "name": "read_double_slash",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -4365,6 +4484,7 @@
     {
       "code": "policy.path_invalid",
       "name": "read_nul",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -4386,6 +4506,7 @@
     {
       "code": "policy.path_invalid",
       "name": "read_newline",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -4407,6 +4528,7 @@
     {
       "code": "policy.path_invalid",
       "name": "read_too_long",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -4428,6 +4550,7 @@
     {
       "code": "policy.path_invalid",
       "name": "reads_unsorted",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -4450,6 +4573,7 @@
     {
       "code": "policy.path_invalid",
       "name": "reads_duplicate",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -4472,6 +4596,7 @@
     {
       "code": "policy.path_invalid",
       "name": "workspace_relative",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -4491,6 +4616,7 @@
     {
       "code": "policy.path_invalid",
       "name": "workspace_root",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -4510,6 +4636,7 @@
     {
       "code": "policy.path_invalid",
       "name": "read_inside_workspace",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -4531,6 +4658,7 @@
     {
       "code": "policy.path_invalid",
       "name": "read_contains_workspace",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -4552,6 +4680,7 @@
     {
       "code": "policy.path_invalid",
       "name": "read_equals_workspace",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -4573,6 +4702,7 @@
     {
       "code": "policy.too_many_entries",
       "name": "too_many_beats_bad_entry",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -4658,6 +4788,7 @@
     {
       "code": "policy.host_invalid",
       "name": "host_uppercase",
+      "platform": "linux",
       "policy": {
         "hosts": [
           {
@@ -4682,6 +4813,7 @@
     {
       "code": "policy.host_invalid",
       "name": "host_no_dot",
+      "platform": "linux",
       "policy": {
         "hosts": [
           {
@@ -4706,6 +4838,7 @@
     {
       "code": "policy.host_invalid",
       "name": "host_ipv4_literal",
+      "platform": "linux",
       "policy": {
         "hosts": [
           {
@@ -4730,6 +4863,7 @@
     {
       "code": "policy.host_invalid",
       "name": "host_ipv6_literal",
+      "platform": "linux",
       "policy": {
         "hosts": [
           {
@@ -4754,6 +4888,7 @@
     {
       "code": "policy.host_invalid",
       "name": "host_wildcard",
+      "platform": "linux",
       "policy": {
         "hosts": [
           {
@@ -4778,6 +4913,7 @@
     {
       "code": "policy.host_invalid",
       "name": "host_trailing_dot",
+      "platform": "linux",
       "policy": {
         "hosts": [
           {
@@ -4802,6 +4938,7 @@
     {
       "code": "policy.host_invalid",
       "name": "host_underscore",
+      "platform": "linux",
       "policy": {
         "hosts": [
           {
@@ -4826,6 +4963,7 @@
     {
       "code": "policy.host_invalid",
       "name": "host_label_too_long",
+      "platform": "linux",
       "policy": {
         "hosts": [
           {
@@ -4850,6 +4988,7 @@
     {
       "code": "policy.host_invalid",
       "name": "host_numeric_tld",
+      "platform": "linux",
       "policy": {
         "hosts": [
           {
@@ -4874,6 +5013,7 @@
     {
       "code": "policy.host_invalid",
       "name": "host_empty_label",
+      "platform": "linux",
       "policy": {
         "hosts": [
           {
@@ -4898,6 +5038,7 @@
     {
       "code": "policy.host_invalid",
       "name": "host_port_8443",
+      "platform": "linux",
       "policy": {
         "hosts": [
           {
@@ -4922,6 +5063,7 @@
     {
       "code": "policy.host_invalid",
       "name": "host_port_zero",
+      "platform": "linux",
       "policy": {
         "hosts": [
           {
@@ -4946,6 +5088,7 @@
     {
       "code": "policy.host_invalid",
       "name": "hosts_unsorted",
+      "platform": "linux",
       "policy": {
         "hosts": [
           {
@@ -4974,6 +5117,7 @@
     {
       "code": "policy.host_invalid",
       "name": "hosts_duplicate",
+      "platform": "linux",
       "policy": {
         "hosts": [
           {
@@ -5002,6 +5146,7 @@
     {
       "code": "policy.limit_out_of_range",
       "name": "memory_below_minimum",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -5021,6 +5166,7 @@
     {
       "code": "policy.limit_out_of_range",
       "name": "memory_above_maximum",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -5040,6 +5186,7 @@
     {
       "code": "policy.limit_out_of_range",
       "name": "processes_zero",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -5059,6 +5206,7 @@
     {
       "code": "policy.limit_out_of_range",
       "name": "processes_above_maximum",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -5078,6 +5226,7 @@
     {
       "code": "policy.limit_out_of_range",
       "name": "open_files_below_minimum",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -5097,6 +5246,7 @@
     {
       "code": "policy.limit_out_of_range",
       "name": "open_files_above_maximum",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -5116,6 +5266,7 @@
     {
       "code": "policy.limit_out_of_range",
       "name": "file_bytes_below_minimum",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -5135,6 +5286,7 @@
     {
       "code": "policy.limit_out_of_range",
       "name": "file_bytes_above_maximum",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -5154,6 +5306,7 @@
     {
       "code": "policy.time_out_of_range",
       "name": "wall_ms_zero",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -5173,6 +5326,7 @@
     {
       "code": "policy.time_out_of_range",
       "name": "wall_ms_above_maximum",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -5192,6 +5346,7 @@
     {
       "code": "policy.time_out_of_range",
       "name": "wall_ms_negative",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -5211,6 +5366,7 @@
     {
       "code": "policy.path_invalid",
       "name": "path_beats_limit",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -5232,6 +5388,7 @@
     {
       "code": "policy.limit_out_of_range",
       "name": "limit_beats_time",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -5251,6 +5408,7 @@
     {
       "code": "policy.path_invalid",
       "name": "read_del_character",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -5273,6 +5431,7 @@
       "code": "ok",
       "digest": "sha256:5058327bb4268c8d6c5dcec763ccc125c57321d62746317cb4851fa089798fc7",
       "name": "read_4096_bytes_accepted",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -5294,6 +5453,7 @@
     {
       "code": "policy.path_invalid",
       "name": "workspace_dotdot",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -5313,6 +5473,7 @@
     {
       "code": "policy.path_invalid",
       "name": "workspace_trailing_slash",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -5333,6 +5494,7 @@
       "code": "ok",
       "digest": "sha256:b762af86b883eafc8b08ab145bd359526a25e61de9ea3b81d3603b19e3f97411",
       "name": "reads_nfc_nfd_pair_linux",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -5379,6 +5541,7 @@
       "code": "ok",
       "digest": "sha256:ace853ae9f17dfba6af621f4a082be4691f5692035403988d69dd12ba5eb3d5b",
       "name": "reads_case_pair_linux",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -5425,6 +5588,7 @@
       "code": "ok",
       "digest": "sha256:c70c9a2408736a5c4586ec20a6a24280ffe603fb47525444d4918dac58277ac1",
       "name": "read_case_variant_of_workspace_linux",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -5468,6 +5632,7 @@
     {
       "code": "policy.host_invalid",
       "name": "host_over_253_characters",
+      "platform": "linux",
       "policy": {
         "hosts": [
           {
@@ -5492,6 +5657,7 @@
     {
       "code": "policy.host_invalid",
       "name": "host_leading_hyphen",
+      "platform": "linux",
       "policy": {
         "hosts": [
           {
@@ -5516,6 +5682,7 @@
     {
       "code": "policy.host_invalid",
       "name": "host_trailing_hyphen",
+      "platform": "linux",
       "policy": {
         "hosts": [
           {
@@ -5540,6 +5707,7 @@
     {
       "code": "policy.host_invalid",
       "name": "host_ipv4_with_hex_octet",
+      "platform": "linux",
       "policy": {
         "hosts": [
           {
@@ -5564,6 +5732,7 @@
     {
       "code": "policy.host_invalid",
       "name": "host_hex_ipv4",
+      "platform": "linux",
       "policy": {
         "hosts": [
           {
@@ -5588,6 +5757,7 @@
     {
       "code": "policy.host_invalid",
       "name": "host_bare_0x_label",
+      "platform": "linux",
       "policy": {
         "hosts": [
           {
@@ -5613,6 +5783,7 @@
       "code": "ok",
       "digest": "sha256:0b361152947f0433de83043bf54e3de7845f625ca1d16464523e6be3b8f38f00",
       "name": "host_digits_then_letters_ok",
+      "platform": "linux",
       "policy": {
         "hosts": [
           {
@@ -5637,6 +5808,7 @@
     {
       "code": "policy.malformed",
       "name": "host_not_string",
+      "platform": "linux",
       "policy": {
         "hosts": [
           {
@@ -5661,6 +5833,7 @@
     {
       "code": "policy.malformed",
       "name": "host_port_true",
+      "platform": "linux",
       "policy": {
         "hosts": [
           {
@@ -5685,6 +5858,7 @@
     {
       "code": "policy.malformed",
       "name": "wall_ms_true",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -5704,6 +5878,7 @@
     {
       "code": "policy.malformed",
       "name": "wall_ms_string",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -5723,6 +5898,7 @@
     {
       "code": "policy.path_invalid",
       "name": "bad_workspace_beats_bad_host",
+      "platform": "linux",
       "policy": {
         "hosts": [
           {
@@ -5747,6 +5923,7 @@
     {
       "code": "policy.host_invalid",
       "name": "bad_host_beats_unknown_time_key",
+      "platform": "linux",
       "policy": {
         "hosts": [
           {
@@ -5772,6 +5949,7 @@
     {
       "code": "policy.path_invalid",
       "name": "overlap_beats_bad_host",
+      "platform": "linux",
       "policy": {
         "hosts": [
           {
@@ -5798,6 +5976,7 @@
     {
       "code": "policy.limit_out_of_range",
       "name": "bad_limit_beats_unknown_time_key",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -5818,26 +5997,31 @@
     {
       "code": "policy.malformed",
       "name": "float_in_extra_key",
+      "platform": "linux",
       "raw": "{\"hosts\": [], \"limits\": {\"file_bytes\": 104857600, \"memory_bytes\": 536870912, \"open_files\": 256, \"processes\": 1}, \"reads\": [], \"time\": {\"wall_ms\": 30000}, \"v\": 1, \"workspace\": \"/private/tmp/astral/ws\", \"extra\": 1.5}"
     },
     {
       "code": "policy.malformed",
       "name": "two_to_the_64_in_extra_key",
+      "platform": "linux",
       "raw": "{\"hosts\": [], \"limits\": {\"file_bytes\": 104857600, \"memory_bytes\": 536870912, \"open_files\": 256, \"processes\": 1}, \"reads\": [], \"time\": {\"wall_ms\": 30000}, \"v\": 1, \"workspace\": \"/private/tmp/astral/ws\", \"extra\": 18446744073709551616}"
     },
     {
       "code": "policy.malformed",
       "name": "float_in_limit",
+      "platform": "linux",
       "raw": "{\"hosts\": [], \"limits\": {\"file_bytes\": 104857600, \"memory_bytes\": 536870912, \"open_files\": 256, \"processes\": 1.0}, \"reads\": [], \"time\": {\"wall_ms\": 30000}, \"v\": 1, \"workspace\": \"/private/tmp/astral/ws\"}"
     },
     {
       "code": "policy.malformed",
       "name": "two_to_the_64_in_limit",
+      "platform": "linux",
       "raw": "{\"hosts\": [], \"limits\": {\"file_bytes\": 104857600, \"memory_bytes\": 18446744073709551616, \"open_files\": 256, \"processes\": 1}, \"reads\": [], \"time\": {\"wall_ms\": 30000}, \"v\": 1, \"workspace\": \"/private/tmp/astral/ws\"}"
     },
     {
       "code": "policy.path_invalid",
       "name": "read_multibyte_over_4096_bytes",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -5860,6 +6044,7 @@
       "code": "ok",
       "digest": "sha256:699ea986b88995752015b915ac0d0201429f48616e1bf8ef7eda7ff965f3ec6e",
       "name": "read_multibyte_4096_bytes_accepted",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -5905,6 +6090,7 @@
       "code": "ok",
       "digest": "sha256:ddc093c44647549ba57d959f8dac9a2965abf1ca297ca1c115c279bc328f697b",
       "name": "reads_sharp_s_pair_linux",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -5951,6 +6137,7 @@
       "code": "ok",
       "digest": "sha256:35e660ba21726dbd284528a91a61b8157f075103ba99cb38ff29782e60d1028a",
       "name": "reads_ligature_pair_linux",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -5996,6 +6183,7 @@
       "code": "ok",
       "digest": "sha256:9c4185537c368c8937e97cb55dedd032d3e6e138fceb397536830ac02161e379",
       "name": "read_unassigned_linux",
+      "platform": "linux",
       "policy": {
         "hosts": [],
         "limits": {
@@ -6151,6 +6339,53 @@
       }
     },
     {
+      "code": "policy.path_invalid",
+      "name": "reads_ypogegrammeni_pair_darwin",
+      "platform": "darwin",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [
+          "/opt/éͅ",
+          "/opt/éͅ"
+        ],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      }
+    },
+    {
+      "code": "ok",
+      "digest": "sha256:1dc9667ae59a0d9c07561a62f7ccdfe5fcccfbf3ae300d54a4b0b187e0d92082",
+      "name": "reads_ypogegrammeni_pair_linux",
+      "platform": "linux",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [
+          "/opt/éͅ",
+          "/opt/éͅ"
+        ],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      }
+    },
+    {
       "code": "ok",
       "digest": "sha256:d62fdd76ce2dda1eae9e8fcf0be62d20ecaddb709f5bd10b7883a6457f45171c",
       "name": "read_assigned_range_start_darwin",
@@ -6222,6 +6457,7 @@
       "code": "ok",
       "digest": "sha256:943847780d0f11d7ecdea68825f1369433c6dc0bee282f80069a3d4031ccf21a",
       "name": "host_253_characters_accepted",
+      "platform": "linux",
       "policy": {
         "hosts": [
           {
@@ -6246,6 +6482,7 @@
     {
       "code": "policy.host_invalid",
       "name": "host_254_characters",
+      "platform": "linux",
       "policy": {
         "hosts": [
           {
@@ -6271,6 +6508,7 @@
       "code": "ok",
       "digest": "sha256:8a8612ebcb8802bb2a49d199fdbf898f954e7199f1cde1838f292ce6a8609305",
       "name": "host_digit_then_letter_label_ok",
+      "platform": "linux",
       "policy": {
         "hosts": [
           {
@@ -6296,6 +6534,7 @@
       "code": "ok",
       "digest": "sha256:3fb6f08ee02305916a56a2730907d91db68efbe48e033440cce2c38ada667c07",
       "name": "host_bad_hex_label_ok",
+      "platform": "linux",
       "policy": {
         "hosts": [
           {

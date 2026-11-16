@@ -87,13 +87,13 @@ def host_of_length(length: int) -> str:
 
 
 def validation_cases() -> list[dict[str, Any]]:
-    cases: list[tuple[str, str, Any, bool, str | None]] = []
+    cases: list[tuple[str, str, Any, bool, str]] = []
 
-    def policy(name: str, code: str, value: Any, platform: str | None = None) -> None:
+    def policy(name: str, code: str, value: Any, platform: str = "linux") -> None:
         cases.append((name, code, value, False, platform))
 
     def raw(name: str, code: str, text: str) -> None:
-        cases.append((name, code, text, True, None))
+        cases.append((name, code, text, True, "linux"))
 
     ok, malformed = "ok", "policy.malformed"
     unknown, bad_path = "policy.unknown_field", "policy.path_invalid"
@@ -428,6 +428,17 @@ def validation_cases() -> list[dict[str, Any]]:
     ):
         policy(name, code, variant(reads=pair), "darwin")
     policy(
+        "reads_ypogegrammeni_pair_darwin",
+        bad_path,
+        variant(reads=["/opt/e\u0301\u0345", "/opt/e\u0345\u0301"]),
+        "darwin",
+    )
+    policy(
+        "reads_ypogegrammeni_pair_linux",
+        ok,
+        variant(reads=["/opt/e\u0301\u0345", "/opt/e\u0345\u0301"]),
+    )
+    policy(
         "read_assigned_range_start_darwin", ok, variant(reads=["/opt/\u037a"]), "darwin"
     )
     policy(
@@ -457,8 +468,7 @@ def validation_cases() -> list[dict[str, Any]]:
     for name, code, value, is_raw, platform in cases:
         entry: dict[str, Any] = {"name": name, "code": code}
         entry["raw" if is_raw else "policy"] = value
-        if platform:
-            entry["platform"] = platform
+        entry["platform"] = platform
         try:
             parsed = exec_policy.parse(value, platform)
             got = "ok"
@@ -707,6 +717,18 @@ def selection_cases() -> list[dict[str, Any]]:
             variant(reads=["/Users/test/\ua7dc"]),
             linux,
             "/Users/test/\u019b/node",
+        ),
+        (
+            "ypogegrammeni_pair_read_root_darwin",
+            variant(reads=["/Users/test/e\u0345\u0301"]),
+            darwin,
+            "/Users/test/e\u0301\u0345/node",
+        ),
+        (
+            "ypogegrammeni_pair_read_root_linux_ok",
+            variant(reads=["/Users/test/e\u0345\u0301"]),
+            linux,
+            "/Users/test/e\u0301\u0345/node",
         ),
         (
             "darwin_unassigned_in_reads",

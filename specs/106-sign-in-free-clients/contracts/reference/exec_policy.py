@@ -195,6 +195,18 @@ def _decomposed_hangul(char: str) -> str:
     return out + (chr(JAMO_T + tail) if tail else "")
 
 
+def _ordered(text: str) -> str:
+    out: list[str] = []
+    run: list[str] = []
+    for ch in text:
+        if _CCC.get(ch):
+            run.append(ch)
+            continue
+        out += sorted(run, key=lambda mark: _CCC[mark]) + [ch]
+        run = []
+    return "".join(out + sorted(run, key=lambda mark: _CCC[mark]))
+
+
 def _fold(path: str, platform: str | None) -> str:
     if platform != "darwin":
         return path
@@ -202,17 +214,9 @@ def _fold(path: str, platform: str | None) -> str:
         _decomposed_hangul(ch)
         if 0 <= ord(ch) - HANGUL_BASE < HANGUL_COUNT
         else _FOLD.get(ch, ch)
-        for ch in path
+        for ch in _ordered(path)
     ]
-    out: list[str] = []
-    run: list[str] = []
-    for ch in "".join(pieces):
-        if _CCC.get(ch):
-            run.append(ch)
-            continue
-        out += sorted(run, key=lambda mark: _CCC[mark]) + [ch]
-        run = []
-    return "".join(out + sorted(run, key=lambda mark: _CCC[mark]))
+    return _ordered("".join(pieces))
 
 
 def _contains(root: str, path: str, platform: str | None = None) -> bool:
@@ -443,6 +447,7 @@ def linux_plan(policy: dict[str, Any], egress_socket: str | None) -> dict[str, A
             "RLIMIT_AS": limits["memory_bytes"],
             "RLIMIT_NOFILE": limits["open_files"],
             "RLIMIT_FSIZE": limits["file_bytes"],
+            "RLIMIT_CORE": 0,
         },
         "watchdog": {
             "wall_ms": policy["time"]["wall_ms"],

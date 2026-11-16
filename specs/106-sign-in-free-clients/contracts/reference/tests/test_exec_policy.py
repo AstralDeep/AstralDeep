@@ -142,6 +142,8 @@ EXPECTED_VALIDATION = {
     "reads_mark_order_pair_darwin": "policy.path_invalid",
     "reads_mark_order_pair_before_base_darwin": "policy.path_invalid",
     "reads_same_class_marks_distinct_darwin": "ok",
+    "reads_ypogegrammeni_pair_darwin": "policy.path_invalid",
+    "reads_ypogegrammeni_pair_linux": "ok",
     "read_assigned_range_start_darwin": "ok",
     "read_assigned_range_end_darwin": "ok",
     "read_unassigned_after_range_darwin": "policy.path_invalid",
@@ -183,6 +185,8 @@ EXPECTED_SELECTION = {
     "unicode_16_case_pair_read_root_darwin": ("exec.policy_overlaps_data", None),
     "unicode_16_case_pair_read_root_linux_ok": ("ok", "linux"),
     "darwin_unassigned_in_reads": ("policy.path_invalid", None),
+    "ypogegrammeni_pair_read_root_darwin": ("exec.policy_overlaps_data", None),
+    "ypogegrammeni_pair_read_root_linux_ok": ("ok", "linux"),
     "workspace_equals_data_exec_refused": ("exec.policy_overlaps_data", None),
     "workspace_exec_lookalike_refused": ("exec.policy_overlaps_data", None),
     "workspace_under_data_exec_linux_ok": ("ok", "linux"),
@@ -332,14 +336,29 @@ def test_profile_never_opens_unwanted_rights(name: str) -> None:
     assert text.index("(deny file-read*") > text.rindex("(allow file-read*")
 
 
-EMPTY_PREFIX = re.compile(r'\(allow\b[^\n]*-prefix[ \t]+""')
-UNFILTERED = re.compile(
-    r"\(allow[ \t]+(?:[\w*-]+[ \t]+)*(?:mach\*|mach-lookup|process-exec\*|signal)[ \t]*\)"
-)
+PATH = r'"(?:[^"\\]|\\.)*"'
+ALLOW_FORMS = [
+    re.compile(pattern)
+    for pattern in (
+        rf"\(allow process-exec\* \(subpath {PATH}\)\)",
+        r"\(allow process-fork\)",
+        r"\(allow process-info\* \(target self\)\)",
+        r"\(allow signal \(target (?:self|children)\)\)",
+        r"\(allow (?:sysctl-read|file-ioctl)\)",
+        rf"\(allow file-read\* \(subpath {PATH}\)\)",
+        r'\(allow file-read-metadata \(subpath "/bin"\) \(subpath "/sbin"\)\)',
+        rf"\(allow file-read\* file-write\* \(subpath {PATH}\)\)",
+        r'\(allow network-outbound \(remote ip "localhost:[0-9]{1,5}"\)\)',
+    )
+]
 
 
 def unfiltered_allows(text: str) -> list[str]:
-    return UNFILTERED.findall(text) + EMPTY_PREFIX.findall(text)
+    return [
+        line
+        for line in text.splitlines()
+        if "(allow" in line and not any(form.fullmatch(line) for form in ALLOW_FORMS)
+    ]
 
 
 @pytest.mark.parametrize(
@@ -349,28 +368,38 @@ def unfiltered_allows(text: str) -> list[str]:
         "(allow mach*)\n",
         "(allow process-fork mach-lookup)",
         "(allow process-exec*)",
+        "(allow process*)",
+        "(allow default)",
         "(allow signal)",
         '(allow mach-lookup (xpc-service-name-prefix ""))',
         '(allow mach-lookup (global-name "a") (xpc-service-name-prefix ""))',
+        '(allow mach-lookup (global-name "com.apple.example"))',
+        '(allow mach-lookup (global-name-regex #"^com"))',
+        '(allow file-read* (regex #"^/"))',
+        '(allow file-read* (subpath "/"))\n(allow default)',
+        '(allow file-read* (literal "/x"))',
+        '(allow network-outbound (remote ip "*:*"))',
+        '(allow network-outbound (remote tcp "*:443"))',
+        '(allow file-read* (subpath "/a")) (allow default)',
         "(version 1)\n(allow  mach-lookup )\n",
     ],
 )
-def test_checker_refuses_unfiltered_allows(text: str) -> None:
+def test_checker_refuses_every_allow_outside_the_known_forms(text: str) -> None:
     assert unfiltered_allows(text)
 
 
 @pytest.mark.parametrize(
     "text",
     [
-        '(allow mach-lookup (global-name "com.apple.example"))',
         '(deny mach-lookup (global-name "com.apple.dnssd.service"))',
         "(allow signal (target self))",
         '(allow process-exec* (subpath "/usr"))',
         '(deny mach-lookup (xpc-service-name-prefix ""))',
-        '(allow mach-lookup (xpc-service-name-prefix "com.example."))',
+        '(allow file-read* file-write* (subpath "/a \\"q\\" b"))',
+        '(allow network-outbound (remote ip "localhost:3128"))',
     ],
 )
-def test_checker_passes_filtered_rules(text: str) -> None:
+def test_checker_passes_known_forms_and_denies(text: str) -> None:
     assert not unfiltered_allows(text)
 
 
@@ -511,6 +540,7 @@ def test_linux_plan_shape() -> None:
     assert plan["landlock"]["exec_read"][: len(base)] == base
     assert plan["landlock"]["abi"] == 6
     assert plan["landlock"]["workspace"] == PROFILES["full"]["policy"]["workspace"]
+    assert plan["rlimits"]["RLIMIT_CORE"] == 0
     assert (
         plan["rlimits"]["RLIMIT_AS"]
         == PROFILES["full"]["policy"]["limits"]["memory_bytes"]
@@ -681,3 +711,15 @@ def test_renderers_refuse_bad_context_values() -> None:
     with pytest.raises(exec_policy.ContextError):
         exec_policy.seatbelt_profile(policy, "/Users/te\u0378st", 3128)
     exec_policy.linux_plan(policy, "/run/user/1000/astral/call-1.sock")
+
+
+def test_validation_cases_always_name_their_platform() -> None:
+    assert {case["platform"] for case in DOC["validation"]} == {"linux", "darwin"}
+    for name, case in VALIDATION.items():
+        assert case["platform"] == ("darwin" if name.endswith("_darwin") else "linux")
+
+
+def test_fold_orders_marks_before_and_after_the_table() -> None:
+    fold = exec_policy._fold
+    assert fold("/e\u0301\u0345", "darwin") == fold("/e\u0345\u0301", "darwin")
+    assert fold("/e\u0345\u0301", "darwin") == "/e\u0301\u03b9"
