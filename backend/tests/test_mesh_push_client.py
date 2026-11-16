@@ -1,5 +1,5 @@
 """Exercises a node's publisher client with verified native route/principal fakes and a recording approved HTTP transport.
-Routes carry empty-wake capabilities only, and every final send is fenced against lifecycle and authority changes."""
+Routes carry empty-wake capabilities only, a wake goes only to the owner bound to the verified mesh id, and every final send is fenced against lifecycle, authority and development-mesh changes."""
 
 from __future__ import annotations
 
@@ -8,20 +8,29 @@ from types import SimpleNamespace as NS
 import pytest
 
 from orchestrator import mesh_push_client as client, push_wake as pw
-from shared import external_http
-from shared.node_identity import canonical_owner_id
+from shared import dev_mesh_keys, external_http
+from shared.node_identity import owner_id_for_mesh
 
 MESH = "sha256:" + "aa" * 32
+OTHER_MESH = "sha256:" + "cc" * 32
 DEVICE = "sha256:" + "bb" * 32
-ISSUER = "https://issuer.example/realms/owners"
-OWNER = canonical_owner_id(ISSUER, "owner")
+LOCAL = "sha256:" + "dd" * 32
+OWNER = owner_id_for_mesh(MESH)
 NOW = 1_800_000_000_000
 URL = "https://publisher.example"
 
 
+@pytest.fixture(autouse=True)
+def production(monkeypatch):
+    monkeypatch.delenv("ASTRAL_ENV", raising=False)
+
+
 class Native:
     def __init__(self):
-        self.identities = [NS(issuer=ISSUER, subject="owner")]
+        self.mesh_id = MESH
+        self.roster_mesh = MESH
+        self.members = [LOCAL, DEVICE]
+        self.removed = []
         self.routes = [
             NS(
                 mesh_id=MESH,
@@ -37,7 +46,14 @@ class Native:
         self.on_read = lambda: None
 
     def mesh_principal(self):
-        return NS(mesh_id=MESH, identities=self.identities)
+        return NS(mesh_id=self.mesh_id)
+
+    def roster(self):
+        return NS(
+            mesh_id=self.roster_mesh,
+            members=[NS(device_id=device) for device in self.members],
+            removed=[NS(device_id=device) for device in self.removed],
+        )
 
     def wake_routes(self):
         self.calls += 1
@@ -88,14 +104,28 @@ async def test_node_sends_only_empty_wake_through_configured_publisher_without_i
     assert native.calls >= 2 and mesh.kernel is native
 
 
+@pytest.mark.parametrize("owner", [
+    owner_id_for_mesh(OTHER_MESH), MESH, "oidc.0123456789abcdef.owner", "", None, "mesh." + "AA" * 32,
+])
+async def test_a_wake_for_any_owner_but_the_one_bound_to_the_verified_mesh_never_reaches_http(owner):
+    _, _, http, gateway = setup()
+    assert await gateway.wake(owner, DEVICE) == pw.WakeOutcome(pw.NO_DESTINATION)
+    assert http.calls == []
+
+
 @pytest.mark.parametrize(
     "mutation",
     [
-        "owner",
+        "principal",
         "mesh",
         "removed",
         "stopped",
         "old_api",
+        "no_roster",
+        "roster_mesh",
+        "malformed_roster",
+        "dev_member",
+        "dev_removed",
         "wrong_device",
         "expired",
         "service",
@@ -107,8 +137,8 @@ async def test_node_sends_only_empty_wake_through_configured_publisher_without_i
 )
 async def test_unverified_or_unavailable_native_context_never_reaches_http(mutation):
     mesh, native, http, gateway = setup()
-    if mutation == "owner":
-        native.identities = [NS(issuer=ISSUER, subject="different")]
+    if mutation == "principal":
+        native.mesh_id = OTHER_MESH
     elif mutation == "mesh":
         native.routes[0].mesh_id = DEVICE
     elif mutation in {"removed", "stopped"}:
@@ -119,6 +149,16 @@ async def test_unverified_or_unavailable_native_context_never_reaches_http(mutat
         native.mesh_principal = denied
     elif mutation == "old_api":
         native.wake_routes = None
+    elif mutation == "no_roster":
+        native.roster = None
+    elif mutation == "roster_mesh":
+        native.roster_mesh = OTHER_MESH
+    elif mutation == "malformed_roster":
+        native.roster = lambda: NS(mesh_id=MESH)
+    elif mutation == "dev_member":
+        native.members.append(dev_mesh_keys.device_ids()["phone"])
+    elif mutation == "dev_removed":
+        native.removed.append(dev_mesh_keys.device_ids()["owner"])
     elif mutation == "wrong_device":
         native.routes[0].device_id = MESH
     elif mutation == "expired":
@@ -137,7 +177,25 @@ async def test_unverified_or_unavailable_native_context_never_reaches_http(mutat
     assert http.calls == []
 
 
-@pytest.mark.parametrize("mutation", ["replace", "close", "owner", "rotate", "revoke"])
+@pytest.mark.parametrize("value", [None, "production", "staging"])
+async def test_a_development_mesh_never_wakes_outside_development(monkeypatch, value):
+    if value is not None:
+        monkeypatch.setenv("ASTRAL_ENV", value)
+    _, native, http, gateway = setup()
+    native.members.append(dev_mesh_keys.device_ids()["owner"])
+    assert await gateway.wake(OWNER, DEVICE) == pw.WakeOutcome(pw.NO_DESTINATION)
+    assert http.calls == []
+
+
+async def test_a_development_mesh_wakes_in_development(monkeypatch):
+    monkeypatch.setenv("ASTRAL_ENV", "development")
+    _, native, http, gateway = setup()
+    native.members.append(dev_mesh_keys.device_ids()["owner"])
+    assert await gateway.wake(OWNER, DEVICE) == pw.WakeOutcome(pw.SENT)
+    assert len(http.calls) == 1
+
+
+@pytest.mark.parametrize("mutation", ["replace", "close", "principal", "rotate", "revoke", "dev_member", "roster_mesh"])
 async def test_authority_or_route_change_during_final_read_prevents_actual_send(
     mutation,
 ):
@@ -150,10 +208,14 @@ async def test_authority_or_route_change_during_final_read_prevents_actual_send(
             mesh.kernel = Native()
         elif mutation == "close":
             mesh.started = False
-        elif mutation == "owner":
-            native.identities = [NS(issuer=ISSUER, subject="other")]
+        elif mutation == "principal":
+            native.mesh_id = OTHER_MESH
         elif mutation == "rotate":
             native.routes[0].route.capability = "new_capability_" * 4
+        elif mutation == "dev_member":
+            native.members.append(dev_mesh_keys.device_ids()["second-phone"])
+        elif mutation == "roster_mesh":
+            native.roster_mesh = OTHER_MESH
         else:
             native.routes.clear()
 
@@ -213,10 +275,3 @@ async def test_unstarted_context_missing_route_and_local_limiter_send_nothing():
     assert (await gateway.wake(OWNER, DEVICE)).status == pw.SENT
     assert (await gateway.wake(OWNER, DEVICE)).status == pw.RATE_LIMITED
     assert len(http.calls) == 1
-
-
-async def test_accountless_principal_without_a_publisher_binding_has_no_destination():
-    _, native, http, gateway = setup()
-    native.mesh_principal = lambda: NS(mesh_id=MESH)
-    assert await gateway.wake(MESH, DEVICE) == pw.WakeOutcome(pw.NO_DESTINATION)
-    assert http.calls == []
