@@ -20,7 +20,7 @@ from astral_exec import Policy, constants, launch
 from astral_exec import run as run_command
 from astral_exec.constants import LAUNCH_MARKER, MESSAGES, REFUSED_EXIT_STATUS
 from astral_exec.facts import Facts
-from astral_exec.launch import Outcome, apply_limits, run
+from astral_exec.launch import Outcome, run
 from astral_exec.watchdog import (
     CTL_KERN,
     KERN_ARGMAX,
@@ -152,6 +152,7 @@ def test_anything_but_the_seatbelt_backend_is_a_launch_failure(spawns, policy, f
         (["/bin/echo"], {"A=B": "x"}, None),
         (["/bin/echo"], {"A": "x\0y"}, None),
         (["/bin/echo"], {LAUNCH_MARKER: "x"}, None),
+        (["/bin/echo"], {"DYLD_INSERT_LIBRARIES": "/x.dylib"}, None),
         (["/bin/echo"], [("A", "x")], None),
         (["/bin/echo"], {}, "text"),
     ],
@@ -174,15 +175,30 @@ def test_a_spawn_failure_is_a_launch_failure_and_removes_the_profile(monkeypatch
         return fd, path
 
     def failing_popen(argv, **kwargs):
-        assert argv[:2] == [constants.SANDBOX_EXEC, "-f"]
-        assert argv[3:] == ["--", "/bin/echo", "hi"]
-        assert kwargs["executable"] == constants.SANDBOX_EXEC
+        status_fd, env_fd = kwargs["pass_fds"]
+        assert argv[:6] == [sys.executable, "-I", "-B", "-S", launch.RUN_PY, "rlimit"]
+        assert argv[6:18] == [
+            "--core",
+            "0",
+            "--fsize",
+            "104857600",
+            "--nofile",
+            "256",
+            "--cpu",
+            "31",
+            "--status-fd",
+            str(status_fd),
+            "--env-fd",
+            str(env_fd),
+        ]
+        assert argv[18:21] == ["--", constants.SANDBOX_EXEC, "-f"]
+        assert argv[22:] == ["--", "/bin/echo", "hi"]
+        assert kwargs["env"] == {}
         assert kwargs["start_new_session"] is True and kwargs["close_fds"] is True
         assert kwargs["cwd"] == WORKSPACE
-        assert set(kwargs["env"]) == {"A", LAUNCH_MARKER}
-        with open(argv[2], encoding="utf-8") as handle:
+        with open(argv[21], encoding="utf-8") as handle:
             assert handle.read().startswith("(version 1)\n(deny default)\n")
-        raise OSError("no sandbox-exec here")
+        raise OSError("no interpreter here")
 
     monkeypatch.setattr(launch.tempfile, "mkstemp", recording_mkstemp)
     monkeypatch.setattr(launch.subprocess, "Popen", failing_popen)
@@ -201,27 +217,164 @@ def test_the_outcome_message_follows_its_code():
 
 @dataclass
 class FakeResource:
-    hard: dict
     RLIMIT_CORE: int = 4
     RLIMIT_FSIZE: int = 1
     RLIMIT_NOFILE: int = 8
-    RLIM_INFINITY: int = -1
+    RLIMIT_CPU: int = 0
+    refuse: int | None = None
     calls: list = field(default_factory=list)
 
-    def getrlimit(self, which):
-        return (0, self.hard[which])
-
     def setrlimit(self, which, value):
+        if which == self.refuse:
+            raise ValueError("not allowed to raise maximum limit")
         self.calls.append((which, value))
 
 
-def test_apply_limits_sets_core_to_zero_and_never_raises_a_hard_limit():
-    api = FakeResource(hard={1: -1, 8: 128})
-    apply_limits({"file_bytes": 4096, "open_files": 256}, api)
-    assert api.calls == [(4, (0, 0)), (1, (4096, 4096)), (8, (128, 128))]
-    api = FakeResource(hard={1: 1 << 40, 8: -1})
-    apply_limits({"file_bytes": 4096, "open_files": 256}, api)
-    assert api.calls == [(4, (0, 0)), (1, (4096, 4096)), (8, (256, 256))]
+@dataclass
+class FakeSignals:
+    SIGPIPE: int = 13
+    SIGXFSZ: int = 25
+    SIG_DFL: int = 0
+    calls: list = field(default_factory=list)
+
+    def signal(self, signum, handler):
+        self.calls.append((signum, handler))
+
+
+def trampoline_args(status_fd, env_fd, *command, **overrides):
+    values = {"core": 0, "fsize": 4096, "nofile": 32, "cpu": 5, **overrides}
+    args = []
+    for name, value in values.items():
+        args += [f"--{name}", str(value)]
+    return [
+        *args,
+        "--status-fd",
+        str(status_fd),
+        "--env-fd",
+        str(env_fd),
+        "--",
+        *command,
+    ]
+
+
+def env_pipe(data):
+    read_end, write_end = os.pipe()
+    os.write(write_end, data)
+    os.close(write_end)
+    return read_end
+
+
+def run_rlimit(env_data, *command, api=None, **overrides):
+    status_read, status_write = os.pipe()
+    env_read = env_pipe(env_data)
+    executed = []
+    api = api or FakeResource()
+    signals = FakeSignals()
+    try:
+        code = run_command.rlimit(
+            trampoline_args(status_write, env_read, *command, **overrides),
+            api=api,
+            signals=signals,
+            execve=lambda path, argv, env: executed.append((path, argv, env)),
+        )
+        inheritable = os.get_inheritable(status_write)
+    finally:
+        os.close(status_write)
+    with os.fdopen(status_read, "rb") as handle:
+        status = handle.read()
+    return code, status, executed, api.calls, signals.calls, inheritable
+
+
+def test_the_trampoline_sets_every_limit_restores_signals_and_execs_with_the_env():
+    code, status, executed, limits, signals, inheritable = run_rlimit(
+        b'{"A": "1"}', "/usr/bin/sandbox-exec", "-f", "p"
+    )
+    assert (code, status, inheritable) == (0, run_command.READY, False)
+    assert run_command.READY == constants.TRAMPOLINE_READY
+    assert executed == [
+        ("/usr/bin/sandbox-exec", ["/usr/bin/sandbox-exec", "-f", "p"], {"A": "1"})
+    ]
+    assert limits == [(4, (0, 0)), (1, (4096, 4096)), (8, (32, 32)), (0, (5, 5))]
+    assert signals == [(13, 0), (25, 0)]
+
+
+@pytest.mark.parametrize(
+    ("env_data", "command", "refuse"),
+    [
+        (b'{"A": "1"}', (), None),
+        (b"{", ("/bin/x",), None),
+        (b'["A"]', ("/bin/x",), None),
+        (b'{"A": 1}', ("/bin/x",), None),
+        (b"{}", ("/bin/x",), 8),
+    ],
+    ids=["no_command", "bad_json", "not_an_object", "not_strings", "limit_refused"],
+)
+def test_the_trampoline_reports_a_failure_and_never_execs(env_data, command, refuse):
+    code, status, executed, _limits, _signals, _inheritable = run_rlimit(
+        env_data, *command, api=FakeResource(refuse=refuse)
+    )
+    assert code == 1 and status.startswith(b"fail ") and executed == []
+
+
+def test_the_trampoline_refuses_a_negative_limit_before_anything_else(capsys):
+    with pytest.raises(SystemExit):
+        run_command.rlimit(trampoline_args(1, 2, "/bin/x", nofile=-1))
+    assert "non-negative" in capsys.readouterr().err
+
+
+def real_trampoline(command, env, prefix=(), **overrides):
+    status_read, status_write = os.pipe()
+    env_read, env_write = os.pipe()
+    os.write(env_write, json.dumps(env).encode())
+    os.close(env_write)
+    args = trampoline_args(status_write, env_read, *command, **overrides)
+    proc = subprocess.Popen(
+        [*prefix, PYTHON, "-I", "-B", "-S", launch.RUN_PY, "rlimit", *args],
+        env={},
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        pass_fds=(status_write, env_read),
+        start_new_session=True,
+    )
+    os.close(status_write)
+    os.close(env_read)
+    out, err = proc.communicate(timeout=120)
+    with os.fdopen(status_read, "rb") as handle:
+        status = handle.read()
+    return proc.returncode, status, out, err
+
+
+REPORT_LIMITS = (
+    "import json, resource\n"
+    "names = ('CORE', 'FSIZE', 'NOFILE', 'CPU')\n"
+    "print(json.dumps([resource.getrlimit(getattr(resource, 'RLIMIT_' + n))"
+    " for n in names]))\n"
+)
+
+
+def test_the_real_trampoline_applies_its_limits_and_env_through_exec():
+    code, status, out, err = real_trampoline(
+        [PYTHON, "-I", "-c", REPORT_LIMITS], {}, fsize=8192, nofile=48, cpu=9
+    )
+    assert (code, status) == (0, run_command.READY), err
+    assert json.loads(out) == [[0, 0], [8192, 8192], [48, 48], [9, 9]]
+    code, status, out, err = real_trampoline(["/usr/bin/env"], {"A": "1", "B": "x y"})
+    assert (code, status, out) == (0, run_command.READY, b"A=1\nB=x y\n"), err
+
+
+def test_the_real_trampoline_refuses_a_limit_the_kernel_rejects():
+    lowered = ["/bin/sh", "-c", 'ulimit -n 64 && exec "$@"', "sh"]
+    code, status, out, _err = real_trampoline(
+        ["/bin/echo", "ran"], {}, prefix=lowered, nofile=128
+    )
+    assert (code, status, out) == (1, b"fail ValueError", b"")
+
+
+def test_the_cpu_limit_kills_a_busy_tool_without_any_launcher():
+    code, status, _out, _err = real_trampoline(
+        [PYTHON, "-I", "-c", "while True: pass"], {}, cpu=1
+    )
+    assert (code, status) == (-signal.SIGXCPU, run_command.READY)
 
 
 @dataclass
@@ -409,8 +562,17 @@ LIMITS = {
 }
 
 
-def supervise(proc, fake, wall_ms=60000, data=None, limits=LIMITS):
-    return launch._supervise(proc, limits, wall_ms, "feedface", data, fake)
+def ready_fds(status=b"exec"):
+    env_read, env_write = os.pipe()
+    os.close(env_read)
+    return env_pipe(status), env_write
+
+
+def supervise(proc, fake, wall_ms=60000, data=None, limits=LIMITS, status=b"exec"):
+    status_fd, env_fd = ready_fds(status)
+    return launch._supervise(
+        proc, status_fd, env_fd, {"A": "1"}, limits, wall_ms, "feedface", data, fake
+    )
 
 
 def test_the_monitor_returns_the_exit_and_output_of_a_finished_child():
@@ -455,8 +617,17 @@ def test_a_watch_that_cannot_start_still_kills_the_group():
     def broken(root, marker):
         raise OSError("no libproc")
 
+    status_fd, env_fd = ready_fds()
     outcome = launch._supervise(
-        spawn("import time; time.sleep(600)"), LIMITS, 60000, "f", None, broken
+        spawn("import time; time.sleep(600)"),
+        status_fd,
+        env_fd,
+        {},
+        LIMITS,
+        60000,
+        "f",
+        None,
+        broken,
     )
     assert (outcome.code, outcome.exit_code) == ("exec.launch_failed", -signal.SIGKILL)
 
@@ -522,6 +693,8 @@ def test_run_py_dispatches_and_names_the_missing_conformance_suite(monkeypatch, 
     assert run_command.main(["launch", "--policy", "p"]) == 7
     assert seen == [["--policy", "p"]]
     assert run_command.main(["conformance", "--json"]) == 2
+    with pytest.raises(SystemExit):
+        run_command.main(["rlimit", "--core", "0"])
     assert "not yet available" in capsys.readouterr().err
     for args in ([], ["other"]):
         assert run_command.main(args) == 2
@@ -771,3 +944,71 @@ def test_run_py_runs_as_a_script_with_only_its_parent_on_the_path(monkeypatch, c
     assert stopped.value.code == 2
     assert sys.path[0] == os.path.dirname(os.path.dirname(script))
     assert "not yet available" in capsys.readouterr().err
+
+
+def test_a_cpu_limit_signal_is_a_time_limit():
+    code = "import os, signal\nos.kill(os.getpid(), signal.SIGXCPU)\n"
+    outcome = supervise(spawn(code), FakeWatch())
+    assert (outcome.code, outcome.exit_code) == ("exec.time_limit", -signal.SIGXCPU)
+
+
+def test_a_trampoline_that_never_got_ready_is_a_launch_failure():
+    outcome = supervise(spawn("import sys; sys.exit(1)"), FakeWatch(), status=b"fail X")
+    assert (outcome.code, outcome.exit_code) == ("exec.launch_failed", None)
+    outcome = supervise(spawn("pass"), FakeWatch(), status=b"")
+    assert (outcome.code, outcome.exit_code) == ("exec.launch_failed", None)
+
+
+def test_output_past_the_cap_is_drained_kept_to_the_cap_and_flagged(monkeypatch):
+    monkeypatch.setattr(launch, "OUTPUT_LIMIT_BYTES", 1000)
+    code = (
+        "import sys\nsys.stdout.write('o' * 300000)\nsys.stdout.flush()\n"
+        "sys.stderr.write('e' * 999)\n"
+    )
+    outcome = supervise(spawn(code), FakeWatch())
+    assert (outcome.code, outcome.exit_code) == (None, 0)
+    assert outcome.stdout == b"o" * 1000 and outcome.stderr == b"e" * 999
+    assert outcome.truncated == ("stdout",)
+
+
+def test_large_stdin_and_env_reach_a_tool_that_reads_slowly():
+    data = b"x" * 300000
+    code = "import sys, time\ntime.sleep(0.2)\nprint(len(sys.stdin.buffer.read()))"
+    outcome = supervise(spawn(code, stdin=True), FakeWatch(), data=data)
+    assert (outcome.code, outcome.stdout) == (None, b"300000\n")
+
+
+def test_a_tool_that_ignores_stdin_still_finishes():
+    outcome = supervise(spawn("pass", stdin=True), FakeWatch(), data=b"x" * 300000)
+    assert (outcome.code, outcome.exit_code) == (None, 0)
+
+
+def test_a_stream_setup_failure_is_a_launch_failure(monkeypatch):
+    def broken(*args):
+        raise OSError("no selector")
+
+    monkeypatch.setattr(launch, "_Streams", broken)
+    outcome = supervise(spawn("import time; time.sleep(600)"), FakeWatch())
+    assert (outcome.code, outcome.exit_code) == ("exec.launch_failed", None)
+
+
+def test_a_relative_interpreter_is_a_launch_failure(spawns, monkeypatch):
+    monkeypatch.setattr(launch.sys, "executable", "python3")
+    outcome = run(darwin_policy(), ["/bin/echo"], {}, None, facts=darwin_facts())
+    assert outcome.code == "exec.launch_failed" and spawns == []
+
+
+def test_empty_stdin_closes_the_tool_input_at_once():
+    code = "import sys\nprint(len(sys.stdin.read()))"
+    outcome = supervise(spawn(code, stdin=True), FakeWatch(), data=b"")
+    assert (outcome.code, outcome.stdout) == (None, b"0\n")
+
+
+def test_a_call_with_inherited_stdio_waits_on_the_process():
+    proc = subprocess.Popen(
+        [PYTHON, "-I", "-B", "-c", "import time; time.sleep(0.1)"],
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    outcome = supervise(proc, FakeWatch())
+    assert outcome == Outcome(None, 0)

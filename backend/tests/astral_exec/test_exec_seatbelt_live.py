@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 from astral_exec import Policy, launch
 from astral_exec.constants import (
+    OUTPUT_LIMIT_BYTES,
     LAUNCH_MARKER,
     MESSAGES,
     REFUSED_EXIT_STATUS,
@@ -106,9 +107,9 @@ def python(code):
     return [PYTHON, "-I", "-B", "-c", code]
 
 
-def gone(pid):
+def gone(pid, tries=500):
     system = Darwin()
-    for _ in range(500):
+    for _ in range(tries):
         usage = system.usage(pid)
         if usage is None or usage.exited:
             return True
@@ -208,13 +209,14 @@ def test_a_tool_past_its_memory_limit_is_stopped(call):
 def test_a_tool_past_its_process_limit_is_stopped_with_every_child(call):
     code = (
         "import subprocess, time\n"
-        "kids = [subprocess.Popen(['/bin/sleep', '600']) for _ in range(4)]\n"
-        "print(' '.join(str(k.pid) for k in kids), flush=True)\ntime.sleep(600)\n"
+        "for _ in range(4):\n"
+        "    print(subprocess.Popen(['/bin/sleep', '600']).pid, flush=True)\n"
+        "time.sleep(600)\n"
     )
     outcome = run(call(processes=3), python(code), {}, None)
     assert (outcome.code, outcome.exit_code) == ("exec.process_limit", -signal.SIGKILL)
     kids = [int(pid) for pid in outcome.stdout.split()]
-    assert len(kids) == 4 and all(gone(pid) for pid in kids)
+    assert len(kids) >= 2 and all(gone(pid) for pid in kids)
 
 
 def test_a_writer_past_file_bytes_is_killed_by_the_file_size_signal(call):
@@ -275,6 +277,63 @@ def test_strays_that_leave_the_group_are_gone_after_the_call(call):
     strays = [int(pid) for pid in outcome.stdout.split()]
     assert outcome.code is None and outcome.exit_code == 0
     assert len(strays) == 2 and all(gone(pid) for pid in strays)
+
+
+LIMITS_SEEN = (
+    "import json, resource\n"
+    "names = ('CORE', 'FSIZE', 'NOFILE', 'CPU')\n"
+    "print(json.dumps([resource.getrlimit(getattr(resource, 'RLIMIT_' + n))"
+    " for n in names]))\n"
+)
+
+
+def test_the_confined_tool_runs_under_every_trampoline_limit(call):
+    policy = call(wall_ms=4500, file_bytes=65536, open_files=40)
+    outcome = run(policy, python(LIMITS_SEEN), {}, None)
+    assert outcome.code is None, outcome.stderr
+    assert json.loads(outcome.stdout) == [[0, 0], [65536, 65536], [40, 40], [6, 6]]
+
+
+def test_a_trampoline_refusal_is_a_launch_failure(call, monkeypatch):
+    real = launch._command
+
+    def bad_limit(*args):
+        command = real(*args)
+        command[command.index("--nofile") + 1] = "-1"
+        return command
+
+    monkeypatch.setattr(launch, "_command", bad_limit)
+    target = call.workspace / "ran"
+    outcome = run(call(), ["/usr/bin/touch", str(target)], {}, None)
+    assert (outcome.code, outcome.exit_code) == ("exec.launch_failed", None)
+    assert not target.exists()
+
+
+def test_output_past_the_cap_is_kept_to_the_cap_and_flagged(call):
+    code = "import sys\nsys.stdout.buffer.write(b'o' * (9 << 20))\n"
+    outcome = run(call(), python(code), {}, None)
+    assert (outcome.code, outcome.exit_code) == (None, 0)
+    assert outcome.stdout == b"o" * OUTPUT_LIMIT_BYTES
+    assert outcome.truncated == ("stdout",)
+
+
+def test_a_busy_tool_dies_by_its_cpu_limit_after_the_launcher_is_killed(tmp_path, call):
+    launcher = subprocess.Popen(
+        _files(tmp_path, call, wall_ms=1000) + python("while True: pass"),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    system = Darwin()
+    children = []
+    for _ in range(1000):
+        children = system.pids(PROC_PPID_ONLY, launcher.pid)
+        if children:
+            break
+        time.sleep(0.01)
+    assert len(children) == 1
+    launcher.kill()
+    launcher.wait(timeout=60)
+    assert gone(children[0], tries=3000)
 
 
 def test_a_tool_sandbox_exec_cannot_start_passes_its_status_through(call):

@@ -1,5 +1,5 @@
-"""The monitoring parent of one confined call: it selects the backend, writes the Seatbelt profile, starts sandbox-exec in a new session with the call's rlimits and enforces time, memory and processes until the tool exits.
-run() captures the output for in-process callers, and main() is the run.py launch command, which passes its own stdio through.
+"""The monitoring parent of one confined call: it selects the backend, writes the Seatbelt profile, starts sandbox-exec through the run.py rlimit trampoline in a new session and enforces time, memory and processes until the tool exits.
+run() captures the output up to a per-stream cap for in-process callers, and main() is the run.py launch command, which passes its own stdio through.
 """
 
 from __future__ import annotations
@@ -7,9 +7,10 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import os
-import resource
 import secrets
+import selectors
 import signal
 import subprocess
 import sys
@@ -24,8 +25,10 @@ from .constants import (
     CORE_LIMIT_BYTES,
     LAUNCH_MARKER,
     MESSAGES,
+    OUTPUT_LIMIT_BYTES,
     REFUSED_EXIT_STATUS,
     SANDBOX_EXEC,
+    TRAMPOLINE_READY,
 )
 from .errors import ContextError, ExecRefused, PolicyError, Refusal
 from .facts import probe
@@ -35,6 +38,9 @@ from .watchdog import Watch
 
 POLL_SECONDS = 0.01
 DRAIN_SECONDS = 2.0
+READ_CHUNK = 65536
+STATUS_LIMIT_BYTES = 256
+RUN_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "run.py")
 STOP_SIGNALS = (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)
 USAGE = "usage: run.py launch --policy FILE --data-dir DIR --home DIR --env-file FILE -- argv..."
 _LOG = logging.getLogger("astral_exec.launch")
@@ -47,6 +53,7 @@ class Outcome:
     stdout: bytes = b""
     stderr: bytes = b""
     refusal: Refusal | None = None
+    truncated: tuple[str, ...] = ()
 
     @property
     def message(self) -> str | None:
@@ -70,17 +77,6 @@ class _Stopped(BaseException):
         self.signum = signum
 
 
-def apply_limits(limits: Mapping[str, int], api: Any = resource) -> None:
-    api.setrlimit(api.RLIMIT_CORE, (CORE_LIMIT_BYTES, CORE_LIMIT_BYTES))
-    for which, key in (
-        (api.RLIMIT_FSIZE, "file_bytes"),
-        (api.RLIMIT_NOFILE, "open_files"),
-    ):
-        _soft, hard = api.getrlimit(which)
-        bound = limits[key] if hard == api.RLIM_INFINITY else min(limits[key], hard)
-        api.setrlimit(which, (bound, bound))
-
-
 def _checked_argv(argv: Any) -> list[str]:
     if isinstance(argv, (str, bytes)) or not isinstance(argv, Sequence) or not argv:
         raise ValueError("argv must be a non-empty list of strings")
@@ -99,6 +95,8 @@ def _checked_env(env: Any) -> dict[str, str]:
             raise ValueError("env keys and values must be strings")
         if not key or "=" in key or "\0" in key or "\0" in value:
             raise ValueError("env holds a malformed entry")
+        if key.startswith("DYLD_"):
+            raise ValueError("macOS strips DYLD_ variables before the tool starts")
     if LAUNCH_MARKER in env:
         raise ValueError(f"{LAUNCH_MARKER} is reserved for the launcher")
     return dict(env)
@@ -144,62 +142,197 @@ def _remove(path: str) -> None:
         pass
 
 
+def _command(call: _Call, profile: str, status_fd: int, env_fd: int) -> list[str]:
+    if not os.path.isabs(sys.executable):
+        raise ContextError("the trampoline needs an absolute interpreter path")
+    limits = call.document["limits"]
+    cpu = math.ceil(call.document["time"]["wall_ms"] / 1000) + 1
+    return [
+        sys.executable,
+        "-I",
+        "-B",
+        "-S",
+        RUN_PY,
+        "rlimit",
+        "--core",
+        str(CORE_LIMIT_BYTES),
+        "--fsize",
+        str(limits["file_bytes"]),
+        "--nofile",
+        str(limits["open_files"]),
+        "--cpu",
+        str(cpu),
+        "--status-fd",
+        str(status_fd),
+        "--env-fd",
+        str(env_fd),
+        "--",
+        SANDBOX_EXEC,
+        "-f",
+        profile,
+        "--",
+        *call.argv,
+    ]
+
+
 def _spawn(
     call: _Call, profile: str, capture: bool, data: bytes | None
-) -> subprocess.Popen:
-    limits = call.document["limits"]
+) -> tuple[subprocess.Popen, int, int]:
     stdin: Any = None
     if capture:
         stdin = subprocess.DEVNULL if data is None else subprocess.PIPE
     output = subprocess.PIPE if capture else None
-    return subprocess.Popen(
-        [SANDBOX_EXEC, "-f", profile, "--", *call.argv],
-        executable=SANDBOX_EXEC,
-        env=call.env,
-        cwd=call.document["workspace"],
-        stdin=stdin,
-        stdout=output,
-        stderr=output,
-        start_new_session=True,
-        close_fds=True,
-        preexec_fn=lambda: apply_limits(limits),
-    )
+    status_read, status_write = os.pipe()
+    env_read, env_write = os.pipe()
+    try:
+        proc = subprocess.Popen(
+            _command(call, profile, status_write, env_read),
+            env={},
+            cwd=call.document["workspace"],
+            stdin=stdin,
+            stdout=output,
+            stderr=output,
+            start_new_session=True,
+            close_fds=True,
+            pass_fds=(status_write, env_read),
+        )
+    except BaseException:
+        os.close(status_read)
+        os.close(env_write)
+        raise
+    finally:
+        os.close(status_write)
+        os.close(env_read)
+    return proc, status_read, env_write
+
+
+class _Streams:
+    def __init__(
+        self,
+        proc: subprocess.Popen,
+        status_fd: int,
+        env_fd: int,
+        env: bytes,
+        data: bytes | None,
+    ) -> None:
+        self._selector = selectors.DefaultSelector()
+        self._closers: dict[int, Callable[[], None]] = {}
+        self._pending: dict[int, memoryview] = {}
+        self._kept = {
+            "stdout": bytearray(),
+            "stderr": bytearray(),
+            "status": bytearray(),
+        }
+        self.truncated: set[str] = set()
+        self._watch(status_fd, "status", lambda: os.close(status_fd))
+        self._send(env_fd, env, lambda: os.close(env_fd))
+        for name in ("stdout", "stderr"):
+            stream = getattr(proc, name)
+            if stream is not None:
+                self._watch(stream.fileno(), name, stream.close)
+        if proc.stdin is not None:
+            if data:
+                self._send(proc.stdin.fileno(), data, proc.stdin.close)
+            else:
+                proc.stdin.close()
+
+    def _watch(self, fd: int, name: str, closer: Callable[[], None]) -> None:
+        self._selector.register(fd, selectors.EVENT_READ, name)
+        self._closers[fd] = closer
+
+    def _send(self, fd: int, data: bytes, closer: Callable[[], None]) -> None:
+        os.set_blocking(fd, False)
+        self._selector.register(fd, selectors.EVENT_WRITE, None)
+        self._closers[fd] = closer
+        self._pending[fd] = memoryview(data)
+
+    def _finish(self, fd: int) -> None:
+        self._selector.unregister(fd)
+        self._pending.pop(fd, None)
+        self._closers.pop(fd)()
+
+    def output(self, name: str) -> bytes:
+        return bytes(self._kept[name])
+
+    def reading(self) -> bool:
+        return any(key.data is not None for key in self._selector.get_map().values())
+
+    def pump(self, timeout: float) -> bool:
+        if not self._selector.get_map():
+            return False
+        for key, _events in self._selector.select(timeout):
+            if key.data is None:
+                self._write(key.fd)
+            else:
+                self._read(key.fd, key.data)
+        return True
+
+    def _write(self, fd: int) -> None:
+        pending = self._pending[fd]
+        try:
+            written = os.write(fd, pending[:READ_CHUNK])
+        except BlockingIOError:
+            return
+        except BrokenPipeError:
+            written = len(pending)
+        self._pending[fd] = pending[written:]
+        if not self._pending[fd]:
+            self._finish(fd)
+
+    def _read(self, fd: int, name: str) -> None:
+        chunk = os.read(fd, READ_CHUNK)
+        if not chunk:
+            self._finish(fd)
+            return
+        kept = self._kept[name]
+        limit = STATUS_LIMIT_BYTES if name == "status" else OUTPUT_LIMIT_BYTES
+        room = max(limit - len(kept), 0)
+        if len(chunk) > room and name != "status":
+            self.truncated.add(name)
+        kept += chunk[:room]
+
+    def drain(self, seconds: float) -> None:
+        end = time.monotonic() + seconds
+        while self.reading():
+            left = end - time.monotonic()
+            if left <= 0:
+                _LOG.warning("exec output stayed open after teardown")
+                return
+            self.pump(min(left, POLL_SECONDS))
+
+    def close(self) -> None:
+        for fd in list(self._closers):
+            self._finish(fd)
+        self._selector.close()
 
 
 def _monitor(
     proc: subprocess.Popen,
+    streams: _Streams,
     watch: Any,
     limits: Mapping[str, int],
     deadline: float,
-    data: bytes | None,
-) -> tuple[str | None, tuple[bytes | None, bytes | None] | None]:
-    pending = data
+) -> str | None:
+    next_sample = 0.0
     while True:
-        try:
-            return None, proc.communicate(pending, timeout=POLL_SECONDS)
-        except subprocess.TimeoutExpired:
-            pending = None
+        if not streams.pump(POLL_SECONDS):
+            try:
+                proc.wait(POLL_SECONDS)
+            except subprocess.TimeoutExpired:
+                pass
         if proc.poll() is not None:
-            return None, None
-        if time.monotonic() >= deadline:
-            return "exec.time_limit", None
+            return None
+        now = time.monotonic()
+        if now >= deadline:
+            return "exec.time_limit"
+        if now < next_sample:
+            continue
+        next_sample = now + POLL_SECONDS
         processes, memory = watch.sample()
         if memory > limits["memory_bytes"]:
-            return "exec.memory_limit", None
+            return "exec.memory_limit"
         if processes > limits["processes"]:
-            return "exec.process_limit", None
-
-
-def _drain(proc: subprocess.Popen) -> tuple[bytes | None, bytes | None]:
-    try:
-        return proc.communicate(timeout=DRAIN_SECONDS)
-    except subprocess.TimeoutExpired as error:
-        _LOG.warning("exec output stayed open after teardown pid=%d", proc.pid)
-        for stream in (proc.stdout, proc.stderr):
-            if stream is not None:
-                stream.close()
-        proc.wait()
-        return error.output, error.stderr
+            return "exec.process_limit"
 
 
 def _end(proc: subprocess.Popen, watch: Any) -> bool:
@@ -219,8 +352,17 @@ def _end(proc: subprocess.Popen, watch: Any) -> bool:
     return survivors == set()
 
 
+_SIGNAL_CODES = {
+    -signal.SIGXFSZ: "exec.file_limit",
+    -signal.SIGXCPU: "exec.time_limit",
+}
+
+
 def _supervise(
     proc: subprocess.Popen,
+    status_fd: int,
+    env_fd: int,
+    env: Mapping[str, str],
     limits: Mapping[str, int],
     wall_ms: int,
     marker: str,
@@ -229,24 +371,44 @@ def _supervise(
 ) -> Outcome:
     deadline = time.monotonic() + wall_ms / 1000
     entry = f"{LAUNCH_MARKER}={marker}".encode() if limits["processes"] > 1 else None
+    streams = None
     watch = None
     code: str | None = None
-    output = None
     ended = False
     try:
-        watch = watch_factory(proc.pid, entry)
-        code, output = _monitor(proc, watch, limits, deadline, data)
-    except Exception as error:
-        _LOG.warning("exec monitor failed: %s", type(error).__name__)
-        code = "exec.launch_failed"
+        try:
+            encoded = json.dumps(dict(env)).encode()
+            streams = _Streams(proc, status_fd, env_fd, encoded, data)
+            watch = watch_factory(proc.pid, entry)
+            code = _monitor(proc, streams, watch, limits, deadline)
+        except Exception as error:
+            _LOG.warning("exec monitor failed: %s", type(error).__name__)
+            code = "exec.launch_failed"
+        finally:
+            ended = _end(proc, watch)
+        if streams is not None:
+            streams.drain(DRAIN_SECONDS)
+        proc.wait()
     finally:
-        ended = _end(proc, watch)
+        if streams is not None:
+            streams.close()
+        else:
+            for fd in (status_fd, env_fd):
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+    if streams is None:
+        return Outcome("exec.launch_failed", None)
+    stdout, stderr = streams.output("stdout"), streams.output("stderr")
+    truncated = tuple(sorted(streams.truncated))
+    if streams.output("status") != TRAMPOLINE_READY:
+        _LOG.warning("exec trampoline refused: %r", streams.output("status")[:64])
+        return Outcome("exec.launch_failed", None, stdout, stderr, truncated=truncated)
     if not ended:
         code = "exec.launch_failed"
-    stdout, stderr = output if output is not None else _drain(proc)
-    if code is None and proc.returncode == -signal.SIGXFSZ:
-        code = "exec.file_limit"
-    return Outcome(code, proc.returncode, stdout or b"", stderr or b"")
+    code = code or _SIGNAL_CODES.get(proc.returncode)
+    return Outcome(code, proc.returncode, stdout, stderr, truncated=truncated)
 
 
 def _launch(
@@ -270,13 +432,16 @@ def _launch(
         return Outcome("exec.launch_failed", None)
     try:
         try:
-            proc = _spawn(call, profile, capture, data)
+            proc, status_fd, env_fd = _spawn(call, profile, capture, data)
         except Exception as error:
             _LOG.warning("exec launch failed digest=%s error=%s", digest, error)
             return Outcome("exec.launch_failed", None)
         _LOG.info("exec launch digest=%s backend=seatbelt pid=%d", digest, proc.pid)
         outcome = _supervise(
             proc,
+            status_fd,
+            env_fd,
+            call.env,
             call.document["limits"],
             call.document["time"]["wall_ms"],
             call.marker,
