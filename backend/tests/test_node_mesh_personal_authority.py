@@ -66,7 +66,7 @@ def personal(monkeypatch):
             members = [SimpleNamespace(device_id="node", is_local=True)] if state.own else []
             if state.source:
                 members.append(SimpleNamespace(device_id="phone", is_local=False))
-            return SimpleNamespace(mesh_id=OWNER, stopped=state.stopped, members=members)
+            return SimpleNamespace(mesh_id=OWNER, stopped=state.stopped, members=members, removed=[])
 
         def request(self, request_id):
             assert request_id == "request-1"

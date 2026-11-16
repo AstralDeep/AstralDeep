@@ -38,7 +38,7 @@ async def receiver(tmp_path, monkeypatch):
         return NS(mesh_id=state.mesh_id)
 
     kernel.mesh_principal = principal
-    kernel.roster = lambda: NS(mesh_id=state.roster_mesh, stopped=state.stopped, members=[
+    kernel.roster = lambda: NS(mesh_id=state.roster_mesh, stopped=state.stopped, removed=[], members=[
         NS(device_id=kernel.device_id, is_local=True)] if state.local else [])
     bridge = node_mesh_chat.active()
     try:
@@ -127,7 +127,7 @@ async def test_reopened_production_receiver_retains_its_bound_mesh_namespace(rec
     kernel = mesh.kernel
     kernel.join(MESH)
     kernel.mesh_principal = lambda: NS(mesh_id=MESH)
-    kernel.roster = lambda: NS(mesh_id=MESH, stopped=False, members=[NS(device_id=kernel.device_id, is_local=True)])
+    kernel.roster = lambda: NS(mesh_id=MESH, stopped=False, removed=[], members=[NS(device_id=kernel.device_id, is_local=True)])
     await node_mesh_chat.active().scan()
     assert node_identity.bound_owner() == MESH == node_mesh_chat.active()._owner
 
