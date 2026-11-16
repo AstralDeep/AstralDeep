@@ -1,6 +1,6 @@
 """Tests that orchestrator.py's register_ui answers an invalid, missing, expired or
 rejected token with a recoverable auth_required signal (shared/protocol.py) instead
-of a dead-end chat alert; mock auth still registers normally.
+of a dead-end chat alert; a signed token still registers normally.
 """
 
 from __future__ import annotations
@@ -164,8 +164,7 @@ def test_verified_registration_retires_only_the_previous_owners_rote_cache(same_
     assert fake.rote.get_cached_components(socket) == (original if same_owner else None)
 
 
-def test_garbage_token_emits_single_auth_required_invalid(auth_audit, monkeypatch):
-    monkeypatch.delenv("USE_MOCK_AUTH", raising=False)
+def test_garbage_token_emits_single_auth_required_invalid(auth_audit):
     fake = _make_fake(validate=_reject_token)
     ws = _FakeWS("garbage")
     evt = asyncio.Event()
@@ -187,8 +186,7 @@ def test_garbage_token_emits_single_auth_required_invalid(auth_audit, monkeypatc
     assert evt.is_set()
 
 
-def test_missing_token_emits_auth_required_invalid(auth_audit, monkeypatch):
-    monkeypatch.delenv("USE_MOCK_AUTH", raising=False)
+def test_missing_token_emits_auth_required_invalid(auth_audit):
     fake = _make_fake(validate=_reject_token)
     ws = _FakeWS()
 
@@ -201,8 +199,7 @@ def test_missing_token_emits_auth_required_invalid(auth_audit, monkeypatch):
     assert fake._renders == []
 
 
-def test_expired_jwt_yields_reason_expired(auth_audit, monkeypatch):
-    monkeypatch.delenv("USE_MOCK_AUTH", raising=False)
+def test_expired_jwt_yields_reason_expired(auth_audit):
     fake = _make_fake(validate=_reject_token)
     ws = _FakeWS("expired")
     token = _fake_jwt({"sub": "someone", "exp": time.time() - 3600})
@@ -217,8 +214,7 @@ def test_expired_jwt_yields_reason_expired(auth_audit, monkeypatch):
     assert fake.ui_sessions == {}
 
 
-def test_unexpired_but_rejected_jwt_yields_reason_invalid(auth_audit, monkeypatch):
-    monkeypatch.delenv("USE_MOCK_AUTH", raising=False)
+def test_unexpired_but_rejected_jwt_yields_reason_invalid(auth_audit):
     fake = _make_fake(validate=_reject_token)
     token = _fake_jwt({"sub": "someone", "exp": time.time() + 3600})
 
@@ -230,27 +226,41 @@ def test_unexpired_but_rejected_jwt_yields_reason_invalid(auth_audit, monkeypatc
     assert payload["reason"] == "invalid"
 
 
-def test_mock_auth_mode_registers_normally(auth_audit, monkeypatch):
-    monkeypatch.setenv("USE_MOCK_AUTH", "true")
+def test_signed_token_registers_normally(auth_audit, server_identity):
     fake = _make_fake()
-    ws = _FakeWS("mock")
+    ws = _FakeWS("signed")
     evt = asyncio.Event()
     fake._registered_events[id(ws)] = evt
+    token = server_identity.token("signed-user", roles=("admin", "user"))
 
-    _run_and_drain(fake.handle_ui_message(ws, _register_msg(token="dev-token")))
+    _run_and_drain(fake.handle_ui_message(ws, _register_msg(token=token)))
 
     assert "auth_required" not in _types(fake)
     assert ws in fake.ui_sessions
     claims = fake.ui_sessions[ws]
-    assert claims["sub"] == "test_user"
-    assert claims["_raw_token"] == "dev-token"
-    assert fake._profiles and fake._profiles[0]["sub"] == "test_user"
+    assert claims["sub"] == server_identity.owner("signed-user")
+    assert claims["_raw_token"] == token
+    assert fake._profiles and fake._profiles[0]["sub"] == server_identity.owner("signed-user")
     assert "rote_config" in _types(fake)
     assert fake._dashboards == [ws]
     assert evt.is_set()
     actions = [e.get("action") for e in auth_audit]
     assert "ws_register" in actions
     assert "login_interactive" in actions
+
+
+def test_foreign_signed_and_unsigned_tokens_are_refused_by_the_real_verifier(auth_audit, server_identity):
+    from tests.helpers.idp_tokens import FakeIssuer
+
+    for bad in (FakeIssuer().token("signed-user"), _fake_jwt({"sub": "signed-user"})):
+        fake = _make_fake()
+        ws = _FakeWS("refused")
+
+        _run_and_drain(fake.handle_ui_message(ws, _register_msg(token=bad)))
+
+        assert _types(fake) == ["auth_required"]
+        assert fake.ui_sessions == {}
+        assert fake._profiles == []
 
 
 def test_auth_required_dataclass_round_trips():

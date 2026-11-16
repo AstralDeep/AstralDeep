@@ -72,14 +72,15 @@ def web_auth_src() -> str:
     return _read(WEB_AUTH_PY)
 
 
-def test_no_dev_token_literal_in_executable_code(client_js):
+def test_no_retired_bearer_literal_in_executable_code(client_js):
+    retired = "dev" + "-token"
     for lineno, line in enumerate(client_js.splitlines(), 1):
-        if "dev-token" in line:
+        if retired in line:
             assert line.lstrip().startswith("//"), (
-                f"client.js:{lineno} carries 'dev-token' outside a comment: {line.strip()!r}"
+                f"client.js:{lineno} carries the retired bearer outside a comment: {line.strip()!r}"
             )
-    assert '"dev-token"' not in client_js, "dev-token JS string literal resurfaced"
-    assert not re.search(r"""\|\|\s*['"]dev-token['"]""", client_js)
+    assert f'"{retired}"' not in client_js, "retired bearer JS string literal resurfaced"
+    assert not re.search(r"""\|\|\s*['"]""" + retired + r"""['"]""", client_js)
 
 
 def test_auth_required_case_refreshes_then_falls_back_to_login(client_js):
