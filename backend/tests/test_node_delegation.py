@@ -13,7 +13,8 @@ from orchestrator import mesh_admission as ma
 from orchestrator.emergency_stop import EmergencyStopCoordinator, EmergencyStopRefused
 from shared import node_identity as ni
 
-OWNER = ni.canonical_owner_id("https://idp.example/realms/a", "owner-1")
+MESH = "sha256:" + "1" * 64
+OWNER = ni.owner_id_for_mesh(MESH)
 AGENT_AUDIENCE = "astral-agent-service"
 
 
@@ -147,7 +148,7 @@ async def test_raising_the_stop_counter_halts_new_delegation(personal):
     status = await orch.emergency_stop.engage(OWNER, reason="drill")
     assert status["engaged"] is True
     assert await orch._get_delegation_token(socket, "agent", OWNER) is None
-    other = ni.canonical_owner_id("https://idp.example/realms/a", "someone-else")
+    other = ni.owner_id_for_mesh("sha256:" + "2" * 64)
     orch.ui_sessions[socket] = {"sub": other}
     assert await orch._get_delegation_token(socket, "agent", other) is not None
     resumed = await orch.emergency_stop.resume(OWNER, expected_revision=status["revision"])
@@ -348,10 +349,16 @@ async def test_agents_accept_node_delegation_for_their_audience_and_owner_only(p
     orch.ui_sessions[socket] = {"sub": OWNER}
     token = await orch._get_delegation_token(socket, "agent", OWNER)
     validator = A2ASecurityValidator()
+    assert await validator.validate_token(token) is None
+    assert ni.bound_owner() is None and not (ni.data_dir() / ni.OWNER_FILE).exists()
+    assert ni.bind_mesh_owner(MESH) == OWNER
     claims = await validator.validate_token(token)
     assert claims["sub"] == OWNER and validator.is_delegation_token(claims)
     assert validator.get_actor(claims) == "agent:agent"
     assert ni.bound_owner() == OWNER
+    for claimed in (MESH, ni.canonical_owner_id("https://idp.example/realms/a", "owner-1")):
+        assert await validator.validate_token(personal.mint_token({"sub": claimed}, audience=[AGENT_AUDIENCE])) is None
+    assert (ni.data_dir() / ni.OWNER_FILE).read_text() == OWNER
     wrong_audience = personal.mint_token({"sub": OWNER, "act": {"sub": "agent:agent"}}, audience=["some-other-service"])
     assert await validator.validate_token(wrong_audience) is None
     other_owner = personal.mint_token({"sub": "oidc.0123456789abcdef.intruder"}, audience=[AGENT_AUDIENCE])
@@ -378,5 +385,6 @@ async def test_agents_on_a_node_take_only_node_tokens_and_never_fetch_issuer_key
         assert await A2ASecurityValidator().validate_token(token) is None
         assert await A2ASecurityValidator(require_first_party_user=True).validate_token(token) is None
     node_token = personal.mint_token({"sub": OWNER, "act": {"sub": "agent:agent"}}, audience=[AGENT_AUDIENCE])
+    ni.bind_mesh_owner(MESH)
     assert (await A2ASecurityValidator().validate_token(node_token))["sub"] == OWNER
     assert await A2ASecurityValidator(require_first_party_user=True).validate_token(node_token) is None

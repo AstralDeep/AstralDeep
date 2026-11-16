@@ -308,7 +308,7 @@ async def paired(tmp_path, monkeypatch, *, phi_protected=False, calls=None, peer
         node_mesh_chat.install(bridge)
         await bridge.start()
         await bridge.scan()
-        assert node_identity.bound_owner() == owner == node.personal_owner_id()
+        assert node_identity.bound_owner() == node_identity.owner_id_for_mesh(owner) == node.personal_owner_id()
         yield node, laptop, (await node.status())["member_id"], bridge
     finally:
         node_mesh_chat.install(None)

@@ -18,6 +18,7 @@ from orchestrator.node_mailbox import MailboxSettings
 from shared import node_identity as ni
 from tests import fake_astral_kernel as fake
 from tests.helpers import orchestrator_app
+from tests.helpers.owner_file import seed_owner
 from tests.helpers.dev_mesh import node_settings, until
 from tests.test_dev_mesh import CLEAN, stored_node
 
@@ -139,8 +140,7 @@ async def test_a_deleted_secret_is_written_again_while_not_enrolled(node):
 @pytest.mark.parametrize("source", ["file", "env"])
 async def test_a_node_with_a_legacy_owner_is_refused_and_keeps_its_owner(node, monkeypatch, source):
     if source == "file":
-        ni.bind_owner(LEGACY)
-        before = (node.home / ni.OWNER_FILE).read_bytes()
+        before = seed_owner(LEGACY)
     else:
         monkeypatch.setenv(ni.OWNER_ENV, LEGACY)
     secret = _secret(node.home)
@@ -186,7 +186,7 @@ async def test_reopening_an_enrolled_store_deletes_a_leftover_secret(tmp_path, m
 
 @pytest.mark.parametrize("owner", [MESH, "mesh." + "e" * 64])
 async def test_a_mesh_owner_does_not_block_the_offer(node, owner):
-    ni.bind_owner(owner)
+    seed_owner(owner)
     assert (await _post(node.app, _secret(node.home))).status_code == 200
 
 
@@ -326,7 +326,7 @@ async def test_the_owner_refresh_deletes_the_secret_once_enrolled(node):
     node.kernel.mesh_principal = lambda: NS(mesh_id=MESH)
     node.kernel.roster = lambda: NS(mesh_id=MESH, stopped=False, removed=[],
                                     members=[NS(device_id=node.kernel.device_id, is_local=True)])
-    assert await node.mesh.refresh_personal_owner() == MESH
+    assert await node.mesh.refresh_personal_owner() == ni.owner_id_for_mesh(MESH)
     assert not _secret_path(node.home).exists()
 
 

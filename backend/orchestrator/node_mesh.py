@@ -129,7 +129,7 @@ def _variant(value: Any) -> str:
     return type(value).__name__.rsplit(".", 1)[-1]
 
 
-def _refuse_development_mesh(roster: Any) -> None:
+def refuse_development_mesh(roster: Any) -> None:
     if _development_allowed():
         return
     try:
@@ -478,7 +478,7 @@ class NodeMesh:
         if _development_allowed() or self._enrollment(await kernel.mesh_status()) not in ENROLLED_STATES:
             return False
         try:
-            _refuse_development_mesh(await asyncio.to_thread(kernel.roster))
+            refuse_development_mesh(await asyncio.to_thread(kernel.roster))
         except NodeMeshError:
             return True
         return False
@@ -592,6 +592,12 @@ class NodeMesh:
             kernel = self.kernel
             status = await self._request_call(kernel.mesh_status)
             if self._enrollment(status) not in ENROLLED_STATES:
+                try:
+                    await asyncio.to_thread(node_identity.bound_mesh_owner)
+                except node_identity.LegacyOwner:
+                    raise NodeMeshError("node.legacy_owner") from None
+                except node_identity.NodeIdentityError:
+                    raise NodeMeshError("node.owner_binding_unavailable") from None
                 self._personal_owner = None
                 self._owner_binding = {"state": "setup_required", "code": "mesh.not_enrolled"}
                 return None
@@ -606,7 +612,7 @@ class NodeMesh:
                 if type(mesh_id) is not str or re.fullmatch(r"sha256:[0-9a-f]{64}", mesh_id) is None:
                     raise NodeMeshError("node.owner_unproven")
                 roster = kernel.roster()
-                _refuse_development_mesh(roster)
+                refuse_development_mesh(roster)
                 if mesh_id != status.mesh_id or mesh_id != roster.mesh_id:
                     raise NodeMeshError("node.mesh_mismatch")
                 if roster.stopped:
@@ -617,6 +623,8 @@ class NodeMesh:
                     raise NodeMeshError("node.mesh_admission_unavailable")
                 try:
                     return node_identity.bind_mesh_owner(mesh_id)
+                except node_identity.LegacyOwner:
+                    raise NodeMeshError("node.legacy_owner") from None
                 except node_identity.OwnerMismatch:
                     raise NodeMeshError("node.owner_mismatch") from None
                 except node_identity.NodeIdentityError:
@@ -818,7 +826,7 @@ class NodeMesh:
                 raise NodeMeshError("node.owner_unproven")
             if self._enrollment(status) not in ENROLLED_STATES:
                 raise NodeMeshError("mesh.not_enrolled")
-            _refuse_development_mesh(roster)
+            refuse_development_mesh(roster)
             if proof.mesh_id != status.mesh_id or proof.mesh_id != roster.mesh_id:
                 raise NodeMeshError("node.mesh_mismatch")
             if roster.stopped:
@@ -843,7 +851,7 @@ class NodeMesh:
                         raise NodeMeshError("request.closed")
                 elif state != "PENDING":
                     raise NodeMeshError("request.closed")
-            if owner != mesh_id:
+            if owner != node_identity.owner_id_for_mesh(mesh_id):
                 raise NodeMeshError("node.owner_mismatch")
             return PersonalAuthorityContext(proof.mesh_id, status.device_id, request)
 
