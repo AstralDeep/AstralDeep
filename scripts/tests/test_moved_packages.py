@@ -265,6 +265,8 @@ def test_the_image_and_deep_requirements_never_take_the_package(
     package: MovedPackage,
 ) -> None:
     _package_files(package)
+    context_rules = (REPOSITORY_ROOT / ".dockerignore").read_text(encoding="utf-8")
+    assert package.folder in context_rules.splitlines()
     tracked = [path for path in _tracked() if _outside_moved_packages(path)]
     dockerfiles = [path for path in tracked if DOCKERFILE.search(path)]
     assert "Dockerfile" in dockerfiles
