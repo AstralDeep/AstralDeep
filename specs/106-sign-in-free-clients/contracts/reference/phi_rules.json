@@ -1,6 +1,7 @@
 {
   "format": "astral.phi-rules/v1",
   "limits": {
+    "float_bytes": 24,
     "max_bytes": 1048576,
     "max_depth": 64
   },
@@ -68,15 +69,22 @@
       "sources": ["_PREFILTER_PATTERNS mrn", "PHI_VALUE_PATTERNS mrn"]
     },
     {
-      "id": "name_after_prefix",
+      "id": "name_labeled",
       "tier": "clear",
       "on": "leaf",
-      "pattern": "(?i:\\b(?:patient|subject)(?:\\s+(?:name|identifier|id|record))?\\s*[:=#]?\\s*(?:\\n\\s*(?:content|text|name)\\s*:\\s*)?)\\b[A-Zx][A-Za-z~'-]*[a-z~](?:[ \\t]+[A-Zx][A-Za-z~'-]*[a-z~]){1,2}",
-      "sources": ["_SHARE_PATIENT_PREFIX"]
+      "pattern": "(?i:\\b(?:patient|subject)(?:\\s+(?:name|identifier|id|record)\\s*[:=#]?\\s*(?:\\n\\s*(?:content|text|name)\\s*:\\s*)?|\\s*[:=#]?\\s*\\n\\s*name\\s*:\\s*))\\b[A-Zx][A-Za-z~'-]*[a-z~](?:[ \\t]+[A-Zx][A-Za-z~'-]*[a-z~]){1,2}",
+      "sources": ["_SHARE_PATIENT_PREFIX with its label word"]
+    },
+    {
+      "id": "name_bare_prefix",
+      "tier": "uncertain",
+      "on": "leaf",
+      "pattern": "(?i:\\b(?:patient|subject)\\s*[:=#]?\\s*(?:\\n\\s*(?:content|text)\\s*:\\s*)?)\\b[A-Zx][A-Za-z~'-]*[a-z~](?:[ \\t]+[A-Zx][A-Za-z~'-]*[a-z~]){1,2}",
+      "sources": ["_SHARE_PATIENT_PREFIX without a label word"]
     },
     {
       "id": "name_before_suffix",
-      "tier": "clear",
+      "tier": "uncertain",
       "on": "leaf",
       "pattern": "\\b[A-Zx][A-Za-z~'-]*[a-z~](?:[ \\t]+[A-Zx][A-Za-z~'-]*[a-z~]){1,2}(?i:\\s*[,;:]?\\s*(?:(?:was|is)\\s+)?(?:diagnosed\\s+with|treated\\s+for|admitted\\s+for|discharged\\s+with|has\\s+(?:diabetes|cancer|HIV|asthma|hypertension|a\\s+history\\s+of))\\b)",
       "sources": ["_SHARE_CLINICAL_SUFFIX"]
@@ -86,7 +94,15 @@
       "tier": "clear",
       "on": "key",
       "value": "present",
-      "pattern": "(?i)ssn|social_security|mrn|medical_record|patient_id|dob|birthdate|birth|health_plan_id|insurance_id|beneficiary",
+      "pattern": "(?i)ssn|social[ ._-]?security|mrn|medical[ ._-]?record|patient[ ._-]?id|dob|birthdate|birth|health[ ._-]?plan[ ._-]?id|insurance[ ._-]?id|beneficiary",
+      "sources": ["PHI_FIELD_PATTERNS"]
+    },
+    {
+      "id": "field_key_phi_blank",
+      "tier": "uncertain",
+      "on": "key",
+      "value": "blank",
+      "pattern": "(?i)ssn|social[ ._-]?security|mrn|medical[ ._-]?record|patient[ ._-]?id|dob|birthdate|birth|health[ ._-]?plan[ ._-]?id|insurance[ ._-]?id|beneficiary",
       "sources": ["PHI_FIELD_PATTERNS"]
     },
     {
@@ -191,6 +207,47 @@
         ["credit", "card"],
         ["ccn"],
         ["card", "number"]
+      ],
+      "glued": [
+        "address",
+        "biometric",
+        "email",
+        "fingerprint",
+        "telephone",
+        "voiceprint",
+        "firstname",
+        "lastname",
+        "middlename",
+        "fullname",
+        "givenname",
+        "familyname",
+        "maidenname",
+        "surname",
+        "nickname",
+        "username",
+        "displayname",
+        "patientname",
+        "streetname",
+        "zipcode",
+        "postalcode",
+        "phonenumber",
+        "phoneno",
+        "homephone",
+        "workphone",
+        "cellphone",
+        "mobilephone",
+        "faxnumber",
+        "imageurl",
+        "photourl",
+        "profilephoto",
+        "deviceid",
+        "deviceserial",
+        "vehicleid",
+        "licenseplate",
+        "licensenumber",
+        "accountnumber",
+        "creditcard",
+        "cardnumber"
       ],
       "sources": ["PHI_FIELD_PATTERNS"]
     }

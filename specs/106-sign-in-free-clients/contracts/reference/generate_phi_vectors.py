@@ -14,7 +14,8 @@ phi_detector = importlib.import_module("phi_detector")
 
 OUTPUT = HERE.parent / "vectors" / "phi-detector-v1.json"
 CLINICAL = HERE.parents[3] / "backend/tests/fixtures/phi-clinical-controls.json"
-SEED = 0x106005
+SEED = 0x2545F491
+SPECIFIC_FIELDS = ["ssn", "social_security", "mrn", "medical_record", "patient_id", "dob", "birth", "birthdate", "health_plan_id", "insurance_id", "beneficiary"]
 
 NAMES = ["Avery Quill", "Bram Okonjo", "Cleo Marsh", "Dara Ventis", "Emil Sorensby", "Faye Lindqvist"]
 SEEDS = {
@@ -40,7 +41,7 @@ SEEDS = {
     "address": ["1200 Example Street", "42 Test Road", "7 Sample Ave", "88 North Fake Blvd", "310 Mock Lane", "5 Elm Dr"],
     "phrase": ["the medical record", "see medical record"],
     "loose_email": ["react@18.3.1", "x@y.z"],
-    "name": [f"Patient: {NAMES[0]}", f"{NAMES[1]} was diagnosed with asthma", f"subject {NAMES[2]}"],
+    "name": [f"Patient: {NAMES[0]}", f"patient name: {NAMES[3]}", f"{NAMES[1]} was diagnosed with asthma", f"subject {NAMES[2]}"],
 }
 BENIGN = [
     "Clear tracheal secretions, continue suction.",
@@ -58,7 +59,7 @@ BENIGN = [
     "Le patient se repose.",
     "Пациент стабилен.",
     "المريض في حالة مستقرة.",
-    "रोगी की हालत स्थिर है।",
+    "\u0930\u094b\u0917\u0940 \u0915\u0940 \u0939\u093e\u0932\u0924 \u0938\u094d\u0925\u093f\u0930 \u0939\u0948\u0964",
     "患者は安定しています。",
     "病人情况稳定。",
 ]
@@ -68,9 +69,9 @@ SURROUNDINGS = [
     ("Résumé du dossier : ", ""),
     ("患者メモ: ", " 以上"),
     ("Заметка: ", "."),
-    ("José García wrote: ", ""),
+    ("Jose\u0301 Garci\u0301a wrote: ", ""),
 ]
-GLUE = ["́", "ⓐ", "＿", "\u0001", "½", "ı", "%41", "&#65;", "＜", "　", "٣", "é"]
+GLUE = ["\u0301", "\u24d0", "\uff3f", "\u0001", "\u00bd", "\u0131", "%41", "&#65;", "\uff1c", "\u3000", "\u0663", "é"]
 SECRETS = ["900-12-3456", "avery.quill@example.com", "Avery Quill"]
 
 
@@ -108,7 +109,7 @@ def percent_all(text: str) -> str:
 
 
 def digits(text: str, zero: int) -> str:
-    return "".join(chr(zero + int(c)) if c.isdigit() else c for c in text)
+    return "".join(chr(zero + ord(c) - 48) if c in "0123456789" else c for c in text)
 
 
 WRAPPERS = {
@@ -125,9 +126,9 @@ WRAPPERS = {
     "fullwidth_digits": lambda s: digits(s, 0xFF10),
     "arabic_digits": lambda s: digits(s, 0x0660),
     "devanagari_digits": lambda s: digits(s, 0x0966),
-    "nbsp": lambda s: s.replace(" ", " "),
-    "ideographic_space": lambda s: s.replace(" ", "　"),
-    "turkish_i": lambda s: s.replace("i", "ı").replace("I", "İ"),
+    "nbsp": lambda s: s.replace(" ", "\u00a0"),
+    "ideographic_space": lambda s: s.replace(" ", "\u3000"),
+    "turkish_i": lambda s: s.replace("i", "\u0131").replace("I", "\u0130"),
 }
 JSON_WRAPPERS = {
     "json_value": lambda s: {"note": s},
@@ -153,9 +154,8 @@ def key_styles(pattern: str) -> dict[str, str]:
 
 def field_patterns() -> tuple[list[str], list[str]]:
     rules = {rule["id"]: rule for rule in phi_detector.RULES["rules"]}
-    specific = rules["field_key_phi"]["pattern"].removeprefix("(?i)").split("|")
     generic = ["_".join(run) for run in rules["field_key_generic"]["tokens"]]
-    return specific, generic
+    return list(SPECIFIC_FIELDS), generic
 
 
 def outcome(value: Any) -> dict[str, Any]:
@@ -222,11 +222,20 @@ def detect_cases() -> list[dict[str, Any]]:
         ("mrn_spaced", "rules", "MRN 0012345"),
         ("mrn_glued", "rules", "MRN0012345"),
         ("mrn_none", "rules", "MRN pending"),
+        ("name_labeled_name", "names", f"patient name: {NAMES[0]}"),
+        ("name_labeled_subject_id", "names", f"subject id: {NAMES[1]}"),
+        ("name_labeled_record", "names", f"Patient Record: {NAMES[2]}"),
+        ("name_labeled_name_line", "names", f"patient\nname: {NAMES[3]}"),
+        ("name_labeled_nfd", "names", "Patient name: Jose\u0301 Garci\u0301a"),
+        ("name_benign_safety_committee", "names", "Patient Safety Committee meets Tuesday"),
+        ("name_benign_subject_matter", "names", "Subject Matter Expert"),
+        ("name_benign_subject_line", "names", "Subject: Team Sync Notes"),
+        ("name_benign_outcomes", "names", "Outcomes in Older Adults Diagnosed With Heart Failure"),
         ("name_after_prefix", "names", f"Patient: {NAMES[0]}"),
         ("name_prefix_content_line", "names", f"patient\ncontent: {NAMES[1]}"),
         ("name_after_dear_patient", "names", f"Dear Patient {NAMES[0]}"),
         ("name_before_suffix", "names", f"{NAMES[0]} was diagnosed with asthma"),
-        ("name_nfd", "names", "Patient: José García"),
+        ("name_nfd", "names", "Patient: Jose\u0301 Garci\u0301a"),
         ("name_no_context", "names", f"{NAMES[0]} joined the call"),
         ("name_lowercase", "names", "patient avery quill"),
         ("name_one_word", "names", "Patient: Avery"),
@@ -235,6 +244,12 @@ def detect_cases() -> list[dict[str, Any]]:
         ("field_key_phi_case", "field_keys", {"Patient_ID": "x"}),
         ("field_key_phi_empty_string", "field_keys", {"dob": ""}),
         ("field_key_phi_zero", "field_keys", {"ssn": 0}),
+        ("field_key_phi_false", "field_keys", {"mrn": False}),
+        ("field_key_phi_true", "field_keys", {"mrn": True}),
+        ("field_key_phi_integer", "field_keys", {"mrn": 1234567}),
+        ("field_key_phi_float", "field_keys", {"mrn": 0.0}),
+        ("field_key_phi_glued", "field_keys", {"patientId": "A-100"}),
+        ("field_key_phi_spaced", "field_keys", {"Medical Record": "A-100"}),
         ("field_key_phi_null", "field_keys", {"dob": None}),
         ("field_key_phi_empty_array", "field_keys", {"dob": []}),
         ("field_key_phi_empty_object", "field_keys", {"dob": {}}),
@@ -246,7 +261,13 @@ def detect_cases() -> list[dict[str, Any]]:
         ("field_key_generic_slash", "field_keys", {"user/name": "x"}),
         ("field_key_generic_null", "field_keys", {"user_name": None}),
         ("field_key_token_filename", "field_keys", {"filename": "report.pdf"}),
-        ("field_key_token_username", "field_keys", {"username": "x"}),
+        ("field_key_token_hostname", "field_keys", {"hostname": "lab-node-1"}),
+        ("field_key_glued_username", "field_keys", {"username": "x"}),
+        ("field_key_glued_lastname", "field_keys", {"lastname": "x"}),
+        ("field_key_glued_firstname", "field_keys", {"FIRSTNAME": "x"}),
+        ("field_key_glued_zipcode", "field_keys", {"zipcode": "40202"}),
+        ("field_key_glued_phonenumber", "field_keys", {"phoneNumber2": "x", "phonenumber": "x"}),
+        ("field_key_glued_inside_token", "field_keys", {"patient_homezipcode": "x"}),
         ("date_iso", "rules", "visit 2024-03-15"),
         ("date_slash", "rules", "seen on 3/15/2024"),
         ("date_ymd", "rules", "logged 1999/1/2"),
@@ -275,36 +296,41 @@ def detect_cases() -> list[dict[str, Any]]:
         ("url_underscore", "url", "https://portal.example.org/p_9001234567"),
         ("url_non_ascii", "url", "https://例え.example/患者?id_9001234567"),
         ("url_control", "url", "https://h.example/a\u0001b_9001234567"),
-        ("url_fullwidth_stop", "url", "https://h.example/a＜b_9001234567"),
+        ("url_fullwidth_stop", "url", "https://h.example/a\uff1cb_9001234567"),
         ("digits_fullwidth", "digits", "SSN " + digits("900-12-3456", 0xFF10)),
         ("digits_arabic_indic", "digits", "SSN " + digits("900-12-3456", 0x0660)),
         ("digits_devanagari", "digits", "SSN " + digits("900-12-3456", 0x0966)),
         ("digits_math", "digits", "SSN " + digits("900-12-3456", 0x1D7CE)),
-        ("digits_superscript", "digits", "SSN ⁹⁰⁰-¹²-³⁴⁵⁶"),
-        ("fold_mark_before", "fold", "é900-12-3456"),
-        ("fold_mark_after", "fold", "900-12-3456́"),
-        ("fold_circled_letter", "fold", "ⓐ900-12-3456"),
-        ("fold_fullwidth_low_line", "fold", "＿900-12-3456"),
+        ("digits_superscript", "digits", "SSN \u2079\u2070\u2070-\u00b9\u00b2-\u00b3\u2074\u2075\u2076"),
+        ("fold_mark_before", "fold", "e\u0301900-12-3456"),
+        ("fold_mark_after", "fold", "900-12-3456\u0301"),
+        ("fold_circled_letter", "fold", "\u24d0900-12-3456"),
+        ("fold_fullwidth_low_line", "fold", "\uff3f900-12-3456"),
         ("fold_control", "fold", "\u0001900-12-3456"),
-        ("fold_numeric_word", "fold", "½900-12-3456"),
+        ("fold_numeric_word", "fold", "\u00bd900-12-3456"),
         ("fold_letter_glued", "fold", "é900-12-3456"),
-        ("fold_dotless_i", "fold", "patıent id: AB12345"),
-        ("fold_dotted_capital_i", "fold", "PATİENT ID: AB12345"),
-        ("fold_ideographic_space", "fold", "fax:　502　555　0100"),
+        ("fold_dotless_i", "fold", "pat\u0131ent id: AB12345"),
+        ("fold_dotted_capital_i", "fold", "PAT\u0130ENT ID: AB12345"),
+        ("fold_ideographic_space", "fold", "fax:\u3000502\u3000555\u30000100"),
         ("fold_fullwidth_email", "fold", "avery＠example．com"),
         ("multilingual_spanish", "multilingual", "La paciente refiere dolor leve y descansa."),
         ("multilingual_german", "multilingual", "Der Befund ist unauffällig."),
         ("multilingual_french", "multilingual", "Le patient se repose après le repas."),
         ("multilingual_russian", "multilingual", "Пациент стабилен, жалоб нет."),
         ("multilingual_arabic", "multilingual", "المريض في حالة مستقرة."),
-        ("multilingual_hindi", "multilingual", "रोगी की हालत स्थिर है।"),
+        ("multilingual_hindi", "multilingual", "\u0930\u094b\u0917\u0940 \u0915\u0940 \u0939\u093e\u0932\u0924 \u0938\u094d\u0925\u093f\u0930 \u0939\u0948\u0964"),
         ("multilingual_japanese", "multilingual", "患者は安定しています。"),
         ("multilingual_chinese", "multilingual", "病人情况稳定。"),
         ("depth_64", "limits", nested(64)),
         ("depth_65", "limits", nested(65)),
         ("json_float", "data_model", {"temp": "x", "value": 37.5}),
+        ("json_float_beside_phi_key", "data_model", {"patient_id": "A-100", "temp": 37.5}),
         ("json_big_int", "data_model", {"n": 9223372036854775808}),
         ("json_int_leaf", "json", {"n": 9001234567}),
+        ("json_int_timestamp", "json", {"ts": 1731734400000}),
+        ("json_int_id", "json", {"id": 123456789}),
+        ("json_int_count", "json", {"count": 1048576}),
+        ("json_int_in_text", "json", {"note": "account 40012345"}),
         ("json_scalars", "json", {"a": True, "b": None, "c": 12}),
         ("json_paths", "json", {"notes": [{"text": "call 502-555-0123"}], "patient_id": "A-1"}),
         ("json_key_leaf", "json", {"avery.quill@example.com": True}),
@@ -324,6 +350,8 @@ def detect_cases() -> list[dict[str, Any]]:
     item = "ab " * 341
     out.append(case("size_near_cap_json", "limits", {"item": item, "count": 1022}, "json_repeat"))
     out.append(case("size_over_cap_json", "limits", {"item": item, "count": 1023}, "json_repeat"))
+    out.append(case("size_floats_at_cap", "limits", {"item": 1.5, "count": 41943}, "json_repeat"))
+    out.append(case("size_floats_over_cap", "limits", {"item": 1.5, "count": 41944}, "json_repeat"))
     return sorted(out, key=lambda entry: entry["id"])
 
 
@@ -343,7 +371,7 @@ def normalize_cases() -> list[dict[str, Any]]:
         ("percent_euro", "%E2%82%AC"),
         ("percent_partial", "%E2%82"),
         ("percent_split_by_letter", "%C3é%A9"),
-        ("fold_mixed", "Ｊｏé ٣ é ⓐ ＿ ½ ıİ 　|\u0001|\u001c"),
+        ("fold_mixed", "\uff2a\uff4f\u00e9 \u0663 e\u0301 \u24d0 \uff3f \u00bd \u0131\u0130 \u3000|\u0001|\u001c"),
         ("url_tokens", "see https://a.example/x_y?z=1 and http://b.example:8080/p-q"),
         ("url_upper_scheme_not_tokenized", "HTTPS://a.example/x_y"),
         ("html_then_percent", "%26%2364%3B and &#37;41"),
@@ -379,6 +407,11 @@ def corpus_inputs() -> list[Any]:
             values.append(WRAPPERS[name](sentence))
         for name in sorted(JSON_WRAPPERS):
             values.append(JSON_WRAPPERS[name](sentence))
+    glued = next(rule for rule in phi_detector.RULES["rules"] if rule["id"] == "field_key_generic")["glued"]
+    for word in glued:
+        for key in (word, word.upper(), "patient_" + word, "contact." + word, "home" + word):
+            state, pick = splitmix(state)
+            values.append({key: NAMES[pick % len(NAMES)]})
     specific, generic = field_patterns()
     for pattern in specific + generic:
         for style, key in sorted(key_styles(pattern).items()):
@@ -402,31 +435,22 @@ def corpus_cases() -> list[dict[str, Any]]:
 
 def token_differences(cases: list[dict[str, Any]]) -> list[str]:
     _, generic = field_patterns()
-    runs = [tuple(pattern.split("_")) for pattern in generic]
 
-    def differs(value: Any) -> bool:
+    def substring_key(value: Any) -> bool:
         if isinstance(value, dict):
-            for key, child in value.items():
-                lowered = key.lower()
-                if phi_detector._present(child) and any(pattern in lowered for pattern in generic):
-                    words = [word for word, _, _ in phi_detector.tokens(phi_detector.skeleton(key))]
-                    hit = any(
-                        tuple(words[at : at + len(run)]) == run
-                        for run in runs
-                        for at in range(len(words) - len(run) + 1)
-                    )
-                    if not hit:
-                        return True
-                if differs(child):
-                    return True
+            return any(
+                (phi_detector.value_class(child) != "absent" and any(field in key.lower() for field in generic))
+                or substring_key(child)
+                for key, child in value.items()
+            )
         if isinstance(value, list):
-            return any(differs(child) for child in value)
+            return any(substring_key(child) for child in value)
         return False
 
     out = []
     for entry in cases:
         verdict = entry["expect"]["verdict"] if "expect" in entry else entry["verdict"]
-        if "json" in entry and verdict == "none" and differs(entry["json"]):
+        if "json" in entry and verdict == "none" and substring_key(entry["json"]):
             out.append(entry["id"])
     return sorted(out)
 
@@ -436,8 +460,8 @@ def chunk_cases() -> list[dict[str, Any]]:
         ("short", {"unit": "ab ", "count": 3, "tail": ""}),
         ("three_chunks", {"unit": "ab ", "count": 3333, "tail": "a"}),
         ("over_budget", {"unit": "abcd", "count": 5000, "tail": ""}),
-        ("euro_boundary", {"unit": "€", "count": 2000, "tail": ""}),
-        ("euro_over_budget", {"unit": "€", "count": 6000, "tail": ""}),
+        ("euro_boundary", {"unit": "\u20ac", "count": 2000, "tail": ""}),
+        ("euro_over_budget", {"unit": "\u20ac", "count": 6000, "tail": ""}),
         ("empty", {"unit": "", "count": 0, "tail": ""}),
     ]
     out = []
@@ -464,6 +488,9 @@ def answer_cases() -> list[dict[str, Any]]:
         ("only_white_space", chunk, findings(("other", "   "))),
         ("one_of_two_counts", chunk, findings(("name", "Bram Okonjo"), ("date", "march 3"))),
         ("accented_name", accented, findings(("name", "JOSÉ GARCÍA"))),
+        ("decomposed_chunk_precomposed_answer", "Patient Jose\u0301 Garci\u0301a seen today.", findings(("name", "Jos\u00e9 Garc\u00eda"))),
+        ("precomposed_chunk_decomposed_answer", accented, findings(("name", "Jose\u0301 Garci\u0301a"))),
+        ("other_accent_still_counts", accented, findings(("name", "Jos\u00e8 Garc\u00eda"))),
         ("unknown_kind", chunk, findings(("person", "Avery Quill"))),
         ("text_too_long", chunk, findings(("other", "a" * 65))),
         ("text_at_limit", chunk, findings(("other", "a" * 64))),

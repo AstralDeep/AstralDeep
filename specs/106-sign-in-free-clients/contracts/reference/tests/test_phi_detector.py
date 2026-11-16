@@ -51,19 +51,34 @@ EXPECTED = {
     "mrn_spaced": "phi",
     "mrn_glued": "phi",
     "mrn_none": "none",
-    "name_after_prefix": "phi",
-    "name_prefix_content_line": "phi",
-    "name_after_dear_patient": "phi",
-    "name_before_suffix": "phi",
-    "name_nfd": "phi",
+    "name_labeled_name": "phi",
+    "name_labeled_subject_id": "phi",
+    "name_labeled_record": "phi",
+    "name_labeled_name_line": "phi",
+    "name_labeled_nfd": "phi",
+    "name_after_prefix": "uncertain",
+    "name_prefix_content_line": "uncertain",
+    "name_after_dear_patient": "uncertain",
+    "name_before_suffix": "uncertain",
+    "name_nfd": "uncertain",
+    "name_benign_safety_committee": "uncertain",
+    "name_benign_subject_matter": "uncertain",
+    "name_benign_subject_line": "uncertain",
+    "name_benign_outcomes": "uncertain",
     "name_no_context": "none",
     "name_lowercase": "none",
     "name_one_word": "none",
     "field_key_phi_value": "phi",
     "field_key_phi_substring": "phi",
     "field_key_phi_case": "phi",
-    "field_key_phi_empty_string": "phi",
-    "field_key_phi_zero": "phi",
+    "field_key_phi_empty_string": "uncertain",
+    "field_key_phi_zero": "uncertain",
+    "field_key_phi_false": "uncertain",
+    "field_key_phi_true": "phi",
+    "field_key_phi_integer": "phi",
+    "field_key_phi_float": "phi",
+    "field_key_phi_glued": "phi",
+    "field_key_phi_spaced": "phi",
     "field_key_phi_null": "none",
     "field_key_phi_empty_array": "none",
     "field_key_phi_empty_object": "none",
@@ -75,7 +90,13 @@ EXPECTED = {
     "field_key_generic_slash": "uncertain",
     "field_key_generic_null": "uncertain",
     "field_key_token_filename": "none",
-    "field_key_token_username": "none",
+    "field_key_token_hostname": "none",
+    "field_key_glued_username": "uncertain",
+    "field_key_glued_lastname": "uncertain",
+    "field_key_glued_firstname": "uncertain",
+    "field_key_glued_zipcode": "uncertain",
+    "field_key_glued_phonenumber": "uncertain",
+    "field_key_glued_inside_token": "uncertain",
     "date_iso": "uncertain",
     "date_slash": "uncertain",
     "date_ymd": "uncertain",
@@ -133,11 +154,18 @@ EXPECTED = {
     "size_over_cap_text": "phi/too_large",
     "size_near_cap_json": "none",
     "size_over_cap_json": "phi/too_large",
+    "size_floats_at_cap": "none",
+    "size_floats_over_cap": "phi/too_large",
     "depth_64": "none",
     "depth_65": "phi/too_large",
-    "json_float": "phi/encoding",
+    "json_float": "none",
+    "json_float_beside_phi_key": "phi",
     "json_big_int": "phi/encoding",
-    "json_int_leaf": "uncertain",
+    "json_int_leaf": "none",
+    "json_int_timestamp": "none",
+    "json_int_id": "none",
+    "json_int_count": "none",
+    "json_int_in_text": "uncertain",
     "json_scalars": "none",
     "json_paths": "phi",
     "json_key_leaf": "phi",
@@ -157,10 +185,18 @@ EXPECTED_RULES = {
     "street_doctor_sentence": {"street_address_abbrev"},
     "street_full": {"street_address"},
     "mrn_glued": {"mrn"},
-    "name_after_prefix": {"name_after_prefix"},
-    "name_after_dear_patient": {"name_after_prefix"},
+    "name_labeled_name": {"name_labeled"},
+    "name_labeled_subject_id": {"name_labeled"},
+    "name_after_prefix": {"name_bare_prefix"},
+    "name_after_dear_patient": {"name_bare_prefix"},
     "name_before_suffix": {"name_before_suffix"},
+    "name_benign_outcomes": {"name_before_suffix"},
     "field_key_phi_value": {"field_key_phi"},
+    "field_key_phi_empty_string": {"field_key_phi_blank"},
+    "field_key_phi_zero": {"field_key_phi_blank"},
+    "field_key_phi_integer": {"field_key_phi"},
+    "field_key_glued_lastname": {"field_key_generic"},
+    "json_float_beside_phi_key": {"field_key_phi"},
     "field_key_generic_snake": {"field_key_generic"},
     "date_iso": {"date_iso", "date_ymd"},
     "ipv4": {"ipv4"},
@@ -173,17 +209,17 @@ EXPECTED_RULES = {
 
 EXPECTED_NORMALIZE = {
     "html_amp_legacy": "a&b",
-    "html_longest_prefix": "¬it;",
-    "html_cp1252": "–",
+    "html_longest_prefix": "\u00acit;",
+    "html_cp1252": "\u2013",
     "html_removed": "ab",
-    "html_surrogate": "�",
-    "html_too_big": "�",
-    "html_zero": "�",
+    "html_surrogate": "\ufffd",
+    "html_too_big": "\ufffd",
+    "html_zero": "\ufffd",
     "html_unknown": "&zzzz;",
     "html_long_decimal": "A",
     "html_carriage_return": "\r",
     "percent_plus_kept": "a+b c",
-    "percent_euro": "€",
+    "percent_euro": "\u20ac",
     "percent_partial": "encoding",
     "percent_split_by_letter": "encoding",
 }
@@ -193,7 +229,7 @@ PROBES = [
     "&amp &amp; &AMP &ampx &copy2024 &notit; &notin; &#x1F600; &#X41 &#65 &#9;",
     "&#128;&#129;&#141;&#150;&#159;&#160;&#0;&#13;&#127;&#1;&#11;&#xFFFE;&#x10FFFF;&#x110000;",
     "&" + "a" * 40 + ";" + "&lt" + "&GT;" + "&#" + "9" * 30 + ";",
-    "&é; &zwj; &‍; &&amp;; &# &#x; &#xg; &;",
+    "&\u00e9; &zwj; &\u200d; &&amp;; &# &#x; &#xg; &;",
     "plain text without any reference",
     "&acE; &NotEqualTilde; &ThickSpace; &fjlig; &nGt;",
 ]
@@ -262,9 +298,46 @@ def test_a_failure_inside_the_detector_is_phi(monkeypatch: pytest.MonkeyPatch) -
 
 
 def test_values_outside_the_data_model_are_encoding_failures() -> None:
-    for value in ("lone \ud800 surrogate", {"k": "\udfff"}, {"\ud800": 1}, {1: "a"}, (1, 2), b"bytes", 1.0):
+    for value in ("lone \ud800 surrogate", {"k": "\udfff"}, {"\ud800": 1}, {1: "a"}, (1, 2), b"bytes", float("nan"), [float("inf")]):
         out = phi_detector.detect(value)
         assert (out["verdict"], out["reason"]) == ("phi", "encoding"), value
+
+
+def test_floats_are_unscreened_and_count_24_bytes() -> None:
+    assert phi_detector.FLOAT_BYTES == 24
+    at_cap = [1.5] * 41943
+    assert len(json.dumps(at_cap, separators=(",", ":"))) < phi_detector.MAX_BYTES
+    assert phi_detector.detect(at_cap)["reason"] is None
+    assert phi_detector.detect(at_cap + [0.0])["reason"] == "too_large"
+    assert phi_detector.detect({"n": 5025550123.0})["verdict"] == "none"
+
+
+def test_integers_are_unscreened_values() -> None:
+    for value in ({"ts": 1731734400000}, [900123456, -12345678], 9001234567):
+        assert phi_detector.detect(value)["verdict"] == "none"
+    assert phi_detector.detect({"mrn": 1234567})["verdict"] == "phi"
+
+
+def test_value_classes_under_a_phi_key() -> None:
+    absent = [None, [], {}]
+    blank = ["", 0, False]
+    present = [" ", 1, True, 0.0, "x", [0], {"a": None}]
+    assert [phi_detector.value_class(value) for value in absent] == ["absent"] * 3
+    assert [phi_detector.value_class(value) for value in blank] == ["blank"] * 3
+    assert [phi_detector.value_class(value) for value in present] == ["present"] * len(present)
+
+
+def test_glued_words_count_inside_a_token() -> None:
+    for key in ("lastname", "LastName", "homeZipcode", "patient.phonenumber", "EMAILADDRESS"):
+        assert phi_detector.detect({key: "x"})["verdict"] == "uncertain", key
+    for key in ("filename", "hostname", "pathname", "basename"):
+        assert phi_detector.detect({key: "x"})["verdict"] == "none", key
+
+
+def test_answer_match_ignores_composition() -> None:
+    forms = ["Jos\u00e9 Garc\u00eda", "Jose\u0301 Garci\u0301a", "JOSE\u0301 GARCI\u0301A", "Jos\u00e9  Garc\u00eda"]
+    assert len({phi_detector._match_form(form) for form in forms}) == 1
+    assert phi_detector._match_form("a\U0001f600b") == "xb"
 
 
 def test_near_cap_vectors_use_short_tokens() -> None:
@@ -391,11 +464,11 @@ def test_fold_table_covers_every_code_point_once() -> None:
 
 def test_fold_keeps_the_class_python_gives_each_character() -> None:
     pairs = {
-        "́": "~", "ⓐ": "~", "＿": "~", "\u0001": "\u0001", "\u001c": " ",
-        "½": "x", "Ⅱ": "x", "é": "x", "一": "x", "ı": "i",
-        "İ": "I", "ſ": "s", "K": "K", "１": "1", "٣": "3",
-        "²": "2", " ": " ", "　": " ", "\u0085": " ", " ": " ",
-        "＜": "~", "＂": "~", "＠": "@", "\U0001f600": "~", "\U0001d7cf": "1",
+        "\u0301": "~", "\u24d0": "~", "\uff3f": "~", "\u0001": "\u0001", "\u001c": " ",
+        "\u00bd": "x", "\u2161": "x", "é": "x", "一": "x", "\u0131": "i",
+        "\u0130": "I", "\u017f": "s", "\u212a": "K", "\uff11": "1", "\u0663": "3",
+        "\u00b2": "2", "\u00a0": " ", "\u3000": " ", "\u0085": " ", "\u2028": " ",
+        "\uff1c": "~", "＂": "~", "＠": "@", "\U0001f600": "~", "\U0001d7cf": "1",
     }
     for char, expected in pairs.items():
         assert phi_detector.skeleton(char) == expected, hex(ord(char))
@@ -517,7 +590,7 @@ def test_filter_table_shape() -> None:
     items = table["schema"]["properties"]["findings"]
     assert items["maxItems"] == 32
     assert items["items"]["properties"]["kind"]["enum"] == table["kinds"]
-    assert not re.search(r"[;–—]", table["instructions"])
+    assert not re.search(r"[;\u2013\u2014]", table["instructions"])
     assert DOC["constants"]["filter_digest"] == phi_detector.digest("phi_filter.json")
 
 
@@ -556,7 +629,7 @@ def test_document_lists_the_token_rule_differences() -> None:
 
 def test_document_names_a_vector_for_each_fold_change() -> None:
     text = (CONTRACTS / "phi-detector.md").read_text(encoding="utf-8")
-    table = text[text.index("| Change from the plan's fold") : text.index("### 3.2")]
+    table = text[text.index("| Fold choice") : text.index("### 3.2")]
     named = re.findall(r"`([a-z_]+)`", table.split("\n", 2)[2])
     vectors = [name for name in named if name in DETECT]
     assert len(vectors) >= 10

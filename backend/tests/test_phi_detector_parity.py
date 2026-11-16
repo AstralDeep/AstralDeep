@@ -102,9 +102,11 @@ def test_every_input_today_flags_is_phi_or_uncertain_in_the_floor() -> None:
 
 
 def test_each_listed_difference_is_a_generic_field_key_alone() -> None:
-    specific = tuple(RULES["field_key_phi"]["pattern"].removeprefix("(?i)").split("|"))
+    phi_key = re.compile(RULES["field_key_phi"]["pattern"], re.ASCII)
+    specific = tuple(field for field in PHI_FIELD_PATTERNS if phi_key.fullmatch(field))
     generic = tuple(field for field in PHI_FIELD_PATTERNS if field not in specific)
-    assert len(specific) + len(generic) == len(PHI_FIELD_PATTERNS)
+    assert len(specific) == 11
+    assert RULES["field_key_phi_blank"]["pattern"] == RULES["field_key_phi"]["pattern"]
     by_id = {case_id: (value, verdict) for case_id, value, verdict in CASES}
     assert EXEMPT <= set(by_id)
     for case_id in sorted(EXEMPT):
