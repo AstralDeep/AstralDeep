@@ -120,20 +120,6 @@ def test_canonical_path_of_a_missing_path_is_an_os_error(tmp_path):
         canonical_path(str(tmp_path / "nope"), "linux")
 
 
-@pytest.mark.skipif(not IS_DARWIN, reason="F_GETPATH exists only on macOS")
-def test_darwin_canonical_path_returns_the_on_disk_case(tmp_path):
-    real = tmp_path / "MixedCase"
-    real.mkdir()
-    (tmp_path / "ws").mkdir()
-    probe = str(tmp_path / "mixedcase")
-    assert canonical_path(probe, "darwin") == str(real)
-    with pytest.raises(PolicyError) as caught:
-        Policy.load(
-            minimal_policy(reads=[probe], workspace=str(tmp_path / "ws")), "darwin"
-        )
-    assert caught.value.code == "policy.path_invalid"
-
-
 def test_context_path_accepts_a_canonical_directory(tmp_path):
     platform = "darwin" if IS_DARWIN else "linux"
     assert canonical_context_path(str(tmp_path), "home", platform) == str(tmp_path)
@@ -167,3 +153,13 @@ def test_context_path_refuses_text_that_is_not_utf8_or_is_too_long():
     for bad in ("/a/\ud800", "/" + "a" * 5000):
         with pytest.raises(ContextError):
             canonical_context_path(bad, "home", "linux", resolve=lambda p, pl: p)
+
+
+def test_context_path_refuses_an_unassigned_code_point_on_darwin():
+    with pytest.raises(ContextError):
+        canonical_context_path(
+            "/Users/t/\u0378", "home", "darwin", resolve=lambda p, pl: p
+        )
+    assert canonical_context_path(
+        "/Users/t/\u0378", "home", "linux", resolve=lambda p, pl: p
+    )

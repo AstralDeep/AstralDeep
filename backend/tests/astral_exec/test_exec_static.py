@@ -81,7 +81,11 @@ def _reference():
         "exec_policy_reference", CONTRACTS / "reference" / "exec_policy.py"
     )
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    saved = list(sys.path)
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.path[:] = saved
     return module
 
 

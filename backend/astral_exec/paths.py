@@ -10,6 +10,7 @@ from collections.abc import Callable
 from typing import Any
 
 from .errors import ContextError
+from .fold import assigned
 
 _PATH_MAX = 1024
 _MAX_PATH_BYTES = 4096
@@ -53,6 +54,8 @@ def canonical_context_path(
 ) -> str:
     if not isinstance(value, str) or path_problem(value):
         raise ContextError(f"{name} must be an absolute normalized path")
+    if platform == "darwin" and not all(map(assigned, value)):
+        raise ContextError(f"{name} holds an unassigned code point")
     try:
         resolved = resolve(value, platform)
     except (OSError, ValueError) as error:
