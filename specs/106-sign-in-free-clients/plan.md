@@ -139,9 +139,11 @@ schema change, so task T1.9 checks the schema first.
 server, as in the 7.8 walkthrough.
 **Depends on.** Phase 1. **Repositories.** AstralKernel, AstralDeep, AstralProjection, AstralVessel,
 AstralPlane (only if needed), `astraldeep.github.io`.
-**Contracts.** A new connection contract: the record (C8), the per-device state events and the approval
-signature. Event names and field spelling are chosen here (7.2). It reuses the definition hash in
-`tools.md` section 2. `event.md` gains the family.
+**Contracts.** [connection.md](contracts/connection.md) (`astral.connection/v1`) fixes the record (C8),
+the per-device state and the approval signature (7.2). The family adds no event type. It rides on the
+reserved `settings.set` keys `connection/<id>` and `connection.state/<id>/<device id>`, because a
+deployed kernel stops a feed at an unknown type. It reuses the definition hash in `tools.md` section 2.
+105 `event.md` carries a banner naming the reserved keys.
 
 **Work.**
 1. Connection contract, vectors and reference code. Keystore on Apple platforms (Keychain) and on
@@ -171,8 +173,9 @@ device. A scan of events, logs and model context for token bytes.
 **Live.** The 7.8 walk on a Mac and an iPhone in one mesh. The owner completes each sign-in.
 **If a spike fails.** The spec gives none for the adapter or the callback. A phase 0 callback failure
 stops this phase until the owner decides.
-**Open item.** The spec does not say whether the connection family needs a Plane table. T2.2 decides
-and a table brings the `SCHEMA_REVISION` rule.
+**Decided (T2.2).** The connection family needs no Plane table and no `SCHEMA_REVISION` bump. Records
+and states live in the signed log on `settings.set` ([connection.md](contracts/connection.md) section 1)
+and each credential stays in its device's keystore.
 
 ## Phase 3: A2A, stdio and key connections
 
