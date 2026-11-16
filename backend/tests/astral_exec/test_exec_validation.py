@@ -14,6 +14,8 @@ from exec_vectors import VALIDATION, minimal_policy
 
 
 def _input(case):
+    if "bytes_hex" in case:
+        return bytes.fromhex(case["bytes_hex"])
     return case["raw"] if "raw" in case else case["policy"]
 
 
