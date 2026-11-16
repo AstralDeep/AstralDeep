@@ -42,6 +42,9 @@ program closes with a UI/UX and agent-experience pass on the Mac, iPhone and wat
 holds both. A *(live)* task in phases 0 to 7 is done in code when its automated part passes, and its
 live part runs in T8.7.
 
+Owner direction, 2026-11-16: consolidate the organization's repositories (spec section 17, O30 to O36).
+Phase R holds the work and lands before phase 8.
+
 ## Owner tasks
 
 | ID | Task | Needed by |
@@ -201,6 +204,20 @@ live part runs in T8.7.
 | T7.5 | Deep | CI check that searches non-test product code for Keycloak | `.github/workflows/` and `scripts/`, decided in this task | Check finds nothing and fails when one is added |
 | T7.6 | Projection | Delete the Android and Windows sign-in code. Both apps open to a plain "not available yet" screen (O22) | `android-client/`, `windows-client/` | Both apps build and show the screen. Their Keycloak code is gone |
 | T7.7 | Deep | Rerun every earlier exit criterion on macOS and iOS | Verification report | All pass. Live ones shown again *(live)* |
+
+## Phase R: repository consolidation
+
+| ID | Repo | Work | Lands | Closes with |
+|---|---|---|---|---|
+| TR.1 | Deep, Vessel | Move AstralVessel into Deep with its history. `astralvessel` keeps its package, manifest and command, builds against Deep's tree, and gets its own test job | `vessel/` in Deep | `astralvessel` installs from Deep's tree. Its tests pass. Deep's suites still pass |
+| TR.2 | Deep, Vessel, Site | Vessel releases with `vessel-v` tags from Deep. The docs keep their URLs. The site's install link resolves | Deep `.github/workflows/`, the site, decided in this task | A dry-run release builds. The docs and install URLs resolve |
+| TR.3 | Vessel | Transfer open issues to Deep, rebuild or close open pull requests with a link, point the README at `vessel/`, archive the repository | AstralVessel on GitHub | Archived. No open issue left behind |
+| TR.4 | Deep | Check Plane's consumers: LETS benchmarks, Projection's node pack list, the site, any install from the Plane repository | Written result in this folder | Each consumer has an action or "none" |
+| TR.5 | Deep, Plane | Move AstralPlane into Deep with its history. Keep its package, migration registry, `SCHEMA_REVISION` and recovery procedure. Point `config/astral-composition.json` at the in-tree package. Add the boundary test (C36) | `plane/` in Deep | Deep boots on the in-tree Plane with the same revision and digest. The boundary test fails on an internal import |
+| TR.6 | Plane | Transfer open issues, point the README at `plane/`, archive the repository | AstralPlane on GitHub | Archived. No open issue left behind |
+| TR.7 | LETS, LETS-demo | Scan LETS-demo's history for secrets. Move it into LETS with its own build target. Archive LETS-demo | `demo/` in LETS, decided in this task | The scan is clean or a reviewed snapshot moved. The demo builds |
+| TR.8 | Deep, mcp_server_examples | Review each example. Rewrite only those that fit today's model, then archive the repository | `examples/` in Deep | Each example is kept and rewritten or dropped, with a reason |
+| TR.9 | Deep, Site | `AGENTS.md` routing, the landing order in plan.md and every link to a moved repository follow the new layout | `AGENTS.md`, plan.md, the site | A search finds no link to a moved repository except its archive pointer |
 
 ## Phase 8: product pass and final verification
 
