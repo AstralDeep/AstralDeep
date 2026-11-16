@@ -44,7 +44,6 @@ def fixture(runtime, monkeypatch, signing_key):
     monkeypatch.setenv("WEB_SESSION_ENC_KEY", key)
     monkeypatch.setenv("WEB_SESSION_SECRET", "synthetic-binding-cookie-key")
     monkeypatch.setattr(og, "OFFLINE_GRANT_ENC_KEY", key)
-    monkeypatch.setenv("MOCK_AUTH", "false")
     monkeypatch.setenv("PUBLIC_BASE_URL", "https://app.invalid")
     monkeypatch.setenv("BACKEND_PUBLIC_URL", "https://app.invalid")
     monkeypatch.setenv("KEYCLOAK_AUTHORITY", ISSUER)

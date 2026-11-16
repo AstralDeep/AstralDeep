@@ -228,7 +228,6 @@ async def test_orchestrator_auth_module_uses_shared_jwks_cache(monkeypatch, inva
     cache = AsyncMock(return_value=keys)
     decode = Mock(side_effect=ValueError("invalid signature") if invalid else None,
                   return_value=payload)
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
     monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-frontend")
     monkeypatch.setenv("KEYCLOAK_AUTHORITY", authority)
     monkeypatch.setattr(auth_mod, "_get_keycloak_config", lambda: (authority, "astral-frontend", ""))

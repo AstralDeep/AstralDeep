@@ -367,7 +367,6 @@ async def test_api_auth_owner_mutations_pagination_and_safe_errors(service, monk
     from orchestrator import web_auth
     from types import SimpleNamespace
     import time
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
     selected = synthetic_consent("owner")
     state = SimpleNamespace(credential=selected.observation.credential,
                             observed_at=selected.observation.started_at)

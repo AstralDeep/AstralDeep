@@ -36,7 +36,6 @@ class MeshRuntime:
         self.owner = canonical_owner_id(self.issuer, self.subject)
         for name, value in {
             "ASTRAL_ENV": "development",
-            "USE_MOCK_AUTH": "false",
             "KEYCLOAK_AUTHORITY": self.issuer,
             "KEYCLOAK_CLIENT_ID": "astral-frontend",
             "KEYCLOAK_CLIENT_SECRET": "synthetic-exchange-secret",

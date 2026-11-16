@@ -34,7 +34,6 @@ def real_auth(host, monkeypatch):  # noqa: F811
         fetched.append(url)
         return keys
 
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
     monkeypatch.delenv("ASTRAL_NODE_PROFILE", raising=False)
     monkeypatch.setenv("KEYCLOAK_AUTHORITY", ISSUER)
     monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-frontend")

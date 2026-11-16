@@ -163,7 +163,6 @@ def test_the_startup_posture_refuses_an_institution_without_a_key_in_development
 
 def test_the_production_posture_accepts_a_configured_institution(env, monkeypatch):
     monkeypatch.setenv("ASTRAL_ENV", "production")
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
     monkeypatch.setenv("WEB_SESSION_ENC_KEY", "x" * 44)
     monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", "y" * 44)
     monkeypatch.setenv("AUDIT_HMAC_SECRET", f"high-entropy-{uuid.uuid4()}")

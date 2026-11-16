@@ -45,7 +45,6 @@ def keyed_store(plane_runtime, fernet_key):
 
 @pytest.fixture
 def auth_env(monkeypatch, plane_runtime, fernet_key):
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
     web_auth.reset_store_for_tests()
     store = web_session_store(plane_runtime)
     web_auth._STORE = store

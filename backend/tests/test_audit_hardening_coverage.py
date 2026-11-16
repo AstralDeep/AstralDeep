@@ -359,7 +359,6 @@ async def test_validate_token_rejects_iss_mismatch(monkeypatch):
     from shared import token_verify
     from orchestrator.orchestrator import Orchestrator
 
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
     monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://kc.example/realms/astral")
     monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-frontend")
 
@@ -495,7 +494,6 @@ async def test_auth_login_prunes_pending(monkeypatch):
         return True
 
     monkeypatch.setattr(web_auth, "_idp_reachable", _reachable)
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
 
     saved = dict(web_auth._PENDING)
     try:

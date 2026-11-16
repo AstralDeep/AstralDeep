@@ -25,8 +25,6 @@ OWNER_ID = canonical_owner_id(ISSUER, "owner")
 async def current_control_caller(assignments, monkeypatch, signing_key):
     monkeypatch.setenv("WEB_SESSION_ENC_KEY", Fernet.generate_key().decode())
     monkeypatch.setenv("WEB_SESSION_SECRET", "synthetic-control-cookie-key")
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
-    monkeypatch.setenv("MOCK_AUTH", "false")
     monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://request-authority.invalid/realm")
     monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-web")
     monkeypatch.setenv("KEYCLOAK_CLIENT_SECRET", "synthetic-secret")

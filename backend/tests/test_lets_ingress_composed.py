@@ -264,7 +264,6 @@ class IngressIdentity:
 @pytest.fixture
 def ingress_identity(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("ASTRAL_ENV", "development")
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
     monkeypatch.setenv("PYTHON_DOTENV_DISABLED", "1")
     monkeypatch.setenv(
         "VOICE_UI_BINDING_SECRET", "ingress-fixture-only-binding-secret-0001"
