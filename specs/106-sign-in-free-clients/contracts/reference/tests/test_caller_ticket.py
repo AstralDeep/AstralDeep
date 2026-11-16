@@ -70,6 +70,7 @@ EXPECTED = {
     "replay_store_keeps_a_nonce_to_the_end_of_its_window": [
         "ok",
         "caller.replayed",
+        "caller.replayed",
         "caller.proof_stale",
     ],
     "replay_key_ignores_the_target": ["ok", "caller.replayed"],
@@ -77,6 +78,7 @@ EXPECTED = {
     "restart_refuses_future_proof_accepted_before": ["ok", "caller.proof_stale"],
     "restart_at_proof_time_minus_5s_refuses": ["ok", "caller.proof_stale"],
     "restart_just_before_proof_time_minus_5s_accepts": ["ok", "ok"],
+    "restart_values_win_over_the_same_steps_state_patch": ["ok", "ok"],
     "restart_keeps_earlier_state_patches": [
         "caller.tool_changed",
         "caller.tool_changed",
@@ -146,6 +148,8 @@ EXPECTED = {
     "ticket_form_wrong_prefix": "caller.malformed",
     "ticket_form_wrong_version": "caller.malformed",
     "ticket_form_not_canonical": "caller.malformed",
+    "ticket_form_canonical_but_invalid": "caller.malformed",
+    "ticket_form_wrong_case_prefix": "caller.malformed",
     "ticket_form_over_limit": "caller.malformed",
     "holder_form_accepted": "ok",
     "key_form_refused_by_minting": "caller.malformed",

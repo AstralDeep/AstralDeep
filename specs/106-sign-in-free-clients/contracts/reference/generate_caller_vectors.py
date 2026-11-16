@@ -416,9 +416,10 @@ def generate() -> dict[str, Any]:
         [
             ahead,
             {**ahead, "state": {"now_ms": NOW + 124999}},
+            {**ahead, "state": {"now_ms": NOW + 125000}},
             {**ahead, "state": {"now_ms": NOW + 125001}},
         ],
-        ["ok", "caller.replayed", "caller.proof_stale"],
+        ["ok", "caller.replayed", "caller.replayed", "caller.proof_stale"],
     )
     sequence(
         "replay_key_ignores_the_target",
@@ -454,6 +455,18 @@ def generate() -> dict[str, Any]:
     sequence(
         "restart_just_before_proof_time_minus_5s_accepts",
         [future, {**future, "restart": {"started_ms": NOW - 1}}],
+        ["ok", "ok"],
+    )
+    sequence(
+        "restart_values_win_over_the_same_steps_state_patch",
+        [
+            again,
+            {
+                **again,
+                "state": {"started_ms": NOW},
+                "restart": {"started_ms": NOW - 3600000},
+            },
+        ],
         ["ok", "ok"],
     )
     sequence(
@@ -785,6 +798,24 @@ def generate() -> dict[str, Any]:
             "text": caller_ticket.TICKET_TEXT
             + b64(json.dumps(ticket, indent=1).encode())
         },
+        "caller.malformed",
+    )
+    empty = make_ticket(tools=[])
+    record(
+        "ticket_form_canonical_but_invalid",
+        "caller_ticket_text",
+        {
+            "text": caller_ticket.TICKET_TEXT
+            + caller_ticket.authorization_header(empty).removeprefix(
+                caller_ticket.SCHEME
+            )
+        },
+        "caller.malformed",
+    )
+    record(
+        "ticket_form_wrong_case_prefix",
+        "caller_ticket_text",
+        {"text": "Astral-Caller-Ticket:v1:" + own},
         "caller.malformed",
     )
     record(
