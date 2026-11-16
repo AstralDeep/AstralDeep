@@ -7,7 +7,6 @@ These documents fix the formats that spec 106 revises or adds. Each one has a Py
 | Document | Format version | Covers | Vectors | Reference |
 |---|---|---|---|---|
 | [roster-v2.md](roster-v2.md) | `astral.roster/v2` | The accountless roster, device add and removal, stop and resume, creation and recovery export | `vectors/roster-v2.json`, `vectors/crypto-v2.json` | `reference/generate_local_vectors.py` |
-| [exec-policy.md](exec-policy.md) | `astral.exec-policy/v1` | The execution policy for untrusted node tools, its validation order and codes, the canonical Seatbelt profile, the Linux plan, backend selection | `vectors/exec-policy-v1.json` | `reference/exec_policy.py`, `reference/generate_exec_vectors.py` |
 | [caller-ticket.md](caller-ticket.md) | `astral.caller/v1` | The owner-minted caller ticket, the holder proof, the holder text forms, the verification order and codes, revocation | `vectors/caller-v1.json`, `reference/label_classes.json` | `reference/caller_ticket.py`, `reference/ed25519_strict.py`, `reference/generate_caller_vectors.py`, `reference/generate_label_classes.py` |
 | [exec-policy.md](exec-policy.md) | `astral.exec-policy/v1` | The execution policy for untrusted node tools, its validation order and codes, the canonical Seatbelt profile, the Linux plan, backend selection | `vectors/exec-policy-v1.json` | `reference/exec_policy.py`, `reference/generate_exec_vectors.py`, `reference/path_fold.json` |
 
@@ -27,11 +26,10 @@ From the repository root, with the packages in `specs/105-decentralized-personal
 python specs/106-sign-in-free-clients/contracts/reference/generate_caller_vectors.py --check
 python specs/106-sign-in-free-clients/contracts/reference/generate_local_vectors.py --check
 python specs/106-sign-in-free-clients/contracts/reference/generate_exec_vectors.py --check
-python specs/106-sign-in-free-clients/contracts/reference/generate_path_fold.py --check
 python -m pytest specs/106-sign-in-free-clients/contracts/reference/tests -q
 ruff check specs/106-sign-in-free-clients/contracts
 python3.14 specs/106-sign-in-free-clients/contracts/reference/generate_label_classes.py --check
+python3.14 specs/106-sign-in-free-clients/contracts/reference/generate_path_fold.py --check
 ```
 
-The last command needs a Python whose `unicodedata.unidata_version` is 16.0.0, such as Python 3.14. It uses only the standard library and refuses to run on other Unicode data. The caller ticket label table comes from it, and every implementation reads that table instead of its runtime's Unicode data.
-`generate_path_fold.py` needs a Python whose `unicodedata` is Unicode 16.0, which is Python 3.14. The exec policy live test runs only on macOS.
+The last two commands need a Python whose `unicodedata.unidata_version` is 16.0.0, such as Python 3.14. They use only the standard library and refuse to run on other Unicode data. The caller ticket label table and the exec policy path fold tables come from them, and every implementation reads those tables instead of its runtime's Unicode data. The exec policy live test runs only on macOS.
