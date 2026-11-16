@@ -1,5 +1,5 @@
 """The per-call egress forwarder: a loopback TCP listener on 127.0.0.1:3128 inside the sandbox network namespace that relays each connection to the host's Unix egress socket.
-inner.py binds the listener and forks this before it restricts the tool, so the forwarder runs outside Landlock and seccomp and is reaped when the namespace dies; the host-side proxy behind the Unix socket is a separate task.
+inner.py binds the listener and forks this before it restricts the tool, so the forwarder runs outside Landlock and seccomp and is reaped when the namespace dies. The host-side proxy behind the Unix socket is a separate task.
 """
 
 from __future__ import annotations

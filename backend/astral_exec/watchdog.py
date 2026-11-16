@@ -1,4 +1,4 @@
-"""Watches the processes of one confined call on macOS through libproc and KERN_PROCARGS2: it counts them, sums their memory footprint and kills them all at the end.
+"""Watches the processes of one confined call and kills them at the end: on macOS through libproc and KERN_PROCARGS2, and on Linux by walking the sandbox process tree in /proc.
 launch.py samples it between waits and ends it at exit, and tests drive the same logic through an injected process table.
 """
 
@@ -132,71 +132,82 @@ class Darwin:
         return procargs_strings(ctypes.string_at(self._args, size))
 
 
+@dataclass(frozen=True)
+class LProc:
+    ppid: int
+    start: int
+    exited: bool
+
+
 class LinuxSystem:
     def __init__(self, root: str = "/proc") -> None:
         self._root = root
-        self._page = os.sysconf("SC_PAGE_SIZE")
 
-    def marked_pids(self, marker: bytes) -> list[int]:
-        found = []
+    def snapshot(self) -> dict[int, LProc]:
+        table: dict[int, LProc] = {}
         for entry in os.listdir(self._root):
             if not entry.isdigit():
                 continue
             try:
-                with open(f"{self._root}/{entry}/environ", "rb") as handle:
-                    block = handle.read()
-            except OSError:
+                with open(f"{self._root}/{entry}/stat", "rb") as handle:
+                    after = handle.read().rpartition(b")")[2].split()
+            except (OSError, IndexError, ValueError):
                 continue
-            if marker in block.split(b"\0"):
-                found.append(int(entry))
-        return found
-
-    def usage(self, pid: int) -> Usage | None:
-        try:
-            with open(f"{self._root}/{pid}/stat", "rb") as handle:
-                after = handle.read().rpartition(b")")[2].split()
-            with open(f"{self._root}/{pid}/statm", "rb") as handle:
-                resident = int(handle.read().split()[1])
-        except (OSError, IndexError, ValueError):
-            return None
-        state = after[0:1]
-        return Usage(int(after[19]), state in (b"Z", b"X", b"x"), resident * self._page)
+            table[int(entry)] = LProc(
+                int(after[1]), int(after[19]), after[0:1] in (b"Z", b"X", b"x")
+            )
+        return table
 
 
 class LinuxWatch:
     def __init__(
         self,
         root: int,
-        marker: bytes,
+        marker: bytes | None = None,
         system: LinuxSystem | None = None,
         kill: Callable[[int, int], None] = os.kill,
         killpg: Callable[[int, int], None] = os.killpg,
+        hosted: bool = False,
     ) -> None:
         self._system = system or LinuxSystem()
         self._root = root
-        self._marker = marker
         self._kill = kill
         self._killpg = killpg
+        self._hosted = hosted
         self.started = True
 
-    def _live(self) -> set[int]:
-        live = set()
-        for pid in self._system.marked_pids(self._marker):
-            usage = self._system.usage(pid)
-            if usage is not None and not usage.exited:
-                live.add(pid)
-        return live
+    def _tool_tree(self, table: dict[int, LProc]) -> set[int]:
+        children: dict[int, list[int]] = {}
+        for pid, proc in table.items():
+            children.setdefault(proc.ppid, []).append(pid)
+        tool_layer = [
+            tool
+            for reaper in children.get(self._root, [])
+            for tool in children.get(reaper, [])
+        ]
+        counted: set[int] = set()
+        stack = list(tool_layer)
+        while stack:
+            pid = stack.pop()
+            if pid in counted:
+                continue
+            counted.add(pid)
+            stack += children.get(pid, [])
+        if self._hosted:
+            direct = [child for tool in tool_layer for child in children.get(tool, [])]
+            if direct:
+                counted.discard(min(direct, key=lambda pid: (table[pid].start, pid)))
+        return counted
 
     def sample(self) -> tuple[int, int]:
-        memory = 0
-        count = 0
-        for pid in self._system.marked_pids(self._marker):
-            usage = self._system.usage(pid)
-            if usage is None or usage.exited:
-                continue
-            count += 1
-            memory += usage.footprint
-        return count, memory
+        # RLIMIT_AS bounds a Linux tool's memory, so the watchdog reports 0 for it.
+        table = self._system.snapshot()
+        count = sum(1 for pid in self._tool_tree(table) if not table[pid].exited)
+        return count, 0
+
+    def _live(self) -> set[int]:
+        table = self._system.snapshot()
+        return {pid for pid in self._tool_tree(table) if not table[pid].exited}
 
     def _signal_root(self) -> None:
         try:

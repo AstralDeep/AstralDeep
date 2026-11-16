@@ -1,5 +1,5 @@
-"""The monitoring parent of one confined call: it selects the backend, writes the Seatbelt profile, starts sandbox-exec through the run.py rlimit trampoline in a new session and enforces time, memory and processes until the tool exits.
-run() captures the output up to a per-stream cap for in-process callers, and main() is the run.py launch command, which passes its own stdio through.
+"""The monitoring parent of one confined call: it selects the backend, prepares the Seatbelt profile or the bubblewrap command and starts the tool through the run.py trampoline or the inner launcher, then enforces the time and process limits until the tool exits.
+run() captures the output up to a per-stream cap for in-process callers, and main() is the run.py launch command that passes its own stdio through.
 """
 
 from __future__ import annotations
@@ -174,11 +174,13 @@ def _linux_call(
         raise ContextError("the sandbox interpreter must sit under a read root")
     if chosen.bwrap not in BWRAP_PATHS:
         raise ContextError("the Linux backend needs a bwrap path from the fixed list")
-    marker = secrets.token_hex(16)
-    child_env = _checked_env(env)
-    child_env[LAUNCH_MARKER] = marker
     return _LinuxCall(
-        document, built, _checked_argv(argv), child_env, marker, chosen.bwrap
+        document,
+        built,
+        _checked_argv(argv),
+        _checked_env(env),
+        secrets.token_hex(16),
+        chosen.bwrap,
     )
 
 
@@ -471,12 +473,10 @@ def _supervise(
     extra_sends: Sequence[tuple[int, bytes]] = (),
     backend_failed: Callable[[subprocess.Popen, bytes], bool] = _seatbelt_failed,
     signal_codes: Mapping[int, str] = _SIGNAL_CODES,
-    always_mark: bool = False,
 ) -> Outcome:
     log = log if log is not None else _log("none")
     deadline = time.monotonic() + wall_ms / 1000
-    marked = always_mark or limits["processes"] > 1
-    entry = f"{LAUNCH_MARKER}={marker}".encode() if marked else None
+    entry = f"{LAUNCH_MARKER}={marker}".encode() if limits["processes"] > 1 else None
     streams = None
     watch = None
     code: str | None = None
@@ -645,6 +645,7 @@ def _launch_linux(
         log.warning("exec launch failed at spawn: %s", type(error).__name__)
         return Outcome("exec.launch_failed", None)
     log.info("exec launch backend=linux pid=%d", proc.pid)
+    hosted = bool(call.document["hosts"])
     outcome = _supervise(
         proc,
         status_fd,
@@ -654,12 +655,11 @@ def _launch_linux(
         call.document["time"]["wall_ms"],
         call.marker,
         data,
-        watch_factory=LinuxWatch,
+        watch_factory=lambda root, marker: LinuxWatch(root, hosted=hosted),
         log=log,
         extra_sends=((plan_fd, plan_bytes),),
         backend_failed=_linux_failed,
         signal_codes=_LINUX_SIGNAL_CODES,
-        always_mark=True,
     )
     log.info("exec outcome code=%s exit=%s", outcome.code, outcome.exit_code)
     return outcome

@@ -65,8 +65,17 @@ def err(fn):
     except OSError as e:
         return e.errno
 
+open_high = []
+for fd in range(3, 64):
+    try:
+        os.fstat(fd); open_high.append(fd)
+    except OSError:
+        pass
+r["open_high_fds"] = open_high
+
 r["write_outside"] = err(lambda: open("/etc/astral_probe", "w"))
 r["read_sibling"] = err(lambda: open(sibling))
+r["read_ungranted_device"] = err(lambda: open("/dev/full"))
 r["read_base_root"] = err(lambda: open("/etc/hostname").read())
 r["write_workspace"] = err(lambda: open("made.txt", "w").write("x"))
 
@@ -99,6 +108,27 @@ t = threading.Thread(target=lambda: flag.setdefault("ran", True))
 t.start(); t.join()
 r["thread"] = flag.get("ran", False)
 
+libc = ctypes.CDLL(None, use_errno=True)
+class _Attr(ctypes.Structure):
+    _fields_ = [("s", ctypes.c_uint64), ("c", ctypes.c_uint64),
+                ("p", ctypes.c_uint64), ("u", ctypes.c_uint64)]
+workspace = os.getcwd().encode()
+
+def _clear_noexec():
+    attr = _Attr(0, 0x8, 0, 0)
+    rc = libc.syscall(442, -100, workspace, 0, ctypes.byref(attr), ctypes.sizeof(attr))
+    return "cleared" if rc == 0 else ctypes.get_errno()
+
+r["clear_noexec"] = _clear_noexec()
+if libc.unshare(0x10000000 | 0x00020000) == 0:
+    for name, text in (("setgroups", "deny"), ("uid_map", "%d %d 1" % (os.getuid(), os.getuid())), ("gid_map", "%d %d 1" % (os.getgid(), os.getgid()))):
+        try:
+            open("/proc/self/" + name, "w").write(text)
+        except OSError:
+            pass
+r["clear_noexec_after_unshare"] = _clear_noexec()
+r["still_noexec"] = bool(os.statvfs(".").f_flag & os.ST_NOEXEC)
+
 print(json.dumps(r))
 """
 
@@ -111,8 +141,10 @@ def test_the_confined_tool_is_boxed_in_every_dimension(tmp_path):
     result = json.loads(outcome.stdout)
     import errno
 
+    assert result["open_high_fds"] == []
     assert result["write_outside"] in (errno.EACCES, errno.EPERM, errno.EROFS)
     assert result["read_sibling"] in (errno.EACCES, errno.ENOENT, errno.EPERM)
+    assert result["read_ungranted_device"] in (errno.EACCES, errno.EPERM)
     assert result["read_base_root"] == "allowed"
     assert result["write_workspace"] == "allowed"
     assert result["exec_mmap_workspace"] in (errno.EACCES, errno.EPERM)
@@ -123,20 +155,49 @@ def test_the_confined_tool_is_boxed_in_every_dimension(tmp_path):
     assert result["signal_launcher"] in (errno.EPERM, errno.ESRCH)
     assert result["fork"] == errno.EPERM
     assert result["thread"] is True
+    assert result["clear_noexec"] != "cleared"
+    assert result["clear_noexec_after_unshare"] != "cleared"
+    assert result["still_noexec"] is True
 
 
 def test_the_tool_sees_only_its_own_namespace_in_proc(tmp_path):
     policy, workspace, read_dir, data = _policy(tmp_path, reads=["/proc"])
     code = (
         "import json, os\n"
-        "pids = sorted(int(p) for p in os.listdir('/proc') if p.isdigit())\n"
-        "print(json.dumps(pids))\n"
+        "pids = [int(p) for p in os.listdir('/proc') if p.isdigit()]\n"
+        "init = open('/proc/1/cmdline', 'rb').read().split(b'\\x00')[0].decode()\n"
+        "print(json.dumps({'pids': sorted(pids), 'init': init}))\n"
     )
     outcome = _run(policy, code)
     assert outcome.code is None and outcome.exit_code == 0, outcome.stderr
-    pids = json.loads(outcome.stdout)
-    assert 1 in pids
-    assert len(pids) < 20
+    result = json.loads(outcome.stdout)
+    assert 1 in result["pids"]
+    assert len(result["pids"]) < 20
+    assert result["init"] == "/usr/bin/bwrap"
+
+
+def test_a_missing_tool_is_a_launch_failure_not_an_exit(tmp_path):
+    policy, workspace, read_dir, data = _policy(tmp_path)
+    outcome = launch._run(policy, ["/nonexistent/tool"], {}, facts=probe())
+    assert outcome.code == "exec.launch_failed"
+    assert outcome.exit_code is None
+
+
+def test_the_process_limit_counts_env_stripped_children(tmp_path):
+    policy, workspace, read_dir, data = _policy(tmp_path, processes=2, wall_ms=10000)
+    code = (
+        "import subprocess, sys, time\n"
+        "kids = [subprocess.Popen(['/bin/sleep', '30'], env={}) for _ in range(3)]\n"
+        "time.sleep(30)\n"
+    )
+    outcome = _run(policy, code)
+    assert outcome.code == "exec.process_limit"
+
+
+def test_the_memory_floor_runs_a_tiny_tool(tmp_path):
+    policy, workspace, read_dir, data = _policy(tmp_path, memory_bytes=16777216)
+    outcome = launch._run(policy, ["/bin/true"], {}, facts=probe())
+    assert outcome.code is None and outcome.exit_code == 0, outcome.stderr
 
 
 CHILD_PROBE = r"""
@@ -196,7 +257,7 @@ def test_a_forked_child_cannot_detach_or_exec_and_is_reaped(tmp_path):
 
 
 def test_the_time_limit_stops_a_sleeping_tool(tmp_path):
-    policy, workspace, read_dir, data = _policy(tmp_path, wall_ms=300)
+    policy, workspace, read_dir, data = _policy(tmp_path, wall_ms=2000)
     outcome = _run(policy, "import time\ntime.sleep(600)\n")
     assert outcome.code == "exec.time_limit"
 

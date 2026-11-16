@@ -19,12 +19,7 @@ AT_FDCWD = -100
 MOUNT_SETATTR = 442
 READY = b"exec"
 DEVNULL = "/dev/null"
-_RLIMITS = (
-    ("RLIMIT_NOFILE", "RLIMIT_NOFILE"),
-    ("RLIMIT_FSIZE", "RLIMIT_FSIZE"),
-    ("RLIMIT_CORE", "RLIMIT_CORE"),
-    ("RLIMIT_AS", "RLIMIT_AS"),
-)
+_EARLY_RLIMITS = ("RLIMIT_NOFILE", "RLIMIT_FSIZE", "RLIMIT_CORE")
 
 
 class _MountAttr(ctypes.Structure):
@@ -110,8 +105,8 @@ def _start_forwarder(forwarder: Any, listen: str, socket_path: str) -> None:
 
 
 def _apply_limits(plan: dict[str, Any]) -> None:
-    for key, name in _RLIMITS:
-        value = plan[key]
+    for name in _EARLY_RLIMITS:
+        value = plan[name]
         resource.setrlimit(getattr(resource, name), (value, value))
 
 
@@ -136,8 +131,12 @@ def _run(options: Any, argv: list[str]) -> None:
     _apply_limits(plan["rlimits"])
     signal.signal(signal.SIGXFSZ, signal.SIG_DFL)
     signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+    os.set_inheritable(options.status_fd, False)
     os.write(options.status_fd, READY)
-    os.closerange(3, 65536)
+    os.closerange(3, options.status_fd)
+    os.closerange(options.status_fd + 1, 65536)
+    memory = plan["rlimits"]["RLIMIT_AS"]
+    resource.setrlimit(resource.RLIMIT_AS, (memory, memory))
     os.execve(argv[0], argv, env)
 
 

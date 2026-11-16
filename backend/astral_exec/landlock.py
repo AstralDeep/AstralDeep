@@ -1,5 +1,5 @@
 """Applies the Landlock part of the Linux plan: the ABI-6 filesystem, TCP and scope rule set that grants read and execute on the system and read roots, read and write on the four device files and every right except execute and socket creation on the workspace.
-inner.py calls apply() before seccomp and exec, and the harness proves the live kernel honors the rules; the rule builders here are pure so they verify on any host.
+inner.py calls apply() before seccomp and exec, and the harness proves the live kernel honors the rules. The rule builders here are pure, so they verify on any host.
 """
 
 from __future__ import annotations

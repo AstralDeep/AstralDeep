@@ -307,58 +307,64 @@ def test_the_relay_pumps_both_directions_until_eof():
 
 
 class _FakeSystem:
-    def __init__(self, table):
-        self.table = table
+    def __init__(self, snapshots):
+        self._snapshots = list(snapshots)
 
-    def marked_pids(self, marker):
-        return list(self.table)
+    def snapshot(self):
+        table = self._snapshots[0]
+        if len(self._snapshots) > 1:
+            self._snapshots.pop(0)
+        return table
 
-    def usage(self, pid):
-        return self.table.get(pid)
+
+def _proc(ppid, exited=False, start=1):
+    return watchdog.LProc(ppid, start, exited)
 
 
-def test_the_linux_watch_counts_and_sums_only_live_marked_processes():
-    table = {
-        10: watchdog.Usage(1, False, 1000),
-        11: watchdog.Usage(1, False, 2000),
-        12: watchdog.Usage(1, True, 4000),
-    }
-    killed = []
-    groups = []
-    watch = watchdog.LinuxWatch(
-        99,
-        b"MARK",
-        _FakeSystem(table),
-        kill=lambda pid, sig: killed.append(pid),
-        killpg=lambda pid, sig: groups.append(pid),
-    )
+def test_the_linux_watch_excludes_bwrap_and_the_forwarder_whenever_it_samples():
+    #  99 bwrap -> 100 reaper -> 101 tool -> 102 forwarder (oldest child)
+    first = {100: _proc(99, start=1), 101: _proc(100, start=2), 102: _proc(101, start=3)}
+    later = dict(first)
+    later[103] = _proc(101, start=10)
+    later[104] = _proc(103, start=11)
+    watch = watchdog.LinuxWatch(99, system=_FakeSystem([first, later]), hosted=True)
     assert watch.started is True
-    assert watch.sample() == (2, 3000)
+    assert watch.sample() == (1, 0)
+    assert watch.sample() == (3, 0)
 
 
-def test_the_linux_watch_end_kills_the_root_group_and_marked_survivors():
-    state = {"live": {10: watchdog.Usage(1, False, 100)}}
+def test_the_linux_watch_counts_every_child_when_there_is_no_forwarder():
+    table = {100: _proc(99), 101: _proc(100), 102: _proc(101)}
+    watch = watchdog.LinuxWatch(99, system=_FakeSystem([table]))
+    assert watch.sample() == (2, 0)
+
+
+def test_the_linux_watch_excludes_an_exited_process():
+    table = {100: _proc(99), 101: _proc(100), 103: _proc(101, exited=True)}
+    watch = watchdog.LinuxWatch(99, system=_FakeSystem([table]))
+    assert watch.sample() == (1, 0)
+
+
+def test_the_linux_watch_end_kills_the_root_group_and_survivors():
+    alive = {100: _proc(99), 101: _proc(100)}
+    state = {"table": alive}
 
     class Draining:
-        def marked_pids(self, marker):
-            return list(state["live"])
-
-        def usage(self, pid):
-            return state["live"].get(pid)
+        def snapshot(self):
+            return state["table"]
 
     killed = []
     groups = []
 
     def kill(pid, sig):
         killed.append(pid)
-        state["live"].clear()
+        state["table"] = {100: _proc(99)}
 
-    def killpg(pid, sig):
-        groups.append(pid)
-
-    watch = watchdog.LinuxWatch(99, b"MARK", Draining(), kill=kill, killpg=killpg)
+    watch = watchdog.LinuxWatch(
+        99, system=Draining(), kill=kill, killpg=lambda pid, sig: groups.append(pid)
+    )
     assert watch.end() == set()
-    assert 99 in groups and 10 in killed
+    assert 99 in groups and 101 in killed
 
 
 MOUNTINFO_ROOTS = ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/opt/reads")
@@ -463,7 +469,6 @@ def test_inner_applies_the_rlimits_in_order(monkeypatch):
         (inner.resource.RLIMIT_NOFILE, (20, 20)),
         (inner.resource.RLIMIT_FSIZE, (30, 30)),
         (inner.resource.RLIMIT_CORE, (0, 0)),
-        (inner.resource.RLIMIT_AS, (10, 10)),
     ]
 
 
