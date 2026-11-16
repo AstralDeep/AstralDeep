@@ -135,6 +135,7 @@ print(json.dumps(r))
 
 def test_the_confined_tool_is_boxed_in_every_dimension(tmp_path):
     policy, workspace, read_dir, data = _policy(tmp_path)
+    (data / "secret.txt").write_text("host only")
     outcome = _run(policy, PROBE, str(data / "secret.txt"))
     assert outcome.code is None, (outcome.code, outcome.stderr)
     assert outcome.exit_code == 0, outcome.stderr
@@ -143,7 +144,7 @@ def test_the_confined_tool_is_boxed_in_every_dimension(tmp_path):
 
     assert result["open_high_fds"] == []
     assert result["write_outside"] in (errno.EACCES, errno.EPERM, errno.EROFS)
-    assert result["read_sibling"] in (errno.EACCES, errno.ENOENT, errno.EPERM)
+    assert result["read_sibling"] == errno.ENOENT
     assert result["read_ungranted_device"] in (errno.EACCES, errno.EPERM)
     assert result["read_base_root"] == "allowed"
     assert result["write_workspace"] == "allowed"

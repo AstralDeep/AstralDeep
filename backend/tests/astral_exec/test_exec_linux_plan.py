@@ -322,12 +322,25 @@ def test_the_relay_pumps_both_directions_until_eof():
 class _FakeSystem:
     def __init__(self, snapshots):
         self._snapshots = list(snapshots)
+        self.stats = 0
 
-    def snapshot(self):
+    def _table(self):
         table = self._snapshots[0]
         if len(self._snapshots) > 1:
             self._snapshots.pop(0)
         return table
+
+    def stat(self, pid):
+        self.stats += 1
+        return self._snapshots[0].get(pid)
+
+    def children(self, pid):
+        table = self._snapshots[0]
+        return sorted(child for child, proc in table.items() if proc.ppid == pid)
+
+    def advance(self):
+        if len(self._snapshots) > 1:
+            self._snapshots.pop(0)
 
 
 def _proc(ppid, exited=False, start=1):
@@ -337,6 +350,7 @@ def _proc(ppid, exited=False, start=1):
 def test_the_linux_watch_excludes_bwrap_and_the_forwarder_whenever_it_samples():
     #  99 bwrap -> 100 reaper -> 101 tool -> 102 forwarder (oldest child)
     first = {
+        99: _proc(1),
         100: _proc(99, start=1),
         101: _proc(100, start=2),
         102: _proc(101, start=3),
@@ -344,44 +358,90 @@ def test_the_linux_watch_excludes_bwrap_and_the_forwarder_whenever_it_samples():
     later = dict(first)
     later[103] = _proc(101, start=10)
     later[104] = _proc(103, start=11)
-    watch = watchdog.LinuxWatch(99, system=_FakeSystem([first, later]), hosted=True)
+    system = _FakeSystem([first, later])
+    watch = watchdog.LinuxWatch(99, system=system, hosted=True)
     assert watch.started is True
     assert watch.sample() == (1, 0)
+    system.advance()
     assert watch.sample() == (3, 0)
 
 
 def test_the_linux_watch_counts_every_child_when_there_is_no_forwarder():
-    table = {100: _proc(99), 101: _proc(100), 102: _proc(101)}
+    table = {99: _proc(1), 100: _proc(99), 101: _proc(100), 102: _proc(101)}
     watch = watchdog.LinuxWatch(99, system=_FakeSystem([table]))
     assert watch.sample() == (2, 0)
 
 
 def test_the_linux_watch_excludes_an_exited_process():
-    table = {100: _proc(99), 101: _proc(100), 103: _proc(101, exited=True)}
+    table = {
+        99: _proc(1),
+        100: _proc(99),
+        101: _proc(100),
+        103: _proc(101, exited=True),
+    }
     watch = watchdog.LinuxWatch(99, system=_FakeSystem([table]))
     assert watch.sample() == (1, 0)
 
 
+def test_the_linux_watch_walks_only_the_sandbox_tree():
+    table = {99: _proc(1), 100: _proc(99), 101: _proc(100)}
+    table.update({pid: _proc(1) for pid in range(200, 400)})
+    system = _FakeSystem([table])
+    watch = watchdog.LinuxWatch(99, system=system)
+    system.stats = 0
+    watch.sample()
+    assert system.stats <= 6
+
+
+class _Draining:
+    def __init__(self, table):
+        self.table = table
+
+    def stat(self, pid):
+        return self.table.get(pid)
+
+    def children(self, pid):
+        return sorted(c for c, proc in self.table.items() if proc.ppid == pid)
+
+
 def test_the_linux_watch_end_kills_the_root_group_and_survivors():
-    alive = {100: _proc(99), 101: _proc(100)}
-    state = {"table": alive}
-
-    class Draining:
-        def snapshot(self):
-            return state["table"]
-
+    system = _Draining({99: _proc(1), 100: _proc(99), 101: _proc(100)})
     killed = []
     groups = []
 
     def kill(pid, sig):
         killed.append(pid)
-        state["table"] = {100: _proc(99)}
+        system.table = {99: _proc(1), 100: _proc(99)}
 
     watch = watchdog.LinuxWatch(
-        99, system=Draining(), kill=kill, killpg=lambda pid, sig: groups.append(pid)
+        99, system=system, kill=kill, killpg=lambda pid, sig: groups.append(pid)
     )
     assert watch.end() == set()
     assert 99 in groups and 101 in killed
+
+
+def test_the_linux_watch_never_signals_a_root_that_left_or_was_reused():
+    table = {99: _proc(1, start=5), 100: _proc(99), 101: _proc(100)}
+    system = _Draining(table)
+    groups, killed = [], []
+    watch = watchdog.LinuxWatch(
+        99,
+        system=system,
+        kill=lambda pid, sig: killed.append(pid),
+        killpg=lambda pid, sig: groups.append(pid),
+    )
+    system.table = {99: _proc(1, start=6), 100: _proc(99), 101: _proc(100)}
+    assert watch.sample() == (0, 0)
+    assert watch.end() == set()
+    system.table = {}
+    assert watch.end() == set()
+    assert groups == [] and killed == []
+
+
+def test_a_watch_over_a_root_that_is_already_gone_did_not_start():
+    watch = watchdog.LinuxWatch(99, system=_Draining({}))
+    assert watch.started is False
+    assert watch.end() == set()
 
 
 MOUNTINFO_ROOTS = ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/opt/reads")
@@ -842,7 +902,7 @@ def test_select_runs_linux_when_no_mount_exposes_the_data_directory(monkeypatch)
     assert outcome == Backend("linux")
 
 
-def test_the_linux_system_reads_ppid_start_and_state_from_proc(tmp_path):
+def test_the_linux_system_reads_ppid_start_state_and_children_from_proc(tmp_path):
     (tmp_path / "123").mkdir()
     (tmp_path / "123" / "stat").write_bytes(
         b"123 (a) b) S 77 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 4242 0 0\n"
@@ -851,30 +911,28 @@ def test_the_linux_system_reads_ppid_start_and_state_from_proc(tmp_path):
     (tmp_path / "124" / "stat").write_bytes(
         b"124 (z) Z 123 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 4243 0 0\n"
     )
-    (tmp_path / "125").mkdir()
-    (tmp_path / "self").mkdir()
-    table = watchdog.LinuxSystem(str(tmp_path)).snapshot()
-    assert table == {
-        123: watchdog.LProc(77, 4242, False),
-        124: watchdog.LProc(123, 4243, True),
-    }
+    for task, kids in (("123", b"124 130 \n"), ("200", b"131\n")):
+        (tmp_path / "123" / "task" / task).mkdir(parents=True)
+        (tmp_path / "123" / "task" / task / "children").write_bytes(kids)
+    system = watchdog.LinuxSystem(str(tmp_path))
+    assert system.stat(123) == watchdog.LProc(77, 4242, False)
+    assert system.stat(124) == watchdog.LProc(123, 4243, True)
+    assert system.stat(999) is None
+    assert sorted(system.children(123)) == [124, 130, 131]
+    assert system.children(999) == []
 
 
 def test_the_linux_watch_end_tolerates_a_process_that_already_left():
-    state = {"table": {100: _proc(99), 101: _proc(100)}}
-
-    class Draining:
-        def snapshot(self):
-            return state["table"]
+    system = _Draining({99: _proc(1), 100: _proc(99), 101: _proc(100)})
 
     def kill(pid, sig):
-        state["table"] = {100: _proc(99)}
+        system.table = {99: _proc(1), 100: _proc(99)}
         raise ProcessLookupError(pid)
 
     def killpg(pid, sig):
         raise PermissionError(pid)
 
-    watch = watchdog.LinuxWatch(99, system=Draining(), kill=kill, killpg=killpg)
+    watch = watchdog.LinuxWatch(99, system=system, kill=kill, killpg=killpg)
     assert watch.end() == set()
 
 

@@ -143,20 +143,23 @@ class LinuxSystem:
     def __init__(self, root: str = "/proc") -> None:
         self._root = root
 
-    def snapshot(self) -> dict[int, LProc]:
-        table: dict[int, LProc] = {}
-        for entry in os.listdir(self._root):
-            if not entry.isdigit():
-                continue
-            try:
-                with open(f"{self._root}/{entry}/stat", "rb") as handle:
-                    after = handle.read().rpartition(b")")[2].split()
-            except (OSError, IndexError, ValueError):
-                continue
-            table[int(entry)] = LProc(
-                int(after[1]), int(after[19]), after[0] in (b"Z", b"X", b"x")
-            )
-        return table
+    def stat(self, pid: int) -> LProc | None:
+        try:
+            with open(f"{self._root}/{pid}/stat", "rb") as handle:
+                after = handle.read().rpartition(b")")[2].split()
+            return LProc(int(after[1]), int(after[19]), after[0] in (b"Z", b"X", b"x"))
+        except (OSError, IndexError, ValueError):
+            return None
+
+    def children(self, pid: int) -> list[int]:
+        found: list[int] = []
+        try:
+            for task in os.listdir(f"{self._root}/{pid}/task"):
+                with open(f"{self._root}/{pid}/task/{task}/children", "rb") as handle:
+                    found += [int(part) for part in handle.read().split()]
+        except (OSError, ValueError):
+            pass
+        return found
 
 
 class LinuxWatch:
@@ -174,42 +177,55 @@ class LinuxWatch:
         self._kill = kill
         self._killpg = killpg
         self._hosted = hosted
-        self.started = True
+        first = self._system.stat(root)
+        self.started = first is not None
+        self._root_start = first.start if first is not None else None
 
-    def _tool_tree(self, table: dict[int, LProc]) -> set[int]:
-        children: dict[int, list[int]] = {}
-        for pid, proc in table.items():
-            children.setdefault(proc.ppid, []).append(pid)
+    def _owns_root(self) -> bool:
+        current = self._system.stat(self._root)
+        return current is not None and current.start == self._root_start
+
+    def _tool_tree(self) -> dict[int, LProc]:
+        if not self._owns_root():
+            return {}
+        system = self._system
         tool_layer = [
             tool
-            for reaper in children.get(self._root, [])
-            for tool in children.get(reaper, [])
+            for reaper in system.children(self._root)
+            for tool in system.children(reaper)
         ]
-        counted: set[int] = set()
+        tree: dict[int, LProc] = {}
+        kids: dict[int, list[int]] = {}
         stack = list(tool_layer)
         while stack:
             pid = stack.pop()
-            if pid in counted:
+            if pid in tree:
                 continue
-            counted.add(pid)
-            stack += children.get(pid, [])
+            proc = system.stat(pid)
+            if proc is None:
+                continue
+            tree[pid] = proc
+            kids[pid] = system.children(pid)
+            stack += kids[pid]
         if self._hosted:
-            direct = [child for tool in tool_layer for child in children.get(tool, [])]
+            direct = [
+                child for tool in tool_layer for child in kids.get(tool, []) if child in tree
+            ]
             if direct:
-                counted.discard(min(direct, key=lambda pid: (table[pid].start, pid)))
-        return counted
+                del tree[min(direct, key=lambda pid: (tree[pid].start, pid))]
+        return tree
 
     def sample(self) -> tuple[int, int]:
         # RLIMIT_AS bounds a Linux tool's memory, so the watchdog reports 0 for it.
-        table = self._system.snapshot()
-        count = sum(1 for pid in self._tool_tree(table) if not table[pid].exited)
+        count = sum(1 for proc in self._tool_tree().values() if not proc.exited)
         return count, 0
 
     def _live(self) -> set[int]:
-        table = self._system.snapshot()
-        return {pid for pid in self._tool_tree(table) if not table[pid].exited}
+        return {pid for pid, proc in self._tool_tree().items() if not proc.exited}
 
     def _signal_root(self) -> None:
+        if not self._owns_root():
+            return
         try:
             self._killpg(self._root, signal.SIGKILL)
         except (ProcessLookupError, PermissionError):
