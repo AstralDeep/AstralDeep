@@ -497,3 +497,13 @@ def test_a_very_fast_tool_always_exits_zero_with_no_outcome_code(call):
     for _ in range(50):
         outcome = run(policy, ["/usr/bin/true"], {}, None)
         assert (outcome.code, outcome.exit_code) == (None, 0), outcome.stderr
+
+
+def test_a_backgrounded_child_is_killed_even_when_the_leader_exits_first(call):
+    policy = call(processes=4)
+    for _ in range(20):
+        argv = ["/bin/sh", "-c", "/bin/sleep 600 & echo $!; exit 0"]
+        outcome = run(policy, argv, {}, None)
+        assert outcome.code is None and outcome.exit_code == 0, outcome.stderr
+        child = int(outcome.stdout.split()[0])
+        assert gone(child), f"leftover background child {child}"

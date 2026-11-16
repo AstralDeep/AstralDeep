@@ -1067,9 +1067,32 @@ def test_every_emitted_launch_line_carries_the_digest(real_call, caplog):
         assert record.getMessage().startswith("digest=sha256:"), record.getMessage()
 
 
-def test_a_watch_over_an_invisible_root_fails_closed():
-    with pytest.raises(OSError):
-        Watch(999999, None, system=FakeSystem({}))
+def test_a_watch_over_an_invisible_root_is_not_started_but_still_tears_down():
+    tracked = watch(FakeSystem({}))
+    assert tracked.started is False
+    assert tracked.end() == set()
+
+
+class ExitedWatch:
+    def __init__(self):
+        self.started = False
+        self.root = None
+
+    def __call__(self, root, marker):
+        self.root = root
+        return self
+
+    def end(self):
+        try:
+            os.killpg(self.root, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        return set()
+
+
+def test_an_unsampleable_live_child_fails_closed():
+    outcome = supervise(spawn("import time; time.sleep(600)"), ExitedWatch())
+    assert (outcome.code, outcome.exit_code) == ("exec.launch_failed", -signal.SIGKILL)
 
 
 def test_a_sandbox_exec_failure_is_a_launch_failure_not_a_tool_exit():
@@ -1213,7 +1236,7 @@ def test_a_child_that_will_not_reap_does_not_hang_teardown(monkeypatch, caplog):
     with caplog.at_level(logging.WARNING, logger="astral_exec.launch"):
         outcome = supervise(proc, FakeWatch())
     assert "did not exit after teardown" in caplog.text
-    assert outcome.code is None
+    assert outcome.code == "exec.launch_failed"
     monkeypatch.undo()
     if proc.poll() is None:
         proc.kill()
@@ -1221,12 +1244,9 @@ def test_a_child_that_will_not_reap_does_not_hang_teardown(monkeypatch, caplog):
 
 
 def test_a_child_that_exits_before_the_first_sample_is_a_normal_exit():
-    def no_watch(root, marker):
-        raise OSError("gone before the first sample")
-
     proc = spawn("import sys; sys.exit(7)")
     proc.wait()
-    outcome = supervise(proc, no_watch)
+    outcome = supervise(proc, ExitedWatch())
     assert (outcome.code, outcome.exit_code) == (None, 7)
 
 
@@ -1252,6 +1272,15 @@ def test_a_tampered_profile_folder_is_refused(tmp_path, kind):
         launch._write_profile("(version 1)\n", data)
 
 
+def test_a_foreign_owned_profile_folder_is_refused(tmp_path, monkeypatch):
+    data = str((tmp_path / "data").resolve())
+    os.makedirs(data)
+    stranger = os.geteuid() + 1
+    monkeypatch.setattr(launch.os, "geteuid", lambda: stranger)
+    with pytest.raises(ContextError):
+        launch._write_profile("(version 1)\n", data)
+
+
 def test_a_fresh_profile_folder_is_created_private_and_used(tmp_path):
     data = str((tmp_path / "data").resolve())
     os.makedirs(data)
@@ -1271,7 +1300,7 @@ def test_a_write_failure_removes_the_profile_file(monkeypatch, tmp_path):
 
     def recording(*args, **kwargs):
         fd, path = real_mkstemp(*args, **kwargs)
-        seen.append(path)
+        seen.append((fd, path))
         return fd, path
 
     def failing_fdopen(*args, **kwargs):
@@ -1281,4 +1310,7 @@ def test_a_write_failure_removes_the_profile_file(monkeypatch, tmp_path):
     monkeypatch.setattr(launch.os, "fdopen", failing_fdopen)
     with pytest.raises(OSError):
         launch._write_profile("(version 1)\n", data)
-    assert len(seen) == 1 and not os.path.exists(seen[0])
+    ((fd, path),) = seen
+    assert not os.path.exists(path)
+    with pytest.raises(OSError):
+        os.fstat(fd)

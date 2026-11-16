@@ -148,10 +148,9 @@ class Watch:
         self._killpg = killpg
         self._self = os.getpid()
         first = self._system.usage(root)
-        if first is None:
-            raise OSError("the confined child is not visible to the watchdog")
-        self._root_start = first.start
-        self._known: dict[int, int] = {root: first.start}
+        self.started = first is not None
+        self._root_start = first.start if first is not None else None
+        self._known: dict[int, int] = {root: first.start} if first is not None else {}
         self._scanned: set[int] = set()
 
     def _group_is_ours(self) -> bool:

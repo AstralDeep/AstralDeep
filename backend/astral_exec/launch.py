@@ -165,6 +165,10 @@ def _write_profile(text: str, data_dir: str) -> str:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(text)
     except BaseException:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
         _remove(path)
         raise
     return path
@@ -387,13 +391,11 @@ def _end(proc: subprocess.Popen, watch: Any, log: _DigestLog) -> bool:
         except Exception as error:
             log.warning("exec teardown failed: %s", type(error).__name__)
     if survivors is None:
-        if proc.returncode is None:
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
-                pass
-            return False
-        return watch is None
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        return False
     if survivors:
         log.warning("exec processes survived teardown count=%d", len(survivors))
     return survivors == set()
@@ -424,17 +426,16 @@ def _supervise(
     watch = None
     code: str | None = None
     ended = False
+    reaped = True
     try:
         try:
             encoded = json.dumps(dict(env)).encode()
             streams = _Streams(proc, status_fd, env_fd, encoded, data)
-            try:
-                watch = watch_factory(proc.pid, entry)
-            except OSError:
-                if proc.poll() is None:
-                    raise
-            if watch is not None:
+            watch = watch_factory(proc.pid, entry)
+            if getattr(watch, "started", True):
                 code = _monitor(proc, streams, watch, limits, deadline)
+            elif proc.poll() is None:
+                raise OSError("the confined child is not visible to the watchdog")
         except Exception as error:
             log.warning("exec monitor failed: %s", type(error).__name__)
             code = "exec.launch_failed"
@@ -447,6 +448,7 @@ def _supervise(
                 try:
                     proc.wait(timeout=TEARDOWN_WAIT_SECONDS)
                 except subprocess.TimeoutExpired:
+                    reaped = False
                     log.warning(
                         "exec child did not exit after teardown pid=%d", proc.pid
                     )
@@ -471,7 +473,7 @@ def _supervise(
     if proc.returncode in SANDBOX_EXEC_FAILURES and stderr.startswith(b"sandbox-exec:"):
         log.warning("exec sandbox-exec failed exit=%s", proc.returncode)
         return Outcome("exec.launch_failed", None, stdout, stderr, truncated=truncated)
-    if not ended:
+    if not ended or not reaped:
         code = "exec.launch_failed"
     code = code or _SIGNAL_CODES.get(proc.returncode)
     return Outcome(code, proc.returncode, stdout, stderr, truncated=truncated)
