@@ -1,7 +1,7 @@
-from typing import Dict
+from typing import Dict, Any, Optional
 from .claude_native import ClaudeNativeAdapter
 
-def get_provider(provider_type: str, credentials: Dict[str, str]):
+def get_provider(provider_type: str, credentials: Dict[str, Any]) -> Optional[Any]:
     """
     Factory method to resolve provider. 
     Added 'claude_native' support.
