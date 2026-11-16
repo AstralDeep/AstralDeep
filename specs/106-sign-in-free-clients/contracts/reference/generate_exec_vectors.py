@@ -80,13 +80,13 @@ def without(policy: dict[str, Any], *path: Any) -> dict[str, Any]:
 
 
 def validation_cases() -> list[dict[str, Any]]:
-    cases: list[tuple[str, str, Any, bool]] = []
+    cases: list[tuple[str, str, Any, bool, str | None]] = []
 
-    def policy(name: str, code: str, value: Any) -> None:
-        cases.append((name, code, value, False))
+    def policy(name: str, code: str, value: Any, platform: str | None = None) -> None:
+        cases.append((name, code, value, False, platform))
 
     def raw(name: str, code: str, text: str) -> None:
-        cases.append((name, code, text, True))
+        cases.append((name, code, text, True, None))
 
     ok, malformed = "ok", "policy.malformed"
     unknown, bad_path = "policy.unknown_field", "policy.path_invalid"
@@ -269,12 +269,105 @@ def validation_cases() -> list[dict[str, Any]]:
         bad_limit,
         with_field(variant(processes=0), ["time", "wall_ms"], 0),
     )
+    nfc, nfd = "/opt/caf\u00e9", "/opt/cafe\u0301"
+    policy("read_del_character", bad_path, variant(reads=["/opt/a\u007fb"]))
+    policy("read_4096_bytes_accepted", ok, variant(reads=["/" + "a" * 4095]))
+    policy("workspace_dotdot", bad_path, variant(workspace="/tmp/../x"))
+    policy("workspace_trailing_slash", bad_path, variant(workspace="/tmp/ws/"))
+    policy("reads_nfc_nfd_pair_linux", ok, variant(reads=[nfd, nfc]))
+    policy("reads_nfc_nfd_pair_darwin", bad_path, variant(reads=[nfd, nfc]), "darwin")
+    policy("reads_case_pair_linux", ok, variant(reads=["/opt/A", "/opt/a"]))
+    policy(
+        "reads_case_pair_darwin",
+        bad_path,
+        variant(reads=["/opt/A", "/opt/a"]),
+        "darwin",
+    )
+    policy("read_case_variant_of_workspace_linux", ok, variant(reads=["/Private/tmp"]))
+    policy(
+        "read_case_variant_of_workspace_darwin",
+        bad_path,
+        variant(reads=["/Private/tmp"]),
+        "darwin",
+    )
+    policy(
+        "host_over_253_characters",
+        bad_host,
+        variant(hosts=hosts((".".join(["a" * 60] * 5 + ["com"]), 443))),
+    )
+    policy(
+        "host_leading_hyphen", bad_host, variant(hosts=hosts(("-a.example.com", 443)))
+    )
+    policy(
+        "host_trailing_hyphen", bad_host, variant(hosts=hosts(("a-.example.com", 443)))
+    )
+    policy(
+        "host_ipv4_with_hex_octet", bad_host, variant(hosts=hosts(("1.2.3.0x4", 443)))
+    )
+    policy("host_hex_ipv4", bad_host, variant(hosts=hosts(("0x7f.0.0.0x1", 443))))
+    policy("host_bare_0x_label", bad_host, variant(hosts=hosts(("example.0x", 443))))
+    policy(
+        "host_digits_then_letters_ok",
+        ok,
+        variant(hosts=hosts(("1.2.3.4a.example", 443))),
+    )
+    policy("host_not_string", malformed, variant(hosts=[{"host": 5, "port": 443}]))
+    policy(
+        "host_port_true",
+        malformed,
+        variant(hosts=[{"host": "api.example.com", "port": True}]),
+    )
+    policy("wall_ms_true", malformed, with_field(MINIMAL, ["time", "wall_ms"], True))
+    policy(
+        "wall_ms_string", malformed, with_field(MINIMAL, ["time", "wall_ms"], "30000")
+    )
+    policy(
+        "bad_workspace_beats_bad_host",
+        bad_path,
+        variant(workspace="relative", hosts=hosts(("NOPE", 443))),
+    )
+    policy(
+        "bad_host_beats_unknown_time_key",
+        bad_host,
+        with_field(variant(hosts=hosts(("NOPE", 443))), ["time", "cpu_ms"], 1),
+    )
+    policy(
+        "overlap_beats_bad_host",
+        bad_path,
+        variant(reads=[WORKSPACE], hosts=hosts(("NOPE", 443))),
+    )
+    policy(
+        "bad_limit_beats_unknown_time_key",
+        bad_limit,
+        with_field(variant(processes=0), ["time", "cpu_ms"], 1),
+    )
+    base_text = json.dumps(MINIMAL, sort_keys=True)
+    raw("float_in_extra_key", malformed, base_text[:-1] + ', "extra": 1.5}')
+    raw(
+        "two_to_the_64_in_extra_key",
+        malformed,
+        base_text[:-1] + ', "extra": 18446744073709551616}',
+    )
+    raw(
+        "float_in_limit",
+        malformed,
+        base_text.replace('"processes": 1', '"processes": 1.0'),
+    )
+    raw(
+        "two_to_the_64_in_limit",
+        malformed,
+        base_text.replace(
+            '"memory_bytes": 536870912', '"memory_bytes": 18446744073709551616'
+        ),
+    )
     out = []
-    for name, code, value, is_raw in cases:
+    for name, code, value, is_raw, platform in cases:
         entry: dict[str, Any] = {"name": name, "code": code}
         entry["raw" if is_raw else "policy"] = value
+        if platform:
+            entry["platform"] = platform
         try:
-            parsed = exec_policy.parse(value)
+            parsed = exec_policy.parse(value, platform)
             got = "ok"
             entry["digest"] = exec_policy.digest(parsed)
         except exec_policy.PolicyError as error:
@@ -409,10 +502,84 @@ def selection_cases() -> list[dict[str, Any]]:
         ),
         ("base_root_contains_data_dir_linux", MINIMAL, linux, "/etc/astral/node"),
         (
-            "workspace_inside_data_dir_ok",
+            "workspace_inside_data_dir_refused",
             variant(workspace=DATA_DIR_DARWIN + "/ws"),
             darwin,
             DATA_DIR_DARWIN,
+        ),
+        (
+            "workspace_equals_data_dir_refused",
+            variant(workspace=DATA_DIR_DARWIN),
+            darwin,
+            DATA_DIR_DARWIN,
+        ),
+        (
+            "workspace_under_data_exec_ok",
+            variant(workspace=DATA_DIR_DARWIN + "/exec/ws"),
+            darwin,
+            DATA_DIR_DARWIN,
+        ),
+        (
+            "workspace_equals_data_exec_refused",
+            variant(workspace=DATA_DIR_DARWIN + "/exec"),
+            darwin,
+            DATA_DIR_DARWIN,
+        ),
+        (
+            "workspace_exec_lookalike_refused",
+            variant(workspace=DATA_DIR_DARWIN + "/executable/ws"),
+            darwin,
+            DATA_DIR_DARWIN,
+        ),
+        (
+            "workspace_under_data_exec_linux_ok",
+            variant(workspace=DATA_DIR_LINUX + "/exec/ws"),
+            linux,
+            DATA_DIR_LINUX,
+        ),
+        (
+            "read_root_inside_data_dir_refused",
+            variant(reads=[DATA_DIR_LINUX + "/pack"]),
+            linux,
+            DATA_DIR_LINUX,
+        ),
+        (
+            "case_variant_read_root_darwin",
+            variant(reads=["/Users/test/Library"]),
+            darwin,
+            "/users/test/library/application support/astral/node",
+        ),
+        (
+            "case_variant_read_root_linux_ok",
+            variant(reads=["/Users/test/Library"]),
+            linux,
+            "/users/test/library/application support/astral/node",
+        ),
+        (
+            "case_variant_workspace_under_exec_darwin_ok",
+            variant(
+                workspace="/USERS/TEST/LIBRARY/APPLICATION SUPPORT/ASTRAL/NODE/EXEC/ws"
+            ),
+            darwin,
+            DATA_DIR_DARWIN,
+        ),
+        (
+            "case_variant_workspace_outside_exec_darwin",
+            variant(workspace="/USERS/TEST/LIBRARY/APPLICATION SUPPORT/ASTRAL/NODE/ws"),
+            darwin,
+            DATA_DIR_DARWIN,
+        ),
+        (
+            "nfd_variant_read_root_darwin",
+            variant(reads=["/Users/test/cafe\u0301"]),
+            darwin,
+            "/Users/test/caf\u00e9/node",
+        ),
+        (
+            "nfd_variant_read_root_linux_ok",
+            variant(reads=["/Users/test/cafe\u0301"]),
+            linux,
+            "/Users/test/caf\u00e9/node",
         ),
         ("sibling_of_data_dir_ok", MINIMAL, darwin, DATA_DIR_DARWIN),
         (
@@ -446,6 +613,37 @@ def selection_cases() -> list[dict[str, Any]]:
     ]
 
 
+CONTEXT_ERRORS = [
+    ("facts_unknown_key", {**facts("linux"), "kernel": "7.0"}, DATA_DIR_LINUX),
+    ("facts_missing_key", {"platform": "linux"}, DATA_DIR_LINUX),
+    (
+        "facts_probe_error_null",
+        {**facts("linux"), "landlock_abi": None},
+        DATA_DIR_LINUX,
+    ),
+    ("facts_probe_error_text", {**facts("linux"), "bwrap": "error"}, DATA_DIR_LINUX),
+    ("facts_abi_bool", {**facts("linux"), "landlock_abi": True}, DATA_DIR_LINUX),
+    ("facts_abi_negative", {**facts("linux"), "landlock_abi": -1}, DATA_DIR_LINUX),
+    ("facts_bad_mode", {**facts("linux"), "mode": "audit"}, DATA_DIR_LINUX),
+    ("facts_not_object", [], DATA_DIR_LINUX),
+    ("data_dir_relative", facts("linux"), "var/astral"),
+    ("data_dir_root", facts("linux"), "/"),
+]
+
+
+def context_error_cases() -> list[dict[str, Any]]:
+    out = []
+    for name, platform_facts, data_dir in CONTEXT_ERRORS:
+        try:
+            exec_policy.select(MINIMAL, platform_facts, data_dir)
+        except exec_policy.ContextError:
+            pass
+        else:
+            raise SystemExit(f"{name}: expected a context error")
+        out.append({"name": name, "facts": platform_facts, "data_dir": data_dir})
+    return out
+
+
 def generate() -> dict[str, Any]:
     return {
         "constants": {
@@ -460,6 +658,10 @@ def generate() -> dict[str, Any]:
             "max_hosts": exec_policy.MAX_HOSTS,
             "max_path_bytes": exec_policy.MAX_PATH_BYTES,
             "host_ports": list(exec_policy.HOST_PORTS),
+            "darwin_exec_only": list(exec_policy.DARWIN_EXEC_ONLY),
+            "dnssd_service": exec_policy.DNSSD_SERVICE,
+            "exec_subdirectory": exec_policy.EXEC_SUBDIRECTORY,
+            "fact_keys": list(exec_policy.FACT_KEYS),
             "landlock_abi": exec_policy.LANDLOCK_ABI,
             "proxy_port": exec_policy.PROXY_PORT,
             "egress_socket": exec_policy.EGRESS_SOCKET,
@@ -470,6 +672,7 @@ def generate() -> dict[str, Any]:
         "validation": validation_cases(),
         "profiles": profile_cases(),
         "selection": selection_cases(),
+        "context_errors": context_error_cases(),
     }
 
 

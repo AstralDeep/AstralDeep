@@ -4,6 +4,7 @@ A failure means the contract document, the committed vectors and the reference m
 
 import copy
 import json
+import re
 from pathlib import Path
 
 import exec_policy
@@ -98,6 +99,35 @@ EXPECTED_VALIDATION = {
     "wall_ms_negative": "policy.time_out_of_range",
     "path_beats_limit": "policy.path_invalid",
     "limit_beats_time": "policy.limit_out_of_range",
+    "read_del_character": "policy.path_invalid",
+    "read_4096_bytes_accepted": "ok",
+    "workspace_dotdot": "policy.path_invalid",
+    "workspace_trailing_slash": "policy.path_invalid",
+    "reads_nfc_nfd_pair_linux": "ok",
+    "reads_nfc_nfd_pair_darwin": "policy.path_invalid",
+    "reads_case_pair_linux": "ok",
+    "reads_case_pair_darwin": "policy.path_invalid",
+    "read_case_variant_of_workspace_linux": "ok",
+    "read_case_variant_of_workspace_darwin": "policy.path_invalid",
+    "host_over_253_characters": "policy.host_invalid",
+    "host_leading_hyphen": "policy.host_invalid",
+    "host_trailing_hyphen": "policy.host_invalid",
+    "host_ipv4_with_hex_octet": "policy.host_invalid",
+    "host_hex_ipv4": "policy.host_invalid",
+    "host_bare_0x_label": "policy.host_invalid",
+    "host_digits_then_letters_ok": "ok",
+    "host_not_string": "policy.malformed",
+    "host_port_true": "policy.malformed",
+    "wall_ms_true": "policy.malformed",
+    "wall_ms_string": "policy.malformed",
+    "bad_workspace_beats_bad_host": "policy.path_invalid",
+    "bad_host_beats_unknown_time_key": "policy.host_invalid",
+    "overlap_beats_bad_host": "policy.path_invalid",
+    "bad_limit_beats_unknown_time_key": "policy.limit_out_of_range",
+    "float_in_extra_key": "policy.malformed",
+    "two_to_the_64_in_extra_key": "policy.malformed",
+    "float_in_limit": "policy.malformed",
+    "two_to_the_64_in_limit": "policy.malformed",
 }
 
 EXPECTED_SELECTION = {
@@ -124,7 +154,19 @@ EXPECTED_SELECTION = {
     "workspace_contains_data_dir": ("exec.policy_overlaps_data", None),
     "base_root_contains_data_dir_darwin": ("exec.policy_overlaps_data", None),
     "base_root_contains_data_dir_linux": ("exec.policy_overlaps_data", None),
-    "workspace_inside_data_dir_ok": ("ok", "seatbelt"),
+    "workspace_inside_data_dir_refused": ("exec.policy_overlaps_data", None),
+    "workspace_equals_data_dir_refused": ("exec.policy_overlaps_data", None),
+    "workspace_under_data_exec_ok": ("ok", "seatbelt"),
+    "workspace_equals_data_exec_refused": ("exec.policy_overlaps_data", None),
+    "workspace_exec_lookalike_refused": ("exec.policy_overlaps_data", None),
+    "workspace_under_data_exec_linux_ok": ("ok", "linux"),
+    "read_root_inside_data_dir_refused": ("exec.policy_overlaps_data", None),
+    "case_variant_read_root_darwin": ("exec.policy_overlaps_data", None),
+    "case_variant_read_root_linux_ok": ("ok", "linux"),
+    "case_variant_workspace_under_exec_darwin_ok": ("ok", "seatbelt"),
+    "case_variant_workspace_outside_exec_darwin": ("exec.policy_overlaps_data", None),
+    "nfd_variant_read_root_darwin": ("exec.policy_overlaps_data", None),
+    "nfd_variant_read_root_linux_ok": ("ok", "linux"),
     "sibling_of_data_dir_ok": ("ok", "seatbelt"),
     "overlap_beats_shadow": ("exec.policy_overlaps_data", None),
     "overlap_beats_unavailable": ("exec.policy_overlaps_data", None),
@@ -134,7 +176,9 @@ EXPECTED_SELECTION = {
 
 def outcome(case: dict) -> str:
     try:
-        exec_policy.parse(case["raw"] if "raw" in case else case["policy"])
+        exec_policy.parse(
+            case["raw"] if "raw" in case else case["policy"], case.get("platform")
+        )
     except exec_policy.PolicyError as error:
         return error.code
     return "ok"
@@ -191,10 +235,17 @@ MINIMAL_PROFILE = """\
 (deny default)
 (import "system.sb")
 
-(allow process-exec*)
+(allow process-exec* (subpath "/usr"))
+(allow process-exec* (subpath "/System"))
+(allow process-exec* (subpath "/Library"))
+(allow process-exec* (subpath "/private/etc"))
+(allow process-exec* (subpath "/private/var/db/dyld"))
+(allow process-exec* (subpath "/dev"))
+(allow process-exec* (subpath "/bin"))
+(allow process-exec* (subpath "/sbin"))
 (allow process-info* (target self))
 (allow signal (target self))
-(allow mach-lookup)
+(allow signal (target children))
 (allow sysctl-read)
 (allow file-ioctl)
 
@@ -207,6 +258,8 @@ MINIMAL_PROFILE = """\
 (allow file-read* file-write* (subpath "/private/tmp/astral/ws"))
 
 (deny process-exec* (subpath "/private/tmp/astral/ws"))
+(deny file-map-executable (subpath "/private/tmp/astral/ws"))
+(deny mach-lookup (global-name "com.apple.dnssd.service"))
 (deny file-read* (subpath "/Users/test/Library/Keychains"))
 (deny file-read* (subpath "/Library/Keychains"))
 (deny file-read* (subpath "/System/Library/Keychains"))
@@ -245,8 +298,102 @@ def test_profile_never_opens_unwanted_rights(name: str) -> None:
     ):
         assert banned not in text
     assert text.endswith("\n") and not text.endswith("\n\n")
-    assert text.index("(deny process-exec*") > text.index("(allow process-exec*)")
+    assert not unfiltered_allows(text)
+    assert text.index("(deny process-exec*") > text.rindex("(allow process-exec*")
+    assert text.index("(deny mach-lookup") > text.rindex("(allow file-read*")
     assert text.index("(deny file-read*") > text.rindex("(allow file-read*")
+
+
+UNFILTERED = re.compile(
+    r"\(allow[ \t]+(?:[\w*-]+[ \t]+)*(?:mach\*|mach-lookup|process-exec\*|signal)[ \t]*\)"
+)
+
+
+def unfiltered_allows(text: str) -> list[str]:
+    return UNFILTERED.findall(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "(allow mach-lookup)",
+        "(allow mach*)\n",
+        "(allow process-fork mach-lookup)",
+        "(allow process-exec*)",
+        "(allow signal)",
+        "(version 1)\n(allow  mach-lookup )\n",
+    ],
+)
+def test_checker_refuses_unfiltered_allows(text: str) -> None:
+    assert unfiltered_allows(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '(allow mach-lookup (global-name "com.apple.example"))',
+        '(deny mach-lookup (global-name "com.apple.dnssd.service"))',
+        "(allow signal (target self))",
+        '(allow process-exec* (subpath "/usr"))',
+    ],
+)
+def test_checker_passes_filtered_rules(text: str) -> None:
+    assert not unfiltered_allows(text)
+
+
+def test_dnssd_lookup_is_denied_and_signals_are_scoped() -> None:
+    for case in PROFILES.values():
+        text = case["seatbelt"]
+        assert '(deny mach-lookup (global-name "com.apple.dnssd.service"))\n' in text
+        assert (
+            "(allow signal (target self))\n(allow signal (target children))\n" in text
+        )
+        assert "(allow mach-lookup" not in text
+        assert (
+            f'(deny file-map-executable (subpath "{case["policy"]["workspace"].replace(chr(92), chr(92) * 2).replace(chr(34), chr(92) + chr(34))}"))'
+            in text
+        )
+
+
+def test_exec_scope_is_base_reads_and_bin_sbin_only() -> None:
+    case = PROFILES["full"]
+    lines = [
+        line
+        for line in case["seatbelt"].splitlines()
+        if line.startswith("(allow process-exec*")
+    ]
+    roots = DOC["constants"]["darwin_base_reads"] + case["policy"]["reads"]
+    roots += DOC["constants"]["darwin_exec_only"]
+    assert lines == [f'(allow process-exec* (subpath "{root}"))' for root in roots]
+    assert DOC["constants"]["darwin_exec_only"] == ["/bin", "/sbin"]
+    reads = [
+        line
+        for line in case["seatbelt"].splitlines()
+        if line.startswith("(allow file-read*")
+    ]
+    assert not any('"/bin"' in line or '"/sbin"' in line for line in reads)
+
+
+def test_workspace_is_never_executable_on_either_backend() -> None:
+    for case in PROFILES.values():
+        assert case["linux"]["workspace_noexec"] is True
+        assert case["linux"]["seccomp"]["deny_socket_domains"] == ["AF_UNIX"]
+        grants = case["linux"]["landlock"]["workspace_rights"]
+        assert "execute" in grants
+
+
+@pytest.mark.parametrize("name", [c["name"] for c in DOC["context_errors"]])
+def test_context_errors_are_refused(name: str) -> None:
+    case = next(c for c in DOC["context_errors"] if c["name"] == name)
+    with pytest.raises(exec_policy.ContextError):
+        exec_policy.select(
+            PROFILES["minimal"]["policy"], case["facts"], case["data_dir"]
+        )
+
+
+def test_context_error_vectors_cover_unknown_keys_and_probe_errors() -> None:
+    names = {c["name"] for c in DOC["context_errors"]}
+    assert {"facts_unknown_key", "facts_probe_error_null", "facts_missing_key"} <= names
 
 
 def test_processes_one_has_no_fork_and_two_has_fork() -> None:

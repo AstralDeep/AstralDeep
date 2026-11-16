@@ -1,5 +1,5 @@
 """Reference validator and renderers for the execution policy: the parse and validation order, the digest, the canonical macOS Seatbelt text, the Linux plan and the backend selection table.
-It reuses the preserved 105 reference for LETS-CJ/1 bytes, and the vectors in vectors/exec-policy-v1.json pin its behavior for every other implementation.
+It reuses the preserved mesh reference for LETS-CJ/1 bytes, and the vectors in vectors/exec-policy-v1.json pin its behavior for every other implementation.
 """
 
 from __future__ import annotations
@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 import re
 import sys
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -107,6 +108,19 @@ DENIED_SYSCALLS = (
 )
 FORK_SYSCALLS = ("clone3", "fork", "vfork")
 HOST_LABEL = re.compile(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?")
+NUMERIC_LABEL = re.compile(r"[0-9]+|0x[0-9a-f]*")
+DARWIN_EXEC_ONLY = ("/bin", "/sbin")
+DNSSD_SERVICE = "com.apple.dnssd.service"
+EXEC_SUBDIRECTORY = "exec"
+FACT_KEYS = (
+    "platform",
+    "mode",
+    "landlock_abi",
+    "bwrap",
+    "userns",
+    "sandbox_exec",
+    "app_sandboxed",
+)
 
 
 class PolicyError(Exception):
@@ -140,7 +154,15 @@ def _path_problem(path: str) -> str | None:
     return None
 
 
-def _contains(root: str, path: str) -> bool:
+def _fold(path: str, platform: str | None) -> str:
+    if platform != "darwin":
+        return path
+    decomposed = unicodedata.normalize("NFD", path)
+    return unicodedata.normalize("NFD", decomposed.casefold())
+
+
+def _contains(root: str, path: str, platform: str | None = None) -> bool:
+    root, path = _fold(root, platform), _fold(path, platform)
     return path == root or path.startswith(root + "/")
 
 
@@ -172,7 +194,7 @@ def _checked_host(value: Any, where: str) -> dict[str, Any]:
         len(host) > 253
         or len(labels) < 2
         or not all(HOST_LABEL.fullmatch(label) for label in labels)
-        or labels[-1].isdigit()
+        or NUMERIC_LABEL.fullmatch(labels[-1])
     ):
         raise PolicyError("policy.host_invalid", f"{where}.host")
     if port not in HOST_PORTS:
@@ -180,7 +202,9 @@ def _checked_host(value: Any, where: str) -> dict[str, Any]:
     return value
 
 
-def parse(data: bytes | str | dict[str, Any]) -> dict[str, Any]:
+def parse(
+    data: bytes | str | dict[str, Any], platform: str | None = None
+) -> dict[str, Any]:
     if isinstance(data, (bytes, str)):
         try:
             policy = strict_loads(data)
@@ -197,16 +221,23 @@ def parse(data: bytes | str | dict[str, Any]) -> dict[str, Any]:
     if len(reads) > MAX_READS:
         raise PolicyError("policy.too_many_entries", "reads")
     previous = None
+    seen: set[str] = set()
     for index, path in enumerate(reads):
         _checked_path(path, f"reads[{index}]")
         if previous is not None and path <= previous:
             raise PolicyError(
                 "policy.path_invalid", f"reads[{index}] not sorted and unique"
             )
+        folded = _fold(path, platform)
+        if folded in seen:
+            raise PolicyError(
+                "policy.path_invalid", f"reads[{index}] repeats a read root"
+            )
+        seen.add(folded)
         previous = path
     workspace = _checked_path(policy["workspace"], "workspace")
     for path in reads:
-        if _contains(workspace, path) or _contains(path, workspace):
+        if _contains(workspace, path, platform) or _contains(path, workspace, platform):
             raise PolicyError(
                 "policy.path_invalid", "a read root overlaps the workspace"
             )
@@ -261,13 +292,16 @@ def seatbelt_profile(policy: dict[str, Any], home: str, proxy_port: int | None) 
         raise ContextError("a policy with hosts needs a proxy port from 1 to 65535")
     workspace = policy["workspace"]
     lines = ["(version 1)", "(deny default)", '(import "system.sb")', ""]
-    lines += ["(allow process-exec*)"]
+    lines += [
+        f"(allow process-exec* (subpath {quote(root)}))"
+        for root in (*DARWIN_BASE, *policy["reads"], *DARWIN_EXEC_ONLY)
+    ]
     if policy["limits"]["processes"] > 1:
         lines.append("(allow process-fork)")
     lines += [
         "(allow process-info* (target self))",
         "(allow signal (target self))",
-        "(allow mach-lookup)",
+        "(allow signal (target children))",
         "(allow sysctl-read)",
         "(allow file-ioctl)",
         "",
@@ -277,7 +311,11 @@ def seatbelt_profile(policy: dict[str, Any], home: str, proxy_port: int | None) 
         for root in (*DARWIN_BASE, *policy["reads"])
     ]
     lines += [f"(allow file-read* file-write* (subpath {quote(workspace)}))", ""]
-    lines.append(f"(deny process-exec* (subpath {quote(workspace)}))")
+    lines += [
+        f"(deny process-exec* (subpath {quote(workspace)}))",
+        f"(deny file-map-executable (subpath {quote(workspace)}))",
+        f'(deny mach-lookup (global-name "{DNSSD_SERVICE}"))',
+    ]
     lines += [
         f"(deny file-read* (subpath {quote(root)}))"
         for root in (home + "/Library/Keychains", *DARWIN_KEYCHAINS)
@@ -315,6 +353,7 @@ def linux_plan(policy: dict[str, Any], egress_socket: str | None) -> dict[str, A
     bwrap += ["--chdir", workspace]
     return {
         "bwrap": bwrap,
+        "workspace_noexec": True,
         "landlock": {
             "abi": LANDLOCK_ABI,
             "exec_read": [*LINUX_BASE, *policy["reads"]],
@@ -334,6 +373,7 @@ def linux_plan(policy: dict[str, Any], egress_socket: str | None) -> dict[str, A
             "fork_syscalls": list(FORK_SYSCALLS),
             "inet_stream_sockets": hosted,
             "deny_socket_types": ["SOCK_DGRAM", "SOCK_RAW"],
+            "deny_socket_domains": ["AF_UNIX"],
         },
         "rlimits": {
             "RLIMIT_AS": limits["memory_bytes"],
@@ -350,6 +390,9 @@ def linux_plan(policy: dict[str, Any], egress_socket: str | None) -> dict[str, A
 def _facts(facts: Any) -> dict[str, Any]:
     if not isinstance(facts, dict):
         raise ContextError("facts must be an object")
+    unknown = set(facts) - set(FACT_KEYS)
+    if unknown:
+        raise ContextError(f"unknown facts: {sorted(unknown)}")
     out = {"mode": "enforce", **facts}
     if not isinstance(out.get("platform"), str):
         raise ContextError("facts.platform must be a string")
@@ -377,13 +420,21 @@ def _refuse(code: str, reason: str | None = None, **extra: Any) -> dict[str, Any
 def select(
     policy: dict[str, Any], facts: dict[str, Any], data_dir: str
 ) -> dict[str, Any]:
-    policy = parse(policy)
     facts = _facts(facts)
-    data_dir = _checked_context_path(data_dir, "data_dir")
     platform = facts["platform"]
+    policy = parse(policy, platform)
+    data_dir = _checked_context_path(data_dir, "data_dir")
     base = {"darwin": DARWIN_BASE, "linux": LINUX_BASE}.get(platform, ())
-    roots = (*base, *policy["reads"], policy["workspace"])
-    if any(_contains(root, data_dir) for root in roots):
+    workspace = policy["workspace"]
+    overlaps = any(
+        _contains(root, data_dir, platform) or _contains(data_dir, root, platform)
+        for root in (*base, *policy["reads"])
+    )
+    overlaps = overlaps or _contains(workspace, data_dir, platform)
+    if _contains(data_dir, workspace, platform):
+        exec_root = _fold(f"{data_dir}/{EXEC_SUBDIRECTORY}/", platform)
+        overlaps = overlaps or not _fold(workspace, platform).startswith(exec_root)
+    if overlaps:
         return _refuse("exec.policy_overlaps_data")
     if facts["mode"] == "shadow":
         return _refuse("exec.shadow_refused")
