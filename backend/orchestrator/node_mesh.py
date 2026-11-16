@@ -1,4 +1,4 @@
-"""The node's peer in its owner's mesh: it opens the pinned kernel binding with the node's own keys, a software signer and a node device kind, shows a pairing offer, and reports mesh status for the descriptor.
+"""The node's peer in its owner's mesh: it opens the pinned kernel binding with the node's own keys, a software signer and a node device kind, shows a pairing offer, reports mesh status for the descriptor, and refuses a mesh listing a seeded development device (shared/dev_mesh_keys.py) unless ASTRAL_ENV is development.
 node_api.py serves it, node_mailbox.py supervises the node's mailbox beside it, node_mesh_chat.py moves chat activity through it, and nothing else imports the kernel binding.
 """
 
@@ -18,7 +18,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from orchestrator import node_mesh_keys
 from orchestrator.node_mailbox import MailboxError, MailboxProcess, MailboxSettings
-from shared import node_identity
+from shared import dev_mesh_keys, node_identity
 
 logger = logging.getLogger("Orchestrator.NodeMesh")
 
@@ -37,6 +37,8 @@ MAX_SYNC_MS = 600_000
 REQUEST_EXPORT = "record_peer_turn"
 PUBLISH_EXPORT = "publish_tool_catalog"
 ENROLLED_STATES = frozenset({"ENROLLED", "RESTORED"})
+ENVIRONMENT_ENV = "ASTRAL_ENV"
+DEVELOPMENT = "development"
 
 
 class NodeMeshError(Exception):
@@ -104,6 +106,14 @@ def load_binding() -> Any:
 
 def _code_of(exc: BaseException) -> str:
     return str(getattr(exc, "code", "") or "kernel_error")
+
+
+def _refuse_development_mesh(roster: Any) -> None:
+    if os.environ.get(ENVIRONMENT_ENV) == DEVELOPMENT:
+        return
+    listed = {member.device_id for member in roster.members} | {device.device_id for device in roster.removed}
+    if not listed.isdisjoint(dev_mesh_keys.device_ids().values()):
+        raise NodeMeshError("node.development_mesh")
 
 
 class _Listener:
@@ -383,6 +393,7 @@ class NodeMesh:
                 roster = kernel.roster()
                 if mesh_id != status.mesh_id or mesh_id != roster.mesh_id:
                     raise NodeMeshError("node.mesh_mismatch")
+                _refuse_development_mesh(roster)
                 if roster.stopped:
                     raise NodeMeshError("gate.mesh_stopped")
                 if not any(member.is_local and member.device_id == status.device_id for member in roster.members):
@@ -560,6 +571,7 @@ class NodeMesh:
                 raise NodeMeshError("mesh.not_enrolled")
             if proof.mesh_id != status.mesh_id or proof.mesh_id != roster.mesh_id:
                 raise NodeMeshError("node.mesh_mismatch")
+            _refuse_development_mesh(roster)
             if roster.stopped:
                 raise NodeMeshError("gate.mesh_stopped")
             if not any(member.is_local and member.device_id == status.device_id for member in roster.members):

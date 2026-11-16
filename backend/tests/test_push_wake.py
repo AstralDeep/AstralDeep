@@ -414,7 +414,7 @@ async def test_a_legacy_personal_owner_never_wakes_from_an_unavailable_mesh_bind
     mesh_id = "sha256:" + "e" * 64
     kernel.join(mesh_id)
     kernel.mesh_principal = lambda: SimpleNamespace(mesh_id=mesh_id)
-    kernel.roster = lambda: SimpleNamespace(mesh_id=mesh_id, stopped=False, members=[
+    kernel.roster = lambda: SimpleNamespace(mesh_id=mesh_id, stopped=False, removed=[], members=[
         SimpleNamespace(device_id=kernel.device_id, is_local=True)])
     await nmc.active().scan()
     kernel.peers = [peer(PHONE, connected=False, pending_out=1)]
