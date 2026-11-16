@@ -2,7 +2,7 @@
   "format": "astraldeep.kernel-binding/v1",
   "source": {
     "repository": "https://github.com/AstralDeep/AstralKernel.git",
-    "branch": "k/integration",
+    "branch": "main",
     "commit": "c2c1cc43e7287cee230a809cdb1e358e10286f5a"
   },
   "python": {
