@@ -132,6 +132,95 @@ class Darwin:
         return procargs_strings(ctypes.string_at(self._args, size))
 
 
+class LinuxSystem:
+    def __init__(self, root: str = "/proc") -> None:
+        self._root = root
+        self._page = os.sysconf("SC_PAGE_SIZE")
+
+    def marked_pids(self, marker: bytes) -> list[int]:
+        found = []
+        for entry in os.listdir(self._root):
+            if not entry.isdigit():
+                continue
+            try:
+                with open(f"{self._root}/{entry}/environ", "rb") as handle:
+                    block = handle.read()
+            except OSError:
+                continue
+            if marker in block.split(b"\0"):
+                found.append(int(entry))
+        return found
+
+    def usage(self, pid: int) -> Usage | None:
+        try:
+            with open(f"{self._root}/{pid}/stat", "rb") as handle:
+                after = handle.read().rpartition(b")")[2].split()
+            with open(f"{self._root}/{pid}/statm", "rb") as handle:
+                resident = int(handle.read().split()[1])
+        except (OSError, IndexError, ValueError):
+            return None
+        state = after[0:1]
+        return Usage(int(after[19]), state in (b"Z", b"X", b"x"), resident * self._page)
+
+
+class LinuxWatch:
+    def __init__(
+        self,
+        root: int,
+        marker: bytes,
+        system: LinuxSystem | None = None,
+        kill: Callable[[int, int], None] = os.kill,
+        killpg: Callable[[int, int], None] = os.killpg,
+    ) -> None:
+        self._system = system or LinuxSystem()
+        self._root = root
+        self._marker = marker
+        self._kill = kill
+        self._killpg = killpg
+        self.started = True
+
+    def _live(self) -> set[int]:
+        live = set()
+        for pid in self._system.marked_pids(self._marker):
+            usage = self._system.usage(pid)
+            if usage is not None and not usage.exited:
+                live.add(pid)
+        return live
+
+    def sample(self) -> tuple[int, int]:
+        memory = 0
+        count = 0
+        for pid in self._system.marked_pids(self._marker):
+            usage = self._system.usage(pid)
+            if usage is None or usage.exited:
+                continue
+            count += 1
+            memory += usage.footprint
+        return count, memory
+
+    def _signal_root(self) -> None:
+        try:
+            self._killpg(self._root, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+    def end(self) -> set[int]:
+        self._signal_root()
+        live = self._live()
+        for _ in range(SWEEP_ROUNDS):
+            if not live:
+                break
+            for pid in live:
+                try:
+                    self._kill(pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+            time.sleep(SWEEP_PAUSE_SECONDS)
+            self._signal_root()
+            live = self._live()
+        return live
+
+
 class Watch:
     def __init__(
         self,

@@ -21,10 +21,12 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from . import canonjson, seatbelt
+from . import canonjson, linux, seatbelt
 from .constants import (
+    BWRAP_PATHS,
     CORE_LIMIT_BYTES,
     LAUNCH_MARKER,
+    LINUX_BASE,
     MESSAGES,
     OUTPUT_LIMIT_BYTES,
     REFUSED_EXIT_STATUS,
@@ -33,9 +35,10 @@ from .constants import (
 )
 from .errors import ContextError, ExecRefused, PolicyError, Refusal
 from .facts import probe
+from .fold import contains
 from .policy import Policy
 from .select import Backend, select
-from .watchdog import Watch, user_process_count
+from .watchdog import LinuxWatch, Watch, user_process_count
 
 POLL_SECONDS = 0.01
 DRAIN_SECONDS = 2.0
@@ -46,6 +49,8 @@ PROFILE_SUBDIR = "exec-profiles"
 TEARDOWN_WAIT_SECONDS = 5.0
 SANDBOX_EXEC_FAILURES = frozenset({64, 65, 71})
 RUN_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "run.py")
+INNER_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "inner.py")
+PACKAGE_PARENT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STOP_SIGNALS = (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)
 USAGE = "usage: run.py launch --policy FILE --data-dir DIR --home DIR --env-file FILE -- argv..."
 _LOG = logging.getLogger("astral_exec.launch")
@@ -85,6 +90,29 @@ class _Call:
     profile: str
 
 
+@dataclass(frozen=True)
+class _LinuxCall:
+    document: dict[str, Any]
+    plan: dict[str, Any]
+    argv: list[str]
+    env: dict[str, str]
+    marker: str
+    bwrap: str
+
+
+def _seatbelt_failed(proc: subprocess.Popen, stderr: bytes) -> bool:
+    return proc.returncode in SANDBOX_EXEC_FAILURES and stderr.startswith(
+        b"sandbox-exec:"
+    )
+
+
+def _linux_failed(proc: subprocess.Popen, stderr: bytes) -> bool:
+    return proc.returncode != 0 and stderr.startswith(b"bwrap:")
+
+
+_LINUX_SIGNAL_CODES = {128 + signal.SIGXFSZ: "exec.file_limit"}
+
+
 class _Stopped(BaseException):
     def __init__(self, signum: int) -> None:
         super().__init__(signum)
@@ -122,16 +150,7 @@ def _checked_stdin(stdin: Any) -> bytes | None:
     return None if stdin is None else bytes(stdin)
 
 
-def _prepare(
-    policy: Any, argv: Any, env: Any, facts: Mapping[str, Any] | None
-) -> _Call | Refusal:
-    if not isinstance(policy, Policy) or policy.loaded_for is None:
-        raise ContextError("run needs a policy loaded with Policy.load")
-    chosen = select(policy, probe() if facts is None else facts, policy.loaded_for[1])
-    if isinstance(chosen, Refusal):
-        return chosen
-    if chosen != Backend("seatbelt"):
-        raise ContextError(f"this launcher cannot start the {chosen.name} backend")
+def _seatbelt_call(policy: Policy, argv: Any, env: Any) -> _Call:
     document = policy.document
     if document["hosts"]:
         raise ContextError("a policy with hosts needs an egress proxy")
@@ -140,6 +159,27 @@ def _prepare(
     child_env[LAUNCH_MARKER] = marker
     profile = seatbelt.render(policy, {"proxy_port": None})
     return _Call(document, _checked_argv(argv), child_env, marker, profile)
+
+
+def _linux_call(
+    policy: Policy, argv: Any, env: Any, chosen: Backend, egress_socket: str | None
+) -> _LinuxCall:
+    document = policy.document
+    built = linux.plan(policy, egress_socket)
+    interpreter = sys.executable
+    if not os.path.isabs(interpreter):
+        raise ContextError("the sandbox interpreter must be an absolute path")
+    roots = (*LINUX_BASE, *document["reads"])
+    if not any(contains(root, interpreter, "linux") for root in roots):
+        raise ContextError("the sandbox interpreter must sit under a read root")
+    if chosen.bwrap not in BWRAP_PATHS:
+        raise ContextError("the Linux backend needs a bwrap path from the fixed list")
+    marker = secrets.token_hex(16)
+    child_env = _checked_env(env)
+    child_env[LAUNCH_MARKER] = marker
+    return _LinuxCall(
+        document, built, _checked_argv(argv), child_env, marker, chosen.bwrap
+    )
 
 
 def _profile_folder(data_dir: str) -> str:
@@ -267,6 +307,7 @@ class _Streams:
         env_fd: int,
         env: bytes,
         data: bytes | None,
+        extra_sends: Sequence[tuple[int, bytes]] = (),
     ) -> None:
         self._selector = selectors.DefaultSelector()
         self._closers: dict[int, Callable[[], None]] = {}
@@ -279,6 +320,8 @@ class _Streams:
         self.truncated: set[str] = set()
         self._watch(status_fd, "status", lambda: os.close(status_fd))
         self._send(env_fd, env, lambda: os.close(env_fd))
+        for extra_fd, payload in extra_sends:
+            self._send(extra_fd, payload, lambda fd=extra_fd: os.close(fd))
         for name in ("stdout", "stderr"):
             stream = getattr(proc, name)
             if stream is not None:
@@ -424,10 +467,16 @@ def _supervise(
     data: bytes | None,
     watch_factory: Callable[[int, bytes | None], Any] = Watch,
     log: _DigestLog | None = None,
+    *,
+    extra_sends: Sequence[tuple[int, bytes]] = (),
+    backend_failed: Callable[[subprocess.Popen, bytes], bool] = _seatbelt_failed,
+    signal_codes: Mapping[int, str] = _SIGNAL_CODES,
+    always_mark: bool = False,
 ) -> Outcome:
     log = log if log is not None else _log("none")
     deadline = time.monotonic() + wall_ms / 1000
-    entry = f"{LAUNCH_MARKER}={marker}".encode() if limits["processes"] > 1 else None
+    marked = always_mark or limits["processes"] > 1
+    entry = f"{LAUNCH_MARKER}={marker}".encode() if marked else None
     streams = None
     watch = None
     code: str | None = None
@@ -436,7 +485,7 @@ def _supervise(
     try:
         try:
             encoded = json.dumps(dict(env)).encode()
-            streams = _Streams(proc, status_fd, env_fd, encoded, data)
+            streams = _Streams(proc, status_fd, env_fd, encoded, data, extra_sends)
             watch = watch_factory(proc.pid, entry)
             if getattr(watch, "started", True):
                 code = _monitor(proc, streams, watch, limits, deadline)
@@ -476,34 +525,92 @@ def _supervise(
     if streams.output("status") != TRAMPOLINE_READY:
         log.warning("exec trampoline refused: %r", streams.output("status")[:64])
         return Outcome("exec.launch_failed", None, stdout, stderr, truncated=truncated)
-    if proc.returncode in SANDBOX_EXEC_FAILURES and stderr.startswith(b"sandbox-exec:"):
-        log.warning("exec sandbox-exec failed exit=%s", proc.returncode)
+    if backend_failed(proc, stderr):
+        log.warning("exec backend failed exit=%s", proc.returncode)
         return Outcome("exec.launch_failed", None, stdout, stderr, truncated=truncated)
     if not ended or not reaped:
         code = "exec.launch_failed"
-    code = code or _SIGNAL_CODES.get(proc.returncode)
+    code = code or signal_codes.get(proc.returncode)
     return Outcome(code, proc.returncode, stdout, stderr, truncated=truncated)
 
 
-def _launch(
-    policy: Any,
-    argv: Any,
-    env: Any,
-    stdin: Any,
-    facts: Mapping[str, Any] | None,
-    capture: bool,
-) -> Outcome:
-    digest = policy.digest() if isinstance(policy, Policy) else "none"
-    log = _log(digest)
+def _close(fd: int | None) -> None:
+    if fd is None:
+        return
     try:
-        call = _prepare(policy, argv, env, facts)
-        if isinstance(call, Refusal):
-            log.info("exec refused code=%s", call.code)
-            return Outcome(call.code, None, refusal=call)
-        data = _checked_stdin(stdin)
-    except Exception as error:
-        log.warning("exec launch failed before start: %s", type(error).__name__)
-        return Outcome("exec.launch_failed", None)
+        os.close(fd)
+    except OSError:
+        pass
+
+
+def _linux_command(
+    call: _LinuxCall, script_fd: int, pkg_fd: int, plan_fd: int, env_fd: int, status_fd: int
+) -> list[str]:
+    if not os.path.isabs(sys.executable):
+        raise ContextError("the sandbox interpreter must be an absolute path")
+    return [
+        call.bwrap,
+        *call.plan["bwrap"],
+        "--",
+        sys.executable,
+        "-I",
+        "-S",
+        "-B",
+        f"/proc/self/fd/{script_fd}",
+        "--package-fd",
+        str(pkg_fd),
+        "--plan-fd",
+        str(plan_fd),
+        "--env-fd",
+        str(env_fd),
+        "--status-fd",
+        str(status_fd),
+        "--",
+        *call.argv,
+    ]
+
+
+def _linux_spawn(
+    call: _LinuxCall, capture: bool, data: bytes | None
+) -> tuple[subprocess.Popen, int, int, int]:
+    stdin: Any = None
+    if capture:
+        stdin = subprocess.DEVNULL if data is None else subprocess.PIPE
+    output = subprocess.PIPE if capture else None
+    script_fd = os.open(INNER_PY, os.O_RDONLY | os.O_CLOEXEC)
+    pkg_fd = os.open(PACKAGE_PARENT, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    plan_read, plan_write = os.pipe()
+    env_read, env_write = os.pipe()
+    status_read, status_write = os.pipe()
+    child_fds = (script_fd, pkg_fd, plan_read, env_read, status_write)
+    try:
+        command = _linux_command(
+            call, script_fd, pkg_fd, plan_read, env_read, status_write
+        )
+        proc = subprocess.Popen(
+            command,
+            env={},
+            cwd=call.document["workspace"],
+            stdin=stdin,
+            stdout=output,
+            stderr=output,
+            start_new_session=True,
+            close_fds=True,
+            pass_fds=child_fds,
+        )
+    except BaseException:
+        for fd in (plan_write, env_write, status_read):
+            _close(fd)
+        raise
+    finally:
+        for fd in child_fds:
+            _close(fd)
+    return proc, status_read, env_write, plan_write
+
+
+def _launch_seatbelt(
+    policy: Policy, call: _Call, capture: bool, data: bytes | None, log: _DigestLog
+) -> Outcome:
     profile = None
     try:
         profile = _write_profile(call.profile, policy.loaded_for[1])
@@ -530,6 +637,71 @@ def _launch(
             _remove(profile)
 
 
+def _launch_linux(
+    call: _LinuxCall, capture: bool, data: bytes | None, log: _DigestLog
+) -> Outcome:
+    plan_bytes = json.dumps(call.plan).encode()
+    try:
+        proc, status_fd, env_fd, plan_fd = _linux_spawn(call, capture, data)
+    except Exception as error:
+        log.warning("exec launch failed at spawn: %s", type(error).__name__)
+        return Outcome("exec.launch_failed", None)
+    log.info("exec launch backend=linux pid=%d", proc.pid)
+    outcome = _supervise(
+        proc,
+        status_fd,
+        env_fd,
+        call.env,
+        call.document["limits"],
+        call.document["time"]["wall_ms"],
+        call.marker,
+        data,
+        watch_factory=LinuxWatch,
+        log=log,
+        extra_sends=((plan_fd, plan_bytes),),
+        backend_failed=_linux_failed,
+        signal_codes=_LINUX_SIGNAL_CODES,
+        always_mark=True,
+    )
+    log.info("exec outcome code=%s exit=%s", outcome.code, outcome.exit_code)
+    return outcome
+
+
+def _launch(
+    policy: Any,
+    argv: Any,
+    env: Any,
+    stdin: Any,
+    facts: Mapping[str, Any] | None,
+    capture: bool,
+    egress_socket: str | None = None,
+) -> Outcome:
+    digest = policy.digest() if isinstance(policy, Policy) else "none"
+    log = _log(digest)
+    try:
+        if not isinstance(policy, Policy) or policy.loaded_for is None:
+            raise ContextError("run needs a policy loaded with Policy.load")
+        chosen = select(
+            policy, probe() if facts is None else facts, policy.loaded_for[1]
+        )
+        if isinstance(chosen, Refusal):
+            log.info("exec refused code=%s", chosen.code)
+            return Outcome(chosen.code, None, refusal=chosen)
+        data = _checked_stdin(stdin)
+        if chosen == Backend("seatbelt"):
+            call = _seatbelt_call(policy, argv, env)
+        elif chosen.name == "linux":
+            linux_call = _linux_call(policy, argv, env, chosen, egress_socket)
+        else:
+            raise ContextError(f"this launcher cannot start the {chosen.name} backend")
+    except Exception as error:
+        log.warning("exec launch failed before start: %s", type(error).__name__)
+        return Outcome("exec.launch_failed", None)
+    if chosen.name == "linux":
+        return _launch_linux(linux_call, capture, data, log)
+    return _launch_seatbelt(policy, call, capture, data, log)
+
+
 def _run(
     policy: Policy,
     argv: Sequence[str],
@@ -538,8 +710,9 @@ def _run(
     *,
     facts: Mapping[str, Any] | None = None,
     capture: bool = True,
+    egress_socket: str | None = None,
 ) -> Outcome:
-    return _launch(policy, argv, env, stdin, facts, capture)
+    return _launch(policy, argv, env, stdin, facts, capture, egress_socket)
 
 
 def run(
