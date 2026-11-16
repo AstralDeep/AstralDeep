@@ -64,7 +64,7 @@ def framework_provider(provider, monkeypatch):
     ]}
     kernel = {"workflow_runs": [{
         "id": 33, "workflow_id": 44, "run_attempt": 1, "head_sha": "c" * 40,
-        "head_branch": "k/integration", "event": "push", "path": ".github/workflows/ci.yml",
+        "head_branch": "main", "event": "push", "path": ".github/workflows/ci.yml",
         "repository": {"full_name": "AstralDeep/AstralKernel"},
         "head_repository": {"full_name": "AstralDeep/AstralKernel"},
         "status": "completed", "conclusion": "success",
@@ -98,7 +98,7 @@ def test_framework_producer_requires_provider_graph_and_kernel_qualification(fra
     assert framework_provider[3].count("actions/runs/11") == 2
     assert "actions/runs/11/jobs?filter=all&per_page=100" in framework_provider[3]
     assert ("repos/AstralDeep/AstralKernel/actions/workflows/ci.yml/runs?head_sha=" + "c" * 40
-            + "&event=push&branch=k%2Fintegration&per_page=100") in framework_provider[3]
+            + "&event=push&per_page=100") in framework_provider[3]
 
 
 def test_automatic_producer_keeps_its_existing_receipt_and_does_not_query_jobs_or_kernel(provider):
@@ -208,7 +208,7 @@ def test_framework_producer_refuses_malformed_graphs_and_ordinary_manual_mac_run
 
 
 @pytest.mark.parametrize("field,value", [
-    ("head_sha", "d" * 40), ("head_branch", "main"), ("event", "pull_request"),
+    ("head_sha", "d" * 40), ("head_branch", "candidate"), ("head_branch", None), ("event", "pull_request"),
     ("path", ".github/workflows/other.yml"), ("status", "in_progress"), ("conclusion", "failure"),
     ("repository", {"full_name": "fork/kernel"}), ("head_repository", {"full_name": "fork/kernel"}),
     ("repository", None), ("id", None), ("workflow_id", True),
@@ -217,6 +217,11 @@ def test_framework_producer_refuses_wrong_or_unqualified_kernel(framework_provid
     framework_provider[2]["workflow_runs"][0][field] = value
     with pytest.raises(ValueError):
         upload.producer(11, 22)
+
+
+def test_framework_producer_accepts_kernel_qualified_under_its_retired_default_branch(framework_provider):
+    framework_provider[2]["workflow_runs"][0]["head_branch"] = "k/integration"
+    assert upload.producer(11, 22)["kernel_qualification"]["head_branch"] == "k/integration"
 
 
 @pytest.mark.parametrize("payload", [{}, {"workflow_runs": {}}, {"workflow_runs": [None]}, {"workflow_runs": []}])

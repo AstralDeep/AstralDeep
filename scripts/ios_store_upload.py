@@ -22,6 +22,8 @@ from pathlib import Path
 BUNDLE = "com.personalailabs.astraldeep"
 REPO = "AstralDeep/AstralDeep"
 API = "https://api.appstoreconnect.apple.com/v1/"
+# k/integration was the Kernel default branch before main; runs qualified there stay valid.
+KERNEL_BRANCHES = frozenset({"main", "k/integration"})
 PROJECTION_INFO = "apple-clients/AstralApp/Info.plist"
 PROJECTION_CONSENT_TESTS = "apple-clients/AstralApp/AstralAppTests/MeshConsentTests.swift"
 PROJECTION_LEDGER = "provenance/transformations.json"
@@ -222,7 +224,7 @@ def framework_only_jobs(run):
 def kernel_qualification(kernel):
     repo = "AstralDeep/AstralKernel"
     response = json.loads(command(
-        "gh", "api", f"repos/{repo}/actions/workflows/ci.yml/runs?head_sha={kernel}&event=push&branch=k%2Fintegration&per_page=100",
+        "gh", "api", f"repos/{repo}/actions/workflows/ci.yml/runs?head_sha={kernel}&event=push&per_page=100",
     ))
     require(isinstance(response, dict) and isinstance(response.get("workflow_runs"), list)
             and len(response["workflow_runs"]) <= 100
@@ -232,14 +234,14 @@ def kernel_qualification(kernel):
         if (type(item.get("id")) is int and item["id"] > 0
                 and type(item.get("workflow_id")) is int and item["workflow_id"] > 0
                 and type(item.get("run_attempt")) is int and item["run_attempt"] > 0
-                and item.get("head_sha") == kernel and item.get("head_branch") == "k/integration"
+                and item.get("head_sha") == kernel and item.get("head_branch") in KERNEL_BRANCHES
                 and item.get("event") == "push" and item.get("path") == ".github/workflows/ci.yml"
                 and isinstance(item.get("repository"), dict) and item["repository"].get("full_name") == repo
                 and isinstance(item.get("head_repository"), dict) and item["head_repository"].get("full_name") == repo
                 and item.get("status") == "completed" and item.get("conclusion") == "success"):
             return {key: item[key] for key in ("id", "workflow_id", "run_attempt", "head_sha", "head_branch",
                                               "event", "path", "repository", "head_repository", "status", "conclusion")}
-    raise ValueError("no successful exact-source Kernel qualification on k/integration")
+    raise ValueError("no successful exact-source Kernel qualification on its default branch")
 
 
 def producer(run_id, artifact_id):
