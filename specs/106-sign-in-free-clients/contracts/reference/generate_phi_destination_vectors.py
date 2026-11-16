@@ -505,6 +505,7 @@ def seq_destinations() -> dict[str, Any]:
         ("ffi_wildcard", "https://*.model.example/v1"),
         ("ffi_not_canonical", "https://API.model.example/v2"),
         ("ffi_unknown_form", "urn:example:destination"),
+        ("ffi_bare_mesh_id", CONTACT),
     ):
         m.grant(ALICE, subject, name=name)
     m.grant(ALICE, "node-7", "node", name="legacy_node_subject")

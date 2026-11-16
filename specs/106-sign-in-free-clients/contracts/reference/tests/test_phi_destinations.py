@@ -731,6 +731,7 @@ def test_destination_statuses_and_answers():
         "https://API.model.example/v2": ("invalid", "phi_destination.not_canonical"),
         "urn:example:destination": ("unsupported", None),
         "node-7": ("unsupported", None),
+        CONTACT: ("unsupported", None),
     }
     assert all(
         r["approved_by"] == ID["alice"]

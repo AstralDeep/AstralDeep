@@ -37,12 +37,12 @@ A restored device has a new identity and so a new device id. It generates a new 
 An approval is the 105 PHI statement, unchanged: exactly `kind` (`phi`), `institution` (the approver public key), `subject_kind`, `subject`, `issued_s`, `not_after_s` and `sig`, signed by the approver key under `astral.attestation/v1`.
 
 - `issued_s` is the whole seconds of the clock of the entry that records it.
-- `not_after_s` is `issued_s` plus 631152000 seconds (20 years). Approvals stand until revoked (owner decision OD9).
+- `not_after_s` is `issued_s` plus 631152000 seconds (20 years). Approvals stand until revoked.
 - `subject_kind` is `device` for a member of the group and `endpoint` for every destination, a contact included. Writers never use `node`.
 
 The statement grants nothing alone. It counts only inside a `phi_approval` grant entry authored by a current member with its presence signature. A revoke is `{"action": "revoke", "subject": <subject>}`, also with presence. One entry records one statement, so one approval names one destination.
 
-The binding passes the number of entries in one presence session to the host, so a host that can reuse one authentication signs a batch with one prompt (OD12). Without host support each entry prompts once.
+The binding passes the number of entries in one presence session to the host, so a host that can reuse one authentication signs a batch with one prompt. Without host support each entry prompts once.
 
 ## 3. The fold
 
@@ -86,7 +86,7 @@ An upgraded kernel writes one `settings.set` event with scope `mesh`, labels `{"
 {"key": "phi.capable/<device id>", "value": {"v": 1, "detector": "astral.phi-detector/v1", "labels": "astral.labels/v2"}}
 ```
 
-It writes it once from its own feed: at open when it is a member and its log holds none, and right after it joins a mesh. Deployed kernels fold the key as a setting nothing reads. A device on the deployed kernel writes none, so it is never granted. It folds the same group, receives PHI headers only and joins once it upgrades (OD15). It runs no detector and refuses PHI only toward models, so granting it could pass a PHI chat to a legacy remote MCP server.
+It writes it once from its own feed: at open when it is a member and its log holds none, and right after it joins a mesh. Deployed kernels fold the key as a setting nothing reads. A device on the deployed kernel writes none, so it is never granted. It folds the same group, receives PHI headers only and joins once it upgrades. It runs no detector and refuses PHI only toward models, so granting it could pass a PHI chat to a legacy remote MCP server.
 
 The fold reads every accepted `settings.set` event whose key starts with `phi.capable/`. Events of other types, such as `mem.remember`, and keys such as `phi.capable` are not read. The first failure wins.
 
@@ -100,7 +100,7 @@ A value with `v` above 1 counts, so a later kernel stays upgraded. A device is *
 
 ## 5. The group
 
-The PHI group is `phi_members`. The upgraded kernel keeps it equal to the owner's upgraded devices (O14) by granting each upgraded member that has no history. A personal node joins by default (OD10). A node in the group refuses draft agents, and the view lists each member's kind so the host can say why on the node's row.
+The PHI group is `phi_members`. The upgraded kernel keeps it equal to the owner's upgraded devices (O14) by granting each upgraded member that has no history. A personal node joins by default, and the owner may exclude it. A node in the group refuses draft agents, and the view lists each member's kind so the host can say why on the node's row.
 
 ### 5.1 States
 
@@ -153,7 +153,7 @@ Targets are checked in the order given, each through steps 2 to 4. The plan is `
 | 2 | T is not a current member | `phi_group.unknown_device` |
 | 3 | T is not in `phi_members` | `phi_group.not_included` |
 
-L writes a revoke of T with presence. When the group left after the revoke is empty, nothing more is written. Otherwise, when L is still in it (`rotate`), L writes a new phi epoch wrapping the remaining members, as `remove_device` does. When L excluded itself (`rekey_needed`), the keeper writes it (section 5.5). Data already on T stays there, and the card says so (OD14). Removing a device from the roster rotates the same way.
+L writes a revoke of T with presence. When the group left after the revoke is empty, nothing more is written. Otherwise, when L is still in it (`rotate`), L writes a new phi epoch wrapping the remaining members, as `remove_device` does. When L excluded itself (`rekey_needed`), the keeper writes it (section 5.5). Data already on T stays there, and the card says so. Removing a device from the roster rotates the same way.
 
 ### 5.5 The keeper
 
@@ -187,7 +187,7 @@ A device can seal a `phi` event only while it is in the group and is a recipient
 | `contact` | A contact's mesh id, `sha256:` and 64 lowercase hex digits | `contact:<mesh id>` |
 | `device` | A device id | The group itself (section 5) |
 
-`model` and `service` share subjects. One approval covers every `model.provider.*` item, model connection, connection or legacy remote MCP server whose target equals it, because the approval binds the place the data goes and not the provider or connection that named it (OD8). Editing a base URL so that its canonical form changes voids the approval. Every subject uses `subject_kind` `endpoint`, which deployed folds accept as any non-empty string. A subject of another form is listed `unsupported` and approves nothing.
+`model` and `service` share subjects. One approval covers every `model.provider.*` item, model connection, connection or legacy remote MCP server whose target equals it, because the approval binds the place the data goes and not the provider or connection that named it. Editing a base URL so that its canonical form changes voids the approval. Every subject uses `subject_kind` `endpoint`, which deployed folds accept as any non-empty string. A subject of another form is listed `unsupported` and approves nothing.
 
 ### 6.2 Canonical endpoint
 
@@ -255,11 +255,11 @@ One row per current member: `{device, kind, state, approved_by}`. `state` follow
 
 ### 7.2 Destination rows
 
-One row per subject with history that is not a roster device id: `{subject, form, target, status, code, approved_by}`. `form` is `endpoint`, `local`, `contact`, `invalid` or `unsupported`. The status is the first that applies.
+One row per subject with history that is not the id of a device the roster ever admitted: `{subject, form, target, status, code, approved_by}`. `form` is `endpoint`, `local`, `contact`, `invalid` or `unsupported`. The status is the first that applies.
 
 | Status | When |
 |---|---|
-| `unsupported` | The subject is not a URL, a `local:` form or a `contact:` form |
+| `unsupported` | The subject is not a URL, a `local:` form or a `contact:` form. A bare device id that names no admitted device is listed here too |
 | `invalid` | The subject has a known form but fails it. `code` is `phi_destination.wildcard`, `phi_destination.malformed`, `phi_destination.not_canonical` (it canonicalizes to another text) or `phi_destination.loopback_unbound` |
 | `revoked` | No grant of the subject is live |
 | `authority_removed` | The chosen grant's approver key is no longer a current authority |
@@ -337,6 +337,7 @@ View statuses: `unsupported`, `invalid`, `revoked`, `authority_removed`, `expire
 | `settings.set` key `phi.capable/<device id>` | Feeds read by deployed kernels | Folded there as a setting nothing reads, with no gap in any feed |
 | Loopback model providers on PHI members | Provider items | Still on the device. Remote endpoints stay refused until approved by name |
 | Chats keyed under the personal group | Every existing chat | Old events keep their keys. The first `phi` event introduces the chat's phi key |
+| Chats after a personal epoch change | Every existing chat, after any device removal | The first personal write in each chat introduces a chat-scoped personal `key.content` under the new epoch. A deployed kernel learns that key from the event and reads what it seals, but it keeps sealing its own writes with the `chat.create` key. The mixed-version run proves both directions for personal and phi keys |
 | Devices on the deployed kernel | Mac 97 and iPhone 99 in a mixed mesh | Never granted, since they write no marker. They fold the same group and receive PHI headers only. After an upgrade the marker arrives and an owner device grants them |
 
 ## 11. Vectors

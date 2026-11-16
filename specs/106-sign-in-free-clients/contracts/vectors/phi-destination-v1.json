@@ -6623,6 +6623,14 @@
                 "code": null,
                 "form": "unsupported",
                 "status": "unsupported",
+                "subject": "sha256:5483660d9181a0467c8382b495d0a4b75084f84975685442dd379c541d0b5332",
+                "target": null
+              },
+              {
+                "approved_by": null,
+                "code": null,
+                "form": "unsupported",
+                "status": "unsupported",
                 "subject": "urn:example:destination",
                 "target": null
               }
@@ -6798,6 +6806,14 @@
                 "form": "unsupported",
                 "status": "unsupported",
                 "subject": "node-7",
+                "target": null
+              },
+              {
+                "approved_by": null,
+                "code": null,
+                "form": "unsupported",
+                "status": "unsupported",
+                "subject": "sha256:5483660d9181a0467c8382b495d0a4b75084f84975685442dd379c541d0b5332",
                 "target": null
               },
               {
@@ -6969,6 +6985,14 @@
                 "code": null,
                 "form": "unsupported",
                 "status": "unsupported",
+                "subject": "sha256:5483660d9181a0467c8382b495d0a4b75084f84975685442dd379c541d0b5332",
+                "target": null
+              },
+              {
+                "approved_by": null,
+                "code": null,
+                "form": "unsupported",
+                "status": "unsupported",
                 "subject": "urn:example:destination",
                 "target": null
               }
@@ -7126,6 +7150,14 @@
                 "form": "unsupported",
                 "status": "unsupported",
                 "subject": "node-7",
+                "target": null
+              },
+              {
+                "approved_by": null,
+                "code": null,
+                "form": "unsupported",
+                "status": "unsupported",
+                "subject": "sha256:5483660d9181a0467c8382b495d0a4b75084f84975685442dd379c541d0b5332",
                 "target": null
               },
               {
@@ -7319,7 +7351,8 @@
               "{\"author\":\"sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c\",\"body\":{\"action\":\"grant\",\"attestation\":{\"institution\":\"BE7wuTSBJWKXEYFcHPM1bUUBblWtqEx6BEAVKPDtZ_j2mtpJjt6TKWoKwPlATPf_dD9F6ythp6P9PLaWaJVmxWw\",\"issued_s\":1794441615,\"kind\":\"phi\",\"not_after_s\":2425593615,\"sig\":\"h96ifqPRAoj7ld6_wDmvfAeNGo05u8Nb-m-McBNW2cIcuiz4BrIJTSMLmGUPoJ7-RIZ0KzAgPg1mg-fad9kDgg\",\"subject\":\"https://*.model.example/v1\",\"subject_kind\":\"endpoint\"}},\"clock\":{\"ms\":1794441615000,\"n\":0},\"follows\":[\"sha256:1717aaaa6443a0ff122ec3fe9faae8537528a7c8fda5630d9368fc2cf1f15f36\"],\"mesh\":\"sha256:391b4f63ec61e49b536e454e8101d41b62b77c26aa440cc03653fb48e31c1b46\",\"presence_sig\":\"qelvGLt4Q3TBjBYNVyTaDPipEJQlzZJby-o-v5NSmzlPybqw10lodpFi9qwC61gkKnfMKV3AuiEnjM1MG7jjpg\",\"sig\":\"-mq8peSm4TxweosRJDQAYA3JfPxzbAUWHzgG7govFcF7xHiCqcyP-CQ493Y-FzP46pju9UshsKO8Jp-xKDLKug\",\"type\":\"phi_approval\",\"v\":2}",
               "{\"author\":\"sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c\",\"body\":{\"action\":\"grant\",\"attestation\":{\"institution\":\"BE7wuTSBJWKXEYFcHPM1bUUBblWtqEx6BEAVKPDtZ_j2mtpJjt6TKWoKwPlATPf_dD9F6ythp6P9PLaWaJVmxWw\",\"issued_s\":1794441616,\"kind\":\"phi\",\"not_after_s\":2425593616,\"sig\":\"VqmPcrkBcwccvn6fOS9M_51ktgrjVXvfSTpQ6OgsLlsEwnPrrCYZd1bBondjZquUu6R86TDaufsEZPsg8jhrTQ\",\"subject\":\"https://API.model.example/v2\",\"subject_kind\":\"endpoint\"}},\"clock\":{\"ms\":1794441616000,\"n\":0},\"follows\":[\"sha256:c33dee9efd657eade5712f0e3fff559087f706c570e85d7b9ac704be3b1bfb5f\"],\"mesh\":\"sha256:391b4f63ec61e49b536e454e8101d41b62b77c26aa440cc03653fb48e31c1b46\",\"presence_sig\":\"geMfELCgz91xV_su5SzTfWQZnt4cimUu0KcFw1q5dccBXSmLIW3nKECszg6lUMYMRB4p5TjCkSXqahqvlYDBag\",\"sig\":\"Ecx__2GGKFgwBeqciWmTxeu2JuU1cw5dqvJxwH_n-2p2UJufkG73S4jwv7lh7cqSTpi_zSyqO-iERrKHG8Rnwg\",\"type\":\"phi_approval\",\"v\":2}",
               "{\"author\":\"sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c\",\"body\":{\"action\":\"grant\",\"attestation\":{\"institution\":\"BE7wuTSBJWKXEYFcHPM1bUUBblWtqEx6BEAVKPDtZ_j2mtpJjt6TKWoKwPlATPf_dD9F6ythp6P9PLaWaJVmxWw\",\"issued_s\":1794441617,\"kind\":\"phi\",\"not_after_s\":2425593617,\"sig\":\"KJbqZZUmS4KuSs73ffCCGcJI6yQ1oh5yvB6TQ8vlHUw3fkFaMnCh9sjnZvNdqWLJOL2xgqkB8OPMbu1XhNq-DA\",\"subject\":\"urn:example:destination\",\"subject_kind\":\"endpoint\"}},\"clock\":{\"ms\":1794441617000,\"n\":0},\"follows\":[\"sha256:4f52134119a8e7f1b82ee78905f3195a2236be259be3631d3e520306fcad816f\"],\"mesh\":\"sha256:391b4f63ec61e49b536e454e8101d41b62b77c26aa440cc03653fb48e31c1b46\",\"presence_sig\":\"mm2Y8v836MM6K356EamPZxcWlccjbyHJSestvrhKk30RfSgh_3HvFzXvccRp0rL1LOwW0lbFYGhDDZCW-mW7Vg\",\"sig\":\"n1OGO442qeUpJroWmD3Uo2Xy6jaGZ25v-39FU4-SpRgQblpWYvLGkouCXXkEgx16ADQYkKLImogz4gKj6JCoGg\",\"type\":\"phi_approval\",\"v\":2}",
-              "{\"author\":\"sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c\",\"body\":{\"action\":\"grant\",\"attestation\":{\"institution\":\"BE7wuTSBJWKXEYFcHPM1bUUBblWtqEx6BEAVKPDtZ_j2mtpJjt6TKWoKwPlATPf_dD9F6ythp6P9PLaWaJVmxWw\",\"issued_s\":1794441618,\"kind\":\"phi\",\"not_after_s\":2425593618,\"sig\":\"RbIvwlH3BrQ1F-SgFukWk-kTBHBh5qEmbgdCAEHoS7F0lcgwjox6wYa7kXmSuJTcGBSj8AnBOLi5Jx6It52tCQ\",\"subject\":\"node-7\",\"subject_kind\":\"node\"}},\"clock\":{\"ms\":1794441618000,\"n\":0},\"follows\":[\"sha256:3244e5cde9bbe3293e35d79c0935eef65c9d32247d805c20371089ff87656286\"],\"mesh\":\"sha256:391b4f63ec61e49b536e454e8101d41b62b77c26aa440cc03653fb48e31c1b46\",\"presence_sig\":\"EOWpHUhHnqCQDt6ez5PLq3K3074sIzhYC5xqFyS1sB1wPn54WD0q03mXEr8yWDp_DvH494k-WeGubW2MT2qJzQ\",\"sig\":\"3-LHMLB1xLFc0fbnvexSkHz_4gEBB2xCUOLiCQ07rZNgBzXMRvamJn39ZWJPRD8Vj1TyzdP_IUsQD0kayHTpIQ\",\"type\":\"phi_approval\",\"v\":2}"
+              "{\"author\":\"sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c\",\"body\":{\"action\":\"grant\",\"attestation\":{\"institution\":\"BE7wuTSBJWKXEYFcHPM1bUUBblWtqEx6BEAVKPDtZ_j2mtpJjt6TKWoKwPlATPf_dD9F6ythp6P9PLaWaJVmxWw\",\"issued_s\":1794441618,\"kind\":\"phi\",\"not_after_s\":2425593618,\"sig\":\"HEqmqrK0YNFqaHKS18yPL34F-GIsxesTtLiFtZ-1KbBBAL_rLghxlobOso8JzwD8qLxaK9GrW4dePQjq-HRnDA\",\"subject\":\"sha256:5483660d9181a0467c8382b495d0a4b75084f84975685442dd379c541d0b5332\",\"subject_kind\":\"endpoint\"}},\"clock\":{\"ms\":1794441618000,\"n\":0},\"follows\":[\"sha256:3244e5cde9bbe3293e35d79c0935eef65c9d32247d805c20371089ff87656286\"],\"mesh\":\"sha256:391b4f63ec61e49b536e454e8101d41b62b77c26aa440cc03653fb48e31c1b46\",\"presence_sig\":\"vQ8mPbP5wB9uQ214vmMatx_Qt-jjuWzhea0N6kibSAdWlUnNTQH6lAmD4Z3eUkq4qe2temvdxJDLGzTIfGvscg\",\"sig\":\"kw7-TcaLnqvFL6SfEubRaT1PGuAOrr3e8IL-j76PLGJsOVykzqEGTaZtuvBzxz3VAOYHwG_dDcbuwF5uF2R9Rw\",\"type\":\"phi_approval\",\"v\":2}",
+              "{\"author\":\"sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c\",\"body\":{\"action\":\"grant\",\"attestation\":{\"institution\":\"BE7wuTSBJWKXEYFcHPM1bUUBblWtqEx6BEAVKPDtZ_j2mtpJjt6TKWoKwPlATPf_dD9F6ythp6P9PLaWaJVmxWw\",\"issued_s\":1794441619,\"kind\":\"phi\",\"not_after_s\":2425593619,\"sig\":\"5G6eYdLMnOGy_Uksd2DESb5QzF5T5szV49VDTIp0QLk5Nf3_5uYaMlBErvZH8AYXmH__cS_sDEeVzvr0waB2UQ\",\"subject\":\"node-7\",\"subject_kind\":\"node\"}},\"clock\":{\"ms\":1794441619000,\"n\":0},\"follows\":[\"sha256:1d0a6109fd9f0e0ed243deca32f300964b29d0a360f42f2368ff75036231bfd0\"],\"mesh\":\"sha256:391b4f63ec61e49b536e454e8101d41b62b77c26aa440cc03653fb48e31c1b46\",\"presence_sig\":\"adlgn0WSL4Gz4l3AZf6AHwwWA-EObTGzTImqC7x84pAzQ1A37DWcn9k81W_XJxwGTqnvo1endtd4Z-3UjEkqhA\",\"sig\":\"Ae0QuC_i7mqhnHsMHmyHFS-0qIfBDY0tx2ulC3vg7Osn9plFMxftwjqgQTIfWfPlX09hSUW8wlCjopT-0N5qwQ\",\"type\":\"phi_approval\",\"v\":2}"
             ],
             "entry_names": [
               "grant_model",
@@ -7330,6 +7363,7 @@
               "ffi_wildcard",
               "ffi_not_canonical",
               "ffi_unknown_form",
+              "ffi_bare_mesh_id",
               "legacy_node_subject"
             ],
             "event_names": [],
@@ -7457,7 +7491,7 @@
               "sha256:5483660d9181a0467c8382b495d0a4b75084f84975685442dd379c541d0b5332"
             ],
             "entries": [
-              "{\"author\":\"sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c\",\"body\":{\"action\":\"revoke\",\"subject\":\"https://mcp.research.example/mcp\"},\"clock\":{\"ms\":1794441619000,\"n\":0},\"follows\":[\"sha256:ce94be1a52ae123ff00bfa4e53b8868016101ac49d7fdcaf0e534f34295a4e48\"],\"mesh\":\"sha256:391b4f63ec61e49b536e454e8101d41b62b77c26aa440cc03653fb48e31c1b46\",\"presence_sig\":\"HZU4oBZgFh_MtrIyXACzZP3DQ0RKLYutb6mYOkGNkVBFPDNw0fu2zrh8oEdIVc20eyi6QnMwo-DACumjEYeAeA\",\"sig\":\"G0RPZaBii8S2xuTnx_i6Oe6zhlrFV3KxJIZFhR8-ZaMujGAmHHK5vPZj429F4N6cjdilAUSgpmN0qYiMWKvkrw\",\"type\":\"phi_approval\",\"v\":2}"
+              "{\"author\":\"sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c\",\"body\":{\"action\":\"revoke\",\"subject\":\"https://mcp.research.example/mcp\"},\"clock\":{\"ms\":1794441620000,\"n\":0},\"follows\":[\"sha256:7dd19b8ea760e4abfda594298f0a00e918ba802821047458143c99690418dfbe\"],\"mesh\":\"sha256:391b4f63ec61e49b536e454e8101d41b62b77c26aa440cc03653fb48e31c1b46\",\"presence_sig\":\"AhVTrBIYpQf0PJ_JVDby_zjIcNeQCIu8K9dvmTSNVYYZPpIdu_tkiJQaowAXfdmQOtTnCxTbkv2cHnVfYgj-OQ\",\"sig\":\"Eii4N0gEyv9d3vVnwIQT-7xA-UEempx_io55lKuy-N1d4uCK1y9ufqULqOnwIxjEr6e2LlqPRktQnU3uRyB0qA\",\"type\":\"phi_approval\",\"v\":2}"
             ],
             "entry_names": [
               "revoke_service"
@@ -7479,7 +7513,7 @@
               "sha256:5483660d9181a0467c8382b495d0a4b75084f84975685442dd379c541d0b5332"
             ],
             "entries": [
-              "{\"author\":\"sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c\",\"body\":{\"action\":\"grant\",\"attestation\":{\"institution\":\"BE7wuTSBJWKXEYFcHPM1bUUBblWtqEx6BEAVKPDtZ_j2mtpJjt6TKWoKwPlATPf_dD9F6ythp6P9PLaWaJVmxWw\",\"issued_s\":1794441620,\"kind\":\"phi\",\"not_after_s\":2425593620,\"sig\":\"Dgboflvi1zPr0rJZiam6DgBDOBytwDSdzEJpNR71ExRyHZlRygyv0tpK3dIgSHGlWcYuFtnp0CRCUSIRKQJb4w\",\"subject\":\"https://mcp.research.example/mcp\",\"subject_kind\":\"endpoint\"}},\"clock\":{\"ms\":1794441620000,\"n\":0},\"follows\":[\"sha256:fe15ffcd73feb3659a1a03eecee3e60638e612cb0f82c34ef9d3183c6a14da0d\"],\"mesh\":\"sha256:391b4f63ec61e49b536e454e8101d41b62b77c26aa440cc03653fb48e31c1b46\",\"presence_sig\":\"_SjRuj8nsU2onYunhB7unql2rOg06TZHph9w_i9hO5knHqJkv01sXSSRKEcaexw43Np2aXa8gOf_C6QC0dW-oA\",\"sig\":\"Pj7oD9c5elXaYd8-o7_BXRD0q0Xwudss72id0TT7QVtIfWHgPvA2r6c4zGG-zqygksvwXILkPWJVCVwpacqawg\",\"type\":\"phi_approval\",\"v\":2}"
+              "{\"author\":\"sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c\",\"body\":{\"action\":\"grant\",\"attestation\":{\"institution\":\"BE7wuTSBJWKXEYFcHPM1bUUBblWtqEx6BEAVKPDtZ_j2mtpJjt6TKWoKwPlATPf_dD9F6ythp6P9PLaWaJVmxWw\",\"issued_s\":1794441621,\"kind\":\"phi\",\"not_after_s\":2425593621,\"sig\":\"sam9dbE09FP881Ut007L96JkC0Vouk6owQECrGwMSWNdwrujyjSmOnLuj4EuBHKvfcAV6XH1SinOatXMshq_Vg\",\"subject\":\"https://mcp.research.example/mcp\",\"subject_kind\":\"endpoint\"}},\"clock\":{\"ms\":1794441621000,\"n\":0},\"follows\":[\"sha256:38d8b96b405f49babda1f78e24f28df821094bbac641a4052778dc8238f14e53\"],\"mesh\":\"sha256:391b4f63ec61e49b536e454e8101d41b62b77c26aa440cc03653fb48e31c1b46\",\"presence_sig\":\"nhNGivG-XcrdLIGYd-SkMU2epz96xw2FNlWWQUaWIvEQNKVOqXOIyvy0rgsB8BFjXUtk2nr_bpOxSApSeisRbw\",\"sig\":\"i7EsIP_sdr-2t73tIPRrUMNCuQT8FEXbgx5CNcgfU28Ba3rjzTCX7yFZH5dPY11bJzrJMniW-QuYb6lYaJfxmA\",\"type\":\"phi_approval\",\"v\":2}"
             ],
             "entry_names": [
               "grant_service_again"

@@ -923,9 +923,11 @@ def view(
         )
     destinations = []
     for subject in sorted(history):
-        if is_device_id(subject):
+        if subject in state["admitted"]:
             continue
         parsed = parse_subject(subject)
+        if parsed["form"] == "device":
+            parsed = _subject("unsupported")
         status, code, approved_by = _status(state, subject, parsed, contacts)
         destinations.append(
             {

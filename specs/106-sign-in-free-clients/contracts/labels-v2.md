@@ -17,7 +17,7 @@ The effect is `{"kind", "target", "argument_integrity", "endpoint_phi_approved",
 
 An effect without `outside_service`, with a value that is not a boolean, or with `outside_service` true and a target other than `remote_tool` is `labels.invalid`. So every outside service is a remote tool and none can be labelled another way.
 
-Peer tools stay false because the executing peer runs its own PHI check and refuses a ticket with a `phi` label when it is not in the group. Caller tickets never cover connection tools (OD7).
+Peer tools stay false because the executing peer runs its own PHI check and refuses a ticket with a `phi` label when it is not in the group. Caller tickets never cover connection tools.
 
 ## 2. Flow rules
 
