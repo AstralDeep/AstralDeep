@@ -1,0 +1,545 @@
+"""Runs every caller ticket vector case through the reference and pins the expected outcome of each named case.
+A failure means the contract document, the committed vectors and the reference module disagree.
+"""
+
+import itertools
+import json
+import unicodedata
+from pathlib import Path
+
+import caller_ticket
+import ed25519_strict
+import generate_caller_vectors
+import generate_label_classes
+import nacl.bindings
+import pytest
+from astral_mesh_ref import crypto, testkit
+
+VECTORS = Path(__file__).resolve().parents[2] / "vectors" / "caller-v1.json"
+DOC = json.loads(VECTORS.read_text(encoding="utf-8"))
+CASES = {case["name"]: case for case in DOC["cases"]}
+
+EXPECTED = {
+    "valid_mcp_tool": "ok",
+    "valid_a2a_message": "ok",
+    "pocket_minter_accepted": "ok",
+    "satellite_minter_accepted": "ok",
+    "other_tool_refused": "caller.tool_not_covered",
+    "changed_definition_refused": "caller.tool_changed",
+    "missing_catalog_tool_refused": "caller.tool_changed",
+    "a2a_not_covered_refused": "caller.tool_not_covered",
+    "tools_list_returns_covered_tools": "ok",
+    "tools_list_skips_tool_checks": "ok",
+    "tools_list_still_checks_stop": "caller.stopped",
+    "expired": "caller.expired",
+    "expiry_exactly_now": "caller.expired",
+    "expiry_one_ms_after_now": "ok",
+    "lifetime_31_days": "caller.malformed",
+    "lifetime_30_days_accepted": "ok",
+    "lifetime_30_days_plus_1_ms": "caller.malformed",
+    "expires_equal_to_issued": "caller.malformed",
+    "expires_before_issued": "caller.malformed",
+    "future_issued_ms": "caller.not_yet_valid",
+    "future_issued_ms_at_limit": "ok",
+    "bad_presence_signature": "caller.bad_signature",
+    "high_s_presence_signature": "caller.bad_signature",
+    "wrong_mesh": "caller.mesh_mismatch",
+    "wrong_node": "caller.wrong_node",
+    "removed_device": "caller.device_removed",
+    "unknown_minting_device": "caller.device_removed",
+    "node_minter_refused": "caller.wrong_minter",
+    "raised_stop": "caller.stopped",
+    "revoked": "caller.revoked",
+    "revoke_for_one_tool_ignored": "ok",
+    "revoke_for_one_scope_ignored": "ok",
+    "revoke_of_another_caller_ignored": "ok",
+    "later_grant_does_not_restore_revoked": "caller.revoked",
+    "lowercase_scheme_refused": "caller.malformed",
+    "tool_name_64_accepted": "ok",
+    "method_16_characters_accepted": "ok",
+    "target_2048_characters_accepted": "ok",
+    "proof_method_mismatch": "caller.proof_mismatch",
+    "proof_target_mismatch": "caller.proof_mismatch",
+    "proof_body_mismatch": "caller.proof_mismatch",
+    "proof_ticket_mismatch": "caller.proof_mismatch",
+    "stale_proof": "caller.proof_stale",
+    "proof_at_window_start": "ok",
+    "proof_ahead_5s": "ok",
+    "proof_ahead_beyond_5s": "caller.proof_stale",
+    "proof_just_after_start_pause_accepted": "ok",
+    "proof_at_start_pause_end_refused": "caller.proof_stale",
+    "proof_non_canonical_s": "caller.proof_bad_signature",
+    "bad_holder_signature": "caller.proof_bad_signature",
+    "replayed_nonce": ["ok", "caller.replayed"],
+    "same_nonce_on_another_ticket_accepted": ["ok", "ok"],
+    "restart_refuses_proof_accepted_before": ["ok", "caller.proof_stale"],
+    "replay_store_keeps_a_nonce_to_the_end_of_its_window": [
+        "ok",
+        "caller.replayed",
+        "caller.replayed",
+        "caller.proof_stale",
+    ],
+    "replay_key_ignores_the_target": ["ok", "caller.replayed"],
+    "replay_key_ignores_the_proof_time": ["ok", "caller.replayed"],
+    "restart_refuses_future_proof_accepted_before": ["ok", "caller.proof_stale"],
+    "restart_at_proof_time_minus_5s_refuses": ["ok", "caller.proof_stale"],
+    "restart_just_before_proof_time_minus_5s_accepts": ["ok", "ok"],
+    "restart_values_win_over_the_same_steps_state_patch": ["ok", "ok"],
+    "restart_keeps_earlier_state_patches": [
+        "caller.tool_changed",
+        "caller.tool_changed",
+    ],
+    "failed_signature_does_not_use_the_nonce": ["caller.proof_bad_signature", "ok"],
+    "uncovered_tool_uses_the_nonce": ["caller.tool_not_covered", "caller.replayed"],
+    "order_bad_holder_before_replayed": ["ok", "caller.proof_bad_signature"],
+    "order_replayed_before_tool_not_covered": ["ok", "caller.replayed"],
+    "order_replayed_before_tool_changed": ["ok", "caller.replayed"],
+    "order_malformed_before_proof_malformed": "caller.malformed",
+    "order_proof_malformed_before_mesh": "caller.proof_malformed",
+    "order_mesh_before_node": "caller.mesh_mismatch",
+    "order_node_before_removed": "caller.wrong_node",
+    "order_removed_before_minter": "caller.device_removed",
+    "order_minter_before_bad_signature": "caller.wrong_minter",
+    "order_bad_signature_before_stopped": "caller.bad_signature",
+    "order_stopped_before_expired": "caller.stopped",
+    "order_stopped_before_not_yet_valid": "caller.stopped",
+    "order_expired_before_revoked": "caller.expired",
+    "order_not_yet_valid_before_revoked": "caller.not_yet_valid",
+    "order_revoked_before_proof_mismatch": "caller.revoked",
+    "order_proof_mismatch_before_proof_stale": "caller.proof_mismatch",
+    "order_proof_stale_before_bad_holder": "caller.proof_stale",
+    "unknown_ticket_field": "caller.malformed",
+    "unknown_proof_field": "caller.proof_malformed",
+    "ticket_version_2": "caller.malformed",
+    "ticket_version_true": "caller.malformed",
+    "empty_label": "caller.malformed",
+    "label_64_code_points_accepted": "ok",
+    "label_65_code_points": "caller.malformed",
+    "label_control_character": "caller.malformed",
+    "label_format_character": "caller.malformed",
+    "no_tools": "caller.malformed",
+    "tools_32_accepted": "ok",
+    "tools_33": "caller.malformed",
+    "duplicate_tools": "caller.malformed",
+    "unsorted_tools": "caller.malformed",
+    "tool_name_starts_with_digit": "caller.malformed",
+    "tool_name_too_long": "caller.malformed",
+    "tool_name_with_dot": "caller.malformed",
+    "tool_without_definition": "caller.malformed",
+    "a2a_with_definition": "caller.malformed",
+    "tool_with_extra_field": "caller.malformed",
+    "holder_key_identity_point": "caller.malformed",
+    "holder_key_order_2_point": "caller.malformed",
+    "holder_key_order_4_point": "caller.malformed",
+    "holder_key_order_8_point": "caller.malformed",
+    "holder_key_non_canonical_encoding": "caller.malformed",
+    "holder_key_off_curve": "caller.malformed",
+    "small_order_holder_forged_proof": "caller.malformed",
+    "holder_key_31_bytes": "caller.malformed",
+    "header_too_long": "caller.malformed",
+    "proof_header_too_long": "caller.proof_malformed",
+    "wrong_scheme": "caller.malformed",
+    "bearer_scheme_with_valid_ticket": "caller.malformed",
+    "ticket_not_canonical_spacing": "caller.malformed",
+    "ticket_not_canonical_key_order": "caller.malformed",
+    "ticket_not_base64": "caller.malformed",
+    "ticket_not_utf8": "caller.malformed",
+    "ticket_not_an_object": "caller.malformed",
+    "proof_not_canonical": "caller.proof_malformed",
+    "proof_not_base64": "caller.proof_malformed",
+    "proof_not_utf8": "caller.proof_malformed",
+    "proof_method_17_characters": "caller.proof_malformed",
+    "proof_target_2049_characters": "caller.proof_malformed",
+    "proof_target_without_slash": "caller.proof_malformed",
+    "proof_version_2": "caller.proof_malformed",
+    "missing_proof": "caller.proof_malformed",
+    "first_failure_wins": "caller.mesh_mismatch",
+    "caller_revoke_fold": "ok",
+    "caller_revoke_fold_control_refuses_covered_agent": "ticket.grant_revoked",
+    "caller_revoke_fold_later_grant_keeps_revoke": "ok",
+    "ticket_form_accepted": "ok",
+    "ticket_form_wrong_prefix": "caller.malformed",
+    "ticket_form_wrong_version": "caller.malformed",
+    "ticket_form_not_canonical": "caller.malformed",
+    "ticket_form_canonical_but_invalid": "caller.malformed",
+    "ticket_form_wrong_case_prefix": "caller.malformed",
+    "ticket_form_over_limit": "caller.malformed",
+    "holder_form_accepted": "ok",
+    "key_form_refused_by_minting": "caller.malformed",
+    "holder_form_31_bytes": "caller.malformed",
+    "holder_form_padded": "caller.malformed",
+    "holder_form_wrong_version": "caller.malformed",
+    "holder_form_identity_point": "caller.malformed",
+    "holder_form_order_2_point": "caller.malformed",
+    "holder_form_order_4_point": "caller.malformed",
+    "holder_form_order_8_point": "caller.malformed",
+    "holder_form_non_canonical_encoding": "caller.malformed",
+    "holder_form_off_curve": "caller.malformed",
+    "key_form_derives_holder": "ok",
+    "key_form_31_bytes": "caller.malformed",
+    "holder_form_refused_as_key": "caller.malformed",
+    "proof_small_order_r_identity": "caller.proof_bad_signature",
+    "proof_small_order_r_order_2": "caller.proof_bad_signature",
+    "proof_small_order_r_order_4": "caller.proof_bad_signature",
+    "proof_small_order_r_order_8": "caller.proof_bad_signature",
+    "proof_mixed_order_r_cofactored_only": "caller.proof_bad_signature",
+    "holder_key_mixed_order_2_point": "caller.malformed",
+    "holder_key_mixed_order_4_point": "caller.malformed",
+    "holder_key_mixed_order_8_point": "caller.malformed",
+    "holder_form_mixed_order_2_point": "caller.malformed",
+    "holder_form_mixed_order_4_point": "caller.malformed",
+    "holder_form_mixed_order_8_point": "caller.malformed",
+    "mixed_order_holder_cofactorless_valid_proof": "caller.malformed",
+    "mixed_order_holder_cofactored_only_proof": "caller.malformed",
+    "label_format_character_added_in_unicode_15": "caller.malformed",
+    "label_unassigned_code_point": "caller.malformed",
+    "label_private_use_code_point": "caller.malformed",
+    "label_letter_added_in_unicode_16_accepted": "ok",
+    "label_symbol_added_in_unicode_17_refused": "caller.malformed",
+    "holder_key_identity_point_with_later_expired": "caller.malformed",
+    "holder_key_identity_point_with_later_wrong_mesh": "caller.malformed",
+    "holder_key_identity_point_with_later_bad_presence_signature": "caller.malformed",
+    "holder_key_mixed_order_8_with_later_expired": "caller.malformed",
+    "holder_key_mixed_order_8_with_later_wrong_mesh": "caller.malformed",
+}
+
+
+def outcome(case: dict) -> object:
+    expect = case["expect"]
+    if case["kind"] == "caller_verify_sequence":
+        return [r.get("error", "ok") for r in expect["ok"]["results"]]
+    return expect.get("error", "ok")
+
+
+def test_document_names_the_contract() -> None:
+    assert DOC["format"] == "astral.vectors/v1"
+    assert DOC["name"] == "caller-v1"
+    assert DOC["spec"] == "106/contracts/caller-ticket.md"
+
+
+def test_vectors_cover_exactly_the_named_cases() -> None:
+    assert set(CASES) == set(EXPECTED)
+    assert len(DOC["cases"]) == len(CASES)
+
+
+@pytest.mark.parametrize("name", sorted(EXPECTED))
+def test_case_reproduces_its_committed_expectation(name: str) -> None:
+    case = CASES[name]
+    assert caller_ticket.run(case["kind"], case["input"]) == case["expect"]
+
+
+@pytest.mark.parametrize("name", sorted(EXPECTED))
+def test_case_has_the_contracted_outcome(name: str) -> None:
+    assert outcome(CASES[name]) == EXPECTED[name]
+
+
+def test_every_verifier_code_is_exercised() -> None:
+    seen = set()
+    for want in EXPECTED.values():
+        seen.update(want if isinstance(want, list) else [want])
+    wanted = set(caller_ticket.CODES) - {"caller.tool_unavailable", "caller.no_catalog"}
+    assert wanted <= seen
+
+
+def test_adjacent_steps_are_pinned_in_the_verification_order() -> None:
+    order = [
+        "malformed", "proof_malformed", "mesh", "node", "removed", "minter",
+        "bad_signature", "stopped", "expired", "revoked", "proof_mismatch",
+        "proof_stale", "bad_holder",
+    ]  # fmt: skip
+    for first, second in itertools.pairwise(order):
+        assert f"order_{first}_before_{second}" in CASES, (first, second)
+    assert "order_not_yet_valid_before_revoked" in CASES
+
+
+def test_published_test_keys_are_the_public_labels() -> None:
+    keys = DOC["test_keys"]
+    assert keys["holder_seed_hex"] == testkit.seed("caller-v1/holder").hex()
+    assert keys["stranger_seed_hex"] == testkit.seed("caller-v1/stranger").hex()
+    for name, hex_value in keys["presence_scalar_hex"].items():
+        assert int(hex_value, 16) == testkit.scalar(f"local-v2/{name}/presence")
+
+
+def test_published_seed_recomputes_the_holder_proof_bytes() -> None:
+    case = CASES["valid_mcp_tool"]["input"]
+    proof = caller_ticket.strict_loads(caller_ticket.b64url_decode(case["proof"]))
+    body = {k: v for k, v in proof.items() if k != "sig"}
+    again = caller_ticket.sign_proof(
+        bytes.fromhex(DOC["test_keys"]["holder_seed_hex"]), body
+    )
+    assert again["sig"] == proof["sig"]
+    ticket = caller_ticket.strict_loads(
+        caller_ticket.b64url_decode(case["authorization"].split(" ")[1])
+    )
+    public = crypto.ed25519_public(bytes.fromhex(DOC["test_keys"]["holder_seed_hex"]))
+    assert ticket["holder"] == caller_ticket.b64url_encode(public)
+
+
+def test_generator_reproduces_the_committed_file() -> None:
+    assert generate_caller_vectors.render() == VECTORS.read_text(encoding="utf-8")
+
+
+def test_ordinary_authority_passes_beside_a_caller_revoke_that_is_present() -> None:
+    case = CASES["caller_revoke_fold"]["input"]
+    assert case["grants"] == []
+    assert any(k.startswith("caller:") and k.endswith("/*/*") for k in case["revokes"])
+    assert CASES["caller_revoke_fold"]["expect"]["ok"]["revoked"] == [case["caller"]]
+
+
+def test_a_covering_agent_revoke_is_refused_by_the_same_check() -> None:
+    control = CASES["caller_revoke_fold_control_refuses_covered_agent"]["input"]
+    assert "agent-a/*/*" in control["revokes"]
+
+
+def test_restart_pause_and_window_constants() -> None:
+    assert caller_ticket.PROOF_WINDOW_MS == 120000
+    assert caller_ticket.PROOF_AHEAD_MS == 5000
+    assert caller_ticket.RESTART_PAUSE_MS == 5000
+    assert caller_ticket.MINTER_KINDS == ("desktop", "pocket", "satellite")
+
+
+def test_ticket_text_form_round_trips_to_the_authorization_header() -> None:
+    text = CASES["ticket_form_accepted"]["input"]["text"]
+    out = CASES["ticket_form_accepted"]["expect"]["ok"]
+    assert out["authorization"] == "AstralCaller " + text.removeprefix(
+        caller_ticket.TICKET_TEXT
+    )
+
+
+def test_a_restart_keeps_the_state_patches_made_before_it() -> None:
+    case = CASES["restart_keeps_earlier_state_patches"]["input"]
+    assert "restart" in case["steps"][1] and "state" not in case["steps"][1]
+
+
+def test_lifetime_choices_are_the_contracted_set() -> None:
+    assert caller_ticket.LIFETIMES == {
+        "1h": 3600,
+        "1d": 86400,
+        "7d": 604800,
+        "30d": 2592000,
+    }
+    assert caller_ticket.DEFAULT_LIFETIME == "7d"
+
+
+def test_every_test_device_has_a_real_roster_kind() -> None:
+    from astral_mesh_ref import roster
+
+    state = CASES["valid_mcp_tool"]["input"]["state"]
+    assert {m["kind"] for m in state["members"].values()} == set(roster.KINDS)
+
+
+def test_undecodable_input_never_raises() -> None:
+    state = CASES["valid_mcp_tool"]["input"]["state"]
+    for header in ("AstralCaller \udcff", "AstralCaller " + "\u00e9" * 10, None, 7):
+        out = caller_ticket.run(
+            "caller_verify",
+            {"state": state, "authorization": header, "proof": "x", "request": {}},
+        )
+        assert out == {"error": "caller.malformed"}
+
+
+def test_strict_verifier_refuses_what_the_library_alone_accepts() -> None:
+    identity = bytes([1]) + bytes(31)
+    forged = identity + bytes(32)
+    assert crypto.ed25519_verify(identity, b"any message", forged)
+    assert not ed25519_strict.verify_strict(identity, b"any message", forged)
+
+
+def test_point_decoding_rules() -> None:
+    base = crypto.ed25519_public(testkit.seed("caller-v1/holder"))
+    assert ed25519_strict.usable_public_key(base)
+    assert not ed25519_strict.usable_public_key(bytes(31))
+    assert (
+        ed25519_strict.decode_point(bytes([1]) + bytes([0]) * 30 + bytes([0x80]))
+        is None
+    )
+    assert ed25519_strict.decode_point(bytes.fromhex("ee" + "ff" * 30 + "7f")) is None
+
+
+def test_strict_verifier_refuses_small_order_r_and_high_s() -> None:
+    seed = testkit.seed("caller-v1/holder")
+    public = crypto.ed25519_public(seed)
+    sig = crypto.ed25519_sign(seed, b"m")
+    assert ed25519_strict.verify_strict(public, b"m", sig)
+    high = int.from_bytes(sig[32:], "little") + ed25519_strict.L
+    assert not ed25519_strict.verify_strict(
+        public, b"m", sig[:32] + high.to_bytes(32, "little")
+    )
+    identity = bytes([1]) + bytes(31)
+    honest = generate_caller_vectors.schnorr(seed, public, identity, 0, b"m")
+    assert crypto.ed25519_verify(public, b"m", honest)
+    assert generate_caller_vectors.cofactored_valid(public, b"m", honest)
+    assert not ed25519_strict.verify_strict(public, b"m", honest)
+    assert not ed25519_strict.verify_strict(public, b"m", sig[:63])
+
+
+def test_strict_checks_hold_without_the_library(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seed = testkit.seed("caller-v1/holder")
+    public = crypto.ed25519_public(seed)
+    sig = crypto.ed25519_sign(seed, b"m")
+    monkeypatch.setattr(ed25519_strict.crypto, "ed25519_verify", lambda *_: True)
+    assert ed25519_strict.verify_strict(public, b"m", sig)
+    high = int.from_bytes(sig[32:], "little") + ed25519_strict.L
+    assert not ed25519_strict.verify_strict(
+        public, b"m", sig[:32] + high.to_bytes(32, "little")
+    )
+    for name in ("identity", "order_2", "order_4", "order_8"):
+        r = generate_caller_vectors.small_order_points()[name]
+        assert not ed25519_strict.verify_strict(public, b"m", r + sig[32:]), name
+    mixed = generate_caller_vectors.mixed_order_holder_keys(public)
+    for name, key in mixed.items():
+        assert not ed25519_strict.verify_strict(key, b"m", sig), name
+
+
+def _proof_signature(case: dict) -> tuple[bytes, bytes, bytes]:
+    case_input = case["input"]
+    ticket = caller_ticket.strict_loads(
+        caller_ticket.b64url_decode(case_input["authorization"].split(" ")[1])
+    )
+    proof = caller_ticket.strict_loads(caller_ticket.b64url_decode(case_input["proof"]))
+    message = caller_ticket.signing_message(caller_ticket.PROOF_CONTEXT, proof)
+    return (
+        caller_ticket.b64url_decode(ticket["holder"]),
+        message,
+        caller_ticket.b64url_decode(proof["sig"]),
+    )
+
+
+def test_small_order_r_vectors_carry_an_s_that_is_honest_for_that_r() -> None:
+    for name in ("identity", "order_2", "order_4", "order_8"):
+        public, message, signature = _proof_signature(
+            CASES["proof_small_order_r_" + name]
+        )
+        point = ed25519_strict.decode_point(signature[:32])
+        assert point is not None and ed25519_strict.small_order(point)
+        assert generate_caller_vectors.cofactored_valid(public, message, signature)
+        assert crypto.ed25519_verify(public, message, signature) == (name == "identity")
+    public, message, signature = _proof_signature(
+        CASES["proof_mixed_order_r_cofactored_only"]
+    )
+    point = ed25519_strict.decode_point(signature[:32])
+    assert point is not None and not ed25519_strict.small_order(point)
+    assert not ed25519_strict.torsion_free(point)
+    assert generate_caller_vectors.cofactored_valid(public, message, signature)
+    assert not crypto.ed25519_verify(public, message, signature)
+
+
+def test_mixed_order_vectors_hold_keys_outside_the_prime_order_subgroup() -> None:
+    for name in ("mixed_order_2", "mixed_order_4", "mixed_order_8"):
+        ticket = CASES["holder_key_" + name + "_point"]["input"]["authorization"]
+        body = caller_ticket.strict_loads(
+            caller_ticket.b64url_decode(ticket.split(" ")[1])
+        )
+        point = ed25519_strict.decode_point(caller_ticket.b64url_decode(body["holder"]))
+        assert point is not None
+        assert not ed25519_strict.small_order(point)
+        assert not ed25519_strict.torsion_free(point)
+    public, message, signature = _proof_signature(
+        CASES["mixed_order_holder_cofactorless_valid_proof"]
+    )
+    assert crypto.ed25519_verify(public, message, signature)
+    public, message, signature = _proof_signature(
+        CASES["mixed_order_holder_cofactored_only_proof"]
+    )
+    assert not crypto.ed25519_verify(public, message, signature)
+    assert generate_caller_vectors.cofactored_valid(public, message, signature)
+
+
+def test_prime_order_holder_key_is_usable() -> None:
+    seed = testkit.seed("caller-v1/holder")
+    public = crypto.ed25519_public(seed)
+    point = ed25519_strict.decode_point(public)
+    assert point is not None and ed25519_strict.torsion_free(point)
+    assert ed25519_strict.usable_public_key(public)
+    scalar = generate_caller_vectors.clamped_scalar(seed)
+    assert (
+        ed25519_strict.encode_point(
+            ed25519_strict.multiply(ed25519_strict.BASE, scalar)
+        )
+        == public
+    )
+    assert ed25519_strict.multiply(ed25519_strict.BASE, ed25519_strict.L) == (0, 1)
+
+
+def test_no_non_canonical_encoding_of_a_usable_key_exists() -> None:
+    for excess in range(19):
+        for sign in (0, 1):
+            raw = ((excess + ed25519_strict.P) | sign << 255).to_bytes(32, "little")
+            assert ed25519_strict.decode_point(raw) is None
+            point = ed25519_strict.decode_point(
+                (excess | sign << 255).to_bytes(32, "little")
+            )
+            assert (
+                point is None
+                or ed25519_strict.small_order(point)
+                or not ed25519_strict.torsion_free(point)
+            ), (excess, sign)
+    for y in (1, ed25519_strict.P - 1):
+        point = ed25519_strict.decode_point(y.to_bytes(32, "little"))
+        assert point is not None and point[0] == 0
+        assert ed25519_strict.small_order(point)
+        assert (
+            ed25519_strict.decode_point((y | 1 << 255).to_bytes(32, "little")) is None
+        )
+
+
+def test_holder_key_rule_agrees_with_libsodium_point_validation() -> None:
+    names = [
+        "accepted",
+        "identity_point",
+        "order_2_point",
+        "order_4_point",
+        "order_8_point",
+        "non_canonical_encoding",
+        "off_curve",
+        "mixed_order_2_point",
+        "mixed_order_4_point",
+        "mixed_order_8_point",
+    ]
+    for name in names:
+        text = CASES["holder_form_" + name]["input"]["text"]
+        key = caller_ticket.b64url_decode(text.removeprefix(caller_ticket.HOLDER_TEXT))
+        usable = ed25519_strict.usable_public_key(key)
+        assert usable == (name == "accepted"), name
+        assert usable == bool(nacl.bindings.crypto_core_ed25519_is_valid_point(key))
+
+
+def test_reference_reads_labels_from_the_committed_table_only() -> None:
+    source = Path(caller_ticket.__file__).read_text(encoding="utf-8")
+    assert "unicodedata" not in source
+    assert caller_ticket.LABEL_CLASSES.name == "label_classes.json"
+
+
+def test_label_table_is_the_unicode_16_refused_classes() -> None:
+    table = json.loads(caller_ticket.LABEL_CLASSES.read_text(encoding="utf-8"))
+    assert table["format"] == "astral.label-classes/v1"
+    assert table["unicode"] == "16.0.0"
+    assert set(table["refused"]) == {"Cc", "Cf", "Cs", "Co", "Cn"}
+    spans = sorted(tuple(s) for runs in table["refused"].values() for s in runs)
+    for first, last in spans:
+        assert 0 <= first <= last <= 0x10FFFF
+    for (_, last), (first, _) in itertools.pairwise(spans):
+        assert last < first
+    refused = caller_ticket.refused_in_label
+    for point in (0x0, 0x7, 0x9F, 0xAD, 0x200B, 0x13439, 0x0378, 0xD800, 0xE000):
+        assert refused(chr(point)), hex(point)
+    for point in (0x10FFFD, 0xF0000, 0xFFFF, 0x10FFFF):
+        assert refused(chr(point)), hex(point)
+    for point in (0x41, 0x20, 0xA0, 0x1F600, 0x10D50, 0x105C0, 0x4E00):
+        assert not refused(chr(point)), hex(point)
+
+
+def test_label_table_ranges_merge_adjacent_code_points() -> None:
+    categories = {0: "Cc", 1: "Cc", 2: "Lu", 3: "Cf", 5: "Cf", 6: "Cf"}
+    out = generate_label_classes.ranges(lambda point: categories.get(point, "Lo"))
+    assert out == {"Cc": [[0, 1]], "Cf": [[3, 3], [5, 6]], "Cs": [], "Co": [], "Cn": []}
+
+
+def test_label_table_generator_needs_unicode_16_data() -> None:
+    if unicodedata.unidata_version == generate_label_classes.UNICODE:
+        generate_label_classes.main(["--check"])
+        return
+    with pytest.raises(SystemExit, match="needs Unicode 16.0.0"):
+        generate_label_classes.main(["--check"])
