@@ -4,6 +4,8 @@ A failure means connection.md, the committed vectors and the connection referenc
 
 import itertools
 import json
+import random
+import re
 from pathlib import Path
 
 import connection
@@ -88,6 +90,9 @@ EXPECTED = {
     "record_endpoint_empty_segment": UNSUP + "record_unsupported",
     "record_endpoint_dot_segment": UNSUP + "record_unsupported",
     "record_endpoint_lowercase_percent": UNSUP + "record_unsupported",
+    "record_endpoint_encoded_dot_segment": UNSUP + "record_unsupported",
+    "record_endpoint_encoded_letter": UNSUP + "record_unsupported",
+    "record_endpoint_reserved_escape_valid": "ok",
     "record_endpoint_port_leading_zero": UNSUP + "record_unsupported",
     "record_endpoint_port_out_of_range": UNSUP + "record_unsupported",
     "record_endpoint_trailing_dot_host": UNSUP + "record_unsupported",
@@ -149,6 +154,7 @@ EXPECTED = {
     "record_name_81": "connection.malformed",
     "record_name_control": "connection.malformed",
     "record_name_bidi_override": "connection.malformed",
+    "record_name_zwj_emoji": "connection.malformed",
     "record_name_not_text": "connection.malformed",
     "record_kind_uppercase": "connection.malformed",
     "record_kind_missing": "connection.malformed",
@@ -205,6 +211,23 @@ EXPECTED = {
         "ignored": ["connection.consent_unknown_device"],
     },
     "fold_unknown_consent_device": {"ignored": ["connection.consent_unknown_device"]},
+    "fold_same_feed_recarry_within_window": {
+        "listed": ["Second:ok"],
+        "ignored": ["connection.consent_reused"],
+    },
+    "fold_order_stale_before_reused": {
+        "listed": ["Second:ok"],
+        "ignored": ["connection.consent_stale"],
+    },
+    "fold_stranger_feed_carries_member_consent": {
+        "ignored": ["connection.consent_foreign_feed"],
+    },
+    "fold_put_from_a_second_feed": {"listed": ["First:ok"]},
+    "fold_state_from_a_second_feed": {
+        "listed": ["First:ok"],
+        "states": ["First:bob:signed_in"],
+    },
+    "fold_remove_from_a_second_feed": {},
     "fold_removed_approval_with_bad_signature_not_listed": {
         "ignored": ["connection.consent_unknown_device"],
     },
@@ -368,6 +391,7 @@ EXPECTED = {
     "exec_port_80": {"host": "mcp.research.example", "port": 80},
     "exec_other_port": {"host": "mcp.research.example", "port": 8443},
     "exec_loopback": {"host": "127.0.0.1", "port": 8765},
+    "exec_entry_not_canonical": "connection.egress_refused",
     "coexistence_deployed_folds": "coexistence",
 }
 
@@ -390,6 +414,7 @@ OAUTH_EXPECTED = {
     "challenge_unterminated_quote": None,
     "challenge_non_ascii": None,
     "challenge_param_without_scheme": None,
+    "challenge_two_header_lines_joined": {"scope": "a"},
     "rm_header_on_origin": [RM + "/mcp"],
     "rm_header_exact_well_known": [RM],
     "rm_header_offsite_host": "connection.resource_metadata_offsite",
@@ -404,6 +429,8 @@ OAUTH_EXPECTED = {
     "rm_header_fragment": "connection.resource_metadata_offsite",
     "rm_header_userinfo": "connection.resource_metadata_offsite",
     "rm_header_dot_segment": "connection.resource_metadata_offsite",
+    "rm_header_encoded_dot_segment": "connection.resource_metadata_offsite",
+    "rm_endpoint_not_canonical": "connection.malformed",
     "rm_header_relative": "connection.resource_metadata_offsite",
     "rm_no_header_path_then_root": [RM + "/mcp", RM],
     "rm_no_header_nested_path": [RM + "/api/mcp", RM],
@@ -445,6 +472,7 @@ OAUTH_EXPECTED = {
         AS + "/.well-known/openid-configuration/tenant1",
         AS + "/tenant1/.well-known/openid-configuration",
     ],
+    "as_urls_issuer_not_canonical": "connection.malformed",
     "select_first_with_s256": AS,
     "select_skips_missing_metadata": "https://login2.research.example",
     "select_skips_absent_s256": "https://login2.research.example",
@@ -460,7 +488,9 @@ OAUTH_EXPECTED = {
     "select_redirect_answer_tries_next_url": AS,
     "select_all_unreachable": "connection.as_unreachable",
     "select_unreachable_and_no_s256": "connection.no_s256",
-    "select_unreachable_and_not_found": "connection.no_s256",
+    "select_unreachable_and_not_found": "connection.as_unreachable",
+    "select_no_valid_metadata_is_unreachable": "connection.as_unreachable",
+    "select_valid_metadata_without_s256_is_no_s256": "connection.no_s256",
     "select_unreachable_then_usable": "https://login2.research.example",
     "select_record_issuer_listed_later": "https://login2.research.example",
     "select_record_issuer_not_listed": "connection.issuer_changed",
@@ -521,6 +551,7 @@ OAUTH_EXPECTED = {
     "bearer_http_downgrade": "connection.token_passthrough",
     "bearer_default_port_spelled": "connection.token_passthrough",
     "bearer_userinfo": "connection.token_passthrough",
+    "bearer_endpoint_not_canonical": "connection.malformed",
 }
 
 PUT_ORDER = [
@@ -532,6 +563,7 @@ PUT_ORDER = [
     "consent_foreign_feed",
     "consent_bad_signature",
     "consent_stale",
+    "consent_reused",
 ]
 
 
@@ -680,6 +712,20 @@ def _codes_in(value: object) -> set[str]:
     return set()
 
 
+def test_the_document_code_table_matches_the_modules() -> None:
+    text = (Path(__file__).resolve().parents[2] / "connection.md").read_text()
+    section = text.split("## 9. Codes", 1)[1].split("\n## ", 1)[0]
+    rows = [line for line in section.splitlines() if line.startswith("| `")]
+    listed = {
+        code
+        for row in rows
+        for code in re.findall(
+            r"`((?:connection|tool)\.[a-z0-9_.]+)`", row.split("|")[1]
+        )
+    }
+    assert listed == set(connection.CODES) | set(connection_oauth.CODES)
+
+
 def test_every_contract_code_is_exercised() -> None:
     seen = _codes_in(list(EXPECTED.values()) + list(OAUTH_EXPECTED.values()))
     wanted = set(connection.CODES) | set(connection_oauth.CODES)
@@ -804,7 +850,39 @@ def test_published_test_devices_are_the_public_labels() -> None:
         )
 
 
+def _corpus() -> list[str]:
+    alphabet = 'Bearer=", \\'
+    exhaustive = [
+        "".join(chars)
+        for size in range(5)
+        for chars in itertools.product(sorted(set(alphabet)), repeat=size)
+    ]
+    rng = random.Random(106)
+    extra = [
+        "".join(rng.choice(alphabet + "abc;\t") for _ in range(rng.randint(5, 24)))
+        for _ in range(2000)
+    ]
+    return exhaustive + extra
+
+
 def test_challenge_parser_never_raises() -> None:
-    for header in ['Bearer "', "Bearer a=", "=", ",,,", "Bearer ,", 'Bearer a="\\']:
+    corpus = _corpus()
+    assert len(corpus) == 6561 + 729 + 81 + 9 + 1 + 2000
+    for header in corpus:
         parsed = connection_oauth.bearer_params(header)
         assert parsed is None or isinstance(parsed, dict)
+        assert isinstance(
+            connection_oauth.bearer_params([header, header]), (dict, type(None))
+        )
+
+
+def test_one_member_writes_from_two_feeds() -> None:
+    bob = DOC["test_devices"]["bob"]
+    assert len(bob["feeds"]) == 2
+    for name in (
+        "fold_put_from_a_second_feed",
+        "fold_state_from_a_second_feed",
+        "fold_remove_from_a_second_feed",
+    ):
+        events = CASES[name]["input"]["events"]
+        assert events[-1]["feed"] == bob["feeds"][1], name

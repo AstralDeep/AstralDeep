@@ -3561,6 +3561,153 @@
     {
       "expect": {
         "ok": {
+          "digest": "sha256:5a5eb84afbb7e6102b15f040a8fc6bbf69633645d71b3539a4853684ba3cae5c",
+          "reason": "connection.record_unsupported",
+          "server": "c44c3d55c",
+          "status": "unsupported"
+        }
+      },
+      "input": {
+        "id": "44c3d55c24475a6459b19b5879e3936a",
+        "value": {
+          "auth": {
+            "client_id": null,
+            "issuer": "https://login.research.example",
+            "resource": "https://mcp.research.example/%2E%2E/mcp",
+            "scheme": "oauth",
+            "scopes": [
+              "mcp.read",
+              "mcp.tools"
+            ]
+          },
+          "device": null,
+          "egress": [
+            "login.research.example",
+            "mcp.research.example"
+          ],
+          "endpoint": "https://mcp.research.example/%2E%2E/mcp",
+          "flow": "phi",
+          "id": "44c3d55c24475a6459b19b5879e3936a",
+          "kind": "mcp-http",
+          "local": false,
+          "name": "First",
+          "tools": [
+            {
+              "hash": "sha256:1aecae58d08399ba76c51a7afc6edf0ff623c4d70361d2a3e663bdfae1cc1c18",
+              "name": "lookup"
+            },
+            {
+              "hash": "sha256:41d37c1c5cedfce12f33f4cc50530377f785608c079d306466f72d0f5f45f00b",
+              "name": "search"
+            }
+          ],
+          "v": 1
+        }
+      },
+      "kind": "connection_record",
+      "name": "record_endpoint_encoded_dot_segment"
+    },
+    {
+      "expect": {
+        "ok": {
+          "digest": "sha256:2252d75ed72f1e901a8947395a035609a4bd9ba39c7ee784201daf354d006624",
+          "reason": "connection.record_unsupported",
+          "server": "c44c3d55c",
+          "status": "unsupported"
+        }
+      },
+      "input": {
+        "id": "44c3d55c24475a6459b19b5879e3936a",
+        "value": {
+          "auth": {
+            "client_id": null,
+            "issuer": "https://login.research.example",
+            "resource": "https://mcp.research.example/%6Dcp",
+            "scheme": "oauth",
+            "scopes": [
+              "mcp.read",
+              "mcp.tools"
+            ]
+          },
+          "device": null,
+          "egress": [
+            "login.research.example",
+            "mcp.research.example"
+          ],
+          "endpoint": "https://mcp.research.example/%6Dcp",
+          "flow": "phi",
+          "id": "44c3d55c24475a6459b19b5879e3936a",
+          "kind": "mcp-http",
+          "local": false,
+          "name": "First",
+          "tools": [
+            {
+              "hash": "sha256:1aecae58d08399ba76c51a7afc6edf0ff623c4d70361d2a3e663bdfae1cc1c18",
+              "name": "lookup"
+            },
+            {
+              "hash": "sha256:41d37c1c5cedfce12f33f4cc50530377f785608c079d306466f72d0f5f45f00b",
+              "name": "search"
+            }
+          ],
+          "v": 1
+        }
+      },
+      "kind": "connection_record",
+      "name": "record_endpoint_encoded_letter"
+    },
+    {
+      "expect": {
+        "ok": {
+          "digest": "sha256:9ace231ac6fe73398c1493fad75a7c21947533f42bb8b805e5c587324dcfc323",
+          "reason": null,
+          "server": "c44c3d55c",
+          "status": "ok"
+        }
+      },
+      "input": {
+        "id": "44c3d55c24475a6459b19b5879e3936a",
+        "value": {
+          "auth": {
+            "client_id": null,
+            "issuer": "https://login.research.example",
+            "resource": "https://mcp.research.example/m%2Fcp",
+            "scheme": "oauth",
+            "scopes": [
+              "mcp.read",
+              "mcp.tools"
+            ]
+          },
+          "device": null,
+          "egress": [
+            "login.research.example",
+            "mcp.research.example"
+          ],
+          "endpoint": "https://mcp.research.example/m%2Fcp",
+          "flow": "phi",
+          "id": "44c3d55c24475a6459b19b5879e3936a",
+          "kind": "mcp-http",
+          "local": false,
+          "name": "First",
+          "tools": [
+            {
+              "hash": "sha256:1aecae58d08399ba76c51a7afc6edf0ff623c4d70361d2a3e663bdfae1cc1c18",
+              "name": "lookup"
+            },
+            {
+              "hash": "sha256:41d37c1c5cedfce12f33f4cc50530377f785608c079d306466f72d0f5f45f00b",
+              "name": "search"
+            }
+          ],
+          "v": 1
+        }
+      },
+      "kind": "connection_record",
+      "name": "record_endpoint_reserved_escape_valid"
+    },
+    {
+      "expect": {
+        "ok": {
           "digest": "sha256:07e2c0f5ad2ab661623049d7ed1b5debd03576beb1552ec8d371677391c1e00a",
           "reason": "connection.record_unsupported",
           "server": "c44c3d55c",
@@ -6364,6 +6511,50 @@
           "id": "44c3d55c24475a6459b19b5879e3936a",
           "kind": "mcp-http",
           "local": false,
+          "name": "Team \ud83d\udc68\u200d\ud83d\udc69",
+          "tools": [
+            {
+              "hash": "sha256:1aecae58d08399ba76c51a7afc6edf0ff623c4d70361d2a3e663bdfae1cc1c18",
+              "name": "lookup"
+            },
+            {
+              "hash": "sha256:41d37c1c5cedfce12f33f4cc50530377f785608c079d306466f72d0f5f45f00b",
+              "name": "search"
+            }
+          ],
+          "v": 1
+        }
+      },
+      "kind": "connection_record",
+      "name": "record_name_zwj_emoji"
+    },
+    {
+      "expect": {
+        "error": "connection.malformed"
+      },
+      "input": {
+        "id": "44c3d55c24475a6459b19b5879e3936a",
+        "value": {
+          "auth": {
+            "client_id": null,
+            "issuer": "https://login.research.example",
+            "resource": "https://mcp.research.example/mcp",
+            "scheme": "oauth",
+            "scopes": [
+              "mcp.read",
+              "mcp.tools"
+            ]
+          },
+          "device": null,
+          "egress": [
+            "login.research.example",
+            "mcp.research.example"
+          ],
+          "endpoint": "https://mcp.research.example/mcp",
+          "flow": "phi",
+          "id": "44c3d55c24475a6459b19b5879e3936a",
+          "kind": "mcp-http",
+          "local": false,
           "name": 7,
           "tools": [
             {
@@ -7984,7 +8175,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -8105,7 +8297,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -8226,7 +8419,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -8389,7 +8583,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -8510,7 +8705,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -8673,7 +8869,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -8794,7 +8991,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -8915,7 +9113,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -9036,7 +9235,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -9157,7 +9357,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -9450,7 +9651,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -9743,7 +9945,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -9782,6 +9985,1218 @@
       },
       "kind": "connection_fold",
       "name": "fold_recarried_by_node_ignored"
+    },
+    {
+      "expect": {
+        "ok": {
+          "connections": [
+            {
+              "approved_by": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+              "event": "sha256:59003e5d481f5ecdcead05ddb56ef3083329ee01b519f22047e981d31f5e8cff",
+              "id": "44c3d55c24475a6459b19b5879e3936a",
+              "reason": null,
+              "record": {
+                "auth": {
+                  "client_id": null,
+                  "issuer": "https://login.research.example",
+                  "resource": "https://mcp.research.example/mcp",
+                  "scheme": "oauth",
+                  "scopes": [
+                    "mcp.read",
+                    "mcp.tools"
+                  ]
+                },
+                "device": null,
+                "egress": [
+                  "login.research.example",
+                  "mcp.research.example"
+                ],
+                "endpoint": "https://mcp.research.example/mcp",
+                "flow": "phi",
+                "id": "44c3d55c24475a6459b19b5879e3936a",
+                "kind": "mcp-http",
+                "local": false,
+                "name": "Second",
+                "tools": [
+                  {
+                    "hash": "sha256:1aecae58d08399ba76c51a7afc6edf0ff623c4d70361d2a3e663bdfae1cc1c18",
+                    "name": "lookup"
+                  },
+                  {
+                    "hash": "sha256:41d37c1c5cedfce12f33f4cc50530377f785608c079d306466f72d0f5f45f00b",
+                    "name": "search"
+                  }
+                ],
+                "v": 1
+              },
+              "server": "c44c3d55c",
+              "states": {},
+              "status": "ok"
+            }
+          ],
+          "ignored": {
+            "sha256:632d0994298c76e274e108958d7f3e2f1834db79da56f52691f8e2c9dd5d0f23": "connection.consent_reused"
+          },
+          "removed_approvals": []
+        }
+      },
+      "input": {
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "consent": {
+                "clock": {
+                  "ms": 1794445199000,
+                  "n": 0
+                },
+                "device": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+                "digest": "sha256:904de894fd3edea10f6cbeb5ecfcc2047773e3cb4985cb32d4b105dd0018b36b",
+                "kind": "connection",
+                "sig": "XjvPh96IsyyMLIzDEw4PtxYOT-MI0xEgDr2uv1vflQ87U3KTJrfiqDiAtWHS5v8QzDjh4kauHCWCEtettEjc0w",
+                "v": 1
+              },
+              "key": "connection/44c3d55c24475a6459b19b5879e3936a",
+              "value": {
+                "auth": {
+                  "client_id": null,
+                  "issuer": "https://login.research.example",
+                  "resource": "https://mcp.research.example/mcp",
+                  "scheme": "oauth",
+                  "scopes": [
+                    "mcp.read",
+                    "mcp.tools"
+                  ]
+                },
+                "device": null,
+                "egress": [
+                  "login.research.example",
+                  "mcp.research.example"
+                ],
+                "endpoint": "https://mcp.research.example/mcp",
+                "flow": "phi",
+                "id": "44c3d55c24475a6459b19b5879e3936a",
+                "kind": "mcp-http",
+                "local": false,
+                "name": "First",
+                "tools": [
+                  {
+                    "hash": "sha256:1aecae58d08399ba76c51a7afc6edf0ff623c4d70361d2a3e663bdfae1cc1c18",
+                    "name": "lookup"
+                  },
+                  {
+                    "hash": "sha256:41d37c1c5cedfce12f33f4cc50530377f785608c079d306466f72d0f5f45f00b",
+                    "name": "search"
+                  }
+                ],
+                "v": 1
+              }
+            },
+            "clock": {
+              "ms": 1794445200000,
+              "n": 0
+            },
+            "feed": "98dbF54AHip3sZoiSvNc6YZDqglrC4XbULQOJNYyqHQ",
+            "id": "sha256:810cc52e6a03a1582fc4afa6a740fb72d45f360a0f2df63745e527cbd9e73d65",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "scope": "mesh",
+            "seq": 1,
+            "type": "settings.set"
+          },
+          {
+            "after": [],
+            "body": {
+              "consent": {
+                "clock": {
+                  "ms": 1794445319000,
+                  "n": 0
+                },
+                "device": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+                "digest": "sha256:c8ab8eac2bdfb7bfea5c41cbb2007a57e48a6363adee8fc47a05b5ba9ca92ce4",
+                "kind": "connection",
+                "sig": "obWKuoOIOuigfv6Ia8yqY7ARzKjndOIMut2EPbpHoEhQuvLp79woo_VIPSsCSzEMkjbH9JP2cdkRI4FJzdgNAw",
+                "v": 1
+              },
+              "key": "connection/44c3d55c24475a6459b19b5879e3936a",
+              "value": {
+                "auth": {
+                  "client_id": null,
+                  "issuer": "https://login.research.example",
+                  "resource": "https://mcp.research.example/mcp",
+                  "scheme": "oauth",
+                  "scopes": [
+                    "mcp.read",
+                    "mcp.tools"
+                  ]
+                },
+                "device": null,
+                "egress": [
+                  "login.research.example",
+                  "mcp.research.example"
+                ],
+                "endpoint": "https://mcp.research.example/mcp",
+                "flow": "phi",
+                "id": "44c3d55c24475a6459b19b5879e3936a",
+                "kind": "mcp-http",
+                "local": false,
+                "name": "Second",
+                "tools": [
+                  {
+                    "hash": "sha256:1aecae58d08399ba76c51a7afc6edf0ff623c4d70361d2a3e663bdfae1cc1c18",
+                    "name": "lookup"
+                  },
+                  {
+                    "hash": "sha256:41d37c1c5cedfce12f33f4cc50530377f785608c079d306466f72d0f5f45f00b",
+                    "name": "search"
+                  }
+                ],
+                "v": 1
+              }
+            },
+            "clock": {
+              "ms": 1794445320000,
+              "n": 0
+            },
+            "feed": "98dbF54AHip3sZoiSvNc6YZDqglrC4XbULQOJNYyqHQ",
+            "id": "sha256:59003e5d481f5ecdcead05ddb56ef3083329ee01b519f22047e981d31f5e8cff",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "scope": "mesh",
+            "seq": 2,
+            "type": "settings.set"
+          },
+          {
+            "after": [],
+            "body": {
+              "consent": {
+                "clock": {
+                  "ms": 1794445199000,
+                  "n": 0
+                },
+                "device": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+                "digest": "sha256:904de894fd3edea10f6cbeb5ecfcc2047773e3cb4985cb32d4b105dd0018b36b",
+                "kind": "connection",
+                "sig": "XjvPh96IsyyMLIzDEw4PtxYOT-MI0xEgDr2uv1vflQ87U3KTJrfiqDiAtWHS5v8QzDjh4kauHCWCEtettEjc0w",
+                "v": 1
+              },
+              "key": "connection/44c3d55c24475a6459b19b5879e3936a",
+              "value": {
+                "auth": {
+                  "client_id": null,
+                  "issuer": "https://login.research.example",
+                  "resource": "https://mcp.research.example/mcp",
+                  "scheme": "oauth",
+                  "scopes": [
+                    "mcp.read",
+                    "mcp.tools"
+                  ]
+                },
+                "device": null,
+                "egress": [
+                  "login.research.example",
+                  "mcp.research.example"
+                ],
+                "endpoint": "https://mcp.research.example/mcp",
+                "flow": "phi",
+                "id": "44c3d55c24475a6459b19b5879e3936a",
+                "kind": "mcp-http",
+                "local": false,
+                "name": "First",
+                "tools": [
+                  {
+                    "hash": "sha256:1aecae58d08399ba76c51a7afc6edf0ff623c4d70361d2a3e663bdfae1cc1c18",
+                    "name": "lookup"
+                  },
+                  {
+                    "hash": "sha256:41d37c1c5cedfce12f33f4cc50530377f785608c079d306466f72d0f5f45f00b",
+                    "name": "search"
+                  }
+                ],
+                "v": 1
+              }
+            },
+            "clock": {
+              "ms": 1794445380000,
+              "n": 0
+            },
+            "feed": "98dbF54AHip3sZoiSvNc6YZDqglrC4XbULQOJNYyqHQ",
+            "id": "sha256:632d0994298c76e274e108958d7f3e2f1834db79da56f52691f8e2c9dd5d0f23",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "scope": "mesh",
+            "seq": 3,
+            "type": "settings.set"
+          }
+        ],
+        "legacy_servers": [],
+        "members": {
+          "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
+            "feeds": [
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
+            ],
+            "kind": "pocket",
+            "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
+          },
+          "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c": {
+            "feeds": [
+              "98dbF54AHip3sZoiSvNc6YZDqglrC4XbULQOJNYyqHQ"
+            ],
+            "kind": "desktop",
+            "presence": "BCp9Kf0eZjRdqdF0vzbv833DVCUwjrnRdn6MDc_QCVtwigBiz78fP24SXkgK0azaXzJa3bZkoAjPetPi-nr2grs"
+          },
+          "sha256:8d212a14e09d4a6e7ac7e0d385dc0c9f363ac57a18f64109675bb39c7e5f88f9": {
+            "feeds": [
+              "45KOxSlVwiUodt6U_ZM-aYYzteGs0VTgXOnJQ27pdPU"
+            ],
+            "kind": "node",
+            "presence": "BEAKyJY7J3JY_3vMcQ58o63lEsmdA7IAV-c_XrsWzM7Tpdj7vnIbZIBNd7fopgvqTN6H3tHBQa821Hj64wxlwos"
+          },
+          "sha256:f3ea926c04008300e4d818ebaef633712b6cd1e0f587f7fcb6052456df08ac7d": {
+            "feeds": [
+              "cHdw1QEbPLkXLxrQM6AZ4P_j8fPIyMvqNNLBBkGXYLg"
+            ],
+            "kind": "satellite",
+            "presence": "BP_xjnS1bz0DPi3k12txbWPE2gUuvQNiml6l7O7MmTQLa72PJXVfJJIVUGO2d1tAXfzehVHSzDGpLRUCetv-53Y"
+          }
+        },
+        "removed": {
+          "sha256:db19eadb01c5419897d86eba86016afe5cb56a5720ff232b742bf17303ec132a": {
+            "feeds": [
+              "99fBC94IcLLi-ZnO2ZP7JJLOUhMVp9jOD1KaVWNSmo0"
+            ],
+            "kind": "desktop",
+            "presence": "BAiTDiaaFHLbVlx9088R2l__FANlP86UWwd_5SHtH8O6Xb6b3GKYZqnoMzULos9Omq28R_dLfWyHBve749R13nI"
+          }
+        }
+      },
+      "kind": "connection_fold",
+      "name": "fold_same_feed_recarry_within_window"
+    },
+    {
+      "expect": {
+        "ok": {
+          "connections": [
+            {
+              "approved_by": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+              "event": "sha256:fab4039b04dd8c151e2bfb2796f067e99512a8c61fcbea221757346a252703b8",
+              "id": "44c3d55c24475a6459b19b5879e3936a",
+              "reason": null,
+              "record": {
+                "auth": {
+                  "client_id": null,
+                  "issuer": "https://login.research.example",
+                  "resource": "https://mcp.research.example/mcp",
+                  "scheme": "oauth",
+                  "scopes": [
+                    "mcp.read",
+                    "mcp.tools"
+                  ]
+                },
+                "device": null,
+                "egress": [
+                  "login.research.example",
+                  "mcp.research.example"
+                ],
+                "endpoint": "https://mcp.research.example/mcp",
+                "flow": "phi",
+                "id": "44c3d55c24475a6459b19b5879e3936a",
+                "kind": "mcp-http",
+                "local": false,
+                "name": "Second",
+                "tools": [
+                  {
+                    "hash": "sha256:1aecae58d08399ba76c51a7afc6edf0ff623c4d70361d2a3e663bdfae1cc1c18",
+                    "name": "lookup"
+                  },
+                  {
+                    "hash": "sha256:41d37c1c5cedfce12f33f4cc50530377f785608c079d306466f72d0f5f45f00b",
+                    "name": "search"
+                  }
+                ],
+                "v": 1
+              },
+              "server": "c44c3d55c",
+              "states": {},
+              "status": "ok"
+            }
+          ],
+          "ignored": {
+            "sha256:4bbb6f4b6f42bd13d30b7a09e1b6af24e2b9176681575459482adcab51d1bb23": "connection.consent_stale"
+          },
+          "removed_approvals": []
+        }
+      },
+      "input": {
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "consent": {
+                "clock": {
+                  "ms": 1794445199000,
+                  "n": 0
+                },
+                "device": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+                "digest": "sha256:904de894fd3edea10f6cbeb5ecfcc2047773e3cb4985cb32d4b105dd0018b36b",
+                "kind": "connection",
+                "sig": "XjvPh96IsyyMLIzDEw4PtxYOT-MI0xEgDr2uv1vflQ87U3KTJrfiqDiAtWHS5v8QzDjh4kauHCWCEtettEjc0w",
+                "v": 1
+              },
+              "key": "connection/44c3d55c24475a6459b19b5879e3936a",
+              "value": {
+                "auth": {
+                  "client_id": null,
+                  "issuer": "https://login.research.example",
+                  "resource": "https://mcp.research.example/mcp",
+                  "scheme": "oauth",
+                  "scopes": [
+                    "mcp.read",
+                    "mcp.tools"
+                  ]
+                },
+                "device": null,
+                "egress": [
+                  "login.research.example",
+                  "mcp.research.example"
+                ],
+                "endpoint": "https://mcp.research.example/mcp",
+                "flow": "phi",
+                "id": "44c3d55c24475a6459b19b5879e3936a",
+                "kind": "mcp-http",
+                "local": false,
+                "name": "First",
+                "tools": [
+                  {
+                    "hash": "sha256:1aecae58d08399ba76c51a7afc6edf0ff623c4d70361d2a3e663bdfae1cc1c18",
+                    "name": "lookup"
+                  },
+                  {
+                    "hash": "sha256:41d37c1c5cedfce12f33f4cc50530377f785608c079d306466f72d0f5f45f00b",
+                    "name": "search"
+                  }
+                ],
+                "v": 1
+              }
+            },
+            "clock": {
+              "ms": 1794445200000,
+              "n": 0
+            },
+            "feed": "98dbF54AHip3sZoiSvNc6YZDqglrC4XbULQOJNYyqHQ",
+            "id": "sha256:1cc9c7c0017ddf4af7b14dccfaa058bb853c92f0458b184c75351494a7d00922",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "scope": "mesh",
+            "seq": 1,
+            "type": "settings.set"
+          },
+          {
+            "after": [],
+            "body": {
+              "consent": {
+                "clock": {
+                  "ms": 1794445319000,
+                  "n": 0
+                },
+                "device": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+                "digest": "sha256:c8ab8eac2bdfb7bfea5c41cbb2007a57e48a6363adee8fc47a05b5ba9ca92ce4",
+                "kind": "connection",
+                "sig": "obWKuoOIOuigfv6Ia8yqY7ARzKjndOIMut2EPbpHoEhQuvLp79woo_VIPSsCSzEMkjbH9JP2cdkRI4FJzdgNAw",
+                "v": 1
+              },
+              "key": "connection/44c3d55c24475a6459b19b5879e3936a",
+              "value": {
+                "auth": {
+                  "client_id": null,
+                  "issuer": "https://login.research.example",
+                  "resource": "https://mcp.research.example/mcp",
+                  "scheme": "oauth",
+                  "scopes": [
+                    "mcp.read",
+                    "mcp.tools"
+                  ]
+                },
+                "device": null,
+                "egress": [
+                  "login.research.example",
+                  "mcp.research.example"
+                ],
+                "endpoint": "https://mcp.research.example/mcp",
+                "flow": "phi",
+                "id": "44c3d55c24475a6459b19b5879e3936a",
+                "kind": "mcp-http",
+                "local": false,
+                "name": "Second",
+                "tools": [
+                  {
+                    "hash": "sha256:1aecae58d08399ba76c51a7afc6edf0ff623c4d70361d2a3e663bdfae1cc1c18",
+                    "name": "lookup"
+                  },
+                  {
+                    "hash": "sha256:41d37c1c5cedfce12f33f4cc50530377f785608c079d306466f72d0f5f45f00b",
+                    "name": "search"
+                  }
+                ],
+                "v": 1
+              }
+            },
+            "clock": {
+              "ms": 1794445320000,
+              "n": 0
+            },
+            "feed": "98dbF54AHip3sZoiSvNc6YZDqglrC4XbULQOJNYyqHQ",
+            "id": "sha256:fab4039b04dd8c151e2bfb2796f067e99512a8c61fcbea221757346a252703b8",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "scope": "mesh",
+            "seq": 2,
+            "type": "settings.set"
+          },
+          {
+            "after": [],
+            "body": {
+              "consent": {
+                "clock": {
+                  "ms": 1794445199000,
+                  "n": 0
+                },
+                "device": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+                "digest": "sha256:904de894fd3edea10f6cbeb5ecfcc2047773e3cb4985cb32d4b105dd0018b36b",
+                "kind": "connection",
+                "sig": "XjvPh96IsyyMLIzDEw4PtxYOT-MI0xEgDr2uv1vflQ87U3KTJrfiqDiAtWHS5v8QzDjh4kauHCWCEtettEjc0w",
+                "v": 1
+              },
+              "key": "connection/44c3d55c24475a6459b19b5879e3936a",
+              "value": {
+                "auth": {
+                  "client_id": null,
+                  "issuer": "https://login.research.example",
+                  "resource": "https://mcp.research.example/mcp",
+                  "scheme": "oauth",
+                  "scopes": [
+                    "mcp.read",
+                    "mcp.tools"
+                  ]
+                },
+                "device": null,
+                "egress": [
+                  "login.research.example",
+                  "mcp.research.example"
+                ],
+                "endpoint": "https://mcp.research.example/mcp",
+                "flow": "phi",
+                "id": "44c3d55c24475a6459b19b5879e3936a",
+                "kind": "mcp-http",
+                "local": false,
+                "name": "First",
+                "tools": [
+                  {
+                    "hash": "sha256:1aecae58d08399ba76c51a7afc6edf0ff623c4d70361d2a3e663bdfae1cc1c18",
+                    "name": "lookup"
+                  },
+                  {
+                    "hash": "sha256:41d37c1c5cedfce12f33f4cc50530377f785608c079d306466f72d0f5f45f00b",
+                    "name": "search"
+                  }
+                ],
+                "v": 1
+              }
+            },
+            "clock": {
+              "ms": 1794445860000,
+              "n": 0
+            },
+            "feed": "98dbF54AHip3sZoiSvNc6YZDqglrC4XbULQOJNYyqHQ",
+            "id": "sha256:4bbb6f4b6f42bd13d30b7a09e1b6af24e2b9176681575459482adcab51d1bb23",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "scope": "mesh",
+            "seq": 3,
+            "type": "settings.set"
+          }
+        ],
+        "legacy_servers": [],
+        "members": {
+          "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
+            "feeds": [
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
+            ],
+            "kind": "pocket",
+            "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
+          },
+          "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c": {
+            "feeds": [
+              "98dbF54AHip3sZoiSvNc6YZDqglrC4XbULQOJNYyqHQ"
+            ],
+            "kind": "desktop",
+            "presence": "BCp9Kf0eZjRdqdF0vzbv833DVCUwjrnRdn6MDc_QCVtwigBiz78fP24SXkgK0azaXzJa3bZkoAjPetPi-nr2grs"
+          },
+          "sha256:8d212a14e09d4a6e7ac7e0d385dc0c9f363ac57a18f64109675bb39c7e5f88f9": {
+            "feeds": [
+              "45KOxSlVwiUodt6U_ZM-aYYzteGs0VTgXOnJQ27pdPU"
+            ],
+            "kind": "node",
+            "presence": "BEAKyJY7J3JY_3vMcQ58o63lEsmdA7IAV-c_XrsWzM7Tpdj7vnIbZIBNd7fopgvqTN6H3tHBQa821Hj64wxlwos"
+          },
+          "sha256:f3ea926c04008300e4d818ebaef633712b6cd1e0f587f7fcb6052456df08ac7d": {
+            "feeds": [
+              "cHdw1QEbPLkXLxrQM6AZ4P_j8fPIyMvqNNLBBkGXYLg"
+            ],
+            "kind": "satellite",
+            "presence": "BP_xjnS1bz0DPi3k12txbWPE2gUuvQNiml6l7O7MmTQLa72PJXVfJJIVUGO2d1tAXfzehVHSzDGpLRUCetv-53Y"
+          }
+        },
+        "removed": {
+          "sha256:db19eadb01c5419897d86eba86016afe5cb56a5720ff232b742bf17303ec132a": {
+            "feeds": [
+              "99fBC94IcLLi-ZnO2ZP7JJLOUhMVp9jOD1KaVWNSmo0"
+            ],
+            "kind": "desktop",
+            "presence": "BAiTDiaaFHLbVlx9088R2l__FANlP86UWwd_5SHtH8O6Xb6b3GKYZqnoMzULos9Omq28R_dLfWyHBve749R13nI"
+          }
+        }
+      },
+      "kind": "connection_fold",
+      "name": "fold_order_stale_before_reused"
+    },
+    {
+      "expect": {
+        "ok": {
+          "connections": [],
+          "ignored": {
+            "sha256:205f9ada8362151e6d7b2979b2f8c3993b0965ea624b6c74957df9968d43cf01": "connection.consent_foreign_feed"
+          },
+          "removed_approvals": []
+        }
+      },
+      "input": {
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "consent": {
+                "clock": {
+                  "ms": 1794445200000,
+                  "n": 0
+                },
+                "device": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+                "digest": "sha256:904de894fd3edea10f6cbeb5ecfcc2047773e3cb4985cb32d4b105dd0018b36b",
+                "kind": "connection",
+                "sig": "EPV7tuKi4DivfCSE0OWjU0Ld2b_HPBoWRixa3tm-tUcTEkLaVEQdi-IlWtZRFA_-lJ7drZoqkXUdGsRHBK94rg",
+                "v": 1
+              },
+              "key": "connection/44c3d55c24475a6459b19b5879e3936a",
+              "value": {
+                "auth": {
+                  "client_id": null,
+                  "issuer": "https://login.research.example",
+                  "resource": "https://mcp.research.example/mcp",
+                  "scheme": "oauth",
+                  "scopes": [
+                    "mcp.read",
+                    "mcp.tools"
+                  ]
+                },
+                "device": null,
+                "egress": [
+                  "login.research.example",
+                  "mcp.research.example"
+                ],
+                "endpoint": "https://mcp.research.example/mcp",
+                "flow": "phi",
+                "id": "44c3d55c24475a6459b19b5879e3936a",
+                "kind": "mcp-http",
+                "local": false,
+                "name": "First",
+                "tools": [
+                  {
+                    "hash": "sha256:1aecae58d08399ba76c51a7afc6edf0ff623c4d70361d2a3e663bdfae1cc1c18",
+                    "name": "lookup"
+                  },
+                  {
+                    "hash": "sha256:41d37c1c5cedfce12f33f4cc50530377f785608c079d306466f72d0f5f45f00b",
+                    "name": "search"
+                  }
+                ],
+                "v": 1
+              }
+            },
+            "clock": {
+              "ms": 1794445200000,
+              "n": 0
+            },
+            "feed": "GXGBX6MfQBBr7h6-xkuuU8PNqk8a3wPOqc4SY_OlERY",
+            "id": "sha256:205f9ada8362151e6d7b2979b2f8c3993b0965ea624b6c74957df9968d43cf01",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "scope": "mesh",
+            "seq": 1,
+            "type": "settings.set"
+          }
+        ],
+        "legacy_servers": [],
+        "members": {
+          "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
+            "feeds": [
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
+            ],
+            "kind": "pocket",
+            "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
+          },
+          "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c": {
+            "feeds": [
+              "98dbF54AHip3sZoiSvNc6YZDqglrC4XbULQOJNYyqHQ"
+            ],
+            "kind": "desktop",
+            "presence": "BCp9Kf0eZjRdqdF0vzbv833DVCUwjrnRdn6MDc_QCVtwigBiz78fP24SXkgK0azaXzJa3bZkoAjPetPi-nr2grs"
+          },
+          "sha256:8d212a14e09d4a6e7ac7e0d385dc0c9f363ac57a18f64109675bb39c7e5f88f9": {
+            "feeds": [
+              "45KOxSlVwiUodt6U_ZM-aYYzteGs0VTgXOnJQ27pdPU"
+            ],
+            "kind": "node",
+            "presence": "BEAKyJY7J3JY_3vMcQ58o63lEsmdA7IAV-c_XrsWzM7Tpdj7vnIbZIBNd7fopgvqTN6H3tHBQa821Hj64wxlwos"
+          },
+          "sha256:f3ea926c04008300e4d818ebaef633712b6cd1e0f587f7fcb6052456df08ac7d": {
+            "feeds": [
+              "cHdw1QEbPLkXLxrQM6AZ4P_j8fPIyMvqNNLBBkGXYLg"
+            ],
+            "kind": "satellite",
+            "presence": "BP_xjnS1bz0DPi3k12txbWPE2gUuvQNiml6l7O7MmTQLa72PJXVfJJIVUGO2d1tAXfzehVHSzDGpLRUCetv-53Y"
+          }
+        },
+        "removed": {
+          "sha256:db19eadb01c5419897d86eba86016afe5cb56a5720ff232b742bf17303ec132a": {
+            "feeds": [
+              "99fBC94IcLLi-ZnO2ZP7JJLOUhMVp9jOD1KaVWNSmo0"
+            ],
+            "kind": "desktop",
+            "presence": "BAiTDiaaFHLbVlx9088R2l__FANlP86UWwd_5SHtH8O6Xb6b3GKYZqnoMzULos9Omq28R_dLfWyHBve749R13nI"
+          }
+        }
+      },
+      "kind": "connection_fold",
+      "name": "fold_stranger_feed_carries_member_consent"
+    },
+    {
+      "expect": {
+        "ok": {
+          "connections": [
+            {
+              "approved_by": "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146",
+              "event": "sha256:001615d18633e7ca9d102888b7998d41428789e0389bd7b0d3e88c6d83900752",
+              "id": "44c3d55c24475a6459b19b5879e3936a",
+              "reason": null,
+              "record": {
+                "auth": {
+                  "client_id": null,
+                  "issuer": "https://login.research.example",
+                  "resource": "https://mcp.research.example/mcp",
+                  "scheme": "oauth",
+                  "scopes": [
+                    "mcp.read",
+                    "mcp.tools"
+                  ]
+                },
+                "device": null,
+                "egress": [
+                  "login.research.example",
+                  "mcp.research.example"
+                ],
+                "endpoint": "https://mcp.research.example/mcp",
+                "flow": "phi",
+                "id": "44c3d55c24475a6459b19b5879e3936a",
+                "kind": "mcp-http",
+                "local": false,
+                "name": "First",
+                "tools": [
+                  {
+                    "hash": "sha256:1aecae58d08399ba76c51a7afc6edf0ff623c4d70361d2a3e663bdfae1cc1c18",
+                    "name": "lookup"
+                  },
+                  {
+                    "hash": "sha256:41d37c1c5cedfce12f33f4cc50530377f785608c079d306466f72d0f5f45f00b",
+                    "name": "search"
+                  }
+                ],
+                "v": 1
+              },
+              "server": "c44c3d55c",
+              "states": {},
+              "status": "ok"
+            }
+          ],
+          "ignored": {},
+          "removed_approvals": []
+        }
+      },
+      "input": {
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "consent": {
+                "clock": {
+                  "ms": 1794445200000,
+                  "n": 0
+                },
+                "device": "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146",
+                "digest": "sha256:904de894fd3edea10f6cbeb5ecfcc2047773e3cb4985cb32d4b105dd0018b36b",
+                "kind": "connection",
+                "sig": "QPE7FDuJFwTa1jGZCd946w-GBiwvXCqkBKnPpv0dPmQGHkGJBisGYRgojGjr9SX2lNWWfV6Fsi9WXxkvFTaJOw",
+                "v": 1
+              },
+              "key": "connection/44c3d55c24475a6459b19b5879e3936a",
+              "value": {
+                "auth": {
+                  "client_id": null,
+                  "issuer": "https://login.research.example",
+                  "resource": "https://mcp.research.example/mcp",
+                  "scheme": "oauth",
+                  "scopes": [
+                    "mcp.read",
+                    "mcp.tools"
+                  ]
+                },
+                "device": null,
+                "egress": [
+                  "login.research.example",
+                  "mcp.research.example"
+                ],
+                "endpoint": "https://mcp.research.example/mcp",
+                "flow": "phi",
+                "id": "44c3d55c24475a6459b19b5879e3936a",
+                "kind": "mcp-http",
+                "local": false,
+                "name": "First",
+                "tools": [
+                  {
+                    "hash": "sha256:1aecae58d08399ba76c51a7afc6edf0ff623c4d70361d2a3e663bdfae1cc1c18",
+                    "name": "lookup"
+                  },
+                  {
+                    "hash": "sha256:41d37c1c5cedfce12f33f4cc50530377f785608c079d306466f72d0f5f45f00b",
+                    "name": "search"
+                  }
+                ],
+                "v": 1
+              }
+            },
+            "clock": {
+              "ms": 1794445200000,
+              "n": 0
+            },
+            "feed": "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY",
+            "id": "sha256:001615d18633e7ca9d102888b7998d41428789e0389bd7b0d3e88c6d83900752",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "scope": "mesh",
+            "seq": 1,
+            "type": "settings.set"
+          }
+        ],
+        "legacy_servers": [],
+        "members": {
+          "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
+            "feeds": [
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
+            ],
+            "kind": "pocket",
+            "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
+          },
+          "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c": {
+            "feeds": [
+              "98dbF54AHip3sZoiSvNc6YZDqglrC4XbULQOJNYyqHQ"
+            ],
+            "kind": "desktop",
+            "presence": "BCp9Kf0eZjRdqdF0vzbv833DVCUwjrnRdn6MDc_QCVtwigBiz78fP24SXkgK0azaXzJa3bZkoAjPetPi-nr2grs"
+          },
+          "sha256:8d212a14e09d4a6e7ac7e0d385dc0c9f363ac57a18f64109675bb39c7e5f88f9": {
+            "feeds": [
+              "45KOxSlVwiUodt6U_ZM-aYYzteGs0VTgXOnJQ27pdPU"
+            ],
+            "kind": "node",
+            "presence": "BEAKyJY7J3JY_3vMcQ58o63lEsmdA7IAV-c_XrsWzM7Tpdj7vnIbZIBNd7fopgvqTN6H3tHBQa821Hj64wxlwos"
+          },
+          "sha256:f3ea926c04008300e4d818ebaef633712b6cd1e0f587f7fcb6052456df08ac7d": {
+            "feeds": [
+              "cHdw1QEbPLkXLxrQM6AZ4P_j8fPIyMvqNNLBBkGXYLg"
+            ],
+            "kind": "satellite",
+            "presence": "BP_xjnS1bz0DPi3k12txbWPE2gUuvQNiml6l7O7MmTQLa72PJXVfJJIVUGO2d1tAXfzehVHSzDGpLRUCetv-53Y"
+          }
+        },
+        "removed": {
+          "sha256:db19eadb01c5419897d86eba86016afe5cb56a5720ff232b742bf17303ec132a": {
+            "feeds": [
+              "99fBC94IcLLi-ZnO2ZP7JJLOUhMVp9jOD1KaVWNSmo0"
+            ],
+            "kind": "desktop",
+            "presence": "BAiTDiaaFHLbVlx9088R2l__FANlP86UWwd_5SHtH8O6Xb6b3GKYZqnoMzULos9Omq28R_dLfWyHBve749R13nI"
+          }
+        }
+      },
+      "kind": "connection_fold",
+      "name": "fold_put_from_a_second_feed"
+    },
+    {
+      "expect": {
+        "ok": {
+          "connections": [
+            {
+              "approved_by": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+              "event": "sha256:dfb7b7d106541eb7886f06ca79f57c26bad524b9cca0caf778c1a82da1e6327d",
+              "id": "44c3d55c24475a6459b19b5879e3936a",
+              "reason": null,
+              "record": {
+                "auth": {
+                  "client_id": null,
+                  "issuer": "https://login.research.example",
+                  "resource": "https://mcp.research.example/mcp",
+                  "scheme": "oauth",
+                  "scopes": [
+                    "mcp.read",
+                    "mcp.tools"
+                  ]
+                },
+                "device": null,
+                "egress": [
+                  "login.research.example",
+                  "mcp.research.example"
+                ],
+                "endpoint": "https://mcp.research.example/mcp",
+                "flow": "phi",
+                "id": "44c3d55c24475a6459b19b5879e3936a",
+                "kind": "mcp-http",
+                "local": false,
+                "name": "First",
+                "tools": [
+                  {
+                    "hash": "sha256:1aecae58d08399ba76c51a7afc6edf0ff623c4d70361d2a3e663bdfae1cc1c18",
+                    "name": "lookup"
+                  },
+                  {
+                    "hash": "sha256:41d37c1c5cedfce12f33f4cc50530377f785608c079d306466f72d0f5f45f00b",
+                    "name": "search"
+                  }
+                ],
+                "v": 1
+              },
+              "server": "c44c3d55c",
+              "states": {
+                "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
+                  "issuer": "https://login.research.example",
+                  "ms": 1794445200000,
+                  "reason": null,
+                  "state": "signed_in",
+                  "v": 1
+                }
+              },
+              "status": "ok"
+            }
+          ],
+          "ignored": {},
+          "removed_approvals": []
+        }
+      },
+      "input": {
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "consent": {
+                "clock": {
+                  "ms": 1794445199000,
+                  "n": 0
+                },
+                "device": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+                "digest": "sha256:904de894fd3edea10f6cbeb5ecfcc2047773e3cb4985cb32d4b105dd0018b36b",
+                "kind": "connection",
+                "sig": "XjvPh96IsyyMLIzDEw4PtxYOT-MI0xEgDr2uv1vflQ87U3KTJrfiqDiAtWHS5v8QzDjh4kauHCWCEtettEjc0w",
+                "v": 1
+              },
+              "key": "connection/44c3d55c24475a6459b19b5879e3936a",
+              "value": {
+                "auth": {
+                  "client_id": null,
+                  "issuer": "https://login.research.example",
+                  "resource": "https://mcp.research.example/mcp",
+                  "scheme": "oauth",
+                  "scopes": [
+                    "mcp.read",
+                    "mcp.tools"
+                  ]
+                },
+                "device": null,
+                "egress": [
+                  "login.research.example",
+                  "mcp.research.example"
+                ],
+                "endpoint": "https://mcp.research.example/mcp",
+                "flow": "phi",
+                "id": "44c3d55c24475a6459b19b5879e3936a",
+                "kind": "mcp-http",
+                "local": false,
+                "name": "First",
+                "tools": [
+                  {
+                    "hash": "sha256:1aecae58d08399ba76c51a7afc6edf0ff623c4d70361d2a3e663bdfae1cc1c18",
+                    "name": "lookup"
+                  },
+                  {
+                    "hash": "sha256:41d37c1c5cedfce12f33f4cc50530377f785608c079d306466f72d0f5f45f00b",
+                    "name": "search"
+                  }
+                ],
+                "v": 1
+              }
+            },
+            "clock": {
+              "ms": 1794445200000,
+              "n": 0
+            },
+            "feed": "98dbF54AHip3sZoiSvNc6YZDqglrC4XbULQOJNYyqHQ",
+            "id": "sha256:dfb7b7d106541eb7886f06ca79f57c26bad524b9cca0caf778c1a82da1e6327d",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "scope": "mesh",
+            "seq": 1,
+            "type": "settings.set"
+          },
+          {
+            "after": [],
+            "body": {
+              "key": "connection.state/44c3d55c24475a6459b19b5879e3936a/sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146",
+              "value": {
+                "issuer": "https://login.research.example",
+                "ms": 1794445200000,
+                "reason": null,
+                "state": "signed_in",
+                "v": 1
+              }
+            },
+            "clock": {
+              "ms": 1794445320000,
+              "n": 0
+            },
+            "feed": "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY",
+            "id": "sha256:e5c7a64a2978260d95e17a3aede28167abe27a97ce4dc6f673dd957c11f84098",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "scope": "mesh",
+            "seq": 1,
+            "type": "settings.set"
+          }
+        ],
+        "legacy_servers": [],
+        "members": {
+          "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
+            "feeds": [
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
+            ],
+            "kind": "pocket",
+            "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
+          },
+          "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c": {
+            "feeds": [
+              "98dbF54AHip3sZoiSvNc6YZDqglrC4XbULQOJNYyqHQ"
+            ],
+            "kind": "desktop",
+            "presence": "BCp9Kf0eZjRdqdF0vzbv833DVCUwjrnRdn6MDc_QCVtwigBiz78fP24SXkgK0azaXzJa3bZkoAjPetPi-nr2grs"
+          },
+          "sha256:8d212a14e09d4a6e7ac7e0d385dc0c9f363ac57a18f64109675bb39c7e5f88f9": {
+            "feeds": [
+              "45KOxSlVwiUodt6U_ZM-aYYzteGs0VTgXOnJQ27pdPU"
+            ],
+            "kind": "node",
+            "presence": "BEAKyJY7J3JY_3vMcQ58o63lEsmdA7IAV-c_XrsWzM7Tpdj7vnIbZIBNd7fopgvqTN6H3tHBQa821Hj64wxlwos"
+          },
+          "sha256:f3ea926c04008300e4d818ebaef633712b6cd1e0f587f7fcb6052456df08ac7d": {
+            "feeds": [
+              "cHdw1QEbPLkXLxrQM6AZ4P_j8fPIyMvqNNLBBkGXYLg"
+            ],
+            "kind": "satellite",
+            "presence": "BP_xjnS1bz0DPi3k12txbWPE2gUuvQNiml6l7O7MmTQLa72PJXVfJJIVUGO2d1tAXfzehVHSzDGpLRUCetv-53Y"
+          }
+        },
+        "removed": {
+          "sha256:db19eadb01c5419897d86eba86016afe5cb56a5720ff232b742bf17303ec132a": {
+            "feeds": [
+              "99fBC94IcLLi-ZnO2ZP7JJLOUhMVp9jOD1KaVWNSmo0"
+            ],
+            "kind": "desktop",
+            "presence": "BAiTDiaaFHLbVlx9088R2l__FANlP86UWwd_5SHtH8O6Xb6b3GKYZqnoMzULos9Omq28R_dLfWyHBve749R13nI"
+          }
+        }
+      },
+      "kind": "connection_fold",
+      "name": "fold_state_from_a_second_feed"
+    },
+    {
+      "expect": {
+        "ok": {
+          "connections": [],
+          "ignored": {},
+          "removed_approvals": []
+        }
+      },
+      "input": {
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "consent": {
+                "clock": {
+                  "ms": 1794445199000,
+                  "n": 0
+                },
+                "device": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+                "digest": "sha256:904de894fd3edea10f6cbeb5ecfcc2047773e3cb4985cb32d4b105dd0018b36b",
+                "kind": "connection",
+                "sig": "XjvPh96IsyyMLIzDEw4PtxYOT-MI0xEgDr2uv1vflQ87U3KTJrfiqDiAtWHS5v8QzDjh4kauHCWCEtettEjc0w",
+                "v": 1
+              },
+              "key": "connection/44c3d55c24475a6459b19b5879e3936a",
+              "value": {
+                "auth": {
+                  "client_id": null,
+                  "issuer": "https://login.research.example",
+                  "resource": "https://mcp.research.example/mcp",
+                  "scheme": "oauth",
+                  "scopes": [
+                    "mcp.read",
+                    "mcp.tools"
+                  ]
+                },
+                "device": null,
+                "egress": [
+                  "login.research.example",
+                  "mcp.research.example"
+                ],
+                "endpoint": "https://mcp.research.example/mcp",
+                "flow": "phi",
+                "id": "44c3d55c24475a6459b19b5879e3936a",
+                "kind": "mcp-http",
+                "local": false,
+                "name": "First",
+                "tools": [
+                  {
+                    "hash": "sha256:1aecae58d08399ba76c51a7afc6edf0ff623c4d70361d2a3e663bdfae1cc1c18",
+                    "name": "lookup"
+                  },
+                  {
+                    "hash": "sha256:41d37c1c5cedfce12f33f4cc50530377f785608c079d306466f72d0f5f45f00b",
+                    "name": "search"
+                  }
+                ],
+                "v": 1
+              }
+            },
+            "clock": {
+              "ms": 1794445200000,
+              "n": 0
+            },
+            "feed": "98dbF54AHip3sZoiSvNc6YZDqglrC4XbULQOJNYyqHQ",
+            "id": "sha256:a0f14256b89b862dbaeecdce58027e5c37139b3e2084514bfd5b3d2a550bbe2a",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "scope": "mesh",
+            "seq": 1,
+            "type": "settings.set"
+          },
+          {
+            "after": [],
+            "body": {
+              "key": "connection/44c3d55c24475a6459b19b5879e3936a",
+              "value": null
+            },
+            "clock": {
+              "ms": 1794445320000,
+              "n": 0
+            },
+            "feed": "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY",
+            "id": "sha256:09c0ce3df3c261734dcb14cb1617bfa547c4c3fbb35a669c6ca68db8022e39f2",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "scope": "mesh",
+            "seq": 1,
+            "type": "settings.set"
+          }
+        ],
+        "legacy_servers": [],
+        "members": {
+          "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
+            "feeds": [
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
+            ],
+            "kind": "pocket",
+            "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
+          },
+          "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c": {
+            "feeds": [
+              "98dbF54AHip3sZoiSvNc6YZDqglrC4XbULQOJNYyqHQ"
+            ],
+            "kind": "desktop",
+            "presence": "BCp9Kf0eZjRdqdF0vzbv833DVCUwjrnRdn6MDc_QCVtwigBiz78fP24SXkgK0azaXzJa3bZkoAjPetPi-nr2grs"
+          },
+          "sha256:8d212a14e09d4a6e7ac7e0d385dc0c9f363ac57a18f64109675bb39c7e5f88f9": {
+            "feeds": [
+              "45KOxSlVwiUodt6U_ZM-aYYzteGs0VTgXOnJQ27pdPU"
+            ],
+            "kind": "node",
+            "presence": "BEAKyJY7J3JY_3vMcQ58o63lEsmdA7IAV-c_XrsWzM7Tpdj7vnIbZIBNd7fopgvqTN6H3tHBQa821Hj64wxlwos"
+          },
+          "sha256:f3ea926c04008300e4d818ebaef633712b6cd1e0f587f7fcb6052456df08ac7d": {
+            "feeds": [
+              "cHdw1QEbPLkXLxrQM6AZ4P_j8fPIyMvqNNLBBkGXYLg"
+            ],
+            "kind": "satellite",
+            "presence": "BP_xjnS1bz0DPi3k12txbWPE2gUuvQNiml6l7O7MmTQLa72PJXVfJJIVUGO2d1tAXfzehVHSzDGpLRUCetv-53Y"
+          }
+        },
+        "removed": {
+          "sha256:db19eadb01c5419897d86eba86016afe5cb56a5720ff232b742bf17303ec132a": {
+            "feeds": [
+              "99fBC94IcLLi-ZnO2ZP7JJLOUhMVp9jOD1KaVWNSmo0"
+            ],
+            "kind": "desktop",
+            "presence": "BAiTDiaaFHLbVlx9088R2l__FANlP86UWwd_5SHtH8O6Xb6b3GKYZqnoMzULos9Omq28R_dLfWyHBve749R13nI"
+          }
+        }
+      },
+      "kind": "connection_fold",
+      "name": "fold_remove_from_a_second_feed"
     },
     {
       "expect": {
@@ -10012,7 +11427,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -10173,7 +11589,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -10402,7 +11819,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -10523,7 +11941,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -10644,7 +12063,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -10785,7 +12205,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -11030,7 +12451,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -11151,7 +12573,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -11272,7 +12695,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -11411,7 +12835,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -11550,7 +12975,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -11689,7 +13115,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -11874,7 +13301,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -12121,7 +13549,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -12348,7 +13777,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -12577,7 +14007,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -12806,7 +14237,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -13033,7 +14465,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -13260,7 +14693,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -13457,7 +14891,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -13648,7 +15083,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -13839,7 +15275,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -14030,7 +15467,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -14253,7 +15691,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -14478,7 +15917,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -14708,7 +16148,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -14907,7 +16348,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -14988,7 +16430,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -15101,7 +16544,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -15278,7 +16722,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -15433,7 +16878,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -15703,7 +17149,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -15923,7 +17370,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -16143,7 +17591,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -16308,7 +17757,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -16471,7 +17921,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -16590,7 +18041,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -16686,7 +18138,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -16807,7 +18260,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -16917,7 +18371,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -17038,7 +18493,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -17159,7 +18615,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -17355,7 +18812,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -17465,7 +18923,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -17587,7 +19046,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -17708,7 +19168,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -17829,7 +19290,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -17939,7 +19401,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -18060,7 +19523,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -18181,7 +19645,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -18302,7 +19767,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -18423,7 +19889,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -18544,7 +20011,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -18665,7 +20133,8 @@
         "members": {
           "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
             "feeds": [
-              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
             ],
             "kind": "pocket",
             "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
@@ -19488,6 +20957,16 @@
     },
     {
       "expect": {
+        "error": "connection.egress_refused"
+      },
+      "input": {
+        "entry": "mcp.research.example:443"
+      },
+      "kind": "connection_exec_host",
+      "name": "exec_entry_not_canonical"
+    },
+    {
+      "expect": {
         "ok": {
           "authority": {
             "grants": {
@@ -19851,42 +21330,55 @@
   "spec": "106/contracts/connection.md",
   "test_devices": {
     "alice": {
-      "feed": "98dbF54AHip3sZoiSvNc6YZDqglrC4XbULQOJNYyqHQ",
+      "feeds": [
+        "98dbF54AHip3sZoiSvNc6YZDqglrC4XbULQOJNYyqHQ"
+      ],
       "id": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
       "kind": "desktop",
       "label": "local-v2/alice",
       "presence_scalar_hex": "4a63f0e668ed7f290a290d5a37efdc44ddb664e057613d2b1b0dde2b143cc811"
     },
     "bob": {
-      "feed": "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+      "feeds": [
+        "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+        "Vb7IO3XWl7Ledq-jFkT3UzwMZ45PBPzw-NzEY9TveUY"
+      ],
       "id": "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146",
       "kind": "pocket",
       "label": "local-v2/bob",
       "presence_scalar_hex": "f37de97e90cbd226bd936f1f062c85b0d49f40bc1599916707c8044d45e2de8e"
     },
     "carol": {
-      "feed": "cHdw1QEbPLkXLxrQM6AZ4P_j8fPIyMvqNNLBBkGXYLg",
+      "feeds": [
+        "cHdw1QEbPLkXLxrQM6AZ4P_j8fPIyMvqNNLBBkGXYLg"
+      ],
       "id": "sha256:f3ea926c04008300e4d818ebaef633712b6cd1e0f587f7fcb6052456df08ac7d",
       "kind": "satellite",
       "label": "local-v2/carol",
       "presence_scalar_hex": "a4e56395445ec8f8380540c347ea1c3ed81586610f302f1e7c45930791b2f61f"
     },
     "dave": {
-      "feed": "99fBC94IcLLi-ZnO2ZP7JJLOUhMVp9jOD1KaVWNSmo0",
+      "feeds": [
+        "99fBC94IcLLi-ZnO2ZP7JJLOUhMVp9jOD1KaVWNSmo0"
+      ],
       "id": "sha256:db19eadb01c5419897d86eba86016afe5cb56a5720ff232b742bf17303ec132a",
       "kind": "desktop",
       "label": "local-v2/dave",
       "presence_scalar_hex": "812d195a5cbe53687fd7fb6ba6782469213cadd9ac73927fd1045009abd25fec"
     },
     "mallory": {
-      "feed": "GXGBX6MfQBBr7h6-xkuuU8PNqk8a3wPOqc4SY_OlERY",
+      "feeds": [
+        "GXGBX6MfQBBr7h6-xkuuU8PNqk8a3wPOqc4SY_OlERY"
+      ],
       "id": "sha256:5b6ee00280b7eb1635adf5784a8bb0cf0df0eede89ceed9df33c563327998eae",
       "kind": "desktop",
       "label": "connection-v1/mallory",
       "presence_scalar_hex": "f0e8d56b0c39fb09104728415e4d6aa28320a45cbd1de1f6d79afbe1185d0d86"
     },
     "node": {
-      "feed": "45KOxSlVwiUodt6U_ZM-aYYzteGs0VTgXOnJQ27pdPU",
+      "feeds": [
+        "45KOxSlVwiUodt6U_ZM-aYYzteGs0VTgXOnJQ27pdPU"
+      ],
       "id": "sha256:8d212a14e09d4a6e7ac7e0d385dc0c9f363ac57a18f64109675bb39c7e5f88f9",
       "kind": "node",
       "label": "local-v2/node",

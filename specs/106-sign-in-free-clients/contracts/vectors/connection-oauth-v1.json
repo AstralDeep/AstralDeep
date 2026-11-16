@@ -241,6 +241,23 @@
     {
       "expect": {
         "ok": {
+          "bearer": {
+            "scope": "a"
+          }
+        }
+      },
+      "input": {
+        "header": [
+          "Basic realm=\"x\"",
+          "Bearer scope=\"a\""
+        ]
+      },
+      "kind": "oauth_challenge",
+      "name": "challenge_two_header_lines_joined"
+    },
+    {
+      "expect": {
+        "ok": {
           "urls": [
             "https://mcp.research.example/.well-known/oauth-protected-resource/mcp"
           ]
@@ -399,6 +416,28 @@
       },
       "kind": "oauth_resource_metadata_urls",
       "name": "rm_header_dot_segment"
+    },
+    {
+      "expect": {
+        "error": "connection.resource_metadata_offsite"
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "header": "Bearer resource_metadata=\"https://mcp.research.example/.well-known/oauth-protected-resource/%2E%2E/%2E%2E/other\""
+      },
+      "kind": "oauth_resource_metadata_urls",
+      "name": "rm_header_encoded_dot_segment"
+    },
+    {
+      "expect": {
+        "error": "connection.malformed"
+      },
+      "input": {
+        "endpoint": "https://MCP.research.example/mcp",
+        "header": null
+      },
+      "kind": "oauth_resource_metadata_urls",
+      "name": "rm_endpoint_not_canonical"
     },
     {
       "expect": {
@@ -1003,6 +1042,16 @@
     },
     {
       "expect": {
+        "error": "connection.malformed"
+      },
+      "input": {
+        "issuer": "https://login.research.example?tenant=uk"
+      },
+      "kind": "oauth_as_metadata_urls",
+      "name": "as_urls_issuer_not_canonical"
+    },
+    {
+      "expect": {
         "ok": {
           "issuer": "https://login.research.example",
           "url": "https://login.research.example/.well-known/oauth-authorization-server"
@@ -1496,7 +1545,7 @@
     },
     {
       "expect": {
-        "error": "connection.no_s256"
+        "error": "connection.as_unreachable"
       },
       "input": {
         "issuers": [
@@ -1515,6 +1564,61 @@
       },
       "kind": "oauth_select_server",
       "name": "select_unreachable_and_not_found"
+    },
+    {
+      "expect": {
+        "error": "connection.as_unreachable"
+      },
+      "input": {
+        "issuers": [
+          "https://login.research.example",
+          "https://login2.research.example"
+        ],
+        "record_issuer": null,
+        "responses": {
+          "https://login.research.example/.well-known/oauth-authorization-server": {
+            "status": 404
+          },
+          "https://login.research.example/.well-known/openid-configuration": {
+            "status": 302
+          },
+          "https://login2.research.example/.well-known/oauth-authorization-server": {
+            "status": 500
+          },
+          "https://login2.research.example/.well-known/openid-configuration": {
+            "json": "not metadata",
+            "status": 200
+          }
+        }
+      },
+      "kind": "oauth_select_server",
+      "name": "select_no_valid_metadata_is_unreachable"
+    },
+    {
+      "expect": {
+        "error": "connection.no_s256"
+      },
+      "input": {
+        "issuers": [
+          "https://login.research.example"
+        ],
+        "record_issuer": null,
+        "responses": {
+          "https://login.research.example/.well-known/oauth-authorization-server": {
+            "json": {
+              "authorization_endpoint": "https://login.research.example/authorize",
+              "code_challenge_methods_supported": [
+                "plain"
+              ],
+              "issuer": "https://login.research.example",
+              "token_endpoint": "https://login.research.example/token"
+            },
+            "status": 200
+          }
+        }
+      },
+      "kind": "oauth_select_server",
+      "name": "select_valid_metadata_without_s256_is_no_s256"
     },
     {
       "expect": {
@@ -2893,6 +2997,17 @@
       },
       "kind": "oauth_bearer_target",
       "name": "bearer_userinfo"
+    },
+    {
+      "expect": {
+        "error": "connection.malformed"
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example:443/mcp",
+        "url": "https://mcp.research.example/mcp"
+      },
+      "kind": "oauth_bearer_target",
+      "name": "bearer_endpoint_not_canonical"
     }
   ],
   "format": "astral.vectors/v1",

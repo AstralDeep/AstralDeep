@@ -41,7 +41,7 @@ Every reader checks these rules for every kind and every later version. A put wh
 |---|---|
 | `v` | An integer of at least 1. A boolean is not an integer |
 | `id` | Equal to the id in the key |
-| `name` | 1 to 80 Unicode code points typed or confirmed by the owner. A code point that the caller ticket label table refuses (Unicode 16.0 categories Cc, Cf, Cs, Co and Cn) is refused here too, so a name cannot hide a control or a direction override |
+| `name` | 1 to 80 Unicode code points typed or confirmed by the owner. A code point that the caller ticket label table refuses (Unicode 16.0 categories Cc, Cf, Cs, Co and Cn) is refused here too, so a name cannot hide a control, a direction override or an invisible character. Cf includes U+200D, the zero width joiner, so an emoji joined by it is refused too |
 | `kind` | Matches `[a-z][a-z0-9-]{0,31}` |
 
 The value is a JSON object whose LETS-CJ/1 bytes are at most 32768 bytes. The record holds no token, client secret or pasted key.
@@ -83,7 +83,7 @@ Every URL in a record must already be canonical. A reader compares strings and r
 - A port, when present, is `1` to `65535` with no leading zero, and never the scheme's default (443 for `https`, 80 for `http`).
 - No userinfo, query or fragment.
 
-An `endpoint` path is empty or one or more `/segment` parts. A segment is one or more RFC 3986 `pchar` characters with each percent escape written as `%` and two uppercase hex digits. A segment is never `.` or `..`, and there is no trailing slash. An issuer path follows the same rule and may also end in one `/`, because some issuers end that way and the issuer is compared exactly.
+An `endpoint` path is empty or one or more `/segment` parts. A segment is one or more RFC 3986 `pchar` characters with each percent escape written as `%` and two uppercase hex digits. A percent escape never encodes an unreserved character (`A` to `Z`, `a` to `z`, `0` to `9`, `-`, `.`, `_` and `~`), because URL parsers rewrite those. So each URL has exactly one spelling, and `%2E%2E` cannot hide a dot segment. An escape of a reserved character such as `%2F` stays. A segment is never `.` or `..`, and there is no trailing slash. An issuer path follows the same rule and may also end in one `/`, because some issuers end that way and the issuer is compared exactly.
 
 A loopback host is allowed only in a local record. Private LAN addresses stay refused, because they are IP literals. A record that breaks any rule of sections 3.2 to 3.4 is listed unsupported with `connection.record_unsupported` (section 3.5).
 
@@ -95,7 +95,7 @@ An egress entry is `host` or `host:port`. `host` alone means port 443, so `host:
 
 A URL's entry is its host when the port is 443 (written or implied by `https`), and `host:port` otherwise, so `http://127.0.0.1/mcp` gives `127.0.0.1:80`. The reader checks that `egress` holds the endpoint's entry and, with `oauth`, the issuer's entry. A writer also lists the host of every authorization-server endpoint it found in metadata (authorization, token and registration). The reader cannot see those, and the device refuses any fetch outside `egress` (section 7.3).
 
-Each entry maps onto an exec policy `hosts` object. `host` gives `{"host": host, "port": 443}` and `host:port` gives `{"host": host, "port": port}`. Exec policy v1 accepts the result only for a DNS name with port 80 or 443. An entry with another port or a loopback literal has no exec form, and a backend that needs one refuses to launch.
+Each entry maps onto an exec policy `hosts` object. `host` gives `{"host": host, "port": 443}` and `host:port` gives `{"host": host, "port": port}`. Exec policy v1 accepts the result only for a DNS name with port 80 or 443. An entry with another port or a loopback literal has no exec form, and a backend that needs one refuses to launch. An entry that is not canonical, such as `host:443`, has no mapping and is `connection.egress_refused`.
 
 ### 3.5 Unsupported records
 
@@ -145,12 +145,12 @@ The winner of each id, `ignored`, `removed_approvals` and `states` are a pure fu
 
 | Input | Meaning |
 |---|---|
-| `members` | Current members, each with `kind`, `presence` (base64url of the 65-byte key) and `feeds` |
+| `members` | Current members, each with `kind`, `presence` (base64url of the 65-byte key) and `feeds`, every feed the device has written from. A device can have more than one |
 | `removed` | Removed members in the same shape |
-| `events` | Decoded event summaries with `id`, `feed`, `seq`, `clock`, `after`, `type`, `scope`, `labels` and `body`, the 105 fold shape plus scope and labels |
+| `events` | Decoded summaries of the events the log accepted, with `id`, `feed`, `seq`, `clock`, `after`, `type`, `scope`, `labels` and `body`, the 105 fold shape plus scope and labels. A removed device's events past its removal cutoff never reach the fold, because the log refuses them with `feed.removed` (105 event.md section 8) |
 | `legacy_servers` | The names of the remote MCP servers the device already holds from before connections |
 
-For each connection id the winner is the latest valid put or remove by `(clock.ms, clock.n, feed)`, as in 105 [event.md](../../105-decentralized-personal-mesh/contracts/event.md) section 10.4. An invalid event never wins. It is listed in `ignored` with its code. A remove at the head means the connection is not listed.
+For each connection id the winner is the latest valid put or remove by `(clock.ms, clock.n, feed, seq)`, the order key of the 105 folds ([event.md](../../105-decentralized-personal-mesh/contracts/event.md) section 10). Within one feed the clock rises, so `seq` never decides between two events that differ in clock. An invalid event never wins. It is listed in `ignored` with its code. A remove at the head means the connection is not listed.
 
 ### 6.1 A put
 
@@ -167,8 +167,9 @@ The first failure wins, in this order.
 | 7 | The event's own feed is one of that member's feeds | `connection.consent_foreign_feed` |
 | 8 | The signature verifies against that member's presence key, low-S only | `connection.consent_bad_signature` |
 | 9 | The consent is inside the 10-minute window of section 5 | `connection.consent_stale` |
+| 10 | No earlier accepted put used the same consent, compared on every consent field except `sig` | `connection.consent_reused` |
 
-Step 7 stops any other member, a node included, from carrying an older consented value again later to roll a change back. Steps 5 and 6 cannot fail together, so the vectors pin step 4 before step 6 directly.
+Step 7 stops any other member, a node included, from carrying an older consented value again later to roll a change back. Step 10 counts each consent once, so the same device cannot repeat its own older put inside the 10-minute window either. "Earlier" is the order key, and a consent stays used after its put is superseded or removed. Steps 5 and 6 cannot fail together, so the vectors pin step 4 before step 6 directly.
 
 ### 6.2 A remove
 
@@ -234,15 +235,15 @@ A connection that offers one tool named after the connection uses `ask_<slug>`. 
 
 ### 7.3 Egress
 
-A device fetches a URL only when it uses `https`, or `http` or `https` to a loopback literal, and when its entry (section 3.4) is in the record's `egress`. Otherwise it refuses with `connection.egress_refused`. The URL must be canonical in scheme, host and port, and may carry a path and query. Userinfo and fragments are refused.
+A device fetches a URL only when it uses `https`, or `http` or `https` to a loopback literal, and when its entry (section 3.4) is in the record's `egress`. Otherwise it refuses with `connection.egress_refused`. The URL must be canonical in scheme, host and port, and may carry a path and query. Userinfo and fragments are refused. The check then continues in the egress resolver. For a record that is not local, a name that resolves to a loopback, private or link-local address is refused with `connection.egress_refused`, and the connection pins the address it checked. A local record reaches only the loopback literals it lists.
 
 ## 8. Adapter decisions for MCP over HTTP
 
-These decisions are pure functions over results the device already fetched. A fetch result is `{"status": <int>, "json": <parsed body>}`, with `json` present only when the body parsed as JSON. A URL missing from the results did not answer. Every fetch has redirects off, so a `3xx` is an answer that is not metadata.
+These decisions are pure functions over results the device already fetched. An endpoint or issuer passed to them that is not canonical (section 3.3) is `connection.malformed`. A fetch result is `{"status": <int>, "json": <parsed body>}`, with `json` present only when the body parsed as JSON. A URL missing from the results did not answer. Every fetch has redirects off, so a `3xx` is an answer that is not metadata.
 
 ### 8.1 The challenge
 
-The device first calls the endpoint with no token. On `401` it reads `WWW-Authenticate` by RFC 9110 section 11.6.1. Scheme and parameter names match without regard to case, parameter names are reported in lowercase and a value is a token or a quoted string with `\` escapes. A `token68` after a scheme is skipped. The parameters of the first `Bearer` challenge are used. A header with a character outside tab and `%x20-7E`, an unterminated quote, a repeated parameter, or a parameter with no scheme before it is malformed and reads as no challenge.
+The device first calls the endpoint with no token. On `401` it reads `WWW-Authenticate` by RFC 9110 section 11.6.1. Several header lines are first joined with `, ` into one value, as RFC 9110 section 5.3 allows. Scheme and parameter names match without regard to case, parameter names are reported in lowercase and a value is a token or a quoted string with `\` escapes. A `token68` after a scheme is skipped. The parameters of the first `Bearer` challenge are used. A header with a character outside tab and `%x20-7E`, an unterminated quote, a repeated parameter, or a parameter with no scheme before it is malformed and reads as no challenge.
 
 ### 8.2 Resource metadata URLs
 
@@ -264,7 +265,7 @@ The device takes the servers in order. For each, it tries the URLs of section 8.
 - When `code_challenge_methods_supported` is a list holding `S256`, the server is chosen and selection stops.
 - A server whose metadata is missing, or that lacks `S256` (absent, empty or `plain` only), is skipped.
 
-No server chosen gives `connection.as_unreachable` when no metadata fetch got any answer, and `connection.no_s256` when at least one did.
+No server chosen gives `connection.no_s256` when at least one server returned metadata (a `200` JSON object) that lacks `S256`. Otherwise it gives `connection.as_unreachable`, whether the fetches timed out or answered with `404`, a `3xx`, a `5xx` or a body that is not a JSON object.
 
 When the owner first adds the connection, selection runs over the listed servers and the chosen issuer goes into the record. At sign-in on any device, the device repeats discovery but signs in only with the record's issuer. The metadata must still list it, else `connection.issuer_changed`, and a new put with a new consent is needed. Then the same checks run on that one server.
 
@@ -314,8 +315,8 @@ A `403` whose `Bearer` challenge has `error` equal to `insufficient_scope` start
 
 | Code | Where |
 |---|---|
-| `connection.malformed` | Fold, any event |
-| `connection.consent_missing`, `connection.consent_wrong_action`, `connection.consent_unknown_device`, `connection.consent_node_device`, `connection.consent_foreign_feed`, `connection.consent_bad_signature`, `connection.consent_stale` | Fold, a put |
+| `connection.malformed` | Fold, any event. Also an adapter input that is not canonical |
+| `connection.consent_missing`, `connection.consent_wrong_action`, `connection.consent_unknown_device`, `connection.consent_node_device`, `connection.consent_foreign_feed`, `connection.consent_bad_signature`, `connection.consent_stale`, `connection.consent_reused` | Fold, a put |
 | `connection.writer_not_member` | Fold, a remove or a state |
 | `connection.state_foreign` | Fold, a state |
 | `connection.version_unsupported`, `connection.kind_unsupported`, `connection.record_unsupported`, `connection.scheme_unsupported`, `connection.server_id_collision` | Fold, the reason of an unsupported record |
@@ -354,7 +355,7 @@ A test with two real kernels proves the first row.
 
 ## 11. Vectors
 
-Both files use the vector format of the roster v2 contract. `connection-v1.json` publishes `test_devices`, the roster v2 test devices `alice` (desktop), `bob` (pocket), `carol` (satellite) and `node` (node), the removed `dave` (desktop) and the stranger `mallory`, with their ids, feeds and presence scalars. They are public test values derived from the labels named there. Clocks are fixed and no case reads a wall clock or the network.
+Both files use the vector format of the roster v2 contract. `connection-v1.json` publishes `test_devices`, the roster v2 test devices `alice` (desktop), `bob` (pocket), `carol` (satellite) and `node` (node), the removed `dave` (desktop) and the stranger `mallory`, with their ids, feeds and presence scalars. `bob` writes from two feeds. They are public test values derived from the labels named there. Clocks are fixed and no case reads a wall clock or the network.
 
 Case kinds in `connection-v1.json`:
 
@@ -374,18 +375,18 @@ Groups of cases:
 | Group | Cases |
 |---|---|
 | Keys | `key_*`, each form, the lookalikes that are not reserved and each malformed form |
-| Record | `record_*`, every field rule, and each limit at and one past its value: 32768 bytes, a name of 80, 128 tools, a tool name of 128, 32 scopes, a scope of 256, a `client_id` of 1024, 16 egress entries, a URL of 2048, port 65535, a host of 253 and a label of 63. Also the unsupported reasons and `record_order_*` for their order |
+| Record | `record_*`, every field rule, and each limit at and one past its value: 32768 bytes, a name of 80, 128 tools, a tool name of 128, 32 scopes, a scope of 256, a `client_id` of 1024, 16 egress entries, a URL of 2048, port 65535, a host of 253 and a label of 63. Percent escapes of a dot, of a letter and of a reserved character, and a name with a zero width joiner. Also the unsupported reasons and `record_order_*` for their order |
 | State | `state_*`, every state and reason, `tools` placement and limits |
-| Put | valid, node consent, a malformed consent object, the window at 600000 and 600001 ms before and 0 and 1 ms after, wrong digest and kind, tampered and high-S signatures, re-carried values on another member's feed and on the node's feed, removed and unknown consenting devices, a forged removed approval, removed approvals with a bad signature, outside the window, before a remove and after one, and `fold_order_*` for each adjacent pair of section 6.1 that can fail together |
-| Remove | without consent, by the node, by a removed device (it stands), from a feed no roster device owned, with a consent field, and a put after a removal |
+| Put | valid, node consent, a malformed consent object, the window at 600000 and 600001 ms before and 0 and 1 ms after, wrong digest and kind, tampered and high-S signatures, re-carried values on another member's feed, on the node's feed and on the same feed inside the window, a stranger's feed carrying a member's consent, a put from a second feed, removed and unknown consenting devices, a forged removed approval, removed approvals with a bad signature, outside the window, before a remove and after one, and `fold_order_*` for each adjacent pair of section 6.1 that can fail together |
+| Remove | without consent, by the node, from a second feed, by a removed device (it stands), from a feed no roster device owned, with a consent field, and a put after a removal |
 | Winner | a later put, a later invalid put, an equal clock broken by feed, an equal millisecond broken by the counter, and arrival order |
-| State fold | own device, another device, a removed member, the latest state, a later unreadable state, several devices, tools from a node, and a state for an unlisted connection |
+| State fold | own device, a second feed of the device, another device, a removed member, the latest state, a later unreadable state, several devices, tools from a node, and a state for an unlisted connection |
 | View | unknown kind, an unsupported put after a supported one, scheme `key`, server id collisions with an ok, an unsupported and a legacy holder, and a local record naming the node |
 | Carrier | `mem.remember` under a reserved key, other events, a malformed reserved key, an unknown family, wrong labels and a chat scope |
 | Use and names | `use_*`, `exposed_*` at 53 and 54 characters, `slug_*` |
-| Egress | `egress_*` and `exec_*` |
+| Egress | `egress_*` and `exec_*`, including an entry that is not canonical |
 | Coexistence | `coexistence_deployed_folds` |
-| Adapter | `challenge_*`, `rm_*` including each near miss of the origin pin, `prm_*`, `as_urls_*`, `select_*` including the mixed unreachable cases and the record issuer, `reg_*`, `dyn_*`, `scopes_*`, the six `iss_*` rows and their spellings, `stepup_*` sequences and `bearer_*` |
+| Adapter | `challenge_*` including two header lines, `rm_*` including each near miss of the origin pin and an encoded dot segment, `prm_*`, `as_urls_*`, `select_*` including the mixed unreachable cases, error answers only and the record issuer, `reg_*`, `dyn_*`, `scopes_*`, the six `iss_*` rows and their spellings, `stepup_*` sequences, `bearer_*`, and an endpoint or issuer that is not canonical for each URL decision |
 
 Regenerate with `python specs/106-sign-in-free-clients/contracts/reference/generate_connection_vectors.py` and verify with `--check`, which writes nothing.
 

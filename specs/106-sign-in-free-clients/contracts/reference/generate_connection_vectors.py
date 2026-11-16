@@ -54,7 +54,16 @@ def _entry(device: Any) -> dict[str, Any]:
     }
 
 
+class SecondFeed:
+    def __init__(self, device: Any, label: str) -> None:
+        self.id = device.id
+        self.device = device
+        self.feed = b64(crypto.ed25519_public(testkit.seed(label)))
+
+
+BOB_2 = SecondFeed(BOB, "local-v2/bob/ops-2")
 MEMBERS = {d.id: _entry(d) for d in CURRENT}
+MEMBERS[BOB.id]["feeds"].append(BOB_2.feed)
 REMOVED = {DAVE.id: _entry(DAVE)}
 
 
@@ -459,6 +468,15 @@ def generate_connection() -> dict[str, Any]:
         "record_endpoint_lowercase_percent", "https://mcp.research.example/m%2fcp"
     )
     endpoint_case(
+        "record_endpoint_encoded_dot_segment", "https://mcp.research.example/%2E%2E/mcp"
+    )
+    endpoint_case(
+        "record_endpoint_encoded_letter", "https://mcp.research.example/%6Dcp"
+    )
+    endpoint_case(
+        "record_endpoint_reserved_escape_valid", "https://mcp.research.example/m%2Fcp"
+    )
+    endpoint_case(
         "record_endpoint_port_leading_zero", "https://mcp.research.example:08443/mcp"
     )
     endpoint_case(
@@ -627,7 +645,11 @@ def generate_connection() -> dict[str, Any]:
     rec("record_name_empty", record(RID, name=""))
     rec("record_name_81", record(RID, name="N" * 81))
     rec("record_name_control", record(RID, name="First\u0007"))
-    rec("record_name_bidi_override", record(RID, name="First‮roc"))
+    rec("record_name_bidi_override", record(RID, name="First\u202eroc"))
+    rec(
+        "record_name_zwj_emoji",
+        record(RID, name="Team \U0001f468\u200d\U0001f469"),
+    )
     rec("record_name_not_text", record(RID, name=7))
     rec("record_kind_uppercase", record(RID, kind="MCP-HTTP"))
     no_kind = record(RID)
@@ -721,6 +743,36 @@ def generate_connection() -> dict[str, Any]:
         put(log, "p2", ALICE, t2, second)
         log.add("p3", carrier, t3, copy.deepcopy(original["body"]))
         fold(name, log)
+
+    log = Log("same-feed-recarry")
+    original = put(log, "p1", ALICE, t1, first)
+    put(log, "p2", ALICE, t2, second)
+    log.add("p3", ALICE, t3, copy.deepcopy(original["body"]))
+    fold("fold_same_feed_recarry_within_window", log)
+    log = Log("order-stale-reused")
+    original = put(log, "p1", ALICE, t1, first)
+    put(log, "p2", ALICE, t2, second)
+    log.add("p3", ALICE, t1 + 11 * MIN, copy.deepcopy(original["body"]))
+    fold("fold_order_stale_before_reused", log)
+    log = Log("stranger-feed")
+    put(log, "p1", MALLORY, t1, first, make_consent(first, ALICE, t1))
+    fold("fold_stranger_feed_carries_member_consent", log)
+    log = Log("second-feed-put")
+    put(log, "p1", BOB_2, t1, first, make_consent(first, BOB, t1))
+    fold("fold_put_from_a_second_feed", log)
+    log = Log("second-feed-state")
+    put(log, "p1", ALICE, t1, first)
+    log.add(
+        "s",
+        BOB_2,
+        t2,
+        {"key": f"connection.state/{RID}/{BOB.id}", "value": state_value()},
+    )
+    fold("fold_state_from_a_second_feed", log)
+    log = Log("second-feed-remove")
+    put(log, "p1", ALICE, t1, first)
+    remove(log, "x", BOB_2, t2, RID)
+    fold("fold_remove_from_a_second_feed", log)
 
     log = Log("removed-approver")
     put(log, "p1", ALICE, t1, first)
@@ -992,12 +1044,12 @@ def generate_connection() -> dict[str, Any]:
     for name, display in (
         ("slug_simple", "Travel agent"),
         ("slug_punctuation_runs", "UK -- Research!! Agent"),
-        ("slug_non_ascii", "Café Ñandú"),
+        ("slug_non_ascii", "Caf\u00e9 \u00d1and\u00fa"),
         ("slug_digits", "Agent 007"),
         ("slug_leading_and_trailing_symbols", "  (Helper)  "),
         ("slug_hyphen_and_underscore_are_separators", "multi-agent_desk"),
         ("slug_all_symbols", "!!!"),
-        ("slug_non_ascii_only", "日本語"),
+        ("slug_non_ascii_only", "\u65e5\u672c\u8a9e"),
         ("slug_long_name_cut_to_49", "a" * 80),
         ("slug_cut_lands_on_separator", "a" * 48 + " " + "b" * 31),
     ):
@@ -1036,6 +1088,7 @@ def generate_connection() -> dict[str, Any]:
         ("exec_port_80", "mcp.research.example:80"),
         ("exec_other_port", "mcp.research.example:8443"),
         ("exec_loopback", "127.0.0.1:8765"),
+        ("exec_entry_not_canonical", "mcp.research.example:443"),
     ):
         add(name, "connection_exec_host", {"entry": entry})
 
@@ -1089,7 +1142,7 @@ def generate_connection() -> dict[str, Any]:
                 "id": d.id,
                 "label": d.name,
                 "kind": d.kind,
-                "feed": d.feed,
+                "feeds": MEMBERS.get(d.id, REMOVED.get(d.id, _entry(d)))["feeds"],
                 "presence_scalar_hex": f"{d.presence_scalar:064x}",
             }
             for name, d in (
@@ -1163,8 +1216,9 @@ def generate_oauth() -> dict[str, Any]:
         ("challenge_empty", ""),
         ("challenge_duplicate_param", 'Bearer scope="a", scope="b"'),
         ("challenge_unterminated_quote", 'Bearer scope="a'),
-        ("challenge_non_ascii", 'Bearer scope="é"'),
+        ("challenge_non_ascii", 'Bearer scope="\u00e9"'),
         ("challenge_param_without_scheme", 'scope="a"'),
+        ("challenge_two_header_lines_joined", ['Basic realm="x"', 'Bearer scope="a"']),
     ):
         add(name, "oauth_challenge", {"header": header})
 
@@ -1226,6 +1280,12 @@ def generate_oauth() -> dict[str, Any]:
             ),
         ),
         ("rm_header_dot_segment", E, bearer(RM + "/../../evil")),
+        (
+            "rm_header_encoded_dot_segment",
+            E,
+            bearer(RM + "/%2E%2E/%2E%2E/other"),
+        ),
+        ("rm_endpoint_not_canonical", "https://MCP.research.example/mcp", None),
         ("rm_header_relative", E, bearer("/.well-known/oauth-protected-resource")),
         ("rm_no_header_path_then_root", E, None),
         ("rm_no_header_nested_path", ORIGIN + "/api/mcp", None),
@@ -1331,6 +1391,7 @@ def generate_oauth() -> dict[str, Any]:
         ("as_urls_root_slash", "https://tenant.research.example/"),
         ("as_urls_with_path", AS + "/realms/uk"),
         ("as_urls_path_trailing_slash", AS + "/tenant1/"),
+        ("as_urls_issuer_not_canonical", AS + "?tenant=uk"),
     ):
         add(name, "oauth_as_metadata_urls", {"issuer": issuer})
 
@@ -1430,6 +1491,21 @@ def generate_oauth() -> dict[str, Any]:
         "select_unreachable_and_not_found",
         both,
         {oauth_url(AS2): {"status": 404}, oidc_url(AS2): {"status": 404}},
+    )
+    select(
+        "select_no_valid_metadata_is_unreachable",
+        both,
+        {
+            oauth_url(AS): {"status": 404},
+            oidc_url(AS): {"status": 302},
+            oauth_url(AS2): {"status": 500},
+            oidc_url(AS2): {"status": 200, "json": "not metadata"},
+        },
+    )
+    select(
+        "select_valid_metadata_without_s256_is_no_s256",
+        [AS],
+        {oauth_url(AS): _ok(_meta(AS, ["plain"]))},
     )
     select("select_unreachable_then_usable", both, good2)
     select(
@@ -1608,6 +1684,11 @@ def generate_oauth() -> dict[str, Any]:
         ("bearer_userinfo", "https://mcp.research.example@evil.example/mcp"),
     ):
         add(name, "oauth_bearer_target", {"endpoint": E, "url": url})
+    add(
+        "bearer_endpoint_not_canonical",
+        "oauth_bearer_target",
+        {"endpoint": "https://mcp.research.example:443/mcp", "url": E},
+    )
 
     return {
         "format": "astral.vectors/v1",

@@ -142,7 +142,14 @@ def challenges(header: str) -> list[tuple[str, dict[str, str]]]:
         i = _params(header, i, params)
 
 
+def joined(header: Any) -> Any:
+    if isinstance(header, list) and all(isinstance(line, str) for line in header):
+        return ", ".join(header)
+    return header
+
+
 def bearer_params(header: Any) -> dict[str, str] | None:
+    header = joined(header)
     if not isinstance(header, str) or not header:
         return None
     try:
@@ -239,23 +246,22 @@ def select_server(case_input: dict[str, Any]) -> dict[str, Any]:
         if expected not in issuers:
             raise _fail("connection.issuer_changed", expected)
         issuers = [expected]
-    answered = False
+    found = False
     for issuer in issuers:
         document = None
         for url in as_metadata_urls(issuer):
-            if url in responses:
-                answered = True
-                document = _document(responses, url)
-                if document is not None:
-                    break
+            document = _document(responses, url)
+            if document is not None:
+                break
         if document is None:
             continue
+        found = True
         if document.get("issuer") != issuer:
             raise _fail("connection.issuer_mismatch", issuer)
         methods = document.get("code_challenge_methods_supported")
         if isinstance(methods, list) and "S256" in methods:
             return {"issuer": issuer, "url": url}
-    if not answered:
+    if not found:
         raise _fail("connection.as_unreachable")
     raise _fail("connection.no_s256")
 

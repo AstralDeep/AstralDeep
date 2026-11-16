@@ -73,6 +73,7 @@ PUT_CHECKS = (
     "connection.consent_foreign_feed",
     "connection.consent_bad_signature",
     "connection.consent_stale",
+    "connection.consent_reused",
 )
 STATE_CHECKS = (
     "connection.malformed",
@@ -101,6 +102,8 @@ HOST_LABEL = re.compile(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?")
 NUMERIC_LABEL = re.compile(r"[0-9]+|0x[0-9a-f]*")
 PORT = re.compile(r"[1-9][0-9]{0,4}")
 SEGMENT = re.compile(r"(?:[A-Za-z0-9._~!$&'()*+,;=:@-]|%[0-9A-F]{2})+")
+ESCAPE = re.compile(r"%([0-9A-F]{2})")
+UNRESERVED = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
 URL = re.compile(
     r"(https|http)://(\[::1\]|[^/?#:@\[\]]+)(?::([^/?#]*))?((?:/[^?#]*)?)(\?[^#]*)?"
 )
@@ -176,7 +179,11 @@ def path_ok(path: str, trailing_slash: bool) -> bool:
     if not path.startswith("/"):
         return False
     return all(
-        SEGMENT.fullmatch(segment) and segment not in (".", "..")
+        SEGMENT.fullmatch(segment)
+        and segment not in (".", "..")
+        and not any(
+            chr(int(code, 16)) in UNRESERVED for code in ESCAPE.findall(segment)
+        )
         for segment in path[1:].split("/")
     )
 
@@ -493,7 +500,11 @@ def _in_window(consent: dict[str, Any], event: dict[str, Any]) -> bool:
 
 
 def _check_put(
-    event: dict[str, Any], key_id: str, members: dict[str, Any], removed: dict[str, Any]
+    event: dict[str, Any],
+    key_id: str,
+    members: dict[str, Any],
+    removed: dict[str, Any],
+    used: set[bytes],
 ) -> dict[str, Any]:
     body = event["body"]
     check_common(key_id, body["value"])
@@ -523,7 +534,13 @@ def _check_put(
         raise _fail("connection.consent_bad_signature")
     if not _in_window(consent, event):
         raise _fail("connection.consent_stale")
+    if _consent_key(consent) in used:
+        raise _fail("connection.consent_reused")
     return consent
+
+
+def _consent_key(consent: dict[str, Any]) -> bytes:
+    return canonical({k: v for k, v in consent.items() if k != "sig"})
 
 
 def _writer_counts(event: dict[str, Any], feed_owner: dict[str, str]) -> str:
@@ -539,6 +556,7 @@ def _check_event(
     removed: dict[str, Any],
     feed_owner: dict[str, str],
     roster_owner: dict[str, str],
+    used: set[bytes],
 ) -> dict[str, Any]:
     body = event["body"]
     if event.get("scope") != "mesh" or event.get("labels") != LABELS:
@@ -553,7 +571,7 @@ def _check_event(
             or body["value"] is None
         ):
             raise _fail("connection.malformed", "body")
-        consent = _check_put(event, key["id"], members, removed)
+        consent = _check_put(event, key["id"], members, removed, used)
         return {"form": "put", "id": key["id"], "consent": consent}
     if set(body) != {"key", "value"}:
         raise _fail("connection.malformed", "body")
@@ -573,12 +591,15 @@ def fold(state: dict[str, Any]) -> dict[str, Any]:
     pending: dict[str, tuple[Any, dict[str, Any]]] = {}
     states: dict[str, dict[str, tuple[Any, Any]]] = {}
     ignored: dict[str, str] = {}
+    used: set[bytes] = set()
     for event in sorted(
         (e for e in state["events"] if is_connection_event(e)), key=mesh_fold.order_key
     ):
         rank = mesh_fold.order_key(event)
         try:
-            checked = _check_event(event, members, removed, feed_owner, roster_owner)
+            checked = _check_event(
+                event, members, removed, feed_owner, roster_owner, used
+            )
         except MeshError as error:
             ignored[event["id"]] = error.code
             if isinstance(error, RemovedApproval):
@@ -588,6 +609,8 @@ def fold(state: dict[str, Any]) -> dict[str, Any]:
             per = states.setdefault(checked["id"], {})
             per[checked["device"]] = (rank, event["body"]["value"])
         else:
+            if checked["form"] == "put":
+                used.add(_consent_key(checked["consent"]))
             heads[checked["id"]] = (rank, event, checked)
     connections = []
     for record_id, (_, event, checked) in sorted(heads.items()):
