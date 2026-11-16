@@ -1,0 +1,493 @@
+"""Generates the execution policy vectors from fixed public values and checks each stated outcome against the reference module.
+`--check` fails when the committed file differs from a fresh render.
+"""
+
+import argparse
+import copy
+import importlib
+import json
+import sys
+from pathlib import Path
+from typing import Any
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+exec_policy = importlib.import_module("exec_policy")
+
+OUTPUT = HERE.parent / "vectors" / "exec-policy-v1.json"
+HOME = "/Users/test"
+WORKSPACE = "/private/tmp/astral/ws"
+DATA_DIR_DARWIN = "/Users/test/Library/Application Support/Astral/node"
+DATA_DIR_LINUX = "/var/lib/astral/node"
+EGRESS = "/run/user/1000/astral/call-1.sock"
+
+MINIMAL: dict[str, Any] = {
+    "v": 1,
+    "reads": [],
+    "workspace": WORKSPACE,
+    "hosts": [],
+    "limits": {
+        "memory_bytes": 536870912,
+        "processes": 1,
+        "open_files": 256,
+        "file_bytes": 104857600,
+    },
+    "time": {"wall_ms": 30000},
+}
+
+
+def variant(**changes: Any) -> dict[str, Any]:
+    policy = copy.deepcopy(MINIMAL)
+    for key, value in changes.items():
+        if key in policy["limits"]:
+            policy["limits"][key] = value
+        else:
+            policy[key] = value
+    return policy
+
+
+def hosts(*pairs: tuple[str, int]) -> list[dict[str, Any]]:
+    return [{"host": host, "port": port} for host, port in pairs]
+
+
+FULL = variant(
+    reads=["/Users/test/.local/share/python/3.11", "/opt/astral/node-pack"],
+    hosts=hosts(
+        ("api.example.com", 80), ("api.example.com", 443), ("files.example.org", 443)
+    ),
+    processes=8,
+)
+READS_64 = [f"/opt/r/r{index:02d}" for index in range(64)]
+HOSTS_64 = hosts(*[(f"h{index:02d}.example.com", 443) for index in range(64)])
+
+
+def with_field(policy: dict[str, Any], path: list[Any], value: Any) -> dict[str, Any]:
+    out = copy.deepcopy(policy)
+    target = out
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = value
+    return out
+
+
+def without(policy: dict[str, Any], *path: Any) -> dict[str, Any]:
+    out = copy.deepcopy(policy)
+    target = out
+    for key in path[:-1]:
+        target = target[key]
+    del target[path[-1]]
+    return out
+
+
+def validation_cases() -> list[dict[str, Any]]:
+    cases: list[tuple[str, str, Any, bool]] = []
+
+    def policy(name: str, code: str, value: Any) -> None:
+        cases.append((name, code, value, False))
+
+    def raw(name: str, code: str, text: str) -> None:
+        cases.append((name, code, text, True))
+
+    ok, malformed = "ok", "policy.malformed"
+    unknown, bad_path = "policy.unknown_field", "policy.path_invalid"
+    many, bad_host = "policy.too_many_entries", "policy.host_invalid"
+    bad_limit, bad_time = "policy.limit_out_of_range", "policy.time_out_of_range"
+    policy("minimal_valid", ok, MINIMAL)
+    policy("full_valid", ok, FULL)
+    policy("reads_64_accepted", ok, variant(reads=READS_64))
+    policy("reads_65", many, variant(reads=READS_64 + ["/opt/r/r64"]))
+    policy("hosts_64_accepted", ok, variant(hosts=HOSTS_64))
+    policy("hosts_65", many, variant(hosts=HOSTS_64 + hosts(("h64.example.com", 443))))
+    policy(
+        "hosts_punycode_and_port_80",
+        ok,
+        variant(hosts=hosts(("xn--bcher-kva.example", 80))),
+    )
+    policy(
+        "limits_at_minimum",
+        ok,
+        with_field(
+            with_field(
+                with_field(
+                    variant(memory_bytes=16777216), ["limits", "open_files"], 16
+                ),
+                ["limits", "file_bytes"],
+                4096,
+            ),
+            ["limits", "processes"],
+            1,
+        ),
+    )
+    policy(
+        "limits_at_maximum",
+        ok,
+        with_field(
+            with_field(
+                with_field(
+                    variant(memory_bytes=68719476736), ["limits", "open_files"], 65536
+                ),
+                ["limits", "file_bytes"],
+                1099511627776,
+            ),
+            ["limits", "processes"],
+            4096,
+        ),
+    )
+    policy("wall_ms_at_minimum", ok, with_field(MINIMAL, ["time", "wall_ms"], 1))
+    policy("wall_ms_at_maximum", ok, with_field(MINIMAL, ["time", "wall_ms"], 86400000))
+    raw("not_json", malformed, "{")
+    raw(
+        "duplicate_key",
+        malformed,
+        '{"v":1,"v":1,"reads":[],"workspace":"/w/x","hosts":[],'
+        '"limits":{"memory_bytes":536870912,"processes":1,"open_files":256,'
+        '"file_bytes":104857600},"time":{"wall_ms":30000}}',
+    )
+    raw(
+        "float_number",
+        malformed,
+        json.dumps(MINIMAL, sort_keys=True).replace('"v": 1', '"v": 1.0'),
+    )
+    policy("array_root", malformed, [MINIMAL])
+    policy("version_missing", malformed, without(MINIMAL, "v"))
+    policy("version_two", malformed, with_field(MINIMAL, ["v"], 2))
+    policy("version_true", malformed, with_field(MINIMAL, ["v"], True))
+    policy("reads_missing", malformed, without(MINIMAL, "reads"))
+    policy("reads_not_list", malformed, with_field(MINIMAL, ["reads"], "/usr"))
+    policy("read_not_string", malformed, with_field(MINIMAL, ["reads"], [7]))
+    policy("workspace_not_string", malformed, with_field(MINIMAL, ["workspace"], None))
+    policy("hosts_not_list", malformed, with_field(MINIMAL, ["hosts"], {}))
+    policy("host_entry_not_object", malformed, variant(hosts=["api.example.com"]))
+    policy(
+        "host_missing_port",
+        malformed,
+        variant(hosts=[{"host": "api.example.com"}]),
+    )
+    policy(
+        "host_port_not_integer",
+        malformed,
+        variant(hosts=[{"host": "api.example.com", "port": "443"}]),
+    )
+    policy("limits_not_object", malformed, with_field(MINIMAL, ["limits"], []))
+    policy("limits_missing_key", malformed, without(MINIMAL, "limits", "open_files"))
+    policy(
+        "limit_not_integer",
+        malformed,
+        with_field(MINIMAL, ["limits", "processes"], "1"),
+    )
+    policy("limit_bool", malformed, with_field(MINIMAL, ["limits", "processes"], True))
+    policy("time_not_object", malformed, with_field(MINIMAL, ["time"], 30000))
+    policy("time_missing_wall_ms", malformed, with_field(MINIMAL, ["time"], {}))
+    policy("unknown_top_level_key", unknown, with_field(MINIMAL, ["extra"], 1))
+    policy("unknown_listen_field", unknown, with_field(MINIMAL, ["listen"], []))
+    policy(
+        "unknown_host_key",
+        unknown,
+        variant(hosts=[{"host": "api.example.com", "port": 443, "path": "/"}]),
+    )
+    policy("unknown_limits_key", unknown, with_field(MINIMAL, ["limits", "cpu"], 1))
+    policy("unknown_time_key", unknown, with_field(MINIMAL, ["time", "cpu_ms"], 1))
+    policy(
+        "unknown_beats_missing",
+        unknown,
+        with_field(without(MINIMAL, "reads"), ["extra"], 1),
+    )
+    for name, value in (
+        ("read_relative", "usr/lib"),
+        ("read_root", "/"),
+        ("read_dotdot", "/opt/../etc"),
+        ("read_dot_component", "/opt/./x"),
+        ("read_trailing_slash", "/opt/x/"),
+        ("read_double_slash", "/opt//x"),
+        ("read_nul", "/opt/a\u0000b"),
+        ("read_newline", "/opt/a\nb"),
+        ("read_too_long", "/" + "a" * 4096),
+    ):
+        policy(name, bad_path, variant(reads=[value]))
+    policy("reads_unsorted", bad_path, variant(reads=["/opt/b", "/opt/a"]))
+    policy("reads_duplicate", bad_path, variant(reads=["/opt/a", "/opt/a"]))
+    policy("workspace_relative", bad_path, variant(workspace="tmp/ws"))
+    policy("workspace_root", bad_path, variant(workspace="/"))
+    policy("read_inside_workspace", bad_path, variant(reads=[WORKSPACE + "/sub"]))
+    policy("read_contains_workspace", bad_path, variant(reads=["/private/tmp"]))
+    policy("read_equals_workspace", bad_path, variant(reads=[WORKSPACE]))
+    policy(
+        "too_many_beats_bad_entry",
+        many,
+        variant(reads=["relative"] + READS_64),
+    )
+    for name, host in (
+        ("host_uppercase", "API.example.com"),
+        ("host_no_dot", "localhost"),
+        ("host_ipv4_literal", "192.168.0.1"),
+        ("host_ipv6_literal", "2001:db8::1"),
+        ("host_wildcard", "*.example.com"),
+        ("host_trailing_dot", "example.com."),
+        ("host_underscore", "my_host.example.com"),
+        ("host_label_too_long", "a" * 64 + ".example.com"),
+        ("host_numeric_tld", "example.123"),
+        ("host_empty_label", "a..example.com"),
+    ):
+        policy(name, bad_host, variant(hosts=hosts((host, 443))))
+    policy("host_port_8443", bad_host, variant(hosts=hosts(("api.example.com", 8443))))
+    policy("host_port_zero", bad_host, variant(hosts=hosts(("api.example.com", 0))))
+    policy(
+        "hosts_unsorted",
+        bad_host,
+        variant(hosts=hosts(("b.example.com", 443), ("a.example.com", 443))),
+    )
+    policy(
+        "hosts_duplicate",
+        bad_host,
+        variant(hosts=hosts(("a.example.com", 443), ("a.example.com", 443))),
+    )
+    for name, key, value in (
+        ("memory_below_minimum", "memory_bytes", 16777215),
+        ("memory_above_maximum", "memory_bytes", 68719476737),
+        ("processes_zero", "processes", 0),
+        ("processes_above_maximum", "processes", 4097),
+        ("open_files_below_minimum", "open_files", 15),
+        ("open_files_above_maximum", "open_files", 65537),
+        ("file_bytes_below_minimum", "file_bytes", 4095),
+        ("file_bytes_above_maximum", "file_bytes", 1099511627777),
+    ):
+        policy(name, bad_limit, variant(**{key: value}))
+    policy("wall_ms_zero", bad_time, with_field(MINIMAL, ["time", "wall_ms"], 0))
+    policy(
+        "wall_ms_above_maximum",
+        bad_time,
+        with_field(MINIMAL, ["time", "wall_ms"], 86400001),
+    )
+    policy("wall_ms_negative", bad_time, with_field(MINIMAL, ["time", "wall_ms"], -1))
+    policy(
+        "path_beats_limit",
+        bad_path,
+        with_field(variant(reads=["relative"]), ["limits", "processes"], 0),
+    )
+    policy(
+        "limit_beats_time",
+        bad_limit,
+        with_field(variant(processes=0), ["time", "wall_ms"], 0),
+    )
+    out = []
+    for name, code, value, is_raw in cases:
+        entry: dict[str, Any] = {"name": name, "code": code}
+        entry["raw" if is_raw else "policy"] = value
+        try:
+            parsed = exec_policy.parse(value)
+            got = "ok"
+            entry["digest"] = exec_policy.digest(parsed)
+        except exec_policy.PolicyError as error:
+            got = error.code
+        if got != code:
+            raise SystemExit(f"{name}: expected {code}, reference gave {got}")
+        out.append(entry)
+    return out
+
+
+def profile_cases() -> list[dict[str, Any]]:
+    quoting = variant(
+        workspace='/private/tmp/astral/ws "q" \\ é',
+        reads=['/opt/a"b', "/opt/café dir"],
+    )
+    named = [
+        ("minimal", MINIMAL, None, None),
+        ("processes_two", variant(processes=2), None, None),
+        (
+            "network_one_process",
+            variant(hosts=hosts(("api.example.com", 443))),
+            49152,
+            EGRESS,
+        ),
+        ("full", FULL, 49152, EGRESS),
+        ("quoting", quoting, None, None),
+    ]
+    out = []
+    for name, policy, port, socket in named:
+        out.append(
+            {
+                "name": name,
+                "policy": policy,
+                "context": {"home": HOME, "proxy_port": port, "egress_socket": socket},
+                "digest": exec_policy.digest(policy),
+                "seatbelt": exec_policy.seatbelt_profile(policy, HOME, port),
+                "linux": exec_policy.linux_plan(policy, socket),
+            }
+        )
+    return out
+
+
+def facts(platform: str, **changes: Any) -> dict[str, Any]:
+    base = {
+        "platform": platform,
+        "landlock_abi": 6 if platform == "linux" else 0,
+        "bwrap": platform == "linux",
+        "userns": platform == "linux",
+        "sandbox_exec": platform == "darwin",
+        "app_sandboxed": False,
+    }
+    base.update(changes)
+    return base
+
+
+def selection_cases() -> list[dict[str, Any]]:
+    darwin, linux = facts("darwin"), facts("linux")
+    rows = [
+        ("darwin_ok", MINIMAL, darwin, DATA_DIR_DARWIN),
+        ("linux_ok", MINIMAL, linux, DATA_DIR_LINUX),
+        ("linux_abi_7_ok", MINIMAL, facts("linux", landlock_abi=7), DATA_DIR_LINUX),
+        ("linux_abi_5", MINIMAL, facts("linux", landlock_abi=5), DATA_DIR_LINUX),
+        ("linux_abi_0", MINIMAL, facts("linux", landlock_abi=0), DATA_DIR_LINUX),
+        ("linux_no_bwrap", MINIMAL, facts("linux", bwrap=False), DATA_DIR_LINUX),
+        ("linux_userns_denied", MINIMAL, facts("linux", userns=False), DATA_DIR_LINUX),
+        (
+            "linux_abi_beats_bwrap",
+            MINIMAL,
+            facts("linux", landlock_abi=5, bwrap=False, userns=False),
+            DATA_DIR_LINUX,
+        ),
+        (
+            "linux_bwrap_beats_userns",
+            MINIMAL,
+            facts("linux", bwrap=False, userns=False),
+            DATA_DIR_LINUX,
+        ),
+        (
+            "darwin_no_sandbox_exec",
+            MINIMAL,
+            facts("darwin", sandbox_exec=False),
+            DATA_DIR_DARWIN,
+        ),
+        (
+            "darwin_app_sandboxed",
+            MINIMAL,
+            facts("darwin", app_sandboxed=True),
+            DATA_DIR_DARWIN,
+        ),
+        (
+            "darwin_missing_beats_sandboxed",
+            MINIMAL,
+            facts("darwin", sandbox_exec=False, app_sandboxed=True),
+            DATA_DIR_DARWIN,
+        ),
+        ("windows", MINIMAL, facts("win32"), "/var/astral/node"),
+        (
+            "shadow_refused_darwin",
+            MINIMAL,
+            facts("darwin", mode="shadow"),
+            DATA_DIR_DARWIN,
+        ),
+        (
+            "shadow_refused_linux",
+            MINIMAL,
+            facts("linux", mode="shadow"),
+            DATA_DIR_LINUX,
+        ),
+        (
+            "read_root_contains_data_dir",
+            variant(reads=["/var/lib"]),
+            linux,
+            DATA_DIR_LINUX,
+        ),
+        (
+            "read_root_equals_data_dir",
+            variant(reads=[DATA_DIR_LINUX]),
+            linux,
+            DATA_DIR_LINUX,
+        ),
+        (
+            "workspace_contains_data_dir",
+            variant(workspace="/var/lib/astral"),
+            linux,
+            DATA_DIR_LINUX,
+        ),
+        (
+            "base_root_contains_data_dir_darwin",
+            MINIMAL,
+            darwin,
+            "/Library/Application Support/Astral/node",
+        ),
+        ("base_root_contains_data_dir_linux", MINIMAL, linux, "/etc/astral/node"),
+        (
+            "workspace_inside_data_dir_ok",
+            variant(workspace=DATA_DIR_DARWIN + "/ws"),
+            darwin,
+            DATA_DIR_DARWIN,
+        ),
+        ("sibling_of_data_dir_ok", MINIMAL, darwin, DATA_DIR_DARWIN),
+        (
+            "overlap_beats_shadow",
+            variant(reads=["/var/lib"]),
+            facts("linux", mode="shadow"),
+            DATA_DIR_LINUX,
+        ),
+        (
+            "overlap_beats_unavailable",
+            variant(reads=["/var/lib"]),
+            facts("win32"),
+            DATA_DIR_LINUX,
+        ),
+        (
+            "shadow_beats_unavailable",
+            MINIMAL,
+            facts("linux", landlock_abi=0, mode="shadow"),
+            DATA_DIR_LINUX,
+        ),
+    ]
+    return [
+        {
+            "name": name,
+            "policy": policy,
+            "facts": platform_facts,
+            "data_dir": data_dir,
+            "result": exec_policy.select(policy, platform_facts, data_dir),
+        }
+        for name, policy, platform_facts, data_dir in rows
+    ]
+
+
+def generate() -> dict[str, Any]:
+    return {
+        "constants": {
+            "format": exec_policy.FORMAT,
+            "darwin_base_reads": list(exec_policy.DARWIN_BASE),
+            "darwin_keychain_denials": list(exec_policy.DARWIN_KEYCHAINS),
+            "linux_base_reads": list(exec_policy.LINUX_BASE),
+            "linux_device_files": list(exec_policy.LINUX_DEVICES),
+            "limits": {k: list(v) for k, v in exec_policy.LIMITS.items()},
+            "wall_ms": list(exec_policy.WALL_MS),
+            "max_reads": exec_policy.MAX_READS,
+            "max_hosts": exec_policy.MAX_HOSTS,
+            "max_path_bytes": exec_policy.MAX_PATH_BYTES,
+            "host_ports": list(exec_policy.HOST_PORTS),
+            "landlock_abi": exec_policy.LANDLOCK_ABI,
+            "proxy_port": exec_policy.PROXY_PORT,
+            "egress_socket": exec_policy.EGRESS_SOCKET,
+            "validation_codes": list(exec_policy.VALIDATION_CODES),
+            "backend_reasons": list(exec_policy.BACKEND_REASONS),
+            "messages": exec_policy.MESSAGES,
+        },
+        "validation": validation_cases(),
+        "profiles": profile_cases(),
+        "selection": selection_cases(),
+    }
+
+
+def render() -> str:
+    return json.dumps(generate(), indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--check", action="store_true")
+    args = parser.parse_args()
+    content = render()
+    if args.check:
+        if not OUTPUT.exists() or OUTPUT.read_text(encoding="utf-8") != content:
+            raise SystemExit("exec-policy-v1 vectors differ")
+    else:
+        OUTPUT.write_text(content, encoding="utf-8")
+
+
+if __name__ == "__main__":
+    main()

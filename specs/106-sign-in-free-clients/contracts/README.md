@@ -8,6 +8,7 @@ These documents fix the formats that spec 106 revises or adds. Each one has a Py
 |---|---|---|---|---|
 | [roster-v2.md](roster-v2.md) | `astral.roster/v2` | The accountless roster, device add and removal, stop and resume, creation and recovery export | `vectors/roster-v2.json`, `vectors/crypto-v2.json` | `reference/generate_local_vectors.py` |
 | [caller-ticket.md](caller-ticket.md) | `astral.caller/v1` | The owner-minted caller ticket, the holder proof, the holder text forms, the verification order and codes, revocation | `vectors/caller-v1.json`, `reference/label_classes.json` | `reference/caller_ticket.py`, `reference/ed25519_strict.py`, `reference/generate_caller_vectors.py`, `reference/generate_label_classes.py` |
+| [exec-policy.md](exec-policy.md) | `astral.exec-policy/v1` | The execution policy for untrusted node tools, its validation order and codes, the canonical Seatbelt profile, the Linux plan, backend selection | `vectors/exec-policy-v1.json` | `reference/exec_policy.py`, `reference/generate_exec_vectors.py` |
 
 A change to a format raises its version. A document, its vectors and its reference module change together, and the reference tests pass before the change merges.
 
@@ -24,6 +25,7 @@ From the repository root, with the packages in `specs/105-decentralized-personal
 ```
 python specs/106-sign-in-free-clients/contracts/reference/generate_caller_vectors.py --check
 python specs/106-sign-in-free-clients/contracts/reference/generate_local_vectors.py --check
+python specs/106-sign-in-free-clients/contracts/reference/generate_exec_vectors.py --check
 python -m pytest specs/106-sign-in-free-clients/contracts/reference/tests -q
 ruff check specs/106-sign-in-free-clients/contracts
 python3.14 specs/106-sign-in-free-clients/contracts/reference/generate_label_classes.py --check
