@@ -250,7 +250,7 @@ class Verifier:
             raise MeshError("caller.proof_mismatch")
         if (
             not now - PROOF_WINDOW_MS <= proof["ms"] <= now + PROOF_AHEAD_MS
-            or proof["ms"] < state["started_ms"] + RESTART_PAUSE_MS
+            or proof["ms"] <= state["started_ms"] + RESTART_PAUSE_MS
         ):
             raise MeshError("caller.proof_stale")
         if not _verify_with(
@@ -321,6 +321,14 @@ def parse_holder_text(text: str) -> str:
     return body
 
 
+def parse_ticket_text(text: str) -> dict[str, str]:
+    value = check_ticket(_decode(text, TICKET_TEXT, "caller.malformed"))
+    return {
+        "id": value["id"],
+        "authorization": SCHEME + text[len(TICKET_TEXT) :],
+    }
+
+
 def parse_key_text(text: str) -> dict[str, str]:
     if not isinstance(text, str) or not text.startswith(KEY_TEXT):
         raise MeshError("caller.malformed", "key form")
@@ -342,20 +350,24 @@ def run(kind: str, case_input: dict[str, Any]) -> dict[str, Any]:
     if kind == "caller_verify":
         return _result(Verifier(case_input["state"]), case_input)
     if kind == "caller_verify_sequence":
-        state = case_input["state"]
-        verifier = Verifier(state)
+        patched = dict(case_input["state"])
+        verifier = Verifier(patched)
         results = []
         for step in case_input["steps"]:
-            if "restart" in step:
-                verifier = Verifier({**state, **step["restart"]})
             if "state" in step:
-                verifier.state = {**verifier.state, **step["state"]}
+                patched = {**patched, **step["state"]}
+                verifier.state = patched
+            if "restart" in step:
+                patched = {**patched, **step["restart"]}
+                verifier = Verifier(patched)
             results.append(_result(verifier, step))
         return {"ok": {"results": results}}
     if kind == "caller_revoke_fold":
         return _guard(lambda: revoke_fold(case_input))
     if kind == "caller_holder_text":
         return _guard(lambda: {"holder": parse_holder_text(case_input["text"])})
+    if kind == "caller_ticket_text":
+        return _guard(lambda: parse_ticket_text(case_input["text"]))
     if kind == "caller_key_text":
         return _guard(lambda: parse_key_text(case_input["text"]))
     raise KeyError(kind)

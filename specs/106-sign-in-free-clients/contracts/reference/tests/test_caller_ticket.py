@@ -48,6 +48,11 @@ EXPECTED = {
     "revoke_for_one_tool_ignored": "ok",
     "revoke_for_one_scope_ignored": "ok",
     "revoke_of_another_caller_ignored": "ok",
+    "later_grant_does_not_restore_revoked": "caller.revoked",
+    "lowercase_scheme_refused": "caller.malformed",
+    "tool_name_64_accepted": "ok",
+    "method_16_characters_accepted": "ok",
+    "target_2048_characters_accepted": "ok",
     "proof_method_mismatch": "caller.proof_mismatch",
     "proof_target_mismatch": "caller.proof_mismatch",
     "proof_body_mismatch": "caller.proof_mismatch",
@@ -56,12 +61,26 @@ EXPECTED = {
     "proof_at_window_start": "ok",
     "proof_ahead_5s": "ok",
     "proof_ahead_beyond_5s": "caller.proof_stale",
-    "proof_at_start_pause_end": "ok",
-    "proof_before_start_pause_end": "caller.proof_stale",
+    "proof_just_after_start_pause_accepted": "ok",
+    "proof_at_start_pause_end_refused": "caller.proof_stale",
     "bad_holder_signature": "caller.proof_bad_signature",
     "replayed_nonce": ["ok", "caller.replayed"],
     "same_nonce_on_another_ticket_accepted": ["ok", "ok"],
     "restart_refuses_proof_accepted_before": ["ok", "caller.proof_stale"],
+    "replay_store_keeps_a_nonce_to_the_end_of_its_window": [
+        "ok",
+        "caller.replayed",
+        "caller.proof_stale",
+    ],
+    "replay_key_ignores_the_target": ["ok", "caller.replayed"],
+    "replay_key_ignores_the_proof_time": ["ok", "caller.replayed"],
+    "restart_refuses_future_proof_accepted_before": ["ok", "caller.proof_stale"],
+    "restart_at_proof_time_minus_5s_refuses": ["ok", "caller.proof_stale"],
+    "restart_just_before_proof_time_minus_5s_accepts": ["ok", "ok"],
+    "restart_keeps_earlier_state_patches": [
+        "caller.tool_changed",
+        "caller.tool_changed",
+    ],
     "failed_signature_does_not_use_the_nonce": ["caller.proof_bad_signature", "ok"],
     "uncovered_tool_uses_the_nonce": ["caller.tool_not_covered", "caller.replayed"],
     "order_bad_holder_before_replayed": ["ok", "caller.proof_bad_signature"],
@@ -122,6 +141,12 @@ EXPECTED = {
     "first_failure_wins": "caller.mesh_mismatch",
     "caller_revoke_fold": "ok",
     "caller_revoke_fold_control_refuses_covered_agent": "ticket.grant_revoked",
+    "caller_revoke_fold_later_grant_keeps_revoke": "ok",
+    "ticket_form_accepted": "ok",
+    "ticket_form_wrong_prefix": "caller.malformed",
+    "ticket_form_wrong_version": "caller.malformed",
+    "ticket_form_not_canonical": "caller.malformed",
+    "ticket_form_over_limit": "caller.malformed",
     "holder_form_accepted": "ok",
     "key_form_refused_by_minting": "caller.malformed",
     "holder_form_31_bytes": "caller.malformed",
@@ -227,6 +252,19 @@ def test_restart_pause_and_window_constants() -> None:
     assert caller_ticket.PROOF_AHEAD_MS == 5000
     assert caller_ticket.RESTART_PAUSE_MS == 5000
     assert caller_ticket.MINTER_KINDS == ("desktop", "pocket", "satellite")
+
+
+def test_ticket_text_form_round_trips_to_the_authorization_header() -> None:
+    text = CASES["ticket_form_accepted"]["input"]["text"]
+    out = CASES["ticket_form_accepted"]["expect"]["ok"]
+    assert out["authorization"] == "AstralCaller " + text.removeprefix(
+        caller_ticket.TICKET_TEXT
+    )
+
+
+def test_a_restart_keeps_the_state_patches_made_before_it() -> None:
+    case = CASES["restart_keeps_earlier_state_patches"]["input"]
+    assert "restart" in case["steps"][1] and "state" not in case["steps"][1]
 
 
 def test_lifetime_choices_are_the_contracted_set() -> None:

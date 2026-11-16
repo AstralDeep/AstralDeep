@@ -98,6 +98,7 @@ def generate() -> dict[str, Any]:
         "removed": [],
         "stop": 1,
         "revokes": [],
+        "grants": [],
         "catalog": {"echo": echo, "search": search},
         "now_ms": NOW,
         "started_ms": NOW - 3600000,
@@ -307,6 +308,43 @@ def generate() -> dict[str, Any]:
     )
 
     verify(
+        "later_grant_does_not_restore_revoked",
+        "caller.revoked",
+        step(ticket),
+        revokes=["caller:" + ticket["id"] + "/*/*"],
+        grants=["caller:" + ticket["id"] + "/*/*"],
+    )
+    verify(
+        "lowercase_scheme_refused",
+        "caller.malformed",
+        {
+            **step(ticket),
+            "authorization": "astralcaller "
+            + caller_ticket.authorization_header(ticket).removeprefix(
+                caller_ticket.SCHEME
+            ),
+        },
+    )
+    long_name = "e" * 64
+    long_tool = make_ticket(tools=[{"def": echo, "name": long_name}])
+    verify(
+        "tool_name_64_accepted",
+        "ok",
+        step(long_tool, tool=long_name),
+        catalog={long_name: echo},
+    )
+    verify(
+        "method_16_characters_accepted",
+        "ok",
+        step(ticket, make_proof(ticket, method="M" * 16), method="M" * 16),
+    )
+    long_target = "/" + "t" * 2047
+    verify(
+        "target_2048_characters_accepted",
+        "ok",
+        step(ticket, make_proof(ticket, target=long_target), target=long_target),
+    )
+    verify(
         "proof_method_mismatch",
         "caller.proof_mismatch",
         step(ticket, make_proof(ticket, method="GET")),
@@ -340,12 +378,17 @@ def generate() -> dict[str, Any]:
         "caller.proof_stale",
         step(ticket, make_proof(ticket, ms=NOW + 5001)),
     )
-    verify("proof_at_start_pause_end", "ok", step(ticket), started_ms=NOW - 1000 - 5000)
     verify(
-        "proof_before_start_pause_end",
+        "proof_just_after_start_pause_accepted",
+        "ok",
+        step(ticket),
+        started_ms=NOW - 1000 - 5001,
+    )
+    verify(
+        "proof_at_start_pause_end_refused",
         "caller.proof_stale",
         step(ticket),
-        started_ms=NOW - 1000 - 4999,
+        started_ms=NOW - 1000 - 5000,
     )
     verify(
         "bad_holder_signature",
@@ -366,6 +409,60 @@ def generate() -> dict[str, Any]:
         "restart_refuses_proof_accepted_before",
         [again, {**again, "restart": {"started_ms": NOW - 500}}],
         ["ok", "caller.proof_stale"],
+    )
+    ahead = step(ticket, make_proof(ticket, ms=NOW + 5000, nonce=nonce))
+    sequence(
+        "replay_store_keeps_a_nonce_to_the_end_of_its_window",
+        [
+            ahead,
+            {**ahead, "state": {"now_ms": NOW + 124999}},
+            {**ahead, "state": {"now_ms": NOW + 125001}},
+        ],
+        ["ok", "caller.replayed", "caller.proof_stale"],
+    )
+    sequence(
+        "replay_key_ignores_the_target",
+        [
+            again,
+            step(
+                ticket,
+                make_proof(ticket, nonce=nonce, target="/mcp?session=2"),
+                target="/mcp?session=2",
+            ),
+        ],
+        ["ok", "caller.replayed"],
+    )
+    sequence(
+        "replay_key_ignores_the_proof_time",
+        [again, step(ticket, make_proof(ticket, nonce=nonce, ms=NOW - 2000))],
+        ["ok", "caller.replayed"],
+    )
+    future = step(ticket, make_proof(ticket, ms=NOW + 5000, nonce=nonce))
+    sequence(
+        "restart_refuses_future_proof_accepted_before",
+        [
+            future,
+            {**future, "restart": {"started_ms": NOW + 1000, "now_ms": NOW + 1000}},
+        ],
+        ["ok", "caller.proof_stale"],
+    )
+    sequence(
+        "restart_at_proof_time_minus_5s_refuses",
+        [future, {**future, "restart": {"started_ms": NOW}}],
+        ["ok", "caller.proof_stale"],
+    )
+    sequence(
+        "restart_just_before_proof_time_minus_5s_accepts",
+        [future, {**future, "restart": {"started_ms": NOW - 1}}],
+        ["ok", "ok"],
+    )
+    sequence(
+        "restart_keeps_earlier_state_patches",
+        [
+            {**again, "state": {"catalog": {"echo": search}}},
+            {**again, "restart": {"started_ms": NOW - 3600000}},
+        ],
+        ["caller.tool_changed", "caller.tool_changed"],
     )
     forged = step(ticket, make_proof(ticket, stranger, nonce=nonce))
     sequence(
@@ -658,6 +755,43 @@ def generate() -> dict[str, Any]:
         "caller_revoke_fold",
         {**fold_input, "revokes": fold_input["revokes"] + ["agent-a/*/*"]},
         "ticket.grant_revoked",
+    )
+
+    record(
+        "caller_revoke_fold_later_grant_keeps_revoke",
+        "caller_revoke_fold",
+        {**fold_input, "grants": ["caller:" + fold_ids + "/*/*"]},
+        "ok",
+    )
+    own = caller_ticket.authorization_header(ticket).removeprefix(caller_ticket.SCHEME)
+    ticket_text = caller_ticket.TICKET_TEXT + own
+    record("ticket_form_accepted", "caller_ticket_text", {"text": ticket_text}, "ok")
+    record(
+        "ticket_form_wrong_prefix",
+        "caller_ticket_text",
+        {"text": "astral-caller-holder:v1:" + own},
+        "caller.malformed",
+    )
+    record(
+        "ticket_form_wrong_version",
+        "caller_ticket_text",
+        {"text": ticket_text.replace(":v1:", ":v2:")},
+        "caller.malformed",
+    )
+    record(
+        "ticket_form_not_canonical",
+        "caller_ticket_text",
+        {
+            "text": caller_ticket.TICKET_TEXT
+            + b64(json.dumps(ticket, indent=1).encode())
+        },
+        "caller.malformed",
+    )
+    record(
+        "ticket_form_over_limit",
+        "caller_ticket_text",
+        {"text": caller_ticket.TICKET_TEXT + "A" * 8192},
+        "caller.malformed",
     )
 
     holder_public = b64(crypto.ed25519_public(holder))

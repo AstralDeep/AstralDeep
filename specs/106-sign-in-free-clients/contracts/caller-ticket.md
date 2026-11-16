@@ -50,23 +50,23 @@ Each request carries the header `Astral-Caller-Proof`. Its value is base64url of
 
 `sig` covers `astral.caller-proof/v1\n` followed by the LETS-CJ/1 bytes of the object without `sig`. Any other field is `caller.proof_malformed`.
 
-A proof is in time when `now - 120000 <= ms <= now + 5000` and `ms >= started_ms + 5000`, where `now` is the verifier's clock in milliseconds and `started_ms` is when this verifier started. Both failures are `caller.proof_stale`. The second bound means no proof that a verifier could have accepted before a restart is accepted after it. The cost is a 5 second pause after each restart.
+A proof is in time when `now - 120000 <= ms <= now + 5000` and `ms > started_ms + 5000`, where `now` is the verifier's clock in milliseconds and `started_ms` is the start of the replay store, taken when the store is created and shared by every process that verifies for the node. Both failures are `caller.proof_stale`. The second bound means no proof that a verifier could have accepted before a restart is accepted after it. The cost is a 5 second pause after each restart. A proof dated exactly 5 seconds after the store started is refused.
 
-The replay store is keyed by ticket id and nonce. An entry is held until `ms + 120000`, in memory, and is shared by every process that verifies for the node. A verifier records the key only after the holder signature has verified, so a forged proof cannot use up a nonce. A leaked ticket alone does nothing, so the ticket is not a secret.
+The replay store is keyed by ticket id and nonce. An entry is held until `ms + 120000`, in memory, and is shared by every process that verifies for the node. A verifier records the key only after the holder signature has verified, so a forged proof cannot use up a nonce. The key does not include the target, the proof time or the signature, so a fresh proof that reuses a ticket id and nonce is a replay. A clock that steps backward is a known limit. A verifier whose clock steps back may accept a proof the store already forgot, and a node should not run with a clock it cannot trust. A leaked ticket alone does nothing, so the ticket is not a secret.
 
 ## 3. Transport
 
-The ticket travels as `Authorization: AstralCaller <base64url ticket>`. Only the `AstralCaller` scheme is read. Any other scheme, even with a valid ticket after it, is `caller.malformed`.
+The ticket travels as `Authorization: AstralCaller <base64url ticket>`. Only the `AstralCaller` scheme is read, and it is matched exactly. Any other scheme, including a different letter case, even with a valid ticket after it, is `caller.malformed`.
 
 Ticket and proof bytes must be exact canonical LETS-CJ/1. A verifier decodes the base64url, parses strictly, re-encodes and compares the bytes. Spacing, key order or any other difference is `caller.malformed` for a ticket and `caller.proof_malformed` for a proof. Undecodable bytes, text that is not valid UTF-8 and any header over 8192 characters are refused before decoding, with the same codes and never with an exception.
 
 Three text forms exist for copying and pasting.
 
-- `astral-caller-ticket:v1:<base64url>` carries the ticket bytes. It is not a secret.
+- `astral-caller-ticket:v1:<base64url>` carries the ticket bytes. It is not a secret. Parsing it applies the ticket rules of section 1 and the canonical byte rule, and yields the ticket id and the `Authorization` header value.
 - `astral-caller-holder:v1:<base64url>` carries the raw 32 byte Ed25519 public key of the holder. It is not a secret. Minting takes only this form.
 - `astral-caller-key:v1:<base64url>` carries the 32 byte Ed25519 seed of the holder key. It is a secret. The caller keeps it and never pastes it into a minting device. An editor that mints a ticket accepts only the holder form and refuses the key form with a message that says so.
 
-A text form with another version, padding, a non-canonical encoding or the wrong key length is `caller.malformed`. The key form derives the holder form, and the vectors pin that.
+A text form with another prefix or version, padding, a non-canonical encoding, a ticket over the header limit or the wrong key length is `caller.malformed`. The key form derives the holder form, and the vectors pin that.
 
 ## 4. Verification
 
@@ -80,6 +80,7 @@ The verifier is given its own view of the mesh and does not read anything from t
 | `removed` | Removed device ids |
 | `stop` | The current stop counter |
 | `revokes` | The authority revoke keys, each `agent/tool/scope` |
+| `grants` | The authority grant keys in the same form. A caller ticket check never reads them |
 | `catalog` | The node's current catalog, tool name to definition hash |
 | `now_ms`, `started_ms` | The verifier's clock and the time this verifier started |
 | request | `method`, `target`, `body` and the `tool` the request names |
@@ -120,7 +121,7 @@ Deep maps `caller.malformed`, `caller.proof_malformed`, `caller.bad_signature` a
 
 ## 5. Revocation
 
-Any member revokes a ticket by writing an `auth.revoke` event whose body has agent `caller:<id>`, tool `*` and scope `*`. Only that exact shape revokes a caller ticket. A revoke for `caller:<id>` with another tool or scope, or for another caller id, does nothing to the ticket, and the vectors pin each.
+Any member revokes a ticket by writing an `auth.revoke` event whose body has agent `caller:<id>`, tool `*` and scope `*`. Only that exact shape revokes a caller ticket. A revoke for `caller:<id>` with another tool or scope, or for another caller id, does nothing to the ticket, and the vectors pin each. A revoked ticket stays revoked. A later `auth.grant` that names `caller:<id>` never restores it, so a verifier must not apply the generic grant-over-revoke rule to callers.
 
 The authority fold accepts any agent string, so the deployed kernel folds it as an ordinary revoke that matches no real agent. Beside it, the 105 grant check still passes for an ordinary agent action that has no grant. The vector `caller_revoke_fold` uses no grants, a caller revoke and an ordinary action, and expects the check to pass. Its control adds a revoke of `agent-a/*/*` and expects `ticket.grant_revoked`, which shows the check discriminates.
 
@@ -142,9 +143,9 @@ These parts belong to the kernel and are listed here so every implementation agr
 Case kinds:
 
 - `caller_verify` has `state`, `authorization`, `proof` and `request`. The expectation is `{"ok": {"caller", "label", "mesh", "tool" or "tools"}}` or `{"error": code}`.
-- `caller_verify_sequence` has `state` and `steps`, each with the fields of a single case. A step may carry `state`, a patch merged into the verifier state before it runs, or `restart`, which replaces the verifier with a new one that has an empty replay store and the patched state. The expectation is `{"ok": {"results": [...]}}` with one result per step.
+- `caller_verify_sequence` has `state` and `steps`, each with the fields of a single case. A step may carry `state`, a patch merged into the verifier state before it runs (it can move `now_ms`), or `restart`, which replaces the verifier with a new one that has an empty replay store. The new verifier's state is the case state with every earlier `state` patch and then the `restart` values applied. Patches persist across later steps. The expectation is `{"ok": {"results": [...]}}` with one result per step.
 - `caller_revoke_fold` has `caller`, `grants`, `revokes`, `action` and `effect_kind`. It expects the revoked caller ids and the pass of the ordinary grant check, or the `ticket.grant_revoked` error.
-- `caller_holder_text` and `caller_key_text` have `text`. They expect the parsed holder key, or for the key form the derived holder key and holder text.
+- `caller_ticket_text`, `caller_holder_text` and `caller_key_text` have `text`. They expect the parsed ticket id and header, the parsed holder key, or for the key form the derived holder key and holder text.
 
 Groups of cases:
 
@@ -154,11 +155,11 @@ Groups of cases:
 | Tool | `other_tool_refused`, `a2a_not_covered_refused`, `changed_definition_refused`, `missing_catalog_tool_refused` |
 | Lifetime and time | `expired`, `expiry_exactly_now`, `lifetime_31_days`, `lifetime_30_days_plus_1_ms`, `expires_equal_to_issued`, `expires_before_issued`, `future_issued_ms` |
 | Signer and device | `bad_presence_signature`, `high_s_presence_signature`, `wrong_mesh`, `wrong_node`, `removed_device`, `unknown_minting_device`, `node_minter_refused`, `raised_stop` |
-| Revocation | `revoked`, `revoke_for_one_tool_ignored`, `revoke_for_one_scope_ignored`, `revoke_of_another_caller_ignored`, `caller_revoke_fold`, `caller_revoke_fold_control_refuses_covered_agent` |
-| Proof | the four `proof_*_mismatch` cases, `stale_proof`, `proof_at_window_start`, `proof_ahead_5s`, `proof_ahead_beyond_5s`, `proof_at_start_pause_end`, `proof_before_start_pause_end`, `bad_holder_signature` |
-| Replay and restart | `replayed_nonce`, `same_nonce_on_another_ticket_accepted`, `restart_refuses_proof_accepted_before`, `failed_signature_does_not_use_the_nonce`, `uncovered_tool_uses_the_nonce` |
+| Revocation | `revoked`, `revoke_for_one_tool_ignored`, `revoke_for_one_scope_ignored`, `revoke_of_another_caller_ignored`, `later_grant_does_not_restore_revoked`, `caller_revoke_fold`, `caller_revoke_fold_later_grant_keeps_revoke`, `caller_revoke_fold_control_refuses_covered_agent` |
+| Proof | the four `proof_*_mismatch` cases, `stale_proof`, `proof_at_window_start`, `proof_ahead_5s`, `proof_ahead_beyond_5s`, `proof_just_after_start_pause_accepted`, `proof_at_start_pause_end_refused`, `bad_holder_signature`, `method_16_characters_accepted`, `target_2048_characters_accepted`, `tool_name_64_accepted` |
+| Replay and restart | `replayed_nonce`, `same_nonce_on_another_ticket_accepted`, `restart_refuses_proof_accepted_before`, the three future-dated restart cases, `restart_keeps_earlier_state_patches`, the replay store retention case that advances `now_ms`, `replay_key_ignores_the_target`, `replay_key_ignores_the_proof_time`, `failed_signature_does_not_use_the_nonce`, `uncovered_tool_uses_the_nonce` |
 | Order | `order_<a>_before_<b>` for each adjacent pair that can fail together, each with defects at both steps and the earlier code expected, `first_failure_wins` |
-| Shape | ticket fields, version, label length and character classes, tool count, duplicates, order, name grammar, `a2a.message` definition, holder key length, header and proof limits, canonical bytes, base64 and UTF-8 failures, scheme cases |
-| Text forms | `holder_form_accepted`, `key_form_refused_by_minting`, `key_form_derives_holder` and the malformed forms |
+| Shape | ticket fields, version, label length and character classes, tool count, duplicates, order, name grammar, `a2a.message` definition, holder key length, header and proof limits, canonical bytes, base64 and UTF-8 failures, scheme cases including `lowercase_scheme_refused` |
+| Text forms | `ticket_form_accepted`, `holder_form_accepted`, `key_form_refused_by_minting`, `key_form_derives_holder` and the malformed forms, including a wrong prefix for each |
 
 Regenerate with `python specs/106-sign-in-free-clients/contracts/reference/generate_caller_vectors.py` and verify with `--check`.
