@@ -45,6 +45,7 @@ NODE_ID_PREFIX = "astral-node:"
 MAX_TOKEN_SECONDS = 300
 CLOCK_SKEW_SECONDS = 30
 _MAX_TOKEN_CHARS = 16384
+MESH_OWNER = re.compile(r"(?:sha256:|mesh\.)[0-9a-f]{64}")
 _SAFE_OWNER_CHARS = frozenset(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._@-"
 )
@@ -120,6 +121,10 @@ def canonical_owner_id(issuer: Any, subject: Any) -> str:
     if len(owner) > 255 or not set(owner) <= _SAFE_OWNER_CHARS:
         raise NodeIdentityError("subject cannot form a storable owner id")
     return owner
+
+
+def is_mesh_owner(value: Any) -> bool:
+    return type(value) is str and MESH_OWNER.fullmatch(value) is not None
 
 
 def owner_principal_hash(owner_id: str) -> str:

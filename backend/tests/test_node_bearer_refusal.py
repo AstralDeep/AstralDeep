@@ -8,6 +8,7 @@ from types import SimpleNamespace as NS
 
 import jose.jwt
 import pytest
+from cryptography.fernet import Fernet
 from fastapi import HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
 from fastapi.testclient import TestClient
@@ -20,6 +21,7 @@ from orchestrator.voice_worker_endpoint import WORKER_CONTROL_PATH
 from shared import jwks_cache, node_identity as ni
 from shared.a2a_security import A2ASecurityValidator
 from shared.token_verify import TokenRefused, verify_idp_token
+from tests import test_node_route_census as census
 from tests.helpers import orchestrator_app
 from tests.helpers.idp_tokens import AUTHORITY
 from tests.helpers.voice_plane_runtime import isolated_plane_runtime
@@ -38,6 +40,8 @@ A2A_BODY = {
 }
 
 REFUSED = {"detail": BEARER}
+VOICE_REFUSED = {"error": "voice_unavailable", "reason": "authentication_required", "retryable": False}
+MOCK_REFUSALS = {"/api/work/v1/operations/op-1/pause": (403, {"error": "work_authority_unavailable"})}
 REST_DOORS = [
     ("GET", "/api/connection/status", 401, REFUSED),
     ("GET", "/api/share", 401, REFUSED),
@@ -47,9 +51,11 @@ REST_DOORS = [
     ("GET", "/api/emergency-stop", 401, REFUSED),
     ("GET", "/api/chrome/commands", 401, REFUSED),
     ("GET", "/api/work/v1/operations/op-1", 401, {"error": "work_authentication_required"}),
-    ("POST", "/api/work/v1/operations", 503, {"error": "work_submit_unavailable"}),
-    ("POST", "/api/work/v1/operations/op-1/pause", 503, {"error": "work_read_unavailable"}),
+    ("POST", "/api/work/v1/operations", 401, {"error": "work_authentication_required"}),
+    ("POST", "/api/work/v1/operations/op-1/pause", 401, {"error": "work_authentication_required"}),
     ("POST", "/api/export/canvas/c1/presentation", 401, {"error": "presentation_authentication_required"}),
+    ("GET", "/api/persistent-agents", 401, {"error": "assignment_authentication_required"}),
+    ("GET", "/api/voice/v2/status", 401, VOICE_REFUSED),
 ]
 SIGN_IN_DOORS = [
     ("GET", "/"),
@@ -123,6 +129,7 @@ def node(request, plane_runtime, server_identity, spies, monkeypatch):
         token = server_identity.token("owner-1", roles=("user", "admin"))
         mcp_token = server_identity.mcp_token("owner-1")
     monkeypatch.setenv(ni.PROFILE_ENV, ni.PERSONAL)
+    monkeypatch.setenv("WEB_SESSION_ENC_KEY", Fernet.generate_key().decode())
     orch = orchestrator_app.host(plane_runtime)
     app = orchestrator_app.build(monkeypatch, orch)
     client = TestClient(app, base_url=orchestrator_app.PUBLIC_BASE_URL, raise_server_exceptions=False)
@@ -134,6 +141,7 @@ def node(request, plane_runtime, server_identity, spies, monkeypatch):
 def server(plane_runtime, server_identity, spies, monkeypatch):
     monkeypatch.setenv("ASTRAL_ENV", "production")
     monkeypatch.delenv(ni.PROFILE_ENV, raising=False)
+    monkeypatch.setenv("WEB_SESSION_ENC_KEY", Fernet.generate_key().decode())
     orch = orchestrator_app.host(plane_runtime)
     app = orchestrator_app.build(monkeypatch, orch)
     client = TestClient(app, base_url=orchestrator_app.PUBLIC_BASE_URL, raise_server_exceptions=False)
@@ -152,6 +160,8 @@ def _detail(response) -> str:
 
 @pytest.mark.parametrize("method,path,status,body", REST_DOORS)
 def test_rest_doors_refuse_a_valid_bearer(node, method, path, status, body):
+    if node.mode == "mock":
+        status, body = MOCK_REFUSALS.get(path, (status, body))
     response = node.client.request(method, path, headers={
         "Authorization": f"Bearer {node.token}", "Origin": orchestrator_app.PUBLIC_BASE_URL,
         "Content-Type": "application/json"}, content=b"{}")
@@ -203,39 +213,48 @@ def test_legacy_enrollment_doors_are_closed(node, method, path):
     _untouched(node)
 
 
-def test_websocket_registration_answers_the_refusal_frame(node):
+def _websocket_probe(node):
     with node.client.websocket_connect("/ws") as socket:
         socket.send_text(json.dumps({"type": "register_ui", "token": node.token, "resumed": True}))
         assert json.loads(socket.receive_text()) == {"type": "auth_required", "reason": BEARER}
     assert node.orch.ui_sessions == {}
-    _untouched(node)
 
 
-@pytest.mark.parametrize("bearer", ["token", "afk_framework-credential"])
-def test_a2a_refuses_every_bearer_before_reading_it(node, bearer):
-    token = node.token if bearer == "token" else bearer
-    response = node.client.post("/a2a", json=A2A_BODY, headers={"Authorization": f"Bearer {token}"})
-    assert response.status_code == 401
-    assert response.json()["error"]["message"] == BEARER
-    _untouched(node)
+def _a2a_probe(node):
+    for token in (node.token, "afk_framework-credential"):
+        response = node.client.post("/a2a", json=A2A_BODY, headers={"Authorization": f"Bearer {token}"})
+        assert response.status_code == 401
+        assert response.json()["error"]["message"] == BEARER
 
 
-@pytest.mark.parametrize("bearer", ["token", "afk_framework-credential"])
-def test_mcp_refuses_every_bearer_before_reading_it(node, bearer):
-    token = node.mcp_token if bearer == "token" else bearer
-    response = node.client.post("/mcp", json={
-        "jsonrpc": "2.0", "id": 1, "method": "server/discover", "params": {"_meta": MCP_META}},
-        headers={"Authorization": f"Bearer {token}", "MCP-Protocol-Version": "2026-07-28",
-                 "Mcp-Method": "server/discover"})
-    assert response.status_code == 401
-    assert f'error="{BEARER}"' in response.headers["www-authenticate"]
-    _untouched(node)
+def _mcp_probe(node):
+    for token in (node.mcp_token, "afk_framework-credential"):
+        response = node.client.post("/mcp", json={
+            "jsonrpc": "2.0", "id": 1, "method": "server/discover", "params": {"_meta": MCP_META}},
+            headers={"Authorization": f"Bearer {token}", "MCP-Protocol-Version": "2026-07-28",
+                     "Mcp-Method": "server/discover"})
+        assert response.status_code == 401
+        assert f'error="{BEARER}"' in response.headers["www-authenticate"]
 
 
-def test_the_voice_worker_socket_refuses_a_bearer(node):
+def _worker_probe(node):
     with pytest.raises(WebSocketDisconnect):
         with node.client.websocket_connect(WORKER_CONTROL_PATH, headers={"Authorization": f"Bearer {node.token}"}):
             pass
+
+
+IN_BAND_PROBES = {
+    ("WS", "/ws"): _websocket_probe,
+    ("POST", "/a2a"): _a2a_probe,
+    ("POST", "/mcp"): _mcp_probe,
+    ("WS", WORKER_CONTROL_PATH): _worker_probe,
+}
+
+
+@pytest.mark.parametrize("door", sorted(census.IN_BAND))
+def test_every_in_band_door_refuses_a_valid_bearer(node, door):
+    assert door in IN_BAND_PROBES, f"{door} is on the census in-band list without a denial probe"
+    IN_BAND_PROBES[door](node)
     _untouched(node)
 
 

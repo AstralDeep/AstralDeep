@@ -52,7 +52,6 @@ PAIRING_SECRET_FILE = "pairing-secret"
 PAIRING_SECRET_BYTES = 32
 OFFERS_PER_WINDOW = 5
 OFFER_WINDOW_SECONDS = 60.0
-MESH_ID = re.compile(r"sha256:[0-9a-f]{64}")
 
 
 class NodeMeshError(Exception):
@@ -236,9 +235,7 @@ class PairingSecret:
         return stat.S_ISREG(info.st_mode) and not stat.S_IMODE(info.st_mode) & 0o077
 
     def _write(self) -> None:
-        self._directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-        if stat.S_IMODE(self._directory.stat().st_mode) & 0o077:
-            self._directory.chmod(0o700)
+        node_identity._ensure_private_dir(self._directory)
         descriptor, temporary = tempfile.mkstemp(prefix=".pairing-secret-", dir=self._directory)
         try:
             with os.fdopen(descriptor, "wb") as handle:
@@ -347,6 +344,7 @@ class NodeMesh:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._checks: set = set()
         self._pairing = PairingSecret(self._data_dir)
+        self._pairing_checks: set = set()
         self._offer_lock = asyncio.Lock()
         self._served: List[float] = []
 
@@ -502,8 +500,31 @@ class NodeMesh:
 
     def _watch_pairing(self, change: Any) -> None:
         progress = getattr(change, "progress", None)
-        if progress is not None and _variant(progress) == "JOINED":
+        joined = progress is not None and _variant(progress) == "JOINED"
+        if joined:
             self._pairing.close()
+        loop = self._loop
+        if loop is not None and (joined or _variant(change) in ROSTER_CHANGES):
+            loop.call_soon_threadsafe(self._schedule_pairing_check)
+
+    def _schedule_pairing_check(self) -> None:
+        task = asyncio.get_running_loop().create_task(self._check_pairing(), name="node-mesh-pairing-check")
+        self._pairing_checks.add(task)
+        task.add_done_callback(self._pairing_checks.discard)
+
+    async def _check_pairing(self) -> None:
+        async with self._offer_lock:
+            if not self._started or self._kernel is None:
+                return
+            try:
+                status = await self._request_call(self._kernel.mesh_status)
+            except NodeMeshError as exc:
+                logger.warning("node_mesh_pairing_check_failed: %s", exc.code)
+                return
+            if self._enrollment(status) in ENROLLED_STATES:
+                self._pairing.close()
+            elif node_identity.is_personal() and not self._quarantined:
+                await asyncio.to_thread(self._pairing.open)
 
     def _schedule_check(self) -> None:
         task = asyncio.get_running_loop().create_task(self._check_development_mesh(), name="node-mesh-development-check")
@@ -540,7 +561,8 @@ class NodeMesh:
                 return
             self._started = False
             self._personal_owner = None
-            checks, self._checks = list(self._checks), set()
+            checks = [*self._checks, *self._pairing_checks]
+            self._checks, self._pairing_checks = set(), set()
             for task in checks:
                 task.cancel()
             await asyncio.gather(*checks, return_exceptions=True)
@@ -663,19 +685,23 @@ class NodeMesh:
         if not node_identity.is_personal():
             raise NodeMeshError("node_profile_inactive", 404)
         async with self._offer_lock:
-            status = await self._request_call(self.kernel.mesh_status)
-            enrolled = self._enrollment(status) in ENROLLED_STATES
-            if not await asyncio.to_thread(self._pairing.matches, presented):
-                if not enrolled:
+            if await asyncio.to_thread(self._pairing.matches, presented):
+                status = await self._request_call(self.kernel.mesh_status)
+            else:
+                try:
+                    status = await self._request_call(self.kernel.mesh_status)
+                except NodeMeshError:
+                    raise NodeMeshError("node.pairing_secret_required", 401) from None
+                if self._enrollment(status) not in ENROLLED_STATES:
                     await asyncio.to_thread(self._pairing.ensure)
-                raise NodeMeshError("node.pairing_secret_required", 401)
+                    raise NodeMeshError("node.pairing_secret_required", 401)
             try:
                 owner = node_identity.bound_owner()
             except node_identity.NodeIdentityError:
                 raise NodeMeshError("node.owner_binding_unavailable", 503) from None
-            if owner is not None and MESH_ID.fullmatch(owner) is None:
+            if owner is not None and not node_identity.is_mesh_owner(owner):
                 raise NodeMeshError("node.legacy_owner", 409)
-            if enrolled:
+            if self._enrollment(status) in ENROLLED_STATES:
                 self._pairing.close()
                 return {"state": "enrolled", "mesh_id": status.mesh_id, "member_id": status.device_id}
             now = time.monotonic()

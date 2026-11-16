@@ -1,12 +1,14 @@
 """A device enrolled through the legacy mesh enrollment keeps its rows when its node turns out to be a personal node, but every step of that flow is closed there: the owner cannot invite, the device cannot redeem, refresh or call in, and no Keycloak exchange happens.
-It drives the mesh SDK client against orchestrator/mesh_api.py on real PostgreSQL through tests/helpers/mesh_runtime.py, beside the factory-app proof in test_mesh_admission.py."""
+It drives the mesh SDK client through the app Orchestrator.build_http_app serves (tests/helpers/orchestrator_app.py) into orchestrator/mesh_api.py, on real PostgreSQL from tests/helpers/mesh_runtime.py."""
 
 from __future__ import annotations
 
 import pytest
+from fastapi.testclient import TestClient
 
-from orchestrator import mesh_admission as ma
+from orchestrator import mesh_admission as ma, web_auth
 from shared import node_identity as ni
+from tests.helpers import orchestrator_app
 from tests.helpers.mesh_runtime import MeshRuntime
 from tests.helpers.voice_plane_runtime import isolated_plane_runtime
 
@@ -25,6 +27,12 @@ def node(plane_runtime, monkeypatch, tmp_path):
     monkeypatch.setenv(ni.DATA_DIR_ENV, str(tmp_path / "node"))
     monkeypatch.delenv(ni.OWNER_ENV, raising=False)
     ni.reset_cache()
+    host = orchestrator_app.host(None, **vars(fixture.host))
+    app = orchestrator_app.build(monkeypatch, host, surfaces=())
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://mesh.invalid")
+    fixture.client.close()
+    fixture.client = TestClient(app, base_url="https://mesh.invalid")
+    fixture.client.cookies.set(web_auth.COOKIE_NAME, web_auth._sign(fixture.sid))
     try:
         yield fixture
     finally:

@@ -10,9 +10,13 @@ from fastapi import FastAPI
 
 from audit.repository import AuditRepository
 from orchestrator.orchestrator import Orchestrator
+from orchestrator.session_store import WebSessionStore
 from orchestrator.voice_bootstrap import VoiceSpeechBackend
 from orchestrator.voice_coordinator import WorkerPool, WorkerPoolPolicy
 from orchestrator.voice_worker_endpoint import WorkerControlSettings, install_router
+from persistent_agents.service import AssignmentService
+from persistent_agents.store import AssignmentStore
+from personalization.phi_gate import PHIGate
 from shared.feature_flags import flags
 
 SURFACES = ("mcp_server", "a2a_server", "kiosk_login", "remote_mcp")
@@ -44,6 +48,12 @@ def host(plane_runtime: Any = None, **attributes: Any) -> Orchestrator:
     if plane_runtime is not None:
         orch.plane_repository_source = plane_runtime
         orch.audit_repo = AuditRepository(plane_runtime=plane_runtime, plane_repositories=plane_runtime.repositories)
+        orch.runtime_composition = SimpleNamespace(
+            plane=SimpleNamespace(runtime=plane_runtime, repositories=plane_runtime.repositories))
+        orch.web_sessions = WebSessionStore(plane_runtime=plane_runtime, plane_repositories=plane_runtime.repositories)
+        orch.persistent_assignments = AssignmentService(
+            orch, AssignmentStore(plane_runtime=plane_runtime), enabled=True,
+            phi_gate=PHIGate(analyzer=SimpleNamespace(analyze=lambda **_: [])))
     orch.agent_cards = {}
     orch.agents = {}
     orch.local_agents = {}

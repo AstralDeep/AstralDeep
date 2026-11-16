@@ -19,6 +19,7 @@ from shared import node_identity as ni
 from tests import fake_astral_kernel as fake
 from tests.helpers import orchestrator_app
 from tests.helpers.dev_mesh import node_settings, until
+from tests.test_dev_mesh import CLEAN, stored_node
 
 OFFER = "/api/node/mesh/offer"
 HEADER = "Astral-Pairing-Secret"
@@ -168,7 +169,6 @@ async def test_a_loose_data_directory_is_closed_when_the_secret_is_written(node)
 @pytest.mark.parametrize("member,code", [("development", node_mesh.DEVELOPMENT_MESH), ("clean", "mesh.not_enrolled")])
 async def test_reopening_an_enrolled_store_deletes_a_leftover_secret(tmp_path, monkeypatch, member, code):
     from shared import dev_mesh_keys
-    from tests.test_dev_mesh import CLEAN, stored_node
 
     device = dev_mesh_keys.device_ids()["owner"] if member == "development" else CLEAN
     record = stored_node(tmp_path, monkeypatch, "production", device, supervised=False)
@@ -184,9 +184,18 @@ async def test_reopening_an_enrolled_store_deletes_a_leftover_secret(tmp_path, m
         ni.reset_cache()
 
 
-async def test_a_mesh_owner_does_not_block_the_offer(node):
-    ni.bind_mesh_owner(MESH)
+@pytest.mark.parametrize("owner", [MESH, "mesh." + "e" * 64])
+async def test_a_mesh_owner_does_not_block_the_offer(node, owner):
+    ni.bind_owner(owner)
     assert (await _post(node.app, _secret(node.home))).status_code == 200
+
+
+@pytest.mark.parametrize("value,mesh", [
+    (MESH, True), ("mesh." + "0" * 64, True), (LEGACY, False), ("sha256:" + "E" * 64, False),
+    ("mesh." + "0" * 63, False), ("mesh-" + "0" * 64, False), (None, False), (7, False),
+])
+def test_one_predicate_tells_a_mesh_owner_from_a_legacy_one(value, mesh):
+    assert ni.is_mesh_owner(value) is mesh
 
 
 async def test_offers_are_limited_to_five_a_minute(node, monkeypatch):
@@ -220,32 +229,96 @@ async def test_a_kernel_refusal_is_reported_and_keeps_the_secret(node):
     assert _secret(node.home) == secret
 
 
-async def test_a_kernel_status_failure_is_reported_as_a_refusal(node):
+async def test_a_kernel_status_failure_is_reported_only_to_the_secret_holder(node):
+    calls = []
+
     async def fail():
+        calls.append(1)
         raise fake.KernelError.State("store.unavailable")
 
     node.kernel.mesh_status = fail
     response = await _post(node.app, _secret(node.home))
     assert (response.status_code, response.json()["detail"]) == (409, "store.unavailable")
+    guessed = await _post(node.app, "guess")
+    assert (guessed.status_code, guessed.json()["detail"]) == (401, "node.pairing_secret_required")
+    assert len(calls) == 2 and node.kernel.offers == 0
+
+
+async def test_a_caller_without_the_secret_never_reaches_the_kernel_offer(node):
+    for presented in ("guess", "x" * 43):
+        assert (await _post(node.app, presented)).status_code == 401
     assert node.kernel.offers == 0
 
 
 async def test_an_enrolled_node_reports_its_membership_and_deletes_the_secret(node):
     secret = _secret(node.home)
     node.kernel.join(MESH)
-    response = await _post(node.app, secret)
-    assert response.json() == {"state": "enrolled", "mesh_id": MESH, "member_id": "dev-node"}
+    enrolled = {"state": "enrolled", "mesh_id": MESH, "member_id": "dev-node"}
+    assert (await _post(node.app, secret)).json() == enrolled
     assert not _secret_path(node.home).exists() and node.kernel.offers == 0
-    assert (await _post(node.app, secret)).status_code == 401
+    again = await _post(node.app, secret)
+    assert (again.status_code, again.json()) == (200, enrolled)
+    assert not _secret_path(node.home).exists() and node.kernel.offers == 0
+
+
+async def test_a_joined_node_answers_its_enrolled_state_once_the_secret_is_gone(node):
+    secret = _secret(node.home)
+    node.kernel.join(MESH)
+    node.mesh._listener.dispatch(NS(progress=type("JOINED", (), {})()))
+    assert not _secret_path(node.home).exists()
+    response = await _post(node.app, secret)
+    assert (response.status_code, response.json()["state"]) == (200, "enrolled")
     assert not _secret_path(node.home).exists()
 
 
 async def test_joining_deletes_the_secret_and_no_later_offer_writes_one(node):
+    node.kernel.join(MESH)
     node.mesh._listener.dispatch(NS(progress=type("JOINED", (), {})()))
     assert not _secret_path(node.home).exists()
     node.mesh._pairing.rotate()
     node.mesh._pairing.ensure()
+    await _settled(node.mesh)
     assert not _secret_path(node.home).exists()
+
+
+async def _settled(mesh):
+    await asyncio.sleep(0)
+    await asyncio.gather(*mesh._checks, *mesh._pairing_checks)
+
+
+@pytest.mark.parametrize("change", ["RosterChanged", "ROSTER_CHANGED"])
+async def test_leaving_the_mesh_at_runtime_writes_a_fresh_secret(node, monkeypatch, change):
+    monkeypatch.setenv("ASTRAL_ENV", "development")
+    node.kernel.join(MESH)
+    node.mesh._listener.dispatch(NS(progress=type("JOINED", (), {})()))
+    await _settled(node.mesh)
+    assert not _secret_path(node.home).exists()
+    node.kernel.enrolled = False
+    node.mesh._listener.dispatch(type(change, (), {})())
+    await _settled(node.mesh)
+    fresh = _secret(node.home)
+    response = await _post(node.app, fresh)
+    assert (response.status_code, response.json()["state"]) == (200, "offer")
+
+
+async def test_a_pairing_check_that_cannot_read_the_kernel_changes_nothing(node, caplog):
+    secret = _secret(node.home)
+
+    async def fail():
+        raise fake.KernelError.State("store.unavailable")
+
+    node.kernel.mesh_status = fail
+    node.mesh._listener.dispatch(type("RosterChanged", (), {})())
+    await _settled(node.mesh)
+    assert _secret(node.home) == secret
+    assert "node_mesh_pairing_check_failed: store.unavailable" in caplog.text
+
+
+async def test_a_pairing_check_after_stop_does_nothing(node):
+    secret = _secret(node.home)
+    await node.mesh.stop()
+    await node.mesh._check_pairing()
+    assert _secret(node.home) == secret
 
 
 async def test_the_owner_refresh_deletes_the_secret_once_enrolled(node):
@@ -341,7 +414,9 @@ async def test_a_real_owner_pairs_through_the_offer_and_the_secret_is_gone(tmp_p
         await node.start()
         node_mesh.install(node)
         assert not _secret_path(home).exists()
-        assert (await _post(app, "left behind")).status_code == 401
+        answer = await _post(app, "left behind")
+        assert answer.json() == {"state": "enrolled", "mesh_id": status["mesh_id"], "member_id": status["member_id"]}
+        assert not _secret_path(home).exists()
     finally:
         node_mesh.install(None)
         await owner.stop()
