@@ -53,7 +53,33 @@ REFUSED_EXIT_STATUS = 125
 OUTPUT_LIMIT_BYTES = 8 * 1024 * 1024
 TRAMPOLINE_READY = b"exec"
 LINUX_BASE = ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc")
+LINUX_DEVICES = ("/dev/null", "/dev/zero", "/dev/urandom", "/dev/random")
 LANDLOCK_ABI = 6
+PROXY_PORT = 3128
+EGRESS_SOCKET = "/run/astral/egress.sock"
+DENIED_SYSCALLS = (
+    "msgctl",
+    "msgget",
+    "msgrcv",
+    "msgsnd",
+    "mq_getsetattr",
+    "mq_notify",
+    "mq_open",
+    "mq_timedreceive",
+    "mq_timedsend",
+    "mq_unlink",
+    "semctl",
+    "semget",
+    "semop",
+    "semtimedop",
+    "setpgid",
+    "setsid",
+    "shmat",
+    "shmctl",
+    "shmdt",
+    "shmget",
+)
+FORK_SYSCALLS = ("clone3", "fork", "vfork")
 BWRAP_PATHS = ("/usr/bin/bwrap", "/bin/bwrap")
 EXEC_SUBDIRECTORY = "exec"
 FACT_KEYS = (
