@@ -4,9 +4,10 @@ It reuses the preserved 105 reference for canonical JSON, hashes and signatures,
 
 from __future__ import annotations
 
+import bisect
+import json
 import re
 import sys
-import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +41,9 @@ PROOF_AHEAD_MS = 5000
 RESTART_PAUSE_MS = 5000
 MINTER_KINDS = ("desktop", "pocket", "satellite")
 HOLDER_TEXT = "astral-caller-holder:v1:"
+LABEL_CLASSES = Path(__file__).resolve().with_name("label_classes.json")
+LABEL_UNICODE = "16.0.0"
+LABEL_REFUSED = ("Cc", "Cf", "Cs", "Co", "Cn")
 TOOL_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,63}")
 TICKET_FIELDS = {
     "v",
@@ -77,6 +81,23 @@ CODES = (
     "caller.tool_unavailable",
     "caller.no_catalog",
 )
+
+
+def _load_label_table() -> tuple[list[int], list[int]]:
+    table = json.loads(LABEL_CLASSES.read_text(encoding="utf-8"))
+    if table["unicode"] != LABEL_UNICODE or set(table["refused"]) != set(LABEL_REFUSED):
+        raise ValueError("label table is not the Unicode 16.0 refused classes")
+    spans = sorted((a, b) for runs in table["refused"].values() for a, b in runs)
+    return [a for a, _ in spans], [b for _, b in spans]
+
+
+REFUSED_STARTS, REFUSED_ENDS = _load_label_table()
+
+
+def refused_in_label(character: str) -> bool:
+    point = ord(character)
+    index = bisect.bisect_right(REFUSED_STARTS, point) - 1
+    return index >= 0 and point <= REFUSED_ENDS[index]
 
 
 def _int(value: Any) -> bool:
@@ -130,7 +151,7 @@ def check_ticket(value: Any) -> dict[str, Any]:
     bad = bad or not (
         isinstance(label, str)
         and 1 <= len(label) <= MAX_LABEL
-        and not any(unicodedata.category(c) in ("Cc", "Cf") for c in label)
+        and not any(refused_in_label(c) for c in label)
     )
     if bad:
         raise MeshError("caller.malformed", "field value")
@@ -185,13 +206,21 @@ def _decode(header: Any, prefix: str, code: str) -> Any:
     return value
 
 
+def signing_message(context: str, obj: dict[str, Any]) -> bytes:
+    return (
+        context.encode()
+        + b"\n"
+        + canonical({k: v for k, v in obj.items() if k != "sig"})
+    )
+
+
 def sign_ticket(presence_scalar: int, body: dict[str, Any]) -> dict[str, Any]:
-    message = TICKET_CONTEXT.encode() + b"\n" + canonical(body)
+    message = signing_message(TICKET_CONTEXT, body)
     return {**body, "sig": b64url_encode(crypto.p256_sign(presence_scalar, message))}
 
 
 def sign_proof(holder_seed: bytes, body: dict[str, Any]) -> dict[str, Any]:
-    message = PROOF_CONTEXT.encode() + b"\n" + canonical(body)
+    message = signing_message(PROOF_CONTEXT, body)
     return {**body, "sig": b64url_encode(crypto.ed25519_sign(holder_seed, message))}
 
 
@@ -208,14 +237,9 @@ def body_digest(body: bytes) -> str:
 
 
 def _verify_with(public: bytes, context: str, obj: dict[str, Any], alg: str) -> bool:
-    message = (
-        context.encode()
-        + b"\n"
-        + canonical({k: v for k, v in obj.items() if k != "sig"})
-    )
     raw = b64url_decode(obj["sig"])
     check = crypto.p256_verify if alg == "p256" else ed25519_strict.verify_strict
-    return check(public, message, raw)
+    return check(public, signing_message(context, obj), raw)
 
 
 class Verifier:

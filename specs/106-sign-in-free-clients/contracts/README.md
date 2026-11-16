@@ -7,7 +7,7 @@ These documents fix the formats that spec 106 revises or adds. Each one has a Py
 | Document | Format version | Covers | Vectors | Reference |
 |---|---|---|---|---|
 | [roster-v2.md](roster-v2.md) | `astral.roster/v2` | The accountless roster, device add and removal, stop and resume, creation and recovery export | `vectors/roster-v2.json`, `vectors/crypto-v2.json` | `reference/generate_local_vectors.py` |
-| [caller-ticket.md](caller-ticket.md) | `astral.caller/v1` | The owner-minted caller ticket, the holder proof, the holder text forms, the verification order and codes, revocation | `vectors/caller-v1.json` | `reference/caller_ticket.py`, `reference/generate_caller_vectors.py` |
+| [caller-ticket.md](caller-ticket.md) | `astral.caller/v1` | The owner-minted caller ticket, the holder proof, the holder text forms, the verification order and codes, revocation | `vectors/caller-v1.json`, `reference/label_classes.json` | `reference/caller_ticket.py`, `reference/ed25519_strict.py`, `reference/generate_caller_vectors.py`, `reference/generate_label_classes.py` |
 
 A change to a format raises its version. A document, its vectors and its reference module change together, and the reference tests pass before the change merges.
 
@@ -26,4 +26,7 @@ python specs/106-sign-in-free-clients/contracts/reference/generate_caller_vector
 python specs/106-sign-in-free-clients/contracts/reference/generate_local_vectors.py --check
 python -m pytest specs/106-sign-in-free-clients/contracts/reference/tests -q
 ruff check specs/106-sign-in-free-clients/contracts
+python3.14 specs/106-sign-in-free-clients/contracts/reference/generate_label_classes.py --check
 ```
+
+The last command needs a Python whose `unicodedata.unidata_version` is 16.0.0, such as Python 3.14. It uses only the standard library and refuses to run on other Unicode data. The caller ticket label table comes from it, and every implementation reads that table instead of its runtime's Unicode data.

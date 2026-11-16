@@ -4,9 +4,14 @@ A failure means the contract document, the committed vectors and the reference m
 
 import itertools
 import json
+import unicodedata
 from pathlib import Path
 
 import caller_ticket
+import ed25519_strict
+import generate_caller_vectors
+import generate_label_classes
+import nacl.bindings
 import pytest
 from astral_mesh_ref import crypto, testkit
 
@@ -173,6 +178,23 @@ EXPECTED = {
     "key_form_derives_holder": "ok",
     "key_form_31_bytes": "caller.malformed",
     "holder_form_refused_as_key": "caller.malformed",
+    "proof_small_order_r_identity": "caller.proof_bad_signature",
+    "proof_small_order_r_order_2": "caller.proof_bad_signature",
+    "proof_small_order_r_order_4": "caller.proof_bad_signature",
+    "proof_small_order_r_order_8": "caller.proof_bad_signature",
+    "proof_mixed_order_r_cofactored_only": "caller.proof_bad_signature",
+    "holder_key_mixed_order_2_point": "caller.malformed",
+    "holder_key_mixed_order_4_point": "caller.malformed",
+    "holder_key_mixed_order_8_point": "caller.malformed",
+    "holder_form_mixed_order_2_point": "caller.malformed",
+    "holder_form_mixed_order_4_point": "caller.malformed",
+    "holder_form_mixed_order_8_point": "caller.malformed",
+    "mixed_order_holder_cofactorless_valid_proof": "caller.malformed",
+    "mixed_order_holder_cofactored_only_proof": "caller.malformed",
+    "label_format_character_added_in_unicode_15": "caller.malformed",
+    "label_unassigned_code_point": "caller.malformed",
+    "label_private_use_code_point": "caller.malformed",
+    "label_letter_added_in_unicode_16_accepted": "ok",
 }
 
 
@@ -248,8 +270,6 @@ def test_published_seed_recomputes_the_holder_proof_bytes() -> None:
 
 
 def test_generator_reproduces_the_committed_file() -> None:
-    import generate_caller_vectors
-
     assert generate_caller_vectors.render() == VECTORS.read_text(encoding="utf-8")
 
 
@@ -313,8 +333,6 @@ def test_undecodable_input_never_raises() -> None:
 
 
 def test_strict_verifier_refuses_what_the_library_alone_accepts() -> None:
-    import ed25519_strict
-
     identity = bytes([1]) + bytes(31)
     forged = identity + bytes(32)
     assert crypto.ed25519_verify(identity, b"any message", forged)
@@ -322,8 +340,6 @@ def test_strict_verifier_refuses_what_the_library_alone_accepts() -> None:
 
 
 def test_point_decoding_rules() -> None:
-    import ed25519_strict
-
     base = crypto.ed25519_public(testkit.seed("caller-v1/holder"))
     assert ed25519_strict.usable_public_key(base)
     assert not ed25519_strict.usable_public_key(bytes(31))
@@ -335,8 +351,6 @@ def test_point_decoding_rules() -> None:
 
 
 def test_strict_verifier_refuses_small_order_r_and_high_s() -> None:
-    import ed25519_strict
-
     seed = testkit.seed("caller-v1/holder")
     public = crypto.ed25519_public(seed)
     sig = crypto.ed25519_sign(seed, b"m")
@@ -345,7 +359,181 @@ def test_strict_verifier_refuses_small_order_r_and_high_s() -> None:
     assert not ed25519_strict.verify_strict(
         public, b"m", sig[:32] + high.to_bytes(32, "little")
     )
-    assert not ed25519_strict.verify_strict(
-        public, b"m", bytes([1]) + bytes(31) + sig[32:]
-    )
+    identity = bytes([1]) + bytes(31)
+    honest = generate_caller_vectors.schnorr(seed, public, identity, 0, b"m")
+    assert crypto.ed25519_verify(public, b"m", honest)
+    assert generate_caller_vectors.cofactored_valid(public, b"m", honest)
+    assert not ed25519_strict.verify_strict(public, b"m", honest)
     assert not ed25519_strict.verify_strict(public, b"m", sig[:63])
+
+
+def test_strict_checks_hold_without_the_library(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seed = testkit.seed("caller-v1/holder")
+    public = crypto.ed25519_public(seed)
+    sig = crypto.ed25519_sign(seed, b"m")
+    monkeypatch.setattr(ed25519_strict.crypto, "ed25519_verify", lambda *_: True)
+    assert ed25519_strict.verify_strict(public, b"m", sig)
+    high = int.from_bytes(sig[32:], "little") + ed25519_strict.L
+    assert not ed25519_strict.verify_strict(
+        public, b"m", sig[:32] + high.to_bytes(32, "little")
+    )
+    for name in ("identity", "order_2", "order_4", "order_8"):
+        r = generate_caller_vectors.small_order_points()[name]
+        assert not ed25519_strict.verify_strict(public, b"m", r + sig[32:]), name
+    mixed = generate_caller_vectors.mixed_order_holder_keys(public)
+    for name, key in mixed.items():
+        assert not ed25519_strict.verify_strict(key, b"m", sig), name
+
+
+def _proof_signature(case: dict) -> tuple[bytes, bytes, bytes]:
+    case_input = case["input"]
+    ticket = caller_ticket.strict_loads(
+        caller_ticket.b64url_decode(case_input["authorization"].split(" ")[1])
+    )
+    proof = caller_ticket.strict_loads(caller_ticket.b64url_decode(case_input["proof"]))
+    message = caller_ticket.signing_message(caller_ticket.PROOF_CONTEXT, proof)
+    return (
+        caller_ticket.b64url_decode(ticket["holder"]),
+        message,
+        caller_ticket.b64url_decode(proof["sig"]),
+    )
+
+
+def test_small_order_r_vectors_carry_an_s_that_is_honest_for_that_r() -> None:
+    for name in ("identity", "order_2", "order_4", "order_8"):
+        public, message, signature = _proof_signature(
+            CASES["proof_small_order_r_" + name]
+        )
+        point = ed25519_strict.decode_point(signature[:32])
+        assert point is not None and ed25519_strict.small_order(point)
+        assert generate_caller_vectors.cofactored_valid(public, message, signature)
+        assert crypto.ed25519_verify(public, message, signature) == (name == "identity")
+    public, message, signature = _proof_signature(
+        CASES["proof_mixed_order_r_cofactored_only"]
+    )
+    point = ed25519_strict.decode_point(signature[:32])
+    assert point is not None and not ed25519_strict.small_order(point)
+    assert not ed25519_strict.torsion_free(point)
+    assert generate_caller_vectors.cofactored_valid(public, message, signature)
+    assert not crypto.ed25519_verify(public, message, signature)
+
+
+def test_mixed_order_vectors_hold_keys_outside_the_prime_order_subgroup() -> None:
+    for name in ("mixed_order_2", "mixed_order_4", "mixed_order_8"):
+        ticket = CASES["holder_key_" + name + "_point"]["input"]["authorization"]
+        body = caller_ticket.strict_loads(
+            caller_ticket.b64url_decode(ticket.split(" ")[1])
+        )
+        point = ed25519_strict.decode_point(caller_ticket.b64url_decode(body["holder"]))
+        assert point is not None
+        assert not ed25519_strict.small_order(point)
+        assert not ed25519_strict.torsion_free(point)
+    public, message, signature = _proof_signature(
+        CASES["mixed_order_holder_cofactorless_valid_proof"]
+    )
+    assert crypto.ed25519_verify(public, message, signature)
+    public, message, signature = _proof_signature(
+        CASES["mixed_order_holder_cofactored_only_proof"]
+    )
+    assert not crypto.ed25519_verify(public, message, signature)
+    assert generate_caller_vectors.cofactored_valid(public, message, signature)
+
+
+def test_prime_order_holder_key_is_usable() -> None:
+    seed = testkit.seed("caller-v1/holder")
+    public = crypto.ed25519_public(seed)
+    point = ed25519_strict.decode_point(public)
+    assert point is not None and ed25519_strict.torsion_free(point)
+    assert ed25519_strict.usable_public_key(public)
+    scalar = generate_caller_vectors.clamped_scalar(seed)
+    assert (
+        ed25519_strict.encode_point(
+            ed25519_strict.multiply(ed25519_strict.BASE, scalar)
+        )
+        == public
+    )
+    assert ed25519_strict.multiply(ed25519_strict.BASE, ed25519_strict.L) == (0, 1)
+
+
+def test_no_non_canonical_encoding_of_a_usable_key_exists() -> None:
+    for excess in range(19):
+        for sign in (0, 1):
+            raw = ((excess + ed25519_strict.P) | sign << 255).to_bytes(32, "little")
+            assert ed25519_strict.decode_point(raw) is None
+            point = ed25519_strict.decode_point(
+                (excess | sign << 255).to_bytes(32, "little")
+            )
+            assert (
+                point is None
+                or ed25519_strict.small_order(point)
+                or not ed25519_strict.torsion_free(point)
+            ), (excess, sign)
+    for y in (1, ed25519_strict.P - 1):
+        point = ed25519_strict.decode_point(y.to_bytes(32, "little"))
+        assert point is not None and point[0] == 0
+        assert ed25519_strict.small_order(point)
+        assert (
+            ed25519_strict.decode_point((y | 1 << 255).to_bytes(32, "little")) is None
+        )
+
+
+def test_holder_key_rule_agrees_with_libsodium_point_validation() -> None:
+    names = [
+        "accepted",
+        "identity_point",
+        "order_2_point",
+        "order_4_point",
+        "order_8_point",
+        "non_canonical_encoding",
+        "off_curve",
+        "mixed_order_2_point",
+        "mixed_order_4_point",
+        "mixed_order_8_point",
+    ]
+    for name in names:
+        text = CASES["holder_form_" + name]["input"]["text"]
+        key = caller_ticket.b64url_decode(text.removeprefix(caller_ticket.HOLDER_TEXT))
+        usable = ed25519_strict.usable_public_key(key)
+        assert usable == (name == "accepted"), name
+        assert usable == bool(nacl.bindings.crypto_core_ed25519_is_valid_point(key))
+
+
+def test_reference_reads_labels_from_the_committed_table_only() -> None:
+    source = Path(caller_ticket.__file__).read_text(encoding="utf-8")
+    assert "unicodedata" not in source
+    assert caller_ticket.LABEL_CLASSES.name == "label_classes.json"
+
+
+def test_label_table_is_the_unicode_16_refused_classes() -> None:
+    table = json.loads(caller_ticket.LABEL_CLASSES.read_text(encoding="utf-8"))
+    assert table["format"] == "astral.label-classes/v1"
+    assert table["unicode"] == "16.0.0"
+    assert set(table["refused"]) == {"Cc", "Cf", "Cs", "Co", "Cn"}
+    spans = sorted(tuple(s) for runs in table["refused"].values() for s in runs)
+    for first, last in spans:
+        assert 0 <= first <= last <= 0x10FFFF
+    for (_, last), (first, _) in itertools.pairwise(spans):
+        assert last < first
+    refused = caller_ticket.refused_in_label
+    for point in (0x0, 0x7, 0x9F, 0xAD, 0x200B, 0x13439, 0x0378, 0xD800, 0xE000):
+        assert refused(chr(point)), hex(point)
+    for point in (0x10FFFD, 0xF0000, 0xFFFF, 0x10FFFF):
+        assert refused(chr(point)), hex(point)
+    for point in (0x41, 0x20, 0xA0, 0x1F600, 0x10D50, 0x105C0, 0x4E00):
+        assert not refused(chr(point)), hex(point)
+
+
+def test_label_table_ranges_merge_adjacent_code_points() -> None:
+    categories = {0: "Cc", 1: "Cc", 2: "Lu", 3: "Cf", 5: "Cf", 6: "Cf"}
+    out = generate_label_classes.ranges(lambda point: categories.get(point, "Lo"))
+    assert out == {"Cc": [[0, 1]], "Cf": [[3, 3], [5, 6]], "Cs": [], "Co": [], "Cn": []}
+
+
+def test_label_table_generator_needs_unicode_16_data() -> None:
+    if unicodedata.unidata_version == generate_label_classes.UNICODE:
+        generate_label_classes.main(["--check"])
+        return
+    with pytest.raises(SystemExit, match="needs Unicode 16.0.0"):
+        generate_label_classes.main(["--check"])
