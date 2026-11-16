@@ -275,12 +275,30 @@ async def test_without_a_started_mesh_the_offer_is_unavailable(node):
 
 
 async def test_outside_the_personal_profile_there_is_no_offer(node, monkeypatch):
+    secret = _secret(node.home)
     monkeypatch.delenv(ni.PROFILE_ENV)
-    response = await _post(node.app, _secret(node.home))
+    response = await _post(node.app, secret)
     assert (response.status_code, response.json()["detail"]) == (404, "node_profile_inactive")
+    with pytest.raises(node_mesh.NodeMeshError) as refused:
+        await node.mesh.serve_offer(secret)
+    assert (refused.value.status, refused.value.code) == (404, "node_profile_inactive")
+    assert _secret(node.home) == secret and node.kernel.offers == 0
+
+
+async def test_a_node_mesh_on_another_profile_writes_no_secret(tmp_path, monkeypatch):
+    monkeypatch.setenv(ni.PROFILE_ENV, ni.INSTITUTION)
+    fake.Kernel.instances.clear()
+    mesh = node_mesh.NodeMesh(data_dir=tmp_path / "owner", binding=fake,
+                              settings=node_mesh.MeshSettings(mailbox=MailboxSettings(enabled=False)))
+    await mesh.start()
+    try:
+        assert not _secret_path(tmp_path / "owner").exists()
+    finally:
+        await mesh.stop()
 
 
 async def test_a_secret_that_cannot_be_stored_fails_the_start(tmp_path, monkeypatch):
+    monkeypatch.setenv(ni.PROFILE_ENV, ni.PERSONAL)
     home = tmp_path / "node"
     home.mkdir(mode=0o700)
     (home / node_mesh.PAIRING_SECRET_FILE).mkdir()

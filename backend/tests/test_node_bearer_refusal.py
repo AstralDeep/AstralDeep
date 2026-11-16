@@ -323,3 +323,18 @@ def test_the_server_websocket_door_does_not_answer_with_the_node_refusal(server)
     with server.client.websocket_connect("/ws") as socket:
         socket.send_text(json.dumps({"type": "register_ui", "token": "not-a-token"}))
         assert json.loads(socket.receive_text()) == {"type": "auth_required", "reason": "invalid"}
+
+
+def test_the_same_token_passes_the_a2a_and_mcp_doors_on_the_server_profile(server):
+    a2a_response = server.client.post("/a2a", json=A2A_BODY, headers={"Authorization": f"Bearer {server.token}"})
+    assert a2a_response.status_code != 401, a2a_response.text
+    assert "Authentication required" not in a2a_response.text and BEARER not in a2a_response.text
+    fetched = server.spies["jwks"]
+    assert fetched > 0
+    mcp_response = server.client.post("/mcp", json={
+        "jsonrpc": "2.0", "id": 1, "method": "server/discover", "params": {"_meta": MCP_META}},
+        headers={"Authorization": f"Bearer {server.identity.mcp_token('owner-1')}",
+                 "MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "server/discover"})
+    assert mcp_response.status_code != 401, mcp_response.text
+    assert "www-authenticate" not in mcp_response.headers
+    assert server.spies["jwks"] > fetched

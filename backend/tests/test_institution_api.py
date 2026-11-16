@@ -191,6 +191,7 @@ async def test_two_owners_get_two_offers_from_two_separate_peers(env):
         second = (await http.post("/api/institution/pairing", json={})).json()
     assert first["owner_hash"] != second["owner_hash"]
     assert len(fake.Kernel.instances) == 2 and len({k.config.data_dir for k in fake.Kernel.instances}) == 2
+    assert not list(env.tmp.rglob(node_mesh.PAIRING_SECRET_FILE))
     await runtime.stop()
 
 

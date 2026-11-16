@@ -406,7 +406,7 @@ class NodeMesh:
                     await self._kernel.start_network()
                     if self._enrollment(await self._kernel.mesh_status()) in ENROLLED_STATES:
                         self._pairing.close()
-                    else:
+                    elif node_identity.is_personal():
                         await asyncio.to_thread(self._pairing.open)
                 except BaseException:
                     await self._kernel.stop_network()
@@ -660,6 +660,8 @@ class NodeMesh:
         }
 
     async def serve_offer(self, presented: str) -> Dict[str, Any]:
+        if not node_identity.is_personal():
+            raise NodeMeshError("node_profile_inactive", 404)
         async with self._offer_lock:
             status = await self._request_call(self.kernel.mesh_status)
             enrolled = self._enrollment(status) in ENROLLED_STATES
