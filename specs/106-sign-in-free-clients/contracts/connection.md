@@ -129,6 +129,8 @@ A device writes its own state for a connection only on a transition. The value h
 | `ms` | The transition time in milliseconds, a non-negative integer |
 | `tools` | Only with `signed_in`. 0 to 128 tool entries of section 3.2, the tools the device listed after it signed in |
 
+States are strict where records are tolerant. An unknown, missing or out-of-range field makes a state `connection.malformed`, because a state is display only and written by one device about itself, so a reader that cannot read it loses only a status line. A record stays tolerant (section 3.5), because a reader that dropped an unreadable record would fall back to an older one and use it.
+
 A device with no state event reads as `not_signed_in`. A device that deletes its credential, for example after a removal syncs in, writes `not_signed_in`. Any other shape, including a state or reason this version does not define, is `connection.malformed`, and that device's older state stands. States are shown and never authorize anything.
 
 `tools` is how the owner reviews the tools of a server that only a node can reach. The node signs in, writes its state with the tools, and an owner device draws the review card from it. A call still checks each tool's hash against the record.
