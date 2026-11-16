@@ -1,12 +1,28 @@
 # Plan for spec 105
 
-**Updated:** 2026-11-15. **Status:** D11/P18 code and native qualification passed; the protected Mac release and website deployment are verified. The owner made live demonstrations optional and authorized release; remaining operational limits are stated explicitly below. See [qualification.md](qualification.md) for criterion-level evidence and [local-integration-handoff.md](local-integration-handoff.md) for current source/pin inventory, commands and retained reports. This is a program plan: phases,
-the work in each repository, and how to tell a phase is finished. A task-level plan for each phase is
-written when that phase is approved, not before.
+**Updated:** 2026-11-15. **Status: Complete against the current accepted code criteria.** Exact-source hosted code/native gates and public Mac97 verification passed. Operational follow-ups below remain distinct from acceptance. See [qualification.md](qualification.md) for the 55 automated plus three owner-approved criteria and [local-integration-handoff.md](local-integration-handoff.md) for exact source/run evidence. This program plan retains its original phases and dated qualification history.
 
 Read [spec.md](spec.md) first. Section numbers below refer to it.
 
-## Current qualification checkpoint
+## Current completion checkpoint
+
+The accepted map is complete: 55 automated criteria and three owner-approved criteria (58 total). The owner's live-demonstration amendment leaves deterministic code, authorization, privacy, native and coverage gates required. Criterion 3.11 retains its documented host/profile bounds; no new loop-parity or live-model claim is added.
+
+| Component | Qualified source | Hosted evidence |
+|---|---|---|
+| Deep | `2050b6a87e9bb5b53449acc45ed2df666a33ee6e` | [43786390723](https://github.com/AstralDeep/AstralDeep/actions/runs/43786390723), 19/19 jobs passed. |
+| Projection | `6f504d740c91c12a7c63d2ac343b20c0fad10e97` | [43786379935](https://github.com/AstralDeep/AstralProjection/actions/runs/43786379935), 21/21 Apple jobs passed. |
+| Kernel | `c2c1cc43e7287cee230a809cdb1e358e10286f5a` | [43772135233](https://github.com/AstralDeep/AstralKernel/actions/runs/43772135233), 10/10 jobs passed. |
+
+The normal protected Mac publisher [43788860810, attempt 2](https://github.com/AstralDeep/AstralDeep/actions/runs/43788860810/attempts/2) passed on exact Deep `2050b6a8` and published immutable stable [Mac 2.0.24 (97)](https://github.com/AstralDeep/AstralDeep/releases/tag/macos-v2.0.24-97). All 11 public asset identities and byte hashes, the source chain, sealed NodePack payload, read-only mounted app/DMG signatures, notarization/stapled tickets, Gatekeeper and update signatures passed independent verification. The packed source is Deep `e6f920d8caebbabc158492b9fb9b6e48fbcc628b` with Projection `6c2abc940a9e9800b9e22fa2843315397e02c870` and the same C2 Kernel; the publisher verifies the closed metadata-only delta to the released source.
+
+iPhone build 99 was accepted for upload. The owner verified personal-mesh creation and chat, and Mac pairing succeeded. The build was submitted for review; the last observed state was **Waiting for Review**. This does not claim Apple approval or public App Store availability. These owner observations are distinct from the public Mac installer checks.
+
+Site commit `c26f8ec` passed normal Pages run [43795779048](https://github.com/AstralDeep/astraldeep.github.io/actions/runs/43795779048). Live downloads, release data, appcast and signed update policy match the immutable Mac97 assets and signatures. Optional Kernel qualification tooling is merged on its default branch at `4b47a7a4f81234170df0fbbfd8e84db6c8dbaaac`; local all-target tests passed (1,329 passed, zero failed, one existing ignore), as did formatting, strict Clippy and default-feature compilation. No new live cloud study was run; released consumer pins remain C2. Production APNs delivery and other unperformed live demonstrations are not asserted. Live diagnostics remain optional under [the acceptance clarification](clarification-code-qualification.md); deterministic code, authorization, privacy, native and coverage gates remain required.
+
+The qualified source includes only the bounded accountless local-mesh creation, roster-v2 identity and retained-v1-storage follow-up authorized in [the Spec106 clarification](../106-sign-in-free-clients/clarification-local-mesh-creation.md). Other Spec106 work, including its remaining Docker, connection-adapter, contact-sharing and PHI-destination projects, is not declared complete. Historical identity-attestation design text below is superseded for personal meshes by that clarification; separate server/institution IAM remains separate.
+
+### Historical D11/P18 qualification checkpoint — 2026-11-15
 
 The owner’s 2026-11-15 amendment makes live device/environment demonstrations optional; deterministic code, authorization, privacy, native-code and coverage gates remain required. The current map is 55 automated plus three owner-approved criteria (58 total). Criterion 3.11 covers 32 pure shared states, 30 reachable Kernel-host cases with two documented profile skips, and real paired protected-executor/institution tests; it is not a 32-case Python loop-parity claim.
 

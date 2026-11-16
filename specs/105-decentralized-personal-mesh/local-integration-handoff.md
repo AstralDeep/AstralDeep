@@ -1,6 +1,28 @@
 # Spec 105 integration and qualification handoff
 
-## Current verified handoff — 2026-11-15
+## Current completed handoff — 2026-11-15
+
+**Status: Complete against the current accepted code criteria.** The 58-criterion map remains 55 automated plus three owner-approved criteria. This documentation closure does not change the qualified product source or add acceptance waivers. Earlier source-specific failures, artifacts, skips/retries and stopping records remain below as history.
+
+| Component | Qualified source | Hosted evidence |
+|---|---|---|
+| Deep | `2050b6a87e9bb5b53449acc45ed2df666a33ee6e` | [43786390723](https://github.com/AstralDeep/AstralDeep/actions/runs/43786390723), 19/19 jobs passed. |
+| Projection | `6f504d740c91c12a7c63d2ac343b20c0fad10e97` | [43786379935](https://github.com/AstralDeep/AstralProjection/actions/runs/43786379935), 21/21 Apple jobs passed. |
+| Kernel | `c2c1cc43e7287cee230a809cdb1e358e10286f5a` | [43772135233](https://github.com/AstralDeep/AstralKernel/actions/runs/43772135233), 10/10 jobs passed. |
+
+The normal protected Mac publisher [43788860810, attempt 2](https://github.com/AstralDeep/AstralDeep/actions/runs/43788860810/attempts/2) passed on exact Deep `2050b6a8` and published immutable stable [Mac 2.0.24 (97)](https://github.com/AstralDeep/AstralDeep/releases/tag/macos-v2.0.24-97). All 11 public asset identities and byte hashes, the source chain, sealed NodePack payload, read-only mounted app/DMG signatures, notarization/stapled tickets, Gatekeeper and update signatures passed independent verification. The packed source is Deep `e6f920d8caebbabc158492b9fb9b6e48fbcc628b` with Projection `6c2abc940a9e9800b9e22fa2843315397e02c870` and the same C2 Kernel; the publisher verifies the closed metadata-only delta to the released source.
+
+iPhone build 99 was accepted for upload. The owner verified personal-mesh creation and chat, and Mac pairing succeeded. The build was submitted for review; the last observed state was **Waiting for Review**. This does not claim Apple approval or public App Store availability. These owner observations are distinct from the public Mac installer checks.
+
+Site commit `c26f8ec` passed normal Pages run [43795779048](https://github.com/AstralDeep/astraldeep.github.io/actions/runs/43795779048). Live downloads, release data, appcast and signed update policy match the immutable Mac97 assets and signatures. Optional Kernel qualification tooling is merged on its default branch at `4b47a7a4f81234170df0fbbfd8e84db6c8dbaaac`; local all-target tests passed (1,329 passed, zero failed, one existing ignore), as did formatting, strict Clippy and default-feature compilation. No new live cloud study was run; released consumer pins remain C2. Production APNs delivery and other unperformed live demonstrations are not asserted. Live diagnostics remain optional under [the acceptance clarification](clarification-code-qualification.md); deterministic code, authorization, privacy, native and coverage gates remain required.
+
+The qualified source includes only the bounded accountless local-mesh creation, roster-v2 identity and retained-v1-storage follow-up authorized in [the Spec106 clarification](../106-sign-in-free-clients/clarification-local-mesh-creation.md). Other Spec106 work, including its remaining Docker, connection-adapter, contact-sharing and PHI-destination projects, is not declared complete. Historical identity-attestation design text below is superseded for personal meshes by that clarification; separate server/institution IAM remains separate.
+
+Current release/code evidence: Deep [43786390723](https://github.com/AstralDeep/AstralDeep/actions/runs/43786390723), Projection [43786379935](https://github.com/AstralDeep/AstralProjection/actions/runs/43786379935), Kernel [43772135233](https://github.com/AstralDeep/AstralKernel/actions/runs/43772135233), and normal Mac publisher [43788860810 attempt 2](https://github.com/AstralDeep/AstralDeep/actions/runs/43788860810/attempts/2). Current public hashes and earlier failure/retry boundaries are in [qualification.md](qualification.md). The original D11/P18 evidence below qualifies its own earlier sources, not the new C2 accountless build.
+
+Operational closure, separate from acceptance: the verified canonical public Mac97 app is installed. Scoped cleanup removed 93 duplicate app copies with a measured 8.40 GiB gain while preserving keys, models and history. Incorporation review retired four redundant local task branches (Deep three, Projection one) and three remote refs; bundles are retained, no task PRs remain open, and unrelated work is preserved. Public-page screenshot evidence is retained externally at `live-site-mac97/downloads-mac97-vessel.jpg`. These operations do not change the immutable qualified C2 runtime or its source evidence. The optional Kernel merge preserves all eight unique tooling commits through an ordinary merge; the other four retired branch snapshots were already incorporated or superseded on current main. No unique implementation was discarded.
+
+## Historical D11/P18 verified handoff — 2026-11-15
 
 This checkpoint supersedes the historical status language below, which is retained verbatim with its original dates and outcomes. Product source is frozen at the exact commits listed here; this update changes documentation only.
 
@@ -16,11 +38,11 @@ The normal local D11/P18 qualification also records 4,603 Python passes, 8 skips
 
 The approved cleanup deleted 29 merged task-owned local/remote branch pairs and verified absence independently (Deep 16, Projection 10, Kernel 2, Vessel 1), with evidence SHA-256 `6b747be513722f0fbcf592ab60d6526d4a225b161163e6b6f2fc461829fdf751` in `evidence-105/merged-spec105-ref-cleanup-final.json`. Scoped temp cleanup recorded 103.65 GiB reclaimed while retaining source, current artifacts, models, stores, and evidence.
 
-## Current qualification commands and logs
+## Historical D11/P18 qualification commands and logs
 
 Deep’s authoritative hosted job log is run [43716072357](https://github.com/AstralDeep/AstralDeep/actions/runs/43716072357); strict coverage reports and command records are retained under `evidence-105/codex-20261114-live/institution-final/release-candidate/hosted-d11/`. Kernel workspace/Clippy results are in [43680163653](https://github.com/AstralDeep/AstralKernel/actions/runs/43680163653), Vessel results in [43680628723](https://github.com/AstralDeep/AstralVessel/actions/runs/43680628723), and Projection logs in [43716070032](https://github.com/AstralDeep/AstralProjection/actions/runs/43716070032), [43716069975](https://github.com/AstralDeep/AstralProjection/actions/runs/43716069975), and [43716069974](https://github.com/AstralDeep/AstralProjection/actions/runs/43716069974). The protected release verification log is `evidence-105/verify-public-macos-96.log`; native totals and report hashes are listed in [qualification.md](qualification.md).
 
-## Current handoff closure
+## Historical D11/P18 handoff closure
 
 The website update is deployed and verified. Release-sync run `43723268187` passed sync/build/deploy at site SHA `efd9097c98ba85267eb0c29f01226eb6709947c0`. The canonical URL `https://astraldeep.github.io/downloads.html` returned 200 with release JSON version 2.0.23 (96), matching DMG and optional NodePack links, and iPhone preparation label. Root inspected desktop 1200px and mobile 390px layouts: scroll width equaled each viewport and both download controls were visible. Screenshots are retained at `evidence-105/site-mac96-desktop.png` and `evidence-105/site-mac96-mobile.png`. No App Store submission, production APNs registration/delivery, physical owner-device demonstration, or live provider sign-in is claimed. Live observations remain optional under the acceptance clarification; deterministic gates are complete and were not waived.
 

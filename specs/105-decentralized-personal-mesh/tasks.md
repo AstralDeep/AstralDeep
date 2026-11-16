@@ -1,8 +1,25 @@
 # Tasks for spec 105
 
-**Date:** 2026-11-15. **Status:** D11/P18 exact-source code/native gates, the protected Mac release, and the website deployment are verified. Live device/environment demonstrations remain optional; deterministic code and security qualification remain required under [the acceptance clarification](clarification-code-qualification.md). Read [spec.md](spec.md), [plan.md](plan.md) and the [qualification map](qualification.md) for evidence and limits.
+**Date:** 2026-11-15. **Status: Complete against the current accepted code criteria.** All 58 criteria are resolved: 55 automated and three owner-approved. Live diagnostics remain optional under [the acceptance clarification](clarification-code-qualification.md); deterministic safety gates remain required. Read [spec.md](spec.md), [plan.md](plan.md) and [qualification.md](qualification.md) for evidence and limits.
 
-## Current completion queue
+## Current completion record
+
+- [x] Close the accepted 58-criterion map as 55 automated and three owner-approved criteria without changing acceptance or reticking historical tasks.
+- [x] Qualify exact Deep `2050b6a8` in [43786390723](https://github.com/AstralDeep/AstralDeep/actions/runs/43786390723) (19/19), Projection `6f504d74` in [43786379935](https://github.com/AstralDeep/AstralProjection/actions/runs/43786379935) (21/21 Apple), and Kernel `c2c1cc43` in [43772135233](https://github.com/AstralDeep/AstralKernel/actions/runs/43772135233) (10/10).
+- [x] Publish and independently verify immutable Mac 2.0.24 (97), exact Deep `2050b6a8`, through [43788860810, attempt 2](https://github.com/AstralDeep/AstralDeep/actions/runs/43788860810/attempts/2), including all 11 public assets, source/byte/payload identity, app/DMG signature, notarization/staple, Gatekeeper and update-signature checks.
+- [x] Record accepted iPhone99 upload and owner-verified mesh creation/chat plus Mac pairing; review submission was last observed Waiting for Review, without claiming Apple approval.
+
+The qualified source includes only the bounded accountless local-mesh creation, roster-v2 identity and retained-v1-storage follow-up authorized in [the Spec106 clarification](../106-sign-in-free-clients/clarification-local-mesh-creation.md). Other Spec106 work, including its remaining Docker, connection-adapter, contact-sharing and PHI-destination projects, is not declared complete. Historical identity-attestation design text below is superseded for personal meshes by that clarification; separate server/institution IAM remains separate.
+
+- [x] Verify site `c26f8ec` through normal Pages run [43795779048](https://github.com/AstralDeep/astraldeep.github.io/actions/runs/43795779048); live downloads/data/feed/signed policy match the immutable Mac97 assets and signatures.
+
+### Separate operational follow-up
+
+Optional Kernel tooling merged at `4b47a7a4` after 1,329 local test passes, formatting, strict Clippy and default-feature compilation; its branch was removed. No new live study was run. App Review submission remains distinct from approval or public availability.
+
+Historical checkboxes below retain their original dates and results. They are not an outstanding current acceptance queue.
+
+## Historical D11/P18 completion queue — 2026-11-15
 
 - [x] Integrate the four feature PRs and delete their merged branches while preserving unrelated working trees.
 - [x] Qualify Kernel `ed5ad2231f445497082750103326242b24fcbcb0` with 1,310 workspace tests, strict all-feature Clippy and all 17 source-bound payloads; adopt the qualified source in Deep, Projection and Vessel.
