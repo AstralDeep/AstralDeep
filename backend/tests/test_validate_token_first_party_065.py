@@ -3,8 +3,6 @@ are accepted, while MCP-audience, RFC 8693 actor-claim, and delegation-flagged t
 are refused.
 """
 
-import base64
-import json
 import os
 
 import pytest
@@ -12,52 +10,43 @@ import pytest
 from orchestrator.orchestrator import Orchestrator
 
 
-def _token(payload: dict) -> str:
-    body = base64.b64encode(json.dumps(payload).encode()).decode().rstrip("=")
-    return f"header.{body}.signature"
-
-
-_USER = {
-    "sub": "user-1",
-    "preferred_username": "user-1",
-    "realm_access": {"roles": ["user"]},
-}
-
-
 @pytest.fixture
-def orch(monkeypatch):
-    monkeypatch.setenv("USE_MOCK_AUTH", "true")
+def orch(server_identity):
     return Orchestrator.__new__(Orchestrator)
 
 
 @pytest.mark.asyncio
-async def test_ordinary_user_token_is_accepted(orch):
-    claims = await orch.validate_token(_token(dict(_USER, aud="account")))
+async def test_ordinary_user_token_is_accepted(orch, server_identity):
+    claims = await orch.validate_token(server_identity.token("user-1", aud="account"))
     assert claims is not None
-    assert claims["sub"] == "user-1"
+    assert claims["sub"] == server_identity.owner("user-1")
 
 
 # Real user logins share this audience — must not refuse
 @pytest.mark.asyncio
-async def test_live_realm_user_token_is_accepted(orch):
+async def test_live_realm_user_token_is_accepted(orch, server_identity):
     agent_aud = os.getenv("AGENT_SERVICE_CLIENT_ID", "astral-agent-service")
-    payload = dict(_USER, aud=[agent_aud, "realm-management", "account"])
-    claims = await orch.validate_token(_token(payload))
-    assert claims is not None and claims["sub"] == "user-1"
+    token = server_identity.token("user-1", aud=[agent_aud, "realm-management", "account"])
+    claims = await orch.validate_token(token)
+    assert claims is not None and claims["sub"] == server_identity.owner("user-1")
 
 
 @pytest.mark.asyncio
-async def test_mcp_audience_is_refused(orch):
-    assert await orch.validate_token(_token(dict(_USER, aud="astral-mcp"))) is None
+async def test_mcp_audience_is_refused(orch, server_identity):
+    assert await orch.validate_token(server_identity.token("user-1", aud="astral-mcp")) is None
 
 
 @pytest.mark.asyncio
-async def test_rfc8693_actor_claim_is_refused(orch):
-    payload = dict(_USER, aud="account", act={"sub": "agent:web-research-1"})
-    assert await orch.validate_token(_token(payload)) is None
+async def test_rfc8693_actor_claim_is_refused(orch, server_identity):
+    token = server_identity.token("user-1", aud="account", act={"sub": "agent:web-research-1"})
+    assert await orch.validate_token(token) is None
 
 
 @pytest.mark.asyncio
-async def test_delegation_flag_is_refused(orch):
-    payload = dict(_USER, aud="account", delegation=True)
-    assert await orch.validate_token(_token(payload)) is None
+async def test_delegation_flag_is_refused(orch, server_identity):
+    assert await orch.validate_token(server_identity.token("user-1", aud="account", delegation=True)) is None
+
+
+@pytest.mark.asyncio
+async def test_unsigned_token_is_refused(orch):
+    assert await orch.validate_token("header.e30.signature") is None
