@@ -4,12 +4,17 @@ The node binds, serves, syncs and wakes for it only with ASTRAL_ENV exactly deve
 from __future__ import annotations
 
 import ast
+import asyncio
 import hashlib
+import socket
 from pathlib import Path
 from types import SimpleNamespace as NS
 
 import astral_kernel as ak
 import pytest
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
 
 from devtools import dev_mesh
 from orchestrator import node_mesh, node_mesh_chat, push_wake
@@ -27,6 +32,73 @@ ECHO = {
     "name": "echo", "description": "echoes text on the node", "effect": "mesh_read", "annotations": {},
     "input_schema": {"type": "object", "properties": {"text": {"type": "string"}}},
 }
+
+
+class SoftwareSigner(ak.HostSigner):
+    def __init__(self):
+        self._identity = ec.generate_private_key(ec.SECP256R1())
+        self._presence = ec.generate_private_key(ec.SECP256R1())
+
+    @staticmethod
+    def _point(key):
+        return key.public_key().public_bytes(serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)
+
+    @staticmethod
+    def _sign(key, message):
+        r, s = decode_dss_signature(key.sign(bytes(message), ec.ECDSA(hashes.SHA256())))
+        if s > dev_mesh_keys.P256_ORDER // 2:
+            s = dev_mesh_keys.P256_ORDER - s
+        return r.to_bytes(32, "big") + s.to_bytes(32, "big")
+
+    def identity_public_key(self):
+        return self._point(self._identity)
+
+    def identity_sign(self, message):
+        return self._sign(self._identity, message)
+
+    def presence_public_key(self):
+        return self._point(self._presence)
+
+    def presence_sign(self, prompt, message):
+        return self._sign(self._presence, message)
+
+    def hardware_backed(self):
+        return False
+
+
+def open_laptop(directory):
+    return ak.Kernel.open(ak.KernelConfig(
+        data_dir=str(directory), operations_secret=ak.new_operations_secret(), wrap_secret=ak.new_operations_secret(),
+        restore_marker=None, device_label="laptop", device_kind=ak.DeviceKind.DESKTOP,
+        network=ak.NetworkConfig(relay=ak.RelayChoice.DISABLED(), local_discovery=False, internet_lookup=False,
+                                 loopback_only=True, sync_interval_ms=500, mailbox=None),
+    ), SoftwareSigner())
+
+
+async def kernel_enrolled(kernel) -> bool:
+    return (await kernel.mesh_status()).state == ak.EnrollmentState.ENROLLED
+
+
+def free_port() -> int:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+def mailbox_settings() -> node_mesh.MeshSettings:
+    return node_mesh.MeshSettings(
+        label="node", relay=("none",), loopback_only=True, local_discovery=False, internet_lookup=False, sync_interval_ms=500,
+        mailbox=MailboxSettings(loopback=True, relay=("none",), bind=(f"127.0.0.1:{free_port()}",)),
+    )
+
+
+def production_node(tmp_path, monkeypatch, value):
+    set_env(monkeypatch, value)
+    monkeypatch.setenv(node_identity.PROFILE_ENV, node_identity.PERSONAL)
+    monkeypatch.setenv(node_identity.DATA_DIR_ENV, str(tmp_path / "node"))
+    monkeypatch.delenv(node_identity.OWNER_ENV, raising=False)
+    node_identity.reset_cache()
+    return node_mesh.NodeMesh(data_dir=tmp_path / "node", settings=node_settings())
 
 
 def set_env(monkeypatch, value):
@@ -208,21 +280,82 @@ async def test_a_production_node_reopening_a_dev_mesh_store_never_starts_sync_an
         await mesh.node.stop()
         for value, online in ((None, False), ("production", False), ("development", True)):
             set_env(monkeypatch, value)
-            reopened = node_mesh.NodeMesh(data_dir=tmp_path / "node", settings=node_settings())
+            reopened = node_mesh.NodeMesh(data_dir=tmp_path / "node", settings=mailbox_settings())
             await reopened.start()
             try:
                 roster = reopened.kernel.roster()
                 assert roster.mesh_id == mesh_id and node_device in {member.device_id for member in roster.members}
                 if online:
                     assert reopened.kernel.endpoint_state().is_online()
+                    assert reopened.mailbox.snapshot()["running"]
                     assert await reopened.refresh_personal_owner() is not None
                 else:
+                    assert reopened.mailbox is None and not (tmp_path / "node" / "mailbox").exists()
                     await assert_no_sync(reopened)
                     assert (await reopened.status())["owner_binding"] == {"state": "refused", "code": "node.development_mesh"}
                     assert await reopened.refresh_personal_owner() is None
                     assert not owner_file().exists()
             finally:
                 await reopened.stop()
+
+
+@pytest.mark.parametrize("value", [None, "production"])
+async def test_a_production_node_cancels_a_pairing_a_dev_device_approves_before_it_joins(tmp_path, monkeypatch, value):
+    monkeypatch.setenv("ASTRAL_ENV", "development")
+    owner = dev_mesh.DevOwner("owner", tmp_path / "owner")
+    owner.create_mesh()
+    owner.confirm_recovery()
+    await owner.start()
+    node = production_node(tmp_path, monkeypatch, value)
+    await node.start()
+    try:
+        offer = await node.pairing_offer()
+        with pytest.raises(ak.KernelError) as refused:
+            await owner.kernel.approve_pairing(offer["payload"], ak.HistoryGrant.ALL)
+        assert refused.value.code == "pairing.cancelled"
+        status = await node.status()
+        assert status["state"] == "not_enrolled" and status["mesh_id"] is None and not status["pairing_open"]
+        node_device = (await node.kernel.mesh_status()).device_id
+        chat = owner.kernel.create_chat("after the refused pairing")
+        owner.kernel.send_message(chat, "never reaches the node", None)
+        await owner.kernel.sync_now()
+        assert [(p.connected, p.status) for p in await owner.kernel.sync_state() if p.device_id == node_device] in ([], [(False, "never_synced")])
+        assert node.kernel.list_chats() == [] and (await node.kernel.mesh_status()).mesh_id is None
+        assert node.kernel.endpoint_state().is_online()
+        assert await node.refresh_personal_owner() is None and not owner_file().exists()
+    finally:
+        await node.stop()
+        await owner.stop()
+
+
+@pytest.mark.parametrize("value", [None, "production"])
+async def test_a_production_node_joined_to_a_dev_mesh_by_another_member_stops_sync_at_the_join(tmp_path, monkeypatch, value):
+    monkeypatch.setenv("ASTRAL_ENV", "development")
+    owner = dev_mesh.DevOwner("owner", tmp_path / "owner")
+    owner.create_mesh()
+    owner.confirm_recovery()
+    await owner.start()
+    laptop = open_laptop(tmp_path / "laptop")
+    node = None
+    try:
+        await laptop.start_network()
+        await owner.approve_offer((await laptop.create_pairing_offer()).payload)
+        await until(lambda: kernel_enrolled(laptop), "the laptop to join")
+        node = production_node(tmp_path, monkeypatch, value)
+        await node.start()
+        offer = await node.pairing_offer()
+        approved = await laptop.approve_pairing(offer["payload"], ak.HistoryGrant.ALL)
+        await until(lambda: node.kernel.endpoint_state().is_stopped(), "the node to stop sync at the join")
+        assert approved.device_id == (await node.kernel.mesh_status()).device_id
+        await assert_no_sync(node)
+        assert node.personal_owner_id() is None and not owner_file().exists()
+        assert (await node.status())["owner_binding"] == {"state": "refused", "code": "node.development_mesh"}
+        assert node.kernel.roster().mesh_id == owner.mesh_id
+    finally:
+        if node is not None:
+            await node.stop()
+        await laptop.stop_network()
+        await owner.stop()
 
 
 @pytest.mark.parametrize("value", OUTSIDE_DEVELOPMENT)
@@ -288,10 +421,12 @@ def test_dev_devices_take_only_their_published_names(tmp_path, monkeypatch):
 class Mailbox:
     def __init__(self):
         self.running = False
+        self.starts = 0
         self.stops = 0
 
     async def start(self):
         self.running = True
+        self.starts += 1
 
     async def stop(self):
         self.running = False
@@ -378,11 +513,13 @@ async def test_a_roster_without_dev_devices_binds_in_every_environment(fake_node
     ("production", "sha256:" + "1" * 64, True),
     ("development", dev_mesh_keys.device_ids()["owner"], True),
 ])
-async def test_a_node_checks_its_stored_roster_before_it_starts_sync(tmp_path, monkeypatch, value, member, online):
+async def test_a_node_checks_its_stored_roster_before_it_starts_its_mailbox_or_sync(tmp_path, monkeypatch, value, member, online):
     set_env(monkeypatch, value)
     monkeypatch.setenv(node_identity.PROFILE_ENV, node_identity.PERSONAL)
     monkeypatch.setenv(node_identity.DATA_DIR_ENV, str(tmp_path))
     node_identity.reset_cache()
+    (tmp_path / node_mesh.KERNEL_DIR).mkdir()
+    (tmp_path / node_mesh.KERNEL_DIR / "store").write_bytes(b"held")
     started = []
 
     class Stored(fake.Kernel):
@@ -406,7 +543,9 @@ async def test_a_node_checks_its_stored_roster_before_it_starts_sync(tmp_path, m
     )
     await mesh.start()
     try:
-        assert mesh.started and bool(started) is online and mesh.kernel.network is online and mailbox.running is online
+        assert mesh.started and bool(started) is online and mesh.kernel.network is online
+        assert mailbox.starts == (1 if online else 0) and mailbox.running is online
+        assert (tmp_path / node_mesh.KERNEL_DIR / "store").read_bytes() == b"held"
         binding = (await mesh.status())["owner_binding"]
         if online:
             assert binding == {"state": "setup_required", "code": "mesh.not_enrolled"}
@@ -418,6 +557,77 @@ async def test_a_node_checks_its_stored_roster_before_it_starts_sync(tmp_path, m
     finally:
         await mesh.stop()
         node_identity.reset_cache()
+
+
+def change(name, progress=None):
+    event = type(name, (), {})()
+    if progress is not None:
+        event.progress = progress
+    return event
+
+
+def offer_seen(peer):
+    return change("KernelChange.PAIRING", type("PairingProgress.OFFER_SEEN", (), {"peer": peer})())
+
+
+@pytest.mark.parametrize("value, peer, cancelled", [
+    (None, dev_mesh_keys.device_ids()["owner"], 1),
+    ("production", dev_mesh_keys.device_ids()["second-phone"], 1),
+    ("production", "sha256:" + "1" * 64, 0),
+    ("development", dev_mesh_keys.device_ids()["owner"], 0),
+])
+async def test_a_pairing_offer_seen_by_a_dev_device_is_cancelled_outside_development(fake_node, monkeypatch, value, peer, cancelled):
+    set_env(monkeypatch, value)
+    fake_node.mesh._listener.dispatch(offer_seen(peer))
+    fake_node.mesh._listener.dispatch(change("KernelChange.PAIRING", type("PairingProgress.APPROVED", (), {})()))
+    assert fake_node.kernel.cancelled == cancelled and fake_node.kernel.network is True
+
+
+@pytest.mark.parametrize("event", [
+    change("KernelChange.ROSTER_CHANGED"), change("RosterChanged"), change("KernelChange.ENROLLMENT"),
+    change("KernelChange.PAIRING", type("PairingProgress.JOINED", (), {})()),
+])
+@pytest.mark.parametrize("value, stopped", [(None, True), ("production", True), ("development", False)])
+async def test_a_roster_notification_refuses_a_dev_mesh_at_once_without_an_owner_refresh(fake_node, monkeypatch, event, value, stopped):
+    set_env(monkeypatch, value)
+    fake_node.state.members.append(dev_mesh_keys.device_ids()["owner"])
+    fake_node.mesh._listener.dispatch(event)
+    if stopped:
+        await until(lambda: fake_node.mailbox.stops == 1, "the development check to stop sync", seconds=5)
+    else:
+        await asyncio.sleep(0)
+        assert not fake_node.mesh._checks
+    assert fake_node.kernel.network is (not stopped) and fake_node.mailbox.running is (not stopped)
+    binding = (await fake_node.mesh.status())["owner_binding"]
+    assert binding == ({"state": "refused", "code": "node.development_mesh"} if stopped else {"state": "setup_required", "code": "mesh.not_enrolled"})
+    assert node_identity.bound_owner() is None
+
+
+async def test_the_development_check_reports_a_kernel_error_and_ignores_other_changes(fake_node, monkeypatch, caplog):
+    set_env(monkeypatch, "production")
+    fake_node.mesh._listener.dispatch(change("KernelChange.CHAT_CHANGED"))
+    await asyncio.sleep(0)
+    assert not fake_node.mesh._checks
+
+    def unreadable():
+        raise fake.KernelError.State("store.unreadable")
+
+    fake_node.kernel.roster = unreadable
+    fake_node.mesh._listener.dispatch(change("KernelChange.ROSTER_CHANGED"))
+    await until(lambda: "node_mesh_development_check_failed: store.unreadable" in caplog.text, "the failed check to be reported", seconds=5)
+    await until(lambda: not fake_node.mesh._checks, "the development check to finish", seconds=5)
+    assert fake_node.kernel.network is True
+
+
+async def test_stopping_the_node_cancels_a_pending_development_check(fake_node, monkeypatch):
+    set_env(monkeypatch, "production")
+    await fake_node.mesh._owner_lock.acquire()
+    fake_node.mesh._listener.dispatch(change("KernelChange.ROSTER_CHANGED"))
+    await until(lambda: bool(fake_node.mesh._checks), "the development check to be scheduled", seconds=5)
+    pending = list(fake_node.mesh._checks)
+    await fake_node.mesh.stop()
+    fake_node.mesh._owner_lock.release()
+    assert all(task.cancelled() for task in pending) and not fake_node.mesh._checks
 
 
 def _base(kernel):
