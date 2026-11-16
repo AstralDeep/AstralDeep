@@ -16,7 +16,8 @@ class ClaudeNativeAdapter:
                 "x-api-key": self.api_key,
                 "anthropic-version": "2023-06-01",
                 "content-type": "application/json"
-            }
+            },
+            trust_env=False
         )
 
     def send_message(self, payload: Dict[str, Any]) -> Dict[str, Any]:
