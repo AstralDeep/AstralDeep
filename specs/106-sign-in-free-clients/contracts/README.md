@@ -10,6 +10,7 @@ These documents fix the formats that spec 106 revises or adds. Each one has a Py
 | [caller-ticket.md](caller-ticket.md) | `astral.caller/v1` | The owner-minted caller ticket, the holder proof, the holder text forms, the verification order and codes, revocation | `vectors/caller-v1.json`, `reference/label_classes.json` | `reference/caller_ticket.py`, `reference/ed25519_strict.py`, `reference/generate_caller_vectors.py`, `reference/generate_label_classes.py` |
 | [exec-policy.md](exec-policy.md) | `astral.exec-policy/v1` | The execution policy for untrusted node tools, its validation order and codes, the canonical Seatbelt profile, the Linux plan, backend selection | `vectors/exec-policy-v1.json` | `reference/exec_policy.py`, `reference/generate_exec_vectors.py`, `reference/path_fold.json` |
 | [connection.md](connection.md) | `astral.connection/v1` | Connections carried on `settings.set`: the key grammar, the record and per-device state, the consent digest, the fold and its codes, unsupported records, server ids and tool names, egress, and the MCP over HTTP adapter decisions | `vectors/connection-v1.json`, `vectors/connection-oauth-v1.json` | `reference/connection.py`, `reference/connection_oauth.py`, `reference/generate_connection_vectors.py` |
+| [phi-detector.md](phi-detector.md) | `astral.phi-detector/v1` | The PHI detector floor: input limits, normalization and the skeleton fold, the pattern dialect, the rule table and its tiers, failure reasons, parity with today's Python rules, and the on-device filter request | `vectors/phi-detector-v1.json` | `reference/phi_detector.py`, `reference/phi_rules.json`, `reference/phi_fold.json`, `reference/html_entities.json`, `reference/phi_filter.json`, `reference/generate_phi_vectors.py`, `reference/generate_phi_fold.py`, `reference/generate_html_entities.py` |
 
 A change to a format raises its version. A document, its vectors and its reference module change together, and the reference tests pass before the change merges.
 
@@ -28,10 +29,13 @@ python specs/106-sign-in-free-clients/contracts/reference/generate_caller_vector
 python specs/106-sign-in-free-clients/contracts/reference/generate_local_vectors.py --check
 python specs/106-sign-in-free-clients/contracts/reference/generate_exec_vectors.py --check
 python specs/106-sign-in-free-clients/contracts/reference/generate_connection_vectors.py --check
+python specs/106-sign-in-free-clients/contracts/reference/generate_phi_vectors.py --check
 python -m pytest specs/106-sign-in-free-clients/contracts/reference/tests -q
 ruff check specs/106-sign-in-free-clients/contracts
 python3.14 specs/106-sign-in-free-clients/contracts/reference/generate_label_classes.py --check
 python3.14 specs/106-sign-in-free-clients/contracts/reference/generate_path_fold.py --check
+python3.14 specs/106-sign-in-free-clients/contracts/reference/generate_phi_fold.py --check
+python3.14 specs/106-sign-in-free-clients/contracts/reference/generate_html_entities.py --check
 ```
 
-The last two commands need a Python whose `unicodedata.unidata_version` is 16.0.0, such as Python 3.14. They use only the standard library and refuse to run on other Unicode data. The caller ticket label table and the exec policy path fold tables come from them, and every implementation reads those tables instead of its runtime's Unicode data. The exec policy live test runs only on macOS.
+The last four commands need Python 3.14. They use only the standard library. The first three refuse to run unless `unicodedata.unidata_version` is 16.0.0, and the last refuses any Python other than 3.14. The caller ticket label table, the exec policy path fold tables, the PHI skeleton fold and the HTML reference table come from them, and every implementation reads those tables instead of its runtime's Unicode or HTML data. The exec policy live test runs only on macOS.
