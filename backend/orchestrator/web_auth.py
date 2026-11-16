@@ -1,6 +1,6 @@
 """Server-side OIDC login, session cookie issuance, silent refresh, and revocation for
-the web shell, plus device-flow kiosk sign-in. Backed by session_store.py, consumed
-by auth.py and orchestrator.py across the authenticated surface.
+the web shell, plus device-flow kiosk sign-in, all unavailable on a personal node. Backed
+by session_store.py, consumed by auth.py and orchestrator.py across the authenticated surface.
 """
 
 from __future__ import annotations
@@ -19,14 +19,15 @@ import threading
 from typing import Any, Dict, Optional
 
 import httpx
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 import shared  # noqa: F401
+from orchestrator.auth import refuse_node_sign_in
 
 logger = logging.getLogger("orchestrator.web_auth")
 
-web_auth_router = APIRouter()
+web_auth_router = APIRouter(dependencies=[Depends(refuse_node_sign_in)])
 
 _SESSIONS: Dict[str, Dict[str, Any]] = {}
 _SESSION_CACHE_LOCK = threading.RLock()
@@ -1032,7 +1033,7 @@ async def _audit(action: str, sub: str, description: str, *, outcome: str = "suc
         logger.debug("web_auth: audit hook unavailable for %s", action, exc_info=True)
 
 
-kiosk_router = APIRouter()
+kiosk_router = APIRouter(dependencies=[Depends(refuse_node_sign_in)])
 
 KIOSK_COOKIE = "astral_kiosk"
 _KIOSK_FLOW_TTL_SECONDS = 900

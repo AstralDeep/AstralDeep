@@ -1058,3 +1058,85 @@ def test_missing_production_signing_key_refuses_audits_and_rolls_back_redemption
     assert recovered.status_code == 200
     assert recovered.json()["member"]["status"] == "active"
     assert ma.verify_member_token(recovered.json()["access_token"])["sub"] == mesh.owner
+
+
+def _legacy_snapshot(mesh):
+    with mesh.runtime.transaction() as transaction:
+        web_row = mesh.sessions._sessions.repository.get_by_session_id_for_administration(
+            transaction, session_id=mesh.sid)
+        neutral = mesh.runtime.repositories.mesh_enrollment.list_members(
+            transaction, owner_id=mesh.owner, mesh_id=me.mesh_id_for_owner(mesh.owner))
+    return (
+        mesh.store.list_members(mesh.owner),
+        mesh.store.list_invitations(mesh.owner),
+        mesh.store._list(mesh.owner, ma.SESSION_NAMESPACE),
+        neutral,
+        web_row,
+        len(mesh.audit.list_for_user(mesh.owner, limit=200)[0]),
+    )
+
+
+def test_a_personal_node_closes_legacy_enrollment_and_keeps_every_row(mesh, monkeypatch, tmp_path):
+    from fastapi.testclient import TestClient
+
+    from orchestrator import web_auth
+    from shared import jwks_cache, node_identity
+    from tests.helpers import orchestrator_app
+
+    client, enrolled = mesh.enroll()
+    _, pending = mesh.invitation()
+    member = client.device.member_id
+    before = _legacy_snapshot(mesh)
+    assert before[0] and before[1] and before[2] and before[4] is not None
+    fetched, keys = [], jwks_cache.get_jwks
+
+    async def counted(*args, **kwargs):
+        fetched.append(args)
+        return await keys(*args, **kwargs)
+
+    monkeypatch.setattr(jwks_cache, "get_jwks", counted)
+    monkeypatch.setenv("ASTRAL_ENV", "production")
+    monkeypatch.setenv(node_identity.PROFILE_ENV, node_identity.PERSONAL)
+    monkeypatch.setenv(node_identity.DATA_DIR_ENV, str(tmp_path / "node"))
+    host = orchestrator_app.host(None, **vars(mesh.host))
+    http = TestClient(orchestrator_app.build(monkeypatch, host, surfaces=()), base_url="https://mesh.invalid")
+    http.cookies.set(web_auth.COOKIE_NAME, web_auth._sign(mesh.sid))
+    invite = pending["invitation"]["invite_id"]
+    owner = {**mesh.owner_headers, "Content-Type": "application/json"}
+    as_member = {"Authorization": "DPoP " + client._token, "DPoP": "proof", "DPoP-Nonce": "nonce"}
+    legacy = [
+        ("POST", "/api/mesh/invitations", owner, {"label": "Another", "device_key": "k"}),
+        ("GET", "/api/mesh/invitations", owner, None),
+        ("POST", f"/api/mesh/invitations/{invite}/confirm", owner, None),
+        ("POST", f"/api/mesh/invitations/{invite}/reject", owner, None),
+        ("POST", f"/api/mesh/invitations/{invite}/remove", owner, None),
+        ("GET", "/api/mesh/members", owner, None),
+        ("POST", f"/api/mesh/members/{member}/revoke", owner, None),
+        ("POST", f"/api/mesh/members/{member}/label", owner, {"label": "Renamed"}),
+        ("GET", "/api/mesh/topology", owner, None),
+        ("GET", "/api/mesh/me", as_member, None),
+        ("GET", "/api/mesh/presence", as_member, None),
+        ("POST", "/api/mesh/presence", as_member, {"endpoint": "https://x.invalid"}),
+        ("POST", "/api/mesh/tools/reader/read", as_member, {"arguments": {}}),
+        ("POST", "/api/mesh/enrollment/redeem", {}, {"payload": enrolled["payload"], "signature": "s"}),
+        ("POST", "/api/mesh/nonce", {}, {"owner_id": mesh.owner, "member_id": member}),
+        ("POST", "/api/mesh/session", {}, {"owner_id": mesh.owner, "member_id": member}),
+        ("GET", "/enroll", {}, None),
+    ]
+    for method, path, headers, body in legacy:
+        response = http.request(method, path, headers=headers, json=body)
+        assert (response.status_code, response.json()) == (403, {"detail": "node.legacy_enrollment_closed"}), path
+    web = [("GET", "/api/share", 401, "node.bearer_refused"),
+           ("GET", "/api/download/s1/f.txt", 401, "node.bearer_refused"),
+           ("GET", "/api/connection/status", 401, "node.bearer_refused"),
+           ("GET", "/auth/session", 403, "node.sign_in_unavailable"),
+           ("POST", "/auth/logout", 403, "node.sign_in_unavailable"),
+           ("GET", "/", 403, "node.sign_in_unavailable")]
+    for method, path, status, code in web:
+        response = http.request(method, path, headers={"Origin": "https://mesh.invalid"})
+        assert (response.status_code, response.json()) == (status, {"detail": code}), path
+    assert _legacy_snapshot(mesh) == before
+    assert fetched == []
+    monkeypatch.delenv(node_identity.PROFILE_ENV)
+    assert mesh.client.get("/api/mesh/members", headers=mesh.owner_headers).status_code == 200
+    assert fetched

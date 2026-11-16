@@ -1,23 +1,24 @@
-"""Exit criterion for a personal node: after sign-in with the issuer unreachable, verification still works on the last good keys and tool calls still dispatch with locally minted delegation."""
+"""A personal node never asks an identity server: a session token from an accepted issuer is refused whether the issuer is reachable, blocked or already cached, while the server profile keeps verifying on its last good keys through the grace window.
+It drives shared/token_verify.py, shared/jwks_cache.py and Orchestrator.validate_token, beside the per-door refusals in test_node_bearer_refusal.py."""
 
 from __future__ import annotations
 
 import types
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from shared import jwks_cache
 from shared import node_identity as ni
-from shared.token_verify import verify_idp_token
+from shared.token_verify import TokenRefused, verify_idp_token
 from tests.helpers.idp_tokens import AUTHORITY, CLIENT_ID, FakeIssuer
 
 JWKS_URL = f"{AUTHORITY}/protocol/openid-connect/certs"
 
 
 @pytest.fixture
-def node(tmp_path, monkeypatch):
-    monkeypatch.setenv(ni.PROFILE_ENV, "personal")
+def issuer(tmp_path, monkeypatch):
+    monkeypatch.setenv("ASTRAL_ENV", "production")
+    monkeypatch.setenv(ni.PROFILE_ENV, ni.PERSONAL)
     monkeypatch.setenv(ni.DATA_DIR_ENV, str(tmp_path / "node"))
     monkeypatch.setenv("USE_MOCK_AUTH", "false")
     monkeypatch.setenv("KEYCLOAK_AUTHORITY", AUTHORITY)
@@ -26,72 +27,52 @@ def node(tmp_path, monkeypatch):
         monkeypatch.delenv(name, raising=False)
     ni.reset_cache()
     jwks_cache.clear()
-    state = {"now": 1_000_000.0, "up": True}
-    monkeypatch.setattr(jwks_cache, "time", types.SimpleNamespace(time=lambda: state["now"]))
-    issuer = FakeIssuer()
+    state = types.SimpleNamespace(now=1_000_000.0, up=True, fetches=0, key=FakeIssuer())
+    monkeypatch.setattr(jwks_cache, "time", types.SimpleNamespace(time=lambda: state.now))
 
     async def fetch(url):
-        if not state["up"]:
+        state.fetches += 1
+        if not state.up:
             raise OSError("issuer blocked")
-        jwks_cache._cache[url] = {"jwks": issuer.jwks, "fetched_at": state["now"]}
-        return issuer.jwks
+        jwks_cache._cache[url] = {"jwks": state.key.jwks, "fetched_at": state.now}
+        return state.key.jwks
 
     monkeypatch.setattr(jwks_cache, "_fetch", fetch)
-    yield types.SimpleNamespace(issuer=issuer, clock=state)
+    yield state
     jwks_cache.clear()
     ni.reset_cache()
 
 
-def orchestrator(owner):
+@pytest.mark.parametrize("reachable,cached", [(True, False), (False, False), (False, True)])
+async def test_a_session_token_is_refused_whether_the_issuer_is_up_down_or_cached(issuer, reachable, cached):
     from orchestrator.orchestrator import Orchestrator
 
-    orch = Orchestrator.__new__(Orchestrator)
-    orch.ui_sessions = {}
-    orch.security_flags = {}
-    orch.agent_cards = {"agent": types.SimpleNamespace(skills=[types.SimpleNamespace(id="read")])}
-    orch.tool_permissions = types.SimpleNamespace(
-        is_tool_allowed=MagicMock(return_value=True),
-        get_tool_scope=MagicMock(return_value="tools:read"),
-    )
-    orch.delegation = types.SimpleNamespace(
-        agent_service_client_id="astral-agent-service",
-        exchange_token_for_agent=AsyncMock(side_effect=AssertionError("Keycloak must not be asked")),
-    )
-    return orch
+    issuer.up = reachable
+    if cached:
+        jwks_cache._cache[JWKS_URL] = {"jwks": issuer.key.jwks, "fetched_at": issuer.now}
+    token = issuer.key.token("owner-1")
+    with pytest.raises(TokenRefused) as refused:
+        await verify_idp_token(token)
+    assert refused.value.reason == "node_bearer_refused"
+    assert await Orchestrator.validate_token(object(), token) is None
+    assert issuer.fetches == 0 and ni.bound_owner() is None
 
 
-async def test_session_keeps_working_and_tools_dispatch_with_the_issuer_blocked(node):
-    from orchestrator.orchestrator import Orchestrator
-
-    token = node.issuer.token("owner-1")
-    claims = await Orchestrator.validate_token(object(), token)
-    owner = claims["sub"]
-    orch = orchestrator(owner)
-    socket = object()
-    orch.ui_sessions[socket] = dict(claims)
-
-    node.clock["up"] = False
-    node.clock["now"] += jwks_cache._TTL_SECONDS + 60
-
-    again = await Orchestrator.validate_token(object(), token)
-    assert again is not None and again["sub"] == owner
-    delegation = await orch._get_delegation_token(socket, "agent", owner)
-    assert delegation is not None
-    verified = ni.load_node_identity().verify_token(delegation)
-    assert verified["sub"] == owner and "tool:read" in verified["scope"].split()
-    orch.delegation.exchange_token_for_agent.assert_not_awaited()
-
-
-async def test_verification_stops_when_the_grace_runs_out(node):
-    token = node.issuer.token("owner-1")
-    await verify_idp_token(token)
-    node.clock["up"] = False
-    node.clock["now"] += jwks_cache._TTL_SECONDS + jwks_cache._DEFAULT_GRACE_SECONDS + 1
+async def test_the_server_profile_keeps_verifying_on_its_last_good_keys(issuer, monkeypatch):
+    monkeypatch.delenv(ni.PROFILE_ENV)
+    token = issuer.key.token("owner-1")
+    owner = ni.canonical_owner_id(AUTHORITY, "owner-1")
+    assert (await verify_idp_token(token))["sub"] == owner
+    issuer.up = False
+    issuer.now += jwks_cache._TTL_SECONDS + 60
+    assert (await verify_idp_token(token))["sub"] == owner
+    issuer.now += jwks_cache._DEFAULT_GRACE_SECONDS
     with pytest.raises(OSError):
         await verify_idp_token(token)
 
 
-async def test_a_new_sign_in_needs_the_issuer(node):
-    node.clock["up"] = False
+async def test_a_new_server_sign_in_needs_the_issuer(issuer, monkeypatch):
+    monkeypatch.delenv(ni.PROFILE_ENV)
+    issuer.up = False
     with pytest.raises(OSError):
-        await verify_idp_token(node.issuer.token("owner-1"))
+        await verify_idp_token(issuer.key.token("owner-1"))

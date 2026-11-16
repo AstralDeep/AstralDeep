@@ -341,10 +341,8 @@ def test_member_audience_helper_accepts_string_and_list():
 async def test_agents_accept_node_delegation_for_their_audience_and_owner_only(personal, tmp_path, monkeypatch):
     from shared.a2a_security import A2ASecurityValidator
 
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
-    monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://idp.example/realms/a")
-    monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-frontend")
-    monkeypatch.delenv("AGENT_SERVICE_CLIENT_ID", raising=False)
+    for name in ("USE_MOCK_AUTH", "KEYCLOAK_AUTHORITY", "KEYCLOAK_CLIENT_ID", "AGENT_SERVICE_CLIENT_ID"):
+        monkeypatch.delenv(name, raising=False)
     orch = orchestrator()
     socket = object()
     orch.ui_sessions[socket] = {"sub": OWNER}
@@ -362,3 +360,23 @@ async def test_agents_accept_node_delegation_for_their_audience_and_owner_only(p
     assert await strict.validate_token(token) is None
     other_node(tmp_path, monkeypatch)
     assert await validator.validate_token(token) is None
+
+
+@pytest.mark.parametrize("mock", ["false", "true"])
+async def test_agents_on_a_node_take_only_node_tokens_and_never_fetch_issuer_keys(personal, monkeypatch, mock):
+    from shared import jwks_cache
+    from shared.a2a_security import A2ASecurityValidator
+    from tests.helpers.idp_tokens import AUTHORITY, CLIENT_ID, FakeIssuer
+
+    monkeypatch.setenv("USE_MOCK_AUTH", mock)
+    monkeypatch.setenv("ASTRAL_ENV", "development" if mock == "true" else "production")
+    monkeypatch.setenv("KEYCLOAK_AUTHORITY", AUTHORITY)
+    monkeypatch.setenv("KEYCLOAK_CLIENT_ID", CLIENT_ID)
+    monkeypatch.setattr(jwks_cache, "get_jwks", lambda *args, **kwargs: pytest.fail("a node fetched issuer keys"))
+    issuer_token = FakeIssuer().token("owner-1", aud=AGENT_AUDIENCE)
+    for token in (issuer_token, "dev-token"):
+        assert await A2ASecurityValidator().validate_token(token) is None
+        assert await A2ASecurityValidator(require_first_party_user=True).validate_token(token) is None
+    node_token = personal.mint_token({"sub": OWNER, "act": {"sub": "agent:agent"}}, audience=[AGENT_AUDIENCE])
+    assert (await A2ASecurityValidator().validate_token(node_token))["sub"] == OWNER
+    assert await A2ASecurityValidator(require_first_party_user=True).validate_token(node_token) is None

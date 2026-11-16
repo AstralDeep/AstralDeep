@@ -10671,6 +10671,16 @@ class Orchestrator:
                 return
 
             if isinstance(msg, RegisterUI):
+                from shared import node_identity
+                if node_identity.is_personal():
+                    from orchestrator.auth import NODE_BEARER_REFUSED
+                    from shared.protocol import AuthRequired
+                    logger.warning("UI registration refused: %s", NODE_BEARER_REFUSED)
+                    evt = self._registered_events.get(id(websocket))
+                    if evt:
+                        evt.set()
+                    await self._safe_send(websocket, AuthRequired(reason=NODE_BEARER_REFUSED).to_json())
+                    return
                 token = msg.token
                 user_data = None
 
@@ -26235,7 +26245,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             await self._close_started_services()
 
     def build_http_app(self) -> FastAPI:
+        from fastapi import Depends
+        from orchestrator.auth import refuse_node_bearer, refuse_node_sign_in
+        from orchestrator.mesh_api import refuse_legacy_enrollment
         from orchestrator.models import WS_PROTOCOL_DOCS
+
+        bearer_closed = [Depends(refuse_node_bearer)]
 
         tags_metadata = [
             {"name": "Chat", "description": "Chat session management — create, list, load, delete chats and send messages."},
@@ -26350,7 +26365,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         _projection_static_dir = _projection_static_filesystem_root()
         _shell_resource = _projection_template_path("shell.html")
 
-        @app.get("/", response_class=_HTMLResponse)
+        @app.get("/", response_class=_HTMLResponse, dependencies=[Depends(refuse_node_sign_in)])
         async def serve_shell(request: Request):
             try:
                 from orchestrator.web_auth import shell_gate
@@ -26481,65 +26496,47 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         from dreaming.api import dreaming_router
         from orchestrator.api import project_router
 
-        app.include_router(project_router)
-        app.include_router(chat_router)
-        app.include_router(component_router)
-        app.include_router(agent_router)
-        app.include_router(user_router)
-        app.include_router(draft_router)
-        app.include_router(dashboard_router)
-        app.include_router(chrome_router)
         from orchestrator.lets_health_api import lets_router
-        app.include_router(lets_router)
         from orchestrator.computer_policy_api import computer_policy_router
-        app.include_router(computer_policy_router)
         from orchestrator.connection_guide import connection_router
-        app.include_router(connection_router)
-        if flags.is_enabled("remote_mcp"):
-            from orchestrator.remote_mcp_api import remote_mcp_router
-            app.include_router(remote_mcp_router)
-        app.include_router(notification_router)
         from orchestrator.a2a_publication_api import publication_router
-        app.include_router(publication_router)
-        app.include_router(export_router)
-        app.include_router(share_router)
-        app.include_router(auth_router)
         from orchestrator.mesh_web import mesh_web_router
         from orchestrator.node_api import node_router
-        app.include_router(mesh_router)
-        app.include_router(mesh_web_router)
-        app.include_router(node_router)
-        app.include_router(push_router)
-        app.include_router(mesh_push_router)
         from orchestrator.harness.selection_api import harness_router
-        app.include_router(harness_router)
+        from orchestrator.terminal_api import terminal_router
+
+        bearer_routers = [
+            project_router, chat_router, component_router, agent_router, user_router,
+            draft_router, dashboard_router, chrome_router, lets_router,
+            computer_policy_router, connection_router,
+        ]
+        if flags.is_enabled("remote_mcp"):
+            from orchestrator.remote_mcp_api import remote_mcp_router
+            bearer_routers.append(remote_mcp_router)
+        bearer_routers += [notification_router, publication_router, export_router]
+        for router in bearer_routers:
+            app.include_router(router, dependencies=bearer_closed)
+        app.include_router(share_router)
+        app.include_router(auth_router)
+        app.include_router(mesh_router)
+        app.include_router(mesh_web_router, dependencies=[Depends(refuse_legacy_enrollment)])
+        app.include_router(node_router)
+        for router in (push_router, mesh_push_router, harness_router):
+            app.include_router(router, dependencies=bearer_closed)
         app.include_router(web_auth_router)
         if flags.is_enabled("kiosk_login"):
             from orchestrator.web_auth import kiosk_router
             app.include_router(kiosk_router)
             logger.info("Kiosk sign-in surface mounted at /kiosk")
-        app.include_router(attachments_router)
-        app.include_router(voice_router)
-        app.include_router(task_router)
-        app.include_router(async_task_router)
-        app.include_router(operation_router)
-        from orchestrator.terminal_api import terminal_router
-        app.include_router(terminal_router)
-        app.include_router(audit_router)
-        app.include_router(feedback_user_router)
-        app.include_router(feedback_admin_router)
-        app.include_router(onboarding_user_router)
-        app.include_router(onboarding_admin_router)
-        app.include_router(llm_router)
-        app.include_router(personalization_router)
-        app.include_router(skills_router)
-        app.include_router(memory_router)
-        app.include_router(atlas_router)
-        app.include_router(search_router)
-        app.include_router(schedule_router)
-        app.include_router(assignment_router)
-        app.include_router(emergency_stop_router)
-        app.include_router(dreaming_router)
+        for router in (
+            attachments_router, voice_router, task_router, async_task_router,
+            operation_router, terminal_router, audit_router, feedback_user_router,
+            feedback_admin_router, onboarding_user_router, onboarding_admin_router,
+            llm_router, personalization_router, skills_router, memory_router,
+            atlas_router, search_router, schedule_router, assignment_router,
+            emergency_stop_router, dreaming_router,
+        ):
+            app.include_router(router, dependencies=bearer_closed)
 
         app.add_middleware(AuditHTTPMiddleware)
 
@@ -27223,6 +27220,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 )
 
     async def validate_token(self, token: str) -> Optional[Dict]:
+        from shared import node_identity
+        if node_identity.is_personal():
+            logger.warning("Token refused for a UI session: node_bearer_refused")
+            return None
         if os.getenv("USE_MOCK_AUTH", "").lower() == "true":
             if token == "dev-token":
                 logger.info("Mock Auth: Validated dev-token as test_user")

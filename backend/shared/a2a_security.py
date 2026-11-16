@@ -1,6 +1,7 @@
 """Validates Bearer tokens on incoming A2A requests via Keycloak JWKS (or mock decode in
 dev) and enforces RFC 8693 delegation scopes; A2ASecurityValidator serves an
-agent-inbound posture and a stricter orchestrator-inbound one.
+agent-inbound posture and a stricter orchestrator-inbound one, and on a personal node
+accepts only node-minted delegation agent-inbound and refuses every orchestrator-inbound bearer.
 """
 
 import os
@@ -10,7 +11,7 @@ import logging
 from typing import Optional, Dict, List, Any
 
 from shared import node_identity
-from shared.token_verify import TokenRefused, check_idp_audience, verify_idp_token
+from shared.token_verify import NODE_BEARER_REFUSED, TokenRefused, check_idp_audience, verify_idp_token
 from shared.auth_clients import (
     agent_service_client_id,
     allowed_azps,
@@ -54,6 +55,11 @@ class A2ASecurityValidator:
     async def validate_token(self, token: str) -> Optional[Dict[str, Any]]:
         if not token:
             return None
+        if node_identity.is_personal():
+            if self.require_first_party_user:
+                logger.warning("A2A token rejected (orchestrator inbound): %s", NODE_BEARER_REFUSED)
+                return None
+            return self._validate_node_token(token)
 
         if self.mock_auth:
             payload = self._validate_mock_token(token)
@@ -98,8 +104,6 @@ class A2ASecurityValidator:
         if not self.authority or not self.client_id:
             logger.error("Keycloak not configured for A2A token validation")
             return None
-        if node_identity.is_personal() and node_identity.peek_algorithm(token) == "EdDSA":
-            return self._validate_node_token(token)
         try:
             return await verify_idp_token(
                 token,

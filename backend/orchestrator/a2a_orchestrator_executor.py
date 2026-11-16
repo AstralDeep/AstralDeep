@@ -1,6 +1,7 @@
 """Exposes the orchestrator as an A2A agent: an anonymous agent-card endpoint
 advertising only the public owner-safe catalog, and a bearer-authenticated JSON-RPC
-endpoint routing into the orchestrator's tool dispatch. Gated by FF_A2A_SERVER.
+endpoint routing into the orchestrator's tool dispatch that a personal node refuses
+before reading any bearer. Gated by FF_A2A_SERVER.
 """
 
 import asyncio
@@ -39,8 +40,10 @@ from shared.a2a_bridge import (
     make_data_part,
 )
 from shared.a2a_publication import A2APublicationRegistry
+from shared import node_identity
 from shared.a2a_security import A2ASecurityValidator
 from orchestrator import a2a_publication_signing as publication_signing
+from orchestrator.auth import NODE_BEARER_REFUSED
 from orchestrator.a2a_publication_policy import A2APublicationPolicy
 from orchestrator.a2a_publication_wiring import attach_publication_registry, owner_lookup
 from orchestrator.local_agents import FIRST_PARTY_PUBLIC_AGENT_IDS
@@ -130,6 +133,8 @@ def _a2a_framework_resolver(orchestrator):
 async def authenticate_a2a_request(
     validator: A2ASecurityValidator, headers, *, resolve_framework_bearer=None,
 ) -> Optional[A2APrincipal]:
+    if node_identity.is_personal():
+        return None
     token = bearer_from_headers(headers)
     if not token:
         return None
@@ -513,14 +518,14 @@ def build_orchestrator_a2a_card(orchestrator) -> A2AAgentCard:
     return card
 
 
-def _unauthenticated_response():
+def _unauthenticated_response(message="Authentication required"):
     from starlette.responses import JSONResponse
 
     return JSONResponse(
         {
             "jsonrpc": "2.0",
             "id": None,
-            "error": {"code": -32001, "message": "Authentication required"},
+            "error": {"code": -32001, "message": message},
         },
         status_code=401,
         headers={"WWW-Authenticate": 'Bearer realm="astral-a2a"'},
@@ -549,6 +554,8 @@ def setup_orchestrator_a2a(app, orchestrator):
 
     def _gated(endpoint):
         async def gated_endpoint(request):
+            if node_identity.is_personal():
+                return _unauthenticated_response(NODE_BEARER_REFUSED)
             # Must run before the SDK parses a method, or tasks/* bypass this
             principal = await authenticate_a2a_request(
                 validator, request.headers,

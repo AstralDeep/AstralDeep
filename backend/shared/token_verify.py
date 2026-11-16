@@ -1,4 +1,4 @@
-"""The one verification function for Keycloak-issued access tokens: accepted issuer, required azp, canonical (issuer, subject) owner id and personal-node owner binding.
+"""The one verification function for Keycloak-issued access tokens: accepted issuer, required azp and canonical (issuer, subject) owner id, refused outright on a personal node before any key fetch.
 orchestrator/auth.py, orchestrator.validate_token and shared/a2a_security.py all call it so the three paths cannot drift.
 """
 
@@ -14,6 +14,7 @@ from shared import jwks_cache
 
 IDP_SUBJECT_CLAIM = "astral_idp_sub"
 IDP_ISSUER_CLAIM = "astral_idp_iss"
+NODE_BEARER_REFUSED = "node_bearer_refused"
 
 
 class TokenRefused(Exception):
@@ -54,6 +55,8 @@ async def verify_idp_token(
     extra_audiences: Iterable[str] = (),
     jwks_getter: Optional[Callable[[str, str], Awaitable[Dict[str, Any]]]] = None,
 ) -> Dict[str, Any]:
+    if node_identity.is_personal():
+        raise TokenRefused(NODE_BEARER_REFUSED)
     if not isinstance(token, str) or not token:
         raise TokenRefused("missing_token")
     issuers = node_identity.accepted_issuers(extra_issuers)
@@ -92,13 +95,6 @@ async def verify_idp_token(
         raise TokenRefused("azp_not_accepted")
     check_idp_audience(payload, extra=extra_audiences)
     try:
-        stamped = with_owner_identity(payload, claimed)
+        return with_owner_identity(payload, claimed)
     except node_identity.NodeIdentityError:
         raise TokenRefused("subject_unusable") from None
-    try:
-        node_identity.enforce_owner(stamped["sub"])
-    except node_identity.OwnerMismatch:
-        raise TokenRefused("owner_mismatch") from None
-    except node_identity.NodeIdentityError:
-        raise TokenRefused("owner_binding_unavailable") from None
-    return stamped
