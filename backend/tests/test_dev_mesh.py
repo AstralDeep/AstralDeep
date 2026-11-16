@@ -7,6 +7,7 @@ import ast
 import asyncio
 import hashlib
 import socket
+import weakref
 from pathlib import Path
 from types import SimpleNamespace as NS
 
@@ -358,6 +359,53 @@ async def test_a_production_node_joined_to_a_dev_mesh_by_another_member_stops_sy
         await owner.stop()
 
 
+async def test_a_production_node_with_a_real_store_binds_its_owner_and_holds_one_store_handle(tmp_path, monkeypatch):
+    laptop = open_laptop(tmp_path / "laptop")
+    laptop.create_mesh()
+    laptop.confirm_mesh_recovery()
+    await laptop.start_network()
+    mesh_id = laptop.mesh_principal().mesh_id
+    node = production_node(tmp_path, monkeypatch, "production")
+    try:
+        await node.start()
+        try:
+            await laptop.approve_pairing((await node.pairing_offer())["payload"], ak.HistoryGrant.ALL)
+            await until(lambda: kernel_enrolled(node.kernel), "the node to join the laptop's mesh")
+            owner = await node.refresh_personal_owner()
+            assert owner is not None and owner.endswith(mesh_id.removeprefix("sha256:"))
+        finally:
+            await node.stop()
+        store = str(tmp_path / "node" / node_mesh.KERNEL_DIR)
+        original = ak.Kernel.open
+        record = NS(opened=[], live_at_open=[])
+
+        def counting(config, *args, **kwargs):
+            if config.data_dir == store:
+                record.live_at_open.append(sum(ref() is not None for ref in record.opened))
+            kernel = original(config, *args, **kwargs)
+            if config.data_dir == store:
+                record.opened.append(weakref.ref(kernel))
+            return kernel
+
+        monkeypatch.setattr(ak.Kernel, "open", staticmethod(counting))
+        for settings, opens in ((node_settings(), 1), (mailbox_settings(), 2)):
+            record.opened.clear()
+            record.live_at_open.clear()
+            reopened = node_mesh.NodeMesh(data_dir=tmp_path / "node", settings=settings)
+            await reopened.start()
+            try:
+                assert len(record.opened) == opens and record.live_at_open == [0] * opens
+                assert record.opened[-1]() is reopened.kernel
+                assert reopened.kernel.endpoint_state().is_online()
+                assert (reopened.mailbox is not None and reopened.mailbox.snapshot()["running"]) is (opens == 2)
+                assert await reopened.refresh_personal_owner() == owner == node_identity.bound_owner()
+                assert (await reopened.status())["owner_binding"] == {"state": "ready", "code": None}
+            finally:
+                await reopened.stop()
+    finally:
+        await laptop.stop_network()
+
+
 @pytest.mark.parametrize("value", OUTSIDE_DEVELOPMENT)
 def test_devtools_refuse_to_start_outside_development(tmp_path, monkeypatch, value):
     set_env(monkeypatch, value)
@@ -507,44 +555,64 @@ async def test_a_roster_without_dev_devices_binds_in_every_environment(fake_node
     assert fake_node.kernel.network is True and fake_node.mailbox.running is True
 
 
-@pytest.mark.parametrize("value, member, online", [
-    (None, dev_mesh_keys.device_ids()["owner"], False),
-    ("production", dev_mesh_keys.device_ids()["second-phone"], False),
-    ("production", "sha256:" + "1" * 64, True),
-    ("development", dev_mesh_keys.device_ids()["owner"], True),
-])
-async def test_a_node_checks_its_stored_roster_before_it_starts_its_mailbox_or_sync(tmp_path, monkeypatch, value, member, online):
+CLEAN = "sha256:" + "1" * 64
+
+
+def stored_node(tmp_path, monkeypatch, value, member, *, supervised, retained=False):
     set_env(monkeypatch, value)
     monkeypatch.setenv(node_identity.PROFILE_ENV, node_identity.PERSONAL)
     monkeypatch.setenv(node_identity.DATA_DIR_ENV, str(tmp_path))
     node_identity.reset_cache()
     (tmp_path / node_mesh.KERNEL_DIR).mkdir()
     (tmp_path / node_mesh.KERNEL_DIR / "store").write_bytes(b"held")
-    started = []
+    record = NS(opened=[], live_at_open=[], started=[])
 
     class Stored(fake.Kernel):
         @classmethod
         def open(cls, config, signer, model=None, tools=None, listener=None):
+            record.live_at_open.append(sum(ref() is not None for ref in record.opened))
             kernel = cls(config, signer, listener)
+            if not retained:
+                cls.instances.remove(kernel)
             kernel.join(MESH)
             kernel.roster = lambda: NS(mesh_id=MESH, stopped=False, removed=[], members=[
                 NS(device_id=kernel.device_id, is_local=True), NS(device_id=member, is_local=False)])
+            record.opened.append(weakref.ref(kernel))
             return kernel
 
         async def start_network(self):
-            started.append(self)
+            record.started.append(weakref.ref(self))
             return await super().start_network()
 
     monkeypatch.setattr(fake, "Kernel", Stored)
-    mailbox = Mailbox()
-    mesh = node_mesh.NodeMesh(
+    record.mailbox = Mailbox() if supervised else None
+    record.mesh = node_mesh.NodeMesh(
         data_dir=tmp_path, settings=node_mesh.MeshSettings(mailbox=MailboxSettings(enabled=False)), binding=fake,
-        mailbox=mailbox,
+        mailbox=record.mailbox,
     )
+    return record
+
+
+@pytest.mark.parametrize("value, member, supervised, online, opens", [
+    (None, dev_mesh_keys.device_ids()["owner"], True, False, 1),
+    ("production", dev_mesh_keys.device_ids()["second-phone"], True, False, 1),
+    ("production", dev_mesh_keys.device_ids()["owner"], False, False, 1),
+    ("production", CLEAN, True, True, 2),
+    ("production", CLEAN, False, True, 1),
+    ("development", dev_mesh_keys.device_ids()["owner"], True, True, 1),
+])
+async def test_a_node_checks_its_stored_roster_before_it_starts_its_mailbox_or_sync(
+    tmp_path, monkeypatch, value, member, supervised, online, opens,
+):
+    record = stored_node(tmp_path, monkeypatch, value, member, supervised=supervised)
+    mesh = record.mesh
     await mesh.start()
     try:
-        assert mesh.started and bool(started) is online and mesh.kernel.network is online
-        assert mailbox.starts == (1 if online else 0) and mailbox.running is online
+        assert len(record.opened) == opens and record.live_at_open == [0] * opens
+        assert mesh.started and bool(record.started) is online and mesh.kernel.network is online
+        assert record.opened[-1]() is mesh.kernel
+        if supervised:
+            assert record.mailbox.starts == (1 if online else 0) and record.mailbox.running is online
         assert (tmp_path / node_mesh.KERNEL_DIR / "store").read_bytes() == b"held"
         binding = (await mesh.status())["owner_binding"]
         if online:
@@ -557,6 +625,16 @@ async def test_a_node_checks_its_stored_roster_before_it_starts_its_mailbox_or_s
     finally:
         await mesh.stop()
         node_identity.reset_cache()
+
+
+async def test_a_checked_store_handle_that_cannot_be_released_never_opens_a_second_handle(tmp_path, monkeypatch):
+    record = stored_node(tmp_path, monkeypatch, "production", CLEAN, supervised=True, retained=True)
+    with pytest.raises(node_mesh.MeshUnavailable) as busy:
+        await record.mesh.start()
+    assert busy.value.code == "kernel_store_busy"
+    assert len(record.opened) == 1 and record.started == [] and record.mailbox.starts == 0
+    assert not record.mesh.started
+    node_identity.reset_cache()
 
 
 def change(name, progress=None):
@@ -643,6 +721,8 @@ MALFORMED = {
     "members_none": lambda k: NS(mesh_id=MESH, stopped=False, members=None, removed=[]),
     "member_without_id": lambda k: NS(mesh_id=MESH, stopped=False, members=[*_base(k), NS(is_local=False)], removed=[]),
     "member_id_not_text": lambda k: NS(mesh_id=MESH, stopped=False, members=[*_base(k), NS(device_id=None)], removed=[]),
+    "no_mesh_id": lambda k: NS(stopped=False, members=_base(k), removed=[]),
+    "mesh_id_not_text": lambda k: NS(mesh_id=None, stopped=False, members=_base(k), removed=[]),
 }
 
 

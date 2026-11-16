@@ -5,6 +5,7 @@ node_api.py serves it, node_mailbox.py supervises the node's mailbox beside it, 
 from __future__ import annotations
 
 import asyncio
+import gc
 import inspect
 import importlib
 import json
@@ -12,6 +13,7 @@ import logging
 import os
 import re
 import threading
+import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence
@@ -122,10 +124,11 @@ def _refuse_development_mesh(roster: Any) -> None:
     if _development_allowed():
         return
     try:
+        mesh_id = roster.mesh_id
         listed = [member.device_id for member in roster.members] + [device.device_id for device in roster.removed]
     except (AttributeError, TypeError):
         raise NodeMeshError(DEVELOPMENT_MESH) from None
-    if any(type(device) is not str for device in listed) or not set(listed).isdisjoint(dev_mesh_keys.device_ids().values()):
+    if any(type(value) is not str for value in (mesh_id, *listed)) or not set(listed).isdisjoint(dev_mesh_keys.device_ids().values()):
         raise NodeMeshError(DEVELOPMENT_MESH)
 
 
@@ -317,12 +320,13 @@ class NodeMesh:
             self._loop = asyncio.get_running_loop()
             self._quarantined = False
             (self._data_dir / KERNEL_DIR).mkdir(mode=0o700, parents=True, exist_ok=True)
-            if await self._open_held_development_store(keys):
+            checked = await self._check_stored_mesh(keys)
+            if self._quarantined:
                 self._started = True
                 return
             await self._start_mailbox()
             try:
-                self._kernel = await self._open_kernel(
+                self._kernel = checked if checked is not None else await self._open_kernel(
                     keys, self._mailbox.snapshot()["address"] if self._mailbox is not None else self._mailbox_address
                 )
                 try:
@@ -356,17 +360,28 @@ class NodeMesh:
         )
         return await asyncio.to_thread(binding.Kernel.open, config, _signer(binding, keys), None, None, self._listener.bridge)
 
-    async def _open_held_development_store(self, keys: node_mesh_keys.NodeMeshKeys) -> bool:
+    def _supervises_mailbox(self) -> bool:
+        return self._mailbox is not None or self._settings.mailbox.enabled
+
+    async def _check_stored_mesh(self, keys: node_mesh_keys.NodeMeshKeys) -> Optional[Any]:
         if _development_allowed() or not any((self._data_dir / KERNEL_DIR).iterdir()):
-            return False
+            return None
         kernel = await self._open_kernel(keys, self._mailbox_address)
-        if not await self._holds_development_mesh(kernel):
-            return False
-        logger.warning("node_mesh_development_mesh_refused")
-        self._kernel = kernel
-        self._owner_binding = {"state": "refused", "code": DEVELOPMENT_MESH}
-        self._quarantined = True
-        return True
+        if await self._holds_development_mesh(kernel):
+            logger.warning("node_mesh_development_mesh_refused")
+            self._kernel = kernel
+            self._owner_binding = {"state": "refused", "code": DEVELOPMENT_MESH}
+            self._quarantined = True
+            return None
+        if not self._supervises_mailbox():
+            return kernel
+        released = weakref.ref(kernel)
+        del kernel
+        if released() is not None:
+            gc.collect()
+        if released() is not None:
+            raise MeshUnavailable("kernel_store_busy")
+        return None
 
     async def _start_mailbox(self) -> None:
         if self._mailbox is None and self._settings.mailbox.enabled:
@@ -486,9 +501,9 @@ class NodeMesh:
                 if type(mesh_id) is not str or re.fullmatch(r"sha256:[0-9a-f]{64}", mesh_id) is None:
                     raise NodeMeshError("node.owner_unproven")
                 roster = kernel.roster()
+                _refuse_development_mesh(roster)
                 if mesh_id != status.mesh_id or mesh_id != roster.mesh_id:
                     raise NodeMeshError("node.mesh_mismatch")
-                _refuse_development_mesh(roster)
                 if roster.stopped:
                     raise NodeMeshError("gate.mesh_stopped")
                 if not any(member.is_local and member.device_id == status.device_id for member in roster.members):
@@ -666,9 +681,9 @@ class NodeMesh:
                 raise NodeMeshError("node.owner_unproven")
             if self._enrollment(status) not in ENROLLED_STATES:
                 raise NodeMeshError("mesh.not_enrolled")
+            _refuse_development_mesh(roster)
             if proof.mesh_id != status.mesh_id or proof.mesh_id != roster.mesh_id:
                 raise NodeMeshError("node.mesh_mismatch")
-            _refuse_development_mesh(roster)
             if roster.stopped:
                 raise NodeMeshError("gate.mesh_stopped")
             if not any(member.is_local and member.device_id == status.device_id for member in roster.members):
