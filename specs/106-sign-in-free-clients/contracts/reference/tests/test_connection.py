@@ -94,6 +94,17 @@ EXPECTED = {
     "record_endpoint_single_label_host": UNSUP + "record_unsupported",
     "record_endpoint_numeric_last_label": UNSUP + "record_unsupported",
     "record_endpoint_2049_characters": UNSUP + "record_unsupported",
+    "record_endpoint_2048_characters_valid": "ok",
+    "record_endpoint_port_65535_valid": "ok",
+    "record_endpoint_host_253_valid": "ok",
+    "record_endpoint_host_254": UNSUP + "record_unsupported",
+    "record_endpoint_label_63_valid": "ok",
+    "record_endpoint_label_64": UNSUP + "record_unsupported",
+    "record_tool_name_128_valid": "ok",
+    "record_scope_256_valid": "ok",
+    "record_scope_257": UNSUP + "record_unsupported",
+    "record_client_id_1024_valid": "ok",
+    "record_client_id_1025": UNSUP + "record_unsupported",
     "record_local_without_device": UNSUP + "record_unsupported",
     "record_device_without_local": UNSUP + "record_unsupported",
     "record_local_dns_endpoint": UNSUP + "record_unsupported",
@@ -194,6 +205,19 @@ EXPECTED = {
         "ignored": ["connection.consent_unknown_device"],
     },
     "fold_unknown_consent_device": {"ignored": ["connection.consent_unknown_device"]},
+    "fold_removed_approval_with_bad_signature_not_listed": {
+        "ignored": ["connection.consent_unknown_device"],
+    },
+    "fold_removed_approval_outside_the_window_not_listed": {
+        "ignored": ["connection.consent_unknown_device"],
+    },
+    "fold_removed_approval_before_a_remove_not_listed": {
+        "ignored": ["connection.consent_unknown_device"],
+    },
+    "fold_removed_approval_after_a_remove_listed": {
+        "ignored": ["connection.consent_unknown_device"],
+        "removed_approvals": ["Second:dave"],
+    },
     "fold_forged_removed_approval": {
         "ignored": ["connection.consent_unknown_device"],
     },

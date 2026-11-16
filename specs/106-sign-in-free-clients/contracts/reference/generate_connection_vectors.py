@@ -462,7 +462,9 @@ def generate_connection() -> dict[str, Any]:
         "record_endpoint_port_leading_zero", "https://mcp.research.example:08443/mcp"
     )
     endpoint_case(
-        "record_endpoint_port_out_of_range", "https://mcp.research.example:65536/mcp"
+        "record_endpoint_port_out_of_range",
+        "https://mcp.research.example:65536/mcp",
+        egress=["login.research.example", "mcp.research.example:65536"],
     )
     endpoint_case(
         "record_endpoint_trailing_dot_host", "https://mcp.research.example./mcp"
@@ -470,6 +472,36 @@ def generate_connection() -> dict[str, Any]:
     endpoint_case("record_endpoint_single_label_host", "https://mcp/mcp")
     endpoint_case("record_endpoint_numeric_last_label", "https://mcp.research.1234/mcp")
     endpoint_case("record_endpoint_2049_characters", E + "/" + "a" * (2048 - len(E)))
+    endpoint_case(
+        "record_endpoint_2048_characters_valid", E + "/" + "a" * (2047 - len(E))
+    )
+    port_max = "https://mcp.research.example:65535/mcp"
+    rec(
+        "record_endpoint_port_65535_valid",
+        record(
+            RID,
+            endpoint=port_max,
+            auth={"resource": port_max},
+            egress=["login.research.example", "mcp.research.example:65535"],
+        ),
+    )
+    long_host = ".".join(["a" * 63, "b" * 63, "c" * 63, "d" * 61])
+    for name, host in (
+        ("record_endpoint_host_253_valid", long_host),
+        ("record_endpoint_host_254", long_host + "d"),
+        ("record_endpoint_label_63_valid", "a" * 63 + ".research.example"),
+        ("record_endpoint_label_64", "a" * 64 + ".research.example"),
+    ):
+        url = f"https://{host}/mcp"
+        rec(
+            name,
+            record(
+                RID,
+                endpoint=url,
+                auth={"resource": url},
+                egress=sorted(["login.research.example", host]),
+            ),
+        )
     rec("record_local_without_device", local_record(RID) | {"device": None})
     rec("record_device_without_local", record(RID, device=ALICE.id))
     rec("record_local_dns_endpoint", record(RID, local=True, device=ALICE.id))
@@ -512,6 +544,14 @@ def generate_connection() -> dict[str, Any]:
         "record_tool_name_129",
         record(RID, tools=[{"hash": _hash("x"), "name": "x" * 129}]),
     )
+    rec(
+        "record_tool_name_128_valid",
+        record(RID, tools=[{"hash": _hash("x"), "name": "x" * 128}]),
+    )
+    rec("record_scope_256_valid", record(RID, auth={"scopes": ["s" * 256]}))
+    rec("record_scope_257", record(RID, auth={"scopes": ["s" * 257]}))
+    rec("record_client_id_1024_valid", record(RID, auth={"client_id": "c" * 1024}))
+    rec("record_client_id_1025", record(RID, auth={"client_id": "c" * 1025}))
     rec("record_flow_unknown", record(RID, flow="secret"))
     rec(
         "record_egress_missing_endpoint_host",
@@ -693,6 +733,21 @@ def generate_connection() -> dict[str, Any]:
     put(log, "p1", DAVE, t1, first)
     put(log, "p2", ALICE, t2, second)
     fold("fold_removed_approval_superseded", log)
+    log = Log("removed-tampered")
+    put(log, "p1", DAVE, t1, first, tampered(make_consent(first, DAVE, t1)))
+    fold("fold_removed_approval_with_bad_signature_not_listed", log)
+    log = Log("removed-stale")
+    put(log, "p1", DAVE, t1, first, make_consent(first, DAVE, t1 - 600001))
+    fold("fold_removed_approval_outside_the_window_not_listed", log)
+    log = Log("removed-then-remove")
+    put(log, "p1", DAVE, t1, first)
+    remove(log, "x", BOB, t2, RID)
+    fold("fold_removed_approval_before_a_remove_not_listed", log)
+    log = Log("remove-then-removed")
+    put(log, "p1", ALICE, t1, first)
+    remove(log, "x", BOB, t2, RID)
+    put(log, "p2", DAVE, t3, second)
+    fold("fold_removed_approval_after_a_remove_listed", log)
     log = Log("unknown-device")
     put(log, "p1", MALLORY, t1, first)
     fold("fold_unknown_consent_device", log)
@@ -1560,7 +1615,7 @@ def generate_oauth() -> dict[str, Any]:
 
 def render() -> dict[str, str]:
     return {
-        name: json.dumps(doc, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+        name: json.dumps(doc, indent=2, sort_keys=True) + "\n"
         for name, doc in (
             ("connection-v1", generate_connection()),
             ("connection-oauth-v1", generate_oauth()),

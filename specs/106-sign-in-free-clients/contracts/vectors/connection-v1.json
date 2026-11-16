@@ -3610,7 +3610,7 @@
     {
       "expect": {
         "ok": {
-          "digest": "sha256:d3440e4f8658863dc82f78fd06294c625f4b1d0a7482b5a72acfbddea1a0be12",
+          "digest": "sha256:5550f62c93b028b3ba5b29f182d255f4da706c5e6ca4924cfb4d5ee033c07c0c",
           "reason": "connection.record_unsupported",
           "server": "c44c3d55c",
           "status": "unsupported"
@@ -3632,7 +3632,7 @@
           "device": null,
           "egress": [
             "login.research.example",
-            "mcp.research.example"
+            "mcp.research.example:65536"
           ],
           "endpoint": "https://mcp.research.example:65536/mcp",
           "flow": "phi",
@@ -3851,6 +3851,300 @@
       },
       "kind": "connection_record",
       "name": "record_endpoint_2049_characters"
+    },
+    {
+      "expect": {
+        "ok": {
+          "digest": "sha256:f47ea651bffdea4f03af2c5dd270a41b70e787038c8ea93a2a722b3f0d7e34ea",
+          "reason": null,
+          "server": "c44c3d55c",
+          "status": "ok"
+        }
+      },
+      "input": {
+        "id": "44c3d55c24475a6459b19b5879e3936a",
+        "value": {
+          "auth": {
+            "client_id": null,
+            "issuer": "https://login.research.example",
+            "resource": "https://mcp.research.example/mcp/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "scheme": "oauth",
+            "scopes": [
+              "mcp.read",
+              "mcp.tools"
+            ]
+          },
+          "device": null,
+          "egress": [
+            "login.research.example",
+            "mcp.research.example"
+          ],
+          "endpoint": "https://mcp.research.example/mcp/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "flow": "phi",
+          "id": "44c3d55c24475a6459b19b5879e3936a",
+          "kind": "mcp-http",
+          "local": false,
+          "name": "First",
+          "tools": [
+            {
+              "hash": "sha256:1aecae58d08399ba76c51a7afc6edf0ff623c4d70361d2a3e663bdfae1cc1c18",
+              "name": "lookup"
+            },
+            {
+              "hash": "sha256:41d37c1c5cedfce12f33f4cc50530377f785608c079d306466f72d0f5f45f00b",
+              "name": "search"
+            }
+          ],
+          "v": 1
+        }
+      },
+      "kind": "connection_record",
+      "name": "record_endpoint_2048_characters_valid"
+    },
+    {
+      "expect": {
+        "ok": {
+          "digest": "sha256:82c63c4c5cbe9e62c300093e9b3f20e3ebd512873f22de8ddc6c4d7e629ecbc1",
+          "reason": null,
+          "server": "c44c3d55c",
+          "status": "ok"
+        }
+      },
+      "input": {
+        "id": "44c3d55c24475a6459b19b5879e3936a",
+        "value": {
+          "auth": {
+            "client_id": null,
+            "issuer": "https://login.research.example",
+            "resource": "https://mcp.research.example:65535/mcp",
+            "scheme": "oauth",
+            "scopes": [
+              "mcp.read",
+              "mcp.tools"
+            ]
+          },
+          "device": null,
+          "egress": [
+            "login.research.example",
+            "mcp.research.example:65535"
+          ],
+          "endpoint": "https://mcp.research.example:65535/mcp",
+          "flow": "phi",
+          "id": "44c3d55c24475a6459b19b5879e3936a",
+          "kind": "mcp-http",
+          "local": false,
+          "name": "First",
+          "tools": [
+            {
+              "hash": "sha256:1aecae58d08399ba76c51a7afc6edf0ff623c4d70361d2a3e663bdfae1cc1c18",
+              "name": "lookup"
+            },
+            {
+              "hash": "sha256:41d37c1c5cedfce12f33f4cc50530377f785608c079d306466f72d0f5f45f00b",
+              "name": "search"
+            }
+          ],
+          "v": 1
+        }
+      },
+      "kind": "connection_record",
+      "name": "record_endpoint_port_65535_valid"
+    },
+    {
+      "expect": {
+        "ok": {
+          "digest": "sha256:9f528376a07476d4813b72f247ae6636ee593fb29b57a87d835224f2ab8fa3a0",
+          "reason": null,
+          "server": "c44c3d55c",
+          "status": "ok"
+        }
+      },
+      "input": {
+        "id": "44c3d55c24475a6459b19b5879e3936a",
+        "value": {
+          "auth": {
+            "client_id": null,
+            "issuer": "https://login.research.example",
+            "resource": "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/mcp",
+            "scheme": "oauth",
+            "scopes": [
+              "mcp.read",
+              "mcp.tools"
+            ]
+          },
+          "device": null,
+          "egress": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "login.research.example"
+          ],
+          "endpoint": "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/mcp",
+          "flow": "phi",
+          "id": "44c3d55c24475a6459b19b5879e3936a",
+          "kind": "mcp-http",
+          "local": false,
+          "name": "First",
+          "tools": [
+            {
+              "hash": "sha256:1aecae58d08399ba76c51a7afc6edf0ff623c4d70361d2a3e663bdfae1cc1c18",
+              "name": "lookup"
+            },
+            {
+              "hash": "sha256:41d37c1c5cedfce12f33f4cc50530377f785608c079d306466f72d0f5f45f00b",
+              "name": "search"
+            }
+          ],
+          "v": 1
+        }
+      },
+      "kind": "connection_record",
+      "name": "record_endpoint_host_253_valid"
+    },
+    {
+      "expect": {
+        "ok": {
+          "digest": "sha256:a2df3f9e08e03291446954bfdbf62cf433e12a1e8de929935f1152afdf09a0ff",
+          "reason": "connection.record_unsupported",
+          "server": "c44c3d55c",
+          "status": "unsupported"
+        }
+      },
+      "input": {
+        "id": "44c3d55c24475a6459b19b5879e3936a",
+        "value": {
+          "auth": {
+            "client_id": null,
+            "issuer": "https://login.research.example",
+            "resource": "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/mcp",
+            "scheme": "oauth",
+            "scopes": [
+              "mcp.read",
+              "mcp.tools"
+            ]
+          },
+          "device": null,
+          "egress": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "login.research.example"
+          ],
+          "endpoint": "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/mcp",
+          "flow": "phi",
+          "id": "44c3d55c24475a6459b19b5879e3936a",
+          "kind": "mcp-http",
+          "local": false,
+          "name": "First",
+          "tools": [
+            {
+              "hash": "sha256:1aecae58d08399ba76c51a7afc6edf0ff623c4d70361d2a3e663bdfae1cc1c18",
+              "name": "lookup"
+            },
+            {
+              "hash": "sha256:41d37c1c5cedfce12f33f4cc50530377f785608c079d306466f72d0f5f45f00b",
+              "name": "search"
+            }
+          ],
+          "v": 1
+        }
+      },
+      "kind": "connection_record",
+      "name": "record_endpoint_host_254"
+    },
+    {
+      "expect": {
+        "ok": {
+          "digest": "sha256:462abd4ccf86a673ea06e6019aa20718857f46fb0bdba37be2a1e71a7afa0e0c",
+          "reason": null,
+          "server": "c44c3d55c",
+          "status": "ok"
+        }
+      },
+      "input": {
+        "id": "44c3d55c24475a6459b19b5879e3936a",
+        "value": {
+          "auth": {
+            "client_id": null,
+            "issuer": "https://login.research.example",
+            "resource": "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.research.example/mcp",
+            "scheme": "oauth",
+            "scopes": [
+              "mcp.read",
+              "mcp.tools"
+            ]
+          },
+          "device": null,
+          "egress": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.research.example",
+            "login.research.example"
+          ],
+          "endpoint": "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.research.example/mcp",
+          "flow": "phi",
+          "id": "44c3d55c24475a6459b19b5879e3936a",
+          "kind": "mcp-http",
+          "local": false,
+          "name": "First",
+          "tools": [
+            {
+              "hash": "sha256:1aecae58d08399ba76c51a7afc6edf0ff623c4d70361d2a3e663bdfae1cc1c18",
+              "name": "lookup"
+            },
+            {
+              "hash": "sha256:41d37c1c5cedfce12f33f4cc50530377f785608c079d306466f72d0f5f45f00b",
+              "name": "search"
+            }
+          ],
+          "v": 1
+        }
+      },
+      "kind": "connection_record",
+      "name": "record_endpoint_label_63_valid"
+    },
+    {
+      "expect": {
+        "ok": {
+          "digest": "sha256:ba60f4c034cf325abfbcd5d69c52bd1f7ed767b047830e33f8d7b6b87ea7c943",
+          "reason": "connection.record_unsupported",
+          "server": "c44c3d55c",
+          "status": "unsupported"
+        }
+      },
+      "input": {
+        "id": "44c3d55c24475a6459b19b5879e3936a",
+        "value": {
+          "auth": {
+            "client_id": null,
+            "issuer": "https://login.research.example",
+            "resource": "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.research.example/mcp",
+            "scheme": "oauth",
+            "scopes": [
+              "mcp.read",
+              "mcp.tools"
+            ]
+          },
+          "device": null,
+          "egress": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.research.example",
+            "login.research.example"
+          ],
+          "endpoint": "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.research.example/mcp",
+          "flow": "phi",
+          "id": "44c3d55c24475a6459b19b5879e3936a",
+          "kind": "mcp-http",
+          "local": false,
+          "name": "First",
+          "tools": [
+            {
+              "hash": "sha256:1aecae58d08399ba76c51a7afc6edf0ff623c4d70361d2a3e663bdfae1cc1c18",
+              "name": "lookup"
+            },
+            {
+              "hash": "sha256:41d37c1c5cedfce12f33f4cc50530377f785608c079d306466f72d0f5f45f00b",
+              "name": "search"
+            }
+          ],
+          "v": 1
+        }
+      },
+      "kind": "connection_record",
+      "name": "record_endpoint_label_64"
     },
     {
       "expect": {
@@ -4862,6 +5156,245 @@
     {
       "expect": {
         "ok": {
+          "digest": "sha256:deb35ecc96c119f5749425e1edcb44ffef12ad67a913eb406003377fc240849f",
+          "reason": null,
+          "server": "c44c3d55c",
+          "status": "ok"
+        }
+      },
+      "input": {
+        "id": "44c3d55c24475a6459b19b5879e3936a",
+        "value": {
+          "auth": {
+            "client_id": null,
+            "issuer": "https://login.research.example",
+            "resource": "https://mcp.research.example/mcp",
+            "scheme": "oauth",
+            "scopes": [
+              "mcp.read",
+              "mcp.tools"
+            ]
+          },
+          "device": null,
+          "egress": [
+            "login.research.example",
+            "mcp.research.example"
+          ],
+          "endpoint": "https://mcp.research.example/mcp",
+          "flow": "phi",
+          "id": "44c3d55c24475a6459b19b5879e3936a",
+          "kind": "mcp-http",
+          "local": false,
+          "name": "First",
+          "tools": [
+            {
+              "hash": "sha256:9bfd82195f33cfcef741939525d4e93d7d5384c0906701a6b063ffedcd113efb",
+              "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+            }
+          ],
+          "v": 1
+        }
+      },
+      "kind": "connection_record",
+      "name": "record_tool_name_128_valid"
+    },
+    {
+      "expect": {
+        "ok": {
+          "digest": "sha256:661ed2fbf5525875c4b78ca3574e48e3a14ed87f65941a856f72462a7aa4f6fe",
+          "reason": null,
+          "server": "c44c3d55c",
+          "status": "ok"
+        }
+      },
+      "input": {
+        "id": "44c3d55c24475a6459b19b5879e3936a",
+        "value": {
+          "auth": {
+            "client_id": null,
+            "issuer": "https://login.research.example",
+            "resource": "https://mcp.research.example/mcp",
+            "scheme": "oauth",
+            "scopes": [
+              "ssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss"
+            ]
+          },
+          "device": null,
+          "egress": [
+            "login.research.example",
+            "mcp.research.example"
+          ],
+          "endpoint": "https://mcp.research.example/mcp",
+          "flow": "phi",
+          "id": "44c3d55c24475a6459b19b5879e3936a",
+          "kind": "mcp-http",
+          "local": false,
+          "name": "First",
+          "tools": [
+            {
+              "hash": "sha256:1aecae58d08399ba76c51a7afc6edf0ff623c4d70361d2a3e663bdfae1cc1c18",
+              "name": "lookup"
+            },
+            {
+              "hash": "sha256:41d37c1c5cedfce12f33f4cc50530377f785608c079d306466f72d0f5f45f00b",
+              "name": "search"
+            }
+          ],
+          "v": 1
+        }
+      },
+      "kind": "connection_record",
+      "name": "record_scope_256_valid"
+    },
+    {
+      "expect": {
+        "ok": {
+          "digest": "sha256:0d941913e5bce0acdc3f08b6a5af5c2cdb5433270c890d10a789508240f39055",
+          "reason": "connection.record_unsupported",
+          "server": "c44c3d55c",
+          "status": "unsupported"
+        }
+      },
+      "input": {
+        "id": "44c3d55c24475a6459b19b5879e3936a",
+        "value": {
+          "auth": {
+            "client_id": null,
+            "issuer": "https://login.research.example",
+            "resource": "https://mcp.research.example/mcp",
+            "scheme": "oauth",
+            "scopes": [
+              "sssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss"
+            ]
+          },
+          "device": null,
+          "egress": [
+            "login.research.example",
+            "mcp.research.example"
+          ],
+          "endpoint": "https://mcp.research.example/mcp",
+          "flow": "phi",
+          "id": "44c3d55c24475a6459b19b5879e3936a",
+          "kind": "mcp-http",
+          "local": false,
+          "name": "First",
+          "tools": [
+            {
+              "hash": "sha256:1aecae58d08399ba76c51a7afc6edf0ff623c4d70361d2a3e663bdfae1cc1c18",
+              "name": "lookup"
+            },
+            {
+              "hash": "sha256:41d37c1c5cedfce12f33f4cc50530377f785608c079d306466f72d0f5f45f00b",
+              "name": "search"
+            }
+          ],
+          "v": 1
+        }
+      },
+      "kind": "connection_record",
+      "name": "record_scope_257"
+    },
+    {
+      "expect": {
+        "ok": {
+          "digest": "sha256:bfa054f02d8a9fa90c64da1a6bc73bcabacbb6fecb6a5b03bd2b67d18f7249a1",
+          "reason": null,
+          "server": "c44c3d55c",
+          "status": "ok"
+        }
+      },
+      "input": {
+        "id": "44c3d55c24475a6459b19b5879e3936a",
+        "value": {
+          "auth": {
+            "client_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "issuer": "https://login.research.example",
+            "resource": "https://mcp.research.example/mcp",
+            "scheme": "oauth",
+            "scopes": [
+              "mcp.read",
+              "mcp.tools"
+            ]
+          },
+          "device": null,
+          "egress": [
+            "login.research.example",
+            "mcp.research.example"
+          ],
+          "endpoint": "https://mcp.research.example/mcp",
+          "flow": "phi",
+          "id": "44c3d55c24475a6459b19b5879e3936a",
+          "kind": "mcp-http",
+          "local": false,
+          "name": "First",
+          "tools": [
+            {
+              "hash": "sha256:1aecae58d08399ba76c51a7afc6edf0ff623c4d70361d2a3e663bdfae1cc1c18",
+              "name": "lookup"
+            },
+            {
+              "hash": "sha256:41d37c1c5cedfce12f33f4cc50530377f785608c079d306466f72d0f5f45f00b",
+              "name": "search"
+            }
+          ],
+          "v": 1
+        }
+      },
+      "kind": "connection_record",
+      "name": "record_client_id_1024_valid"
+    },
+    {
+      "expect": {
+        "ok": {
+          "digest": "sha256:92ae24e2570167ef9aa458ba178a8b9cee8295778515a9df8bb87ff4f53e5eee",
+          "reason": "connection.record_unsupported",
+          "server": "c44c3d55c",
+          "status": "unsupported"
+        }
+      },
+      "input": {
+        "id": "44c3d55c24475a6459b19b5879e3936a",
+        "value": {
+          "auth": {
+            "client_id": "ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "issuer": "https://login.research.example",
+            "resource": "https://mcp.research.example/mcp",
+            "scheme": "oauth",
+            "scopes": [
+              "mcp.read",
+              "mcp.tools"
+            ]
+          },
+          "device": null,
+          "egress": [
+            "login.research.example",
+            "mcp.research.example"
+          ],
+          "endpoint": "https://mcp.research.example/mcp",
+          "flow": "phi",
+          "id": "44c3d55c24475a6459b19b5879e3936a",
+          "kind": "mcp-http",
+          "local": false,
+          "name": "First",
+          "tools": [
+            {
+              "hash": "sha256:1aecae58d08399ba76c51a7afc6edf0ff623c4d70361d2a3e663bdfae1cc1c18",
+              "name": "lookup"
+            },
+            {
+              "hash": "sha256:41d37c1c5cedfce12f33f4cc50530377f785608c079d306466f72d0f5f45f00b",
+              "name": "search"
+            }
+          ],
+          "v": 1
+        }
+      },
+      "kind": "connection_record",
+      "name": "record_client_id_1025"
+    },
+    {
+      "expect": {
+        "ok": {
           "digest": "sha256:46c053f9d2e7492e38fb5ffac1ef223a0f31fd20309ceef6ebf334af7e846818",
           "reason": "connection.record_unsupported",
           "server": "c44c3d55c",
@@ -5787,7 +6320,7 @@
           "id": "44c3d55c24475a6459b19b5879e3936a",
           "kind": "mcp-http",
           "local": false,
-          "name": "First‮roc",
+          "name": "First\u202eroc",
           "tools": [
             {
               "hash": "sha256:1aecae58d08399ba76c51a7afc6edf0ff623c4d70361d2a3e663bdfae1cc1c18",
@@ -9908,6 +10441,634 @@
       },
       "kind": "connection_fold",
       "name": "fold_removed_approval_superseded"
+    },
+    {
+      "expect": {
+        "ok": {
+          "connections": [],
+          "ignored": {
+            "sha256:77e5fbe6aa2dca091333f8dfb2265ed10007b300eabc2c9b036f3fd2603986d2": "connection.consent_unknown_device"
+          },
+          "removed_approvals": []
+        }
+      },
+      "input": {
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "consent": {
+                "clock": {
+                  "ms": 1794445200000,
+                  "n": 0
+                },
+                "device": "sha256:db19eadb01c5419897d86eba86016afe5cb56a5720ff232b742bf17303ec132a",
+                "digest": "sha256:904de894fd3edea10f6cbeb5ecfcc2047773e3cb4985cb32d4b105dd0018b36b",
+                "kind": "connection",
+                "sig": "C61Ywjy7brm62aBJJSPCkN2gefJidxyVPeFGFULHbZIcEc1IsF48t8hhSsULDSiM0cv78ki2Iq-rO_sm12LBQA",
+                "v": 1
+              },
+              "key": "connection/44c3d55c24475a6459b19b5879e3936a",
+              "value": {
+                "auth": {
+                  "client_id": null,
+                  "issuer": "https://login.research.example",
+                  "resource": "https://mcp.research.example/mcp",
+                  "scheme": "oauth",
+                  "scopes": [
+                    "mcp.read",
+                    "mcp.tools"
+                  ]
+                },
+                "device": null,
+                "egress": [
+                  "login.research.example",
+                  "mcp.research.example"
+                ],
+                "endpoint": "https://mcp.research.example/mcp",
+                "flow": "phi",
+                "id": "44c3d55c24475a6459b19b5879e3936a",
+                "kind": "mcp-http",
+                "local": false,
+                "name": "First",
+                "tools": [
+                  {
+                    "hash": "sha256:1aecae58d08399ba76c51a7afc6edf0ff623c4d70361d2a3e663bdfae1cc1c18",
+                    "name": "lookup"
+                  },
+                  {
+                    "hash": "sha256:41d37c1c5cedfce12f33f4cc50530377f785608c079d306466f72d0f5f45f00b",
+                    "name": "search"
+                  }
+                ],
+                "v": 1
+              }
+            },
+            "clock": {
+              "ms": 1794445200000,
+              "n": 0
+            },
+            "feed": "99fBC94IcLLi-ZnO2ZP7JJLOUhMVp9jOD1KaVWNSmo0",
+            "id": "sha256:77e5fbe6aa2dca091333f8dfb2265ed10007b300eabc2c9b036f3fd2603986d2",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "scope": "mesh",
+            "seq": 1,
+            "type": "settings.set"
+          }
+        ],
+        "legacy_servers": [],
+        "members": {
+          "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
+            "feeds": [
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+            ],
+            "kind": "pocket",
+            "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
+          },
+          "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c": {
+            "feeds": [
+              "98dbF54AHip3sZoiSvNc6YZDqglrC4XbULQOJNYyqHQ"
+            ],
+            "kind": "desktop",
+            "presence": "BCp9Kf0eZjRdqdF0vzbv833DVCUwjrnRdn6MDc_QCVtwigBiz78fP24SXkgK0azaXzJa3bZkoAjPetPi-nr2grs"
+          },
+          "sha256:8d212a14e09d4a6e7ac7e0d385dc0c9f363ac57a18f64109675bb39c7e5f88f9": {
+            "feeds": [
+              "45KOxSlVwiUodt6U_ZM-aYYzteGs0VTgXOnJQ27pdPU"
+            ],
+            "kind": "node",
+            "presence": "BEAKyJY7J3JY_3vMcQ58o63lEsmdA7IAV-c_XrsWzM7Tpdj7vnIbZIBNd7fopgvqTN6H3tHBQa821Hj64wxlwos"
+          },
+          "sha256:f3ea926c04008300e4d818ebaef633712b6cd1e0f587f7fcb6052456df08ac7d": {
+            "feeds": [
+              "cHdw1QEbPLkXLxrQM6AZ4P_j8fPIyMvqNNLBBkGXYLg"
+            ],
+            "kind": "satellite",
+            "presence": "BP_xjnS1bz0DPi3k12txbWPE2gUuvQNiml6l7O7MmTQLa72PJXVfJJIVUGO2d1tAXfzehVHSzDGpLRUCetv-53Y"
+          }
+        },
+        "removed": {
+          "sha256:db19eadb01c5419897d86eba86016afe5cb56a5720ff232b742bf17303ec132a": {
+            "feeds": [
+              "99fBC94IcLLi-ZnO2ZP7JJLOUhMVp9jOD1KaVWNSmo0"
+            ],
+            "kind": "desktop",
+            "presence": "BAiTDiaaFHLbVlx9088R2l__FANlP86UWwd_5SHtH8O6Xb6b3GKYZqnoMzULos9Omq28R_dLfWyHBve749R13nI"
+          }
+        }
+      },
+      "kind": "connection_fold",
+      "name": "fold_removed_approval_with_bad_signature_not_listed"
+    },
+    {
+      "expect": {
+        "ok": {
+          "connections": [],
+          "ignored": {
+            "sha256:635ce83958e6ad815453771c89b1ae0beb8995e29622c15c804e3ccad3debdad": "connection.consent_unknown_device"
+          },
+          "removed_approvals": []
+        }
+      },
+      "input": {
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "consent": {
+                "clock": {
+                  "ms": 1794444599999,
+                  "n": 0
+                },
+                "device": "sha256:db19eadb01c5419897d86eba86016afe5cb56a5720ff232b742bf17303ec132a",
+                "digest": "sha256:904de894fd3edea10f6cbeb5ecfcc2047773e3cb4985cb32d4b105dd0018b36b",
+                "kind": "connection",
+                "sig": "LxcA8ATCqatDZ2FNrXj66zwXg9CfLT7XK4T6Xi7HbWEnDo0GeBykRwIGGTLoTPoILoNDlsdmiaMSqRHcxEfQMQ",
+                "v": 1
+              },
+              "key": "connection/44c3d55c24475a6459b19b5879e3936a",
+              "value": {
+                "auth": {
+                  "client_id": null,
+                  "issuer": "https://login.research.example",
+                  "resource": "https://mcp.research.example/mcp",
+                  "scheme": "oauth",
+                  "scopes": [
+                    "mcp.read",
+                    "mcp.tools"
+                  ]
+                },
+                "device": null,
+                "egress": [
+                  "login.research.example",
+                  "mcp.research.example"
+                ],
+                "endpoint": "https://mcp.research.example/mcp",
+                "flow": "phi",
+                "id": "44c3d55c24475a6459b19b5879e3936a",
+                "kind": "mcp-http",
+                "local": false,
+                "name": "First",
+                "tools": [
+                  {
+                    "hash": "sha256:1aecae58d08399ba76c51a7afc6edf0ff623c4d70361d2a3e663bdfae1cc1c18",
+                    "name": "lookup"
+                  },
+                  {
+                    "hash": "sha256:41d37c1c5cedfce12f33f4cc50530377f785608c079d306466f72d0f5f45f00b",
+                    "name": "search"
+                  }
+                ],
+                "v": 1
+              }
+            },
+            "clock": {
+              "ms": 1794445200000,
+              "n": 0
+            },
+            "feed": "99fBC94IcLLi-ZnO2ZP7JJLOUhMVp9jOD1KaVWNSmo0",
+            "id": "sha256:635ce83958e6ad815453771c89b1ae0beb8995e29622c15c804e3ccad3debdad",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "scope": "mesh",
+            "seq": 1,
+            "type": "settings.set"
+          }
+        ],
+        "legacy_servers": [],
+        "members": {
+          "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
+            "feeds": [
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+            ],
+            "kind": "pocket",
+            "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
+          },
+          "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c": {
+            "feeds": [
+              "98dbF54AHip3sZoiSvNc6YZDqglrC4XbULQOJNYyqHQ"
+            ],
+            "kind": "desktop",
+            "presence": "BCp9Kf0eZjRdqdF0vzbv833DVCUwjrnRdn6MDc_QCVtwigBiz78fP24SXkgK0azaXzJa3bZkoAjPetPi-nr2grs"
+          },
+          "sha256:8d212a14e09d4a6e7ac7e0d385dc0c9f363ac57a18f64109675bb39c7e5f88f9": {
+            "feeds": [
+              "45KOxSlVwiUodt6U_ZM-aYYzteGs0VTgXOnJQ27pdPU"
+            ],
+            "kind": "node",
+            "presence": "BEAKyJY7J3JY_3vMcQ58o63lEsmdA7IAV-c_XrsWzM7Tpdj7vnIbZIBNd7fopgvqTN6H3tHBQa821Hj64wxlwos"
+          },
+          "sha256:f3ea926c04008300e4d818ebaef633712b6cd1e0f587f7fcb6052456df08ac7d": {
+            "feeds": [
+              "cHdw1QEbPLkXLxrQM6AZ4P_j8fPIyMvqNNLBBkGXYLg"
+            ],
+            "kind": "satellite",
+            "presence": "BP_xjnS1bz0DPi3k12txbWPE2gUuvQNiml6l7O7MmTQLa72PJXVfJJIVUGO2d1tAXfzehVHSzDGpLRUCetv-53Y"
+          }
+        },
+        "removed": {
+          "sha256:db19eadb01c5419897d86eba86016afe5cb56a5720ff232b742bf17303ec132a": {
+            "feeds": [
+              "99fBC94IcLLi-ZnO2ZP7JJLOUhMVp9jOD1KaVWNSmo0"
+            ],
+            "kind": "desktop",
+            "presence": "BAiTDiaaFHLbVlx9088R2l__FANlP86UWwd_5SHtH8O6Xb6b3GKYZqnoMzULos9Omq28R_dLfWyHBve749R13nI"
+          }
+        }
+      },
+      "kind": "connection_fold",
+      "name": "fold_removed_approval_outside_the_window_not_listed"
+    },
+    {
+      "expect": {
+        "ok": {
+          "connections": [],
+          "ignored": {
+            "sha256:33919608464444ba414f177b142210d848c245039d36a12ae195587679181181": "connection.consent_unknown_device"
+          },
+          "removed_approvals": []
+        }
+      },
+      "input": {
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "consent": {
+                "clock": {
+                  "ms": 1794445199000,
+                  "n": 0
+                },
+                "device": "sha256:db19eadb01c5419897d86eba86016afe5cb56a5720ff232b742bf17303ec132a",
+                "digest": "sha256:904de894fd3edea10f6cbeb5ecfcc2047773e3cb4985cb32d4b105dd0018b36b",
+                "kind": "connection",
+                "sig": "dx5LJpXtjbShoo5iHZvKrV1Qxvu4TwtWxrCjz9d9lcou_mrsbD6Fv4YdK53XsSOqNKJPUhEtHij0Eu7v7XCucQ",
+                "v": 1
+              },
+              "key": "connection/44c3d55c24475a6459b19b5879e3936a",
+              "value": {
+                "auth": {
+                  "client_id": null,
+                  "issuer": "https://login.research.example",
+                  "resource": "https://mcp.research.example/mcp",
+                  "scheme": "oauth",
+                  "scopes": [
+                    "mcp.read",
+                    "mcp.tools"
+                  ]
+                },
+                "device": null,
+                "egress": [
+                  "login.research.example",
+                  "mcp.research.example"
+                ],
+                "endpoint": "https://mcp.research.example/mcp",
+                "flow": "phi",
+                "id": "44c3d55c24475a6459b19b5879e3936a",
+                "kind": "mcp-http",
+                "local": false,
+                "name": "First",
+                "tools": [
+                  {
+                    "hash": "sha256:1aecae58d08399ba76c51a7afc6edf0ff623c4d70361d2a3e663bdfae1cc1c18",
+                    "name": "lookup"
+                  },
+                  {
+                    "hash": "sha256:41d37c1c5cedfce12f33f4cc50530377f785608c079d306466f72d0f5f45f00b",
+                    "name": "search"
+                  }
+                ],
+                "v": 1
+              }
+            },
+            "clock": {
+              "ms": 1794445200000,
+              "n": 0
+            },
+            "feed": "99fBC94IcLLi-ZnO2ZP7JJLOUhMVp9jOD1KaVWNSmo0",
+            "id": "sha256:33919608464444ba414f177b142210d848c245039d36a12ae195587679181181",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "scope": "mesh",
+            "seq": 1,
+            "type": "settings.set"
+          },
+          {
+            "after": [],
+            "body": {
+              "key": "connection/44c3d55c24475a6459b19b5879e3936a",
+              "value": null
+            },
+            "clock": {
+              "ms": 1794445320000,
+              "n": 0
+            },
+            "feed": "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+            "id": "sha256:7e9afca8776c9a079787c4b9b5f231e1a2c4e0586d223977aecc71e225e72c90",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "scope": "mesh",
+            "seq": 1,
+            "type": "settings.set"
+          }
+        ],
+        "legacy_servers": [],
+        "members": {
+          "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
+            "feeds": [
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+            ],
+            "kind": "pocket",
+            "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
+          },
+          "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c": {
+            "feeds": [
+              "98dbF54AHip3sZoiSvNc6YZDqglrC4XbULQOJNYyqHQ"
+            ],
+            "kind": "desktop",
+            "presence": "BCp9Kf0eZjRdqdF0vzbv833DVCUwjrnRdn6MDc_QCVtwigBiz78fP24SXkgK0azaXzJa3bZkoAjPetPi-nr2grs"
+          },
+          "sha256:8d212a14e09d4a6e7ac7e0d385dc0c9f363ac57a18f64109675bb39c7e5f88f9": {
+            "feeds": [
+              "45KOxSlVwiUodt6U_ZM-aYYzteGs0VTgXOnJQ27pdPU"
+            ],
+            "kind": "node",
+            "presence": "BEAKyJY7J3JY_3vMcQ58o63lEsmdA7IAV-c_XrsWzM7Tpdj7vnIbZIBNd7fopgvqTN6H3tHBQa821Hj64wxlwos"
+          },
+          "sha256:f3ea926c04008300e4d818ebaef633712b6cd1e0f587f7fcb6052456df08ac7d": {
+            "feeds": [
+              "cHdw1QEbPLkXLxrQM6AZ4P_j8fPIyMvqNNLBBkGXYLg"
+            ],
+            "kind": "satellite",
+            "presence": "BP_xjnS1bz0DPi3k12txbWPE2gUuvQNiml6l7O7MmTQLa72PJXVfJJIVUGO2d1tAXfzehVHSzDGpLRUCetv-53Y"
+          }
+        },
+        "removed": {
+          "sha256:db19eadb01c5419897d86eba86016afe5cb56a5720ff232b742bf17303ec132a": {
+            "feeds": [
+              "99fBC94IcLLi-ZnO2ZP7JJLOUhMVp9jOD1KaVWNSmo0"
+            ],
+            "kind": "desktop",
+            "presence": "BAiTDiaaFHLbVlx9088R2l__FANlP86UWwd_5SHtH8O6Xb6b3GKYZqnoMzULos9Omq28R_dLfWyHBve749R13nI"
+          }
+        }
+      },
+      "kind": "connection_fold",
+      "name": "fold_removed_approval_before_a_remove_not_listed"
+    },
+    {
+      "expect": {
+        "ok": {
+          "connections": [],
+          "ignored": {
+            "sha256:00d3a9326559c75ae24f592d0dfc6c642547670dc80619682a85e9258c85dc5d": "connection.consent_unknown_device"
+          },
+          "removed_approvals": [
+            {
+              "device": "sha256:db19eadb01c5419897d86eba86016afe5cb56a5720ff232b742bf17303ec132a",
+              "event": "sha256:00d3a9326559c75ae24f592d0dfc6c642547670dc80619682a85e9258c85dc5d",
+              "id": "44c3d55c24475a6459b19b5879e3936a",
+              "record": {
+                "auth": {
+                  "client_id": null,
+                  "issuer": "https://login.research.example",
+                  "resource": "https://mcp.research.example/mcp",
+                  "scheme": "oauth",
+                  "scopes": [
+                    "mcp.read",
+                    "mcp.tools"
+                  ]
+                },
+                "device": null,
+                "egress": [
+                  "login.research.example",
+                  "mcp.research.example"
+                ],
+                "endpoint": "https://mcp.research.example/mcp",
+                "flow": "phi",
+                "id": "44c3d55c24475a6459b19b5879e3936a",
+                "kind": "mcp-http",
+                "local": false,
+                "name": "Second",
+                "tools": [
+                  {
+                    "hash": "sha256:1aecae58d08399ba76c51a7afc6edf0ff623c4d70361d2a3e663bdfae1cc1c18",
+                    "name": "lookup"
+                  },
+                  {
+                    "hash": "sha256:41d37c1c5cedfce12f33f4cc50530377f785608c079d306466f72d0f5f45f00b",
+                    "name": "search"
+                  }
+                ],
+                "v": 1
+              }
+            }
+          ]
+        }
+      },
+      "input": {
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "consent": {
+                "clock": {
+                  "ms": 1794445199000,
+                  "n": 0
+                },
+                "device": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+                "digest": "sha256:904de894fd3edea10f6cbeb5ecfcc2047773e3cb4985cb32d4b105dd0018b36b",
+                "kind": "connection",
+                "sig": "XjvPh96IsyyMLIzDEw4PtxYOT-MI0xEgDr2uv1vflQ87U3KTJrfiqDiAtWHS5v8QzDjh4kauHCWCEtettEjc0w",
+                "v": 1
+              },
+              "key": "connection/44c3d55c24475a6459b19b5879e3936a",
+              "value": {
+                "auth": {
+                  "client_id": null,
+                  "issuer": "https://login.research.example",
+                  "resource": "https://mcp.research.example/mcp",
+                  "scheme": "oauth",
+                  "scopes": [
+                    "mcp.read",
+                    "mcp.tools"
+                  ]
+                },
+                "device": null,
+                "egress": [
+                  "login.research.example",
+                  "mcp.research.example"
+                ],
+                "endpoint": "https://mcp.research.example/mcp",
+                "flow": "phi",
+                "id": "44c3d55c24475a6459b19b5879e3936a",
+                "kind": "mcp-http",
+                "local": false,
+                "name": "First",
+                "tools": [
+                  {
+                    "hash": "sha256:1aecae58d08399ba76c51a7afc6edf0ff623c4d70361d2a3e663bdfae1cc1c18",
+                    "name": "lookup"
+                  },
+                  {
+                    "hash": "sha256:41d37c1c5cedfce12f33f4cc50530377f785608c079d306466f72d0f5f45f00b",
+                    "name": "search"
+                  }
+                ],
+                "v": 1
+              }
+            },
+            "clock": {
+              "ms": 1794445200000,
+              "n": 0
+            },
+            "feed": "98dbF54AHip3sZoiSvNc6YZDqglrC4XbULQOJNYyqHQ",
+            "id": "sha256:2ac85fd99696c664c787a9e7b1d284c8677119bd0246d6173e44b490d10f03c9",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "scope": "mesh",
+            "seq": 1,
+            "type": "settings.set"
+          },
+          {
+            "after": [],
+            "body": {
+              "key": "connection/44c3d55c24475a6459b19b5879e3936a",
+              "value": null
+            },
+            "clock": {
+              "ms": 1794445320000,
+              "n": 0
+            },
+            "feed": "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+            "id": "sha256:0d85f7c0a0ab842213a0de494571864893c9fe8b6e7964fd9894f828b4f282da",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "scope": "mesh",
+            "seq": 1,
+            "type": "settings.set"
+          },
+          {
+            "after": [],
+            "body": {
+              "consent": {
+                "clock": {
+                  "ms": 1794445379000,
+                  "n": 0
+                },
+                "device": "sha256:db19eadb01c5419897d86eba86016afe5cb56a5720ff232b742bf17303ec132a",
+                "digest": "sha256:c8ab8eac2bdfb7bfea5c41cbb2007a57e48a6363adee8fc47a05b5ba9ca92ce4",
+                "kind": "connection",
+                "sig": "Bzg42mbSfnC28cJJIKtOraeSVYkup8cNE1qRkC4iSBFppB_a-qYUfYGg4Uw6ptvTiHryyC5aPD5P82U6K4zwQg",
+                "v": 1
+              },
+              "key": "connection/44c3d55c24475a6459b19b5879e3936a",
+              "value": {
+                "auth": {
+                  "client_id": null,
+                  "issuer": "https://login.research.example",
+                  "resource": "https://mcp.research.example/mcp",
+                  "scheme": "oauth",
+                  "scopes": [
+                    "mcp.read",
+                    "mcp.tools"
+                  ]
+                },
+                "device": null,
+                "egress": [
+                  "login.research.example",
+                  "mcp.research.example"
+                ],
+                "endpoint": "https://mcp.research.example/mcp",
+                "flow": "phi",
+                "id": "44c3d55c24475a6459b19b5879e3936a",
+                "kind": "mcp-http",
+                "local": false,
+                "name": "Second",
+                "tools": [
+                  {
+                    "hash": "sha256:1aecae58d08399ba76c51a7afc6edf0ff623c4d70361d2a3e663bdfae1cc1c18",
+                    "name": "lookup"
+                  },
+                  {
+                    "hash": "sha256:41d37c1c5cedfce12f33f4cc50530377f785608c079d306466f72d0f5f45f00b",
+                    "name": "search"
+                  }
+                ],
+                "v": 1
+              }
+            },
+            "clock": {
+              "ms": 1794445380000,
+              "n": 0
+            },
+            "feed": "99fBC94IcLLi-ZnO2ZP7JJLOUhMVp9jOD1KaVWNSmo0",
+            "id": "sha256:00d3a9326559c75ae24f592d0dfc6c642547670dc80619682a85e9258c85dc5d",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "scope": "mesh",
+            "seq": 1,
+            "type": "settings.set"
+          }
+        ],
+        "legacy_servers": [],
+        "members": {
+          "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
+            "feeds": [
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+            ],
+            "kind": "pocket",
+            "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
+          },
+          "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c": {
+            "feeds": [
+              "98dbF54AHip3sZoiSvNc6YZDqglrC4XbULQOJNYyqHQ"
+            ],
+            "kind": "desktop",
+            "presence": "BCp9Kf0eZjRdqdF0vzbv833DVCUwjrnRdn6MDc_QCVtwigBiz78fP24SXkgK0azaXzJa3bZkoAjPetPi-nr2grs"
+          },
+          "sha256:8d212a14e09d4a6e7ac7e0d385dc0c9f363ac57a18f64109675bb39c7e5f88f9": {
+            "feeds": [
+              "45KOxSlVwiUodt6U_ZM-aYYzteGs0VTgXOnJQ27pdPU"
+            ],
+            "kind": "node",
+            "presence": "BEAKyJY7J3JY_3vMcQ58o63lEsmdA7IAV-c_XrsWzM7Tpdj7vnIbZIBNd7fopgvqTN6H3tHBQa821Hj64wxlwos"
+          },
+          "sha256:f3ea926c04008300e4d818ebaef633712b6cd1e0f587f7fcb6052456df08ac7d": {
+            "feeds": [
+              "cHdw1QEbPLkXLxrQM6AZ4P_j8fPIyMvqNNLBBkGXYLg"
+            ],
+            "kind": "satellite",
+            "presence": "BP_xjnS1bz0DPi3k12txbWPE2gUuvQNiml6l7O7MmTQLa72PJXVfJJIVUGO2d1tAXfzehVHSzDGpLRUCetv-53Y"
+          }
+        },
+        "removed": {
+          "sha256:db19eadb01c5419897d86eba86016afe5cb56a5720ff232b742bf17303ec132a": {
+            "feeds": [
+              "99fBC94IcLLi-ZnO2ZP7JJLOUhMVp9jOD1KaVWNSmo0"
+            ],
+            "kind": "desktop",
+            "presence": "BAiTDiaaFHLbVlx9088R2l__FANlP86UWwd_5SHtH8O6Xb6b3GKYZqnoMzULos9Omq28R_dLfWyHBve749R13nI"
+          }
+        }
+      },
+      "kind": "connection_fold",
+      "name": "fold_removed_approval_after_a_remove_listed"
     },
     {
       "expect": {
@@ -17867,7 +19028,7 @@
         }
       },
       "input": {
-        "name": "Café Ñandú"
+        "name": "Caf\u00e9 \u00d1and\u00fa"
       },
       "kind": "connection_ask_slug",
       "name": "slug_non_ascii"
@@ -17927,7 +19088,7 @@
         }
       },
       "input": {
-        "name": "日本語"
+        "name": "\u65e5\u672c\u8a9e"
       },
       "kind": "connection_ask_slug",
       "name": "slug_non_ascii_only"

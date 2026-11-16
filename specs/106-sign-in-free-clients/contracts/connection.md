@@ -141,7 +141,7 @@ The kernel draws the presence prompt from the record and never from model output
 
 ## 6. Fold
 
-The fold is a pure function of the events, the same on every peer. It does not depend on the device that computes it.
+The winner of each id, `ignored`, `removed_approvals` and `states` are a pure function of the events and the roster, the same on every peer. `status` and `reason` also depend on the kinds and schemes the reader implements and on the device's own legacy server names.
 
 | Input | Meaning |
 |---|---|
@@ -204,7 +204,7 @@ A remove or a state written by a device that was later removed is `connection.wr
 
 `connections` and `removed_approvals` are sorted by id. `status` is `ok` or `unsupported`, and `reason` is null or a code of section 3.5. `states` maps each device id to its latest valid state.
 
-Inside turns the server id of a connection is `c` and the first 8 hex digits of its id. Two connections can share it when two devices create them at once. Among listed connections the lowest full id keeps the server id, and every later one is listed unsupported with `connection.server_id_collision`. A legacy server whose name equals a server id keeps the name, and the connection is listed the same way. Every listed connection takes part, whatever its status, so all readers agree on who holds a name. The kernel draws a new id at creation when the server id is already taken, and refuses a new legacy server name of the form `c` and 8 hex digits.
+Inside turns the server id of a connection is `c` and the first 8 hex digits of its id. Two connections can share it when two devices create them at once. Among listed connections the lowest full id keeps the server id, and every later one is listed unsupported with `connection.server_id_collision`. A legacy server whose name equals a server id keeps the name, and the connection is listed the same way. Every listed connection takes part, whatever its status, so two readers with the same legacy server names agree on who holds a name. The kernel draws a new id at creation when the server id is already taken, and refuses a new legacy server name of the form `c` and 8 hex digits.
 
 ## 7. Use on a device
 
@@ -368,9 +368,9 @@ Groups of cases:
 | Group | Cases |
 |---|---|
 | Keys | `key_*`, each form, the lookalikes that are not reserved and each malformed form |
-| Record | `record_*`, every field rule, the size limit at 32768 and 32769 bytes, the limits at and one past 80, 128, 32 and 16, the unsupported reasons and `record_order_*` for their order |
+| Record | `record_*`, every field rule, and each limit at and one past its value: 32768 bytes, a name of 80, 128 tools, a tool name of 128, 32 scopes, a scope of 256, a `client_id` of 1024, 16 egress entries, a URL of 2048, port 65535, a host of 253 and a label of 63. Also the unsupported reasons and `record_order_*` for their order |
 | State | `state_*`, every state and reason, `tools` placement and limits |
-| Put | valid, node consent, a malformed consent object, the window at 600000 and 600001 ms before and 0 and 1 ms after, wrong digest and kind, tampered and high-S signatures, re-carried values on another member's feed and on the node's feed, removed and unknown consenting devices, a forged removed approval, and `fold_order_*` for each adjacent pair of section 6.1 that can fail together |
+| Put | valid, node consent, a malformed consent object, the window at 600000 and 600001 ms before and 0 and 1 ms after, wrong digest and kind, tampered and high-S signatures, re-carried values on another member's feed and on the node's feed, removed and unknown consenting devices, a forged removed approval, removed approvals with a bad signature, outside the window, before a remove and after one, and `fold_order_*` for each adjacent pair of section 6.1 that can fail together |
 | Remove | without consent, by the node, by a removed device, with a consent field, and a put after a removal |
 | Winner | a later put, a later invalid put, an equal clock broken by feed, an equal millisecond broken by the counter, and arrival order |
 | State fold | own device, another device, a removed member, the latest state, a later unreadable state, several devices, tools from a node, and a state for an unlisted connection |

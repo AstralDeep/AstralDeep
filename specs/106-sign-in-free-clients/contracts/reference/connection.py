@@ -47,6 +47,7 @@ STATES = ("not_signed_in", "signed_in", "needs_attention")
 REASONS = ("refresh_refused", "expired", "scope", "refused")
 LOOPBACK = ("127.0.0.1", "[::1]")
 DEFAULT_PORT = {"https": 443, "http": 80}
+MAX_PORT = 65535
 EGRESS_DEFAULT_PORT = 443
 RECORD_FIELDS = {
     "v",
@@ -152,16 +153,17 @@ def dns_host(host: str) -> bool:
     )
 
 
+def port_number(text: str) -> int | None:
+    return int(text) if PORT.fullmatch(text) and int(text) <= MAX_PORT else None
+
+
 def _port(text: str | None, scheme: str) -> int | None:
     if text is None:
         return None
-    if (
-        not PORT.fullmatch(text)
-        or int(text) > 65535
-        or int(text) == DEFAULT_PORT[scheme]
-    ):
+    number = port_number(text)
+    if number is None or number == DEFAULT_PORT[scheme]:
         raise ValueError("port")
-    return int(text)
+    return number
 
 
 def path_ok(path: str, trailing_slash: bool) -> bool:
@@ -235,13 +237,10 @@ def parse_entry(entry: Any, local: bool) -> tuple[str, int] | None:
         return None
     if port_text is None:
         return host, EGRESS_DEFAULT_PORT
-    if (
-        not PORT.fullmatch(port_text)
-        or int(port_text) > 65535
-        or int(port_text) == EGRESS_DEFAULT_PORT
-    ):
+    number = port_number(port_text)
+    if number is None or number == EGRESS_DEFAULT_PORT:
         return None
-    return host, int(port_text)
+    return host, number
 
 
 def exec_host(entry: str) -> dict[str, Any]:

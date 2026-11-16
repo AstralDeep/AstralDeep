@@ -221,7 +221,7 @@
         }
       },
       "input": {
-        "header": "Bearer scope=\"é\""
+        "header": "Bearer scope=\"\u00e9\""
       },
       "kind": "oauth_challenge",
       "name": "challenge_non_ascii"
