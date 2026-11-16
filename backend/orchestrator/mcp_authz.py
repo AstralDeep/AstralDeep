@@ -1,6 +1,6 @@
 """MCP-only OAuth resource-server boundary, kept separate from the web/native bearer
 dependency since MCP tokens carry a distinct audience and scope set; the inbound
-bearer is discarded after validation. Used by mcp_server_endpoint.py.
+bearer is discarded after validation and refused unread on a personal node. Used by mcp_server_endpoint.py.
 """
 
 from __future__ import annotations
@@ -13,6 +13,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 from jose import jwt as jose_jwt
 
+from orchestrator.auth import NODE_BEARER_REFUSED
+from shared import node_identity
 from shared.jwks_cache import get_jwks
 
 
@@ -154,6 +156,7 @@ def bearer_from_headers(
 
 
 async def decode_mcp_token(token: str) -> dict[str, Any]:
+    refuse_on_personal_node(())
     if os.getenv("USE_MOCK_AUTH", "").strip().lower() == "true":
         # Separate from the web dev-token; keep audiences apart
         if token != "dev-mcp-token":
@@ -183,11 +186,13 @@ async def decode_mcp_token(token: str) -> dict[str, Any]:
     )
     if not isinstance(payload, dict) or not payload.get("sub"):
         raise ValueError("MCP token has no subject")
-    from shared import node_identity
-
     payload["sub"] = node_identity.canonical_owner_id(authority, payload["sub"])
-    node_identity.enforce_owner(payload["sub"])
     return payload
+
+
+def refuse_on_personal_node(required_scopes: Iterable[str]) -> None:
+    if node_identity.is_personal():
+        raise MCPAuthError(401, NODE_BEARER_REFUSED, "this node refuses bearer tokens", tuple(required_scopes))
 
 
 def require_mcp_entry_role(
@@ -211,6 +216,7 @@ async def authorize_mcp_request(
     resolve_framework_bearer: Optional[Callable[[str], Any]] = None,
 ) -> dict[str, Any]:
     required = tuple(required_scopes)
+    refuse_on_personal_node(required)
     token = bearer_from_headers(
         headers,
         query_params,

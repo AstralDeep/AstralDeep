@@ -11,7 +11,7 @@ from functools import wraps
 from uuid import UUID
 
 from audit.repository import AuditRepository
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 from llm_config.user_store import UserLLMConfigStore
@@ -213,7 +213,9 @@ class WorkAdmissionRoute(APIRoute):
                     {"error": error.code if known else "work_submit_unavailable"},
                     error.status_code if known else 503,
                 )
-            except Exception:
+            except Exception as error:
+                if isinstance(error, HTTPException) and error.status_code in {401, 403}:
+                    return _json({"error": "work_authentication_required"}, 401)
                 return _json({"error": "work_submit_unavailable"}, 503)
 
         return safe
