@@ -1,7 +1,8 @@
-"""Covers orchestrator/node_api.py: the public descriptor and JWKS, and the personal-profile gate on the node surface. test_node_mesh_offer.py covers the loopback pairing offer."""
+"""Covers orchestrator/node_api.py: the public v2 descriptor with a hash of the mesh owner and no accepted issuers, the JWKS, and the personal-profile gate on the node surface. test_node_mesh_offer.py covers the loopback pairing offer."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 from types import SimpleNamespace
 
@@ -11,8 +12,11 @@ from httpx import ASGITransport, AsyncClient
 
 from orchestrator import node_api
 from shared import node_identity as ni
+from tests.helpers.owner_file import seed_owner
 
-OWNER = "oidc.0123456789abcdef.owner-1"
+MESH = "sha256:" + "4" * 64
+STORED = "mesh." + "4" * 64
+LEGACY = "oidc.0123456789abcdef.owner-1"
 
 
 @pytest.fixture
@@ -42,19 +46,49 @@ async def test_descriptor_is_public_and_describes_the_node(env):
     assert response.headers["cache-control"] == "no-store"
     assert body["node_id"] == identity.node_id
     assert body["node_key"] == identity.public_jwk()
-    assert body["accepted_issuers"] == ["https://idp.example/realms/a"]
+    assert body["format"] == "astral.node.descriptor/v2"
+    assert "accepted_issuers" not in body and "idp.example" not in json.dumps(body)
     assert body["owner_hash"] is None
     assert body["transport_addresses"] == []
     assert "mesh-pairing" in body["capabilities"]
     assert "d" not in body["node_key"]
 
 
-async def test_descriptor_carries_only_a_hash_of_the_bound_owner(env):
-    ni.bind_owner(OWNER)
+@pytest.mark.parametrize("binding", ["bound", "wire_file", "env_wire", "env_stored"])
+async def test_descriptor_carries_only_a_hash_of_the_bound_mesh_id(env, binding):
+    if binding == "bound":
+        ni.bind_mesh_owner(MESH)
+    elif binding == "wire_file":
+        seed_owner(MESH)
+    else:
+        env.monkeypatch.setenv(ni.OWNER_ENV, MESH if binding == "env_wire" else STORED)
     async with client(env) as http:
         body = (await http.get("/api/node/descriptor")).json()
-    assert body["owner_hash"] == ni.owner_principal_hash(OWNER)
-    assert OWNER not in json.dumps(body)
+    assert body["owner_hash"] == ni.owner_principal_hash(MESH) == "sha256:" + hashlib.sha256(MESH.encode()).hexdigest()
+    assert MESH not in json.dumps(body) and STORED not in json.dumps(body)
+
+
+@pytest.mark.parametrize("source", ["file", "env"])
+async def test_a_legacy_owner_is_neither_hashed_nor_shown(env, source):
+    if source == "file":
+        stored = seed_owner(LEGACY)
+    else:
+        env.monkeypatch.setenv(ni.OWNER_ENV, LEGACY)
+    async with client(env) as http:
+        response = await http.get("/api/node/descriptor")
+    assert response.status_code == 200
+    assert response.json()["owner_hash"] is None and LEGACY not in response.text
+    if source == "file":
+        assert (ni.data_dir() / ni.OWNER_FILE).read_bytes() == stored
+
+
+async def test_an_unreadable_owner_binding_is_reported_not_hidden(env):
+    ni.data_dir().mkdir(parents=True)
+    (ni.data_dir() / ni.OWNER_FILE).write_text("")
+    async with client(env) as http:
+        response = await http.get("/api/node/descriptor")
+    assert (response.status_code, response.json()) == (503, {"detail": "node.owner_binding_unavailable"})
+    assert response.headers["cache-control"] == "no-store"
 
 
 async def test_node_surface_is_absent_outside_the_personal_profile(env):

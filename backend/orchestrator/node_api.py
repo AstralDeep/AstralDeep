@@ -1,5 +1,5 @@
-"""REST surface of a personal node: the public descriptor, the node's JWKS, and the loopback pairing offer that only a holder of the node's pairing secret can read.
-The offer comes from node_mesh.py, which owns the secret file, and the owner approves it on an existing mesh device.
+"""REST surface of a personal node: the public v2 descriptor, which names no identity server and carries only a hash of the owner's mesh id, the node's JWKS, and the loopback pairing offer that only a holder of the node's pairing secret can read.
+The offer comes from node_mesh.py, which owns the secret file, the owner approves it on an existing mesh device, and institution_api.py keeps the v1 descriptor.
 """
 
 from __future__ import annotations
@@ -15,7 +15,8 @@ from shared import node_identity
 
 node_router = APIRouter(tags=["Node"])
 
-DESCRIPTOR_FORMAT = "astral.node.descriptor/v1"
+DESCRIPTOR_FORMAT = "astral.node.descriptor/v2"
+INSTITUTION_DESCRIPTOR_FORMAT = "astral.node.descriptor/v1"
 NODE_VERSION = "astral.node/v1"
 CAPABILITIES = (
     "chat",
@@ -38,18 +39,28 @@ def _require_node() -> node_identity.NodeIdentity:
         raise HTTPException(503, "node_key_unavailable") from exc
 
 
+def _owner_hash() -> str | None:
+    try:
+        owner = node_identity.bound_mesh_owner()
+    except node_identity.LegacyOwner:
+        return None
+    except node_identity.NodeIdentityError as exc:
+        raise HTTPException(503, "node.owner_binding_unavailable", headers=NO_STORE) from exc
+    if owner is None:
+        return None
+    return node_identity.owner_principal_hash(node_identity.mesh_id_for_owner(owner))
+
+
 def descriptor() -> dict[str, Any]:
     identity = _require_node()
     if node_identity.is_institution():
-        return institution_api.descriptor(identity, DESCRIPTOR_FORMAT, NODE_VERSION, CAPABILITIES)
-    owner = node_identity.bound_owner()
+        return institution_api.descriptor(identity, INSTITUTION_DESCRIPTOR_FORMAT, NODE_VERSION, CAPABILITIES)
     return {
         "format": DESCRIPTOR_FORMAT,
         "version": NODE_VERSION,
         "node_id": identity.node_id,
         "node_key": identity.public_jwk(),
-        "accepted_issuers": node_identity.accepted_issuers(),
-        "owner_hash": node_identity.owner_principal_hash(owner) if owner else None,
+        "owner_hash": _owner_hash(),
         "capabilities": list(CAPABILITIES),
         "transport_addresses": [],
     }
