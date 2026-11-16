@@ -151,6 +151,21 @@ EXPECTED_VALIDATION = {
     "host_254_characters": "policy.host_invalid",
     "host_digit_then_letter_label_ok": "ok",
     "host_bad_hex_label_ok": "ok",
+    "reads_precomposed_acute_dot_below_pair_darwin": "policy.path_invalid",
+    "reads_precomposed_acute_dot_below_pair_linux": "ok",
+    "reads_last_hangul_syllable_pair_darwin": "policy.path_invalid",
+    "reads_last_hangul_syllable_pair_linux": "ok",
+    "reads_precomposed_capital_pair_darwin": "policy.path_invalid",
+    "reads_precomposed_capital_pair_linux": "ok",
+    "reads_precomposed_ypogegrammeni_acute_pair_darwin": "policy.path_invalid",
+    "reads_precomposed_ypogegrammeni_acute_pair_linux": "ok",
+    "reads_precomposed_psili_ypogegrammeni_grave_pair_darwin": "policy.path_invalid",
+    "reads_precomposed_psili_ypogegrammeni_grave_pair_linux": "ok",
+    "read_name_prefix_of_workspace_ok": "ok",
+    "read_name_prefix_of_workspace_darwin": "ok",
+    "read_unit_separator": "policy.path_invalid",
+    "read_case_variant_inside_workspace_darwin": "policy.path_invalid",
+    "read_case_variant_inside_workspace_linux": "ok",
 }
 
 EXPECTED_SELECTION = {
@@ -201,6 +216,18 @@ EXPECTED_SELECTION = {
     "overlap_beats_shadow": ("exec.policy_overlaps_data", None),
     "overlap_beats_unavailable": ("exec.policy_overlaps_data", None),
     "shadow_beats_unavailable": ("exec.shadow_refused", None),
+    "case_variant_read_root_inside_data_dir_darwin": (
+        "exec.policy_overlaps_data",
+        None,
+    ),
+    "case_variant_read_root_inside_data_dir_linux_ok": ("ok", "linux"),
+    "data_dir_inside_case_variant_workspace_darwin": (
+        "exec.policy_overlaps_data",
+        None,
+    ),
+    "data_dir_inside_case_variant_workspace_linux_ok": ("ok", "linux"),
+    "precomposed_ypogegrammeni_read_root_darwin": ("exec.policy_overlaps_data", None),
+    "precomposed_ypogegrammeni_read_root_linux_ok": ("ok", "linux"),
 }
 
 
@@ -330,16 +357,20 @@ def test_profile_never_opens_unwanted_rights(name: str) -> None:
     ):
         assert banned not in text
     assert text.endswith("\n") and not text.endswith("\n\n")
-    assert not unfiltered_allows(text)
+    assert not unknown_lines(text)
     assert text.index("(deny process-exec*") > text.rindex("(allow process-exec*")
     assert text.index("(deny mach-lookup") > text.rindex("(allow file-read*")
     assert text.index("(deny file-read*") > text.rindex("(allow file-read*")
 
 
 PATH = r'"(?:[^"\\]|\\.)*"'
-ALLOW_FORMS = [
+NAME = r'"[A-Za-z0-9._-]+"'
+LINE_FORMS = [
     re.compile(pattern)
     for pattern in (
+        r"\(version 1\)",
+        r"\(deny default\)",
+        r'\(import "system\.sb"\)',
         rf"\(allow process-exec\* \(subpath {PATH}\)\)",
         r"\(allow process-fork\)",
         r"\(allow process-info\* \(target self\)\)",
@@ -349,15 +380,19 @@ ALLOW_FORMS = [
         r'\(allow file-read-metadata \(subpath "/bin"\) \(subpath "/sbin"\)\)',
         rf"\(allow file-read\* file-write\* \(subpath {PATH}\)\)",
         r'\(allow network-outbound \(remote ip "localhost:[0-9]{1,5}"\)\)',
+        rf"\(deny (?:process-exec\*|file-map-executable|file-read\*) \(subpath {PATH}\)\)",
+        rf'\(deny mach-lookup(?:(?: \(global-name {NAME}\))+(?: \(xpc-service-name-prefix ""\))?| \(xpc-service-name-prefix ""\))\)',
+        rf"\(deny network-outbound \(literal {PATH}\)\)",
     )
 ]
 
 
-def unfiltered_allows(text: str) -> list[str]:
+def unknown_lines(text: str) -> list[str]:
+    text = re.sub(r"\(\s+", "(", text)
     return [
         line
         for line in text.splitlines()
-        if "(allow" in line and not any(form.fullmatch(line) for form in ALLOW_FORMS)
+        if line.strip() and not any(form.fullmatch(line) for form in LINE_FORMS)
     ]
 
 
@@ -382,25 +417,46 @@ def unfiltered_allows(text: str) -> list[str]:
         '(allow network-outbound (remote tcp "*:443"))',
         '(allow file-read* (subpath "/a")) (allow default)',
         "(version 1)\n(allow  mach-lookup )\n",
+        "( allow default)",
+        "(version 1)\n(deny default)\n(\nallow default)",
+        "(\tallow mach-lookup)",
+        "(ALLOW default)",
+        "(allow default) ; a comment",
+        '(allow file-read*\n(subpath "/"))',
+        '(allow file-read*  (subpath "/x"))',
+        '(allow file-read* (subpath "/x") )',
+        '(deny file-read* (subpath "/x")) (allow default)',
+        "(deny mach-lookup)",
+        '(import "bsd.sb")',
+        "(version 2)",
+        "(debug deny)",
+        '(trace "/private/tmp/trace.sb")',
+        "(define (opened) (allow default))",
+        "(with-filter (process-attribute is-platform-binary) (allow default))",
+        "allow default",
+        ")",
     ],
 )
-def test_checker_refuses_every_allow_outside_the_known_forms(text: str) -> None:
-    assert unfiltered_allows(text)
+def test_checker_refuses_every_line_outside_the_known_forms(text: str) -> None:
+    assert unknown_lines(text)
 
 
 @pytest.mark.parametrize(
     "text",
     [
+        MINIMAL_PROFILE,
         '(deny mach-lookup (global-name "com.apple.dnssd.service"))',
         "(allow signal (target self))",
         '(allow process-exec* (subpath "/usr"))',
         '(deny mach-lookup (xpc-service-name-prefix ""))',
         '(allow file-read* file-write* (subpath "/a \\"q\\" b"))',
         '(allow network-outbound (remote ip "localhost:3128"))',
+        '(deny network-outbound (literal "/private/var/run/syslog"))',
+        "( version 1)\n\n(deny default)",
     ],
 )
-def test_checker_passes_known_forms_and_denies(text: str) -> None:
-    assert not unfiltered_allows(text)
+def test_checker_passes_known_forms(text: str) -> None:
+    assert not unknown_lines(text)
 
 
 def test_dnssd_lookup_is_denied_and_signals_are_scoped() -> None:
@@ -540,7 +596,7 @@ def test_linux_plan_shape() -> None:
     assert plan["landlock"]["exec_read"][: len(base)] == base
     assert plan["landlock"]["abi"] == 6
     assert plan["landlock"]["workspace"] == PROFILES["full"]["policy"]["workspace"]
-    assert plan["rlimits"]["RLIMIT_CORE"] == 0
+    assert plan["rlimits"]["RLIMIT_CORE"] == exec_policy.CORE_LIMIT_BYTES == 0
     assert (
         plan["rlimits"]["RLIMIT_AS"]
         == PROFILES["full"]["policy"]["limits"]["memory_bytes"]
@@ -624,6 +680,7 @@ def test_constants_in_vectors_match_reference() -> None:
         key: list(bounds) for key, bounds in exec_policy.LIMITS.items()
     }
     assert constants["wall_ms"] == list(exec_policy.WALL_MS)
+    assert constants["core_limit_bytes"] == exec_policy.CORE_LIMIT_BYTES == 0
     assert constants["landlock_abi"] == 6
 
 
@@ -723,3 +780,25 @@ def test_fold_orders_marks_before_and_after_the_table() -> None:
     fold = exec_policy._fold
     assert fold("/e\u0301\u0345", "darwin") == fold("/e\u0345\u0301", "darwin")
     assert fold("/e\u0345\u0301", "darwin") == "/e\u0301\u03b9"
+
+
+def test_fold_decomposes_before_ordering_and_folding() -> None:
+    fold = exec_policy._fold
+    assert fold("/\u00e9\u0323", "darwin") == fold("/e\u0323\u0301", "darwin")
+    assert fold("/\u00e9\u0323", "darwin") == "/e\u0323\u0301"
+    assert fold("/\u1fb3\u0301", "darwin") == "/\u03b1\u0301\u03b9"
+    assert fold("/\u1f80\u0300", "darwin") == "/\u03b1\u0313\u0300\u03b9"
+    assert fold("/\u1f88", "darwin") == fold("/\u1f80", "darwin")
+    assert fold("/\u00c9", "darwin") == "/e\u0301"
+    assert fold("/\ud7a3", "darwin") == "/\u1112\u1175\u11c2"
+    assert fold("/\u0130", "darwin") == "/i\u0307"
+
+
+def test_fold_tables_hold_no_runtime_unicode_data() -> None:
+    source = Path(exec_policy.__file__).read_text(encoding="utf-8")
+    assert "unicodedata" not in source
+    table = exec_policy._TABLE
+    assert set(table) == {"unicode", "assigned", "ccc", "decompose", "fold"}
+    assert not set(table["decompose"]) & set(table["fold"])
+    assert table["decompose"]["1F80"] == "\u03b1\u0313\u0345"
+    assert "1F80" not in table["fold"] and table["fold"]["0345"] == "\u03b9"

@@ -464,6 +464,43 @@ def validation_cases() -> list[dict[str, Any]]:
         "host_digit_then_letter_label_ok", ok, variant(hosts=hosts(("example.1a", 443)))
     )
     policy("host_bad_hex_label_ok", ok, variant(hosts=hosts(("example.0xg", 443))))
+    for name, pair in (
+        (
+            "reads_precomposed_acute_dot_below_pair",
+            ["/opt/e\u0323\u0301", "/opt/\u00e9\u0323"],
+        ),
+        ("reads_last_hangul_syllable_pair", ["/opt/\u1112\u1175\u11c2", "/opt/\ud7a3"]),
+        ("reads_precomposed_capital_pair", ["/opt/\u00c9", "/opt/\u00e9"]),
+        (
+            "reads_precomposed_ypogegrammeni_acute_pair",
+            ["/opt/\u03b1\u0301\u0345", "/opt/\u1fb3\u0301"],
+        ),
+        (
+            "reads_precomposed_psili_ypogegrammeni_grave_pair",
+            ["/opt/\u03b1\u0313\u0300\u0345", "/opt/\u1f80\u0300"],
+        ),
+    ):
+        policy(name + "_darwin", bad_path, variant(reads=pair), "darwin")
+        policy(name + "_linux", ok, variant(reads=pair))
+    policy("read_name_prefix_of_workspace_ok", ok, variant(reads=[WORKSPACE[:-1]]))
+    policy(
+        "read_name_prefix_of_workspace_darwin",
+        ok,
+        variant(reads=["/Private/tmp/astral/W"]),
+        "darwin",
+    )
+    policy("read_unit_separator", bad_path, variant(reads=["/opt/a\u001fb"]))
+    policy(
+        "read_case_variant_inside_workspace_darwin",
+        bad_path,
+        variant(reads=["/private/tmp/astral/WS/lib"]),
+        "darwin",
+    )
+    policy(
+        "read_case_variant_inside_workspace_linux",
+        ok,
+        variant(reads=["/private/tmp/astral/WS/lib"]),
+    )
     out = []
     for name, code, value, is_raw, platform in cases:
         entry: dict[str, Any] = {"name": name, "code": code}
@@ -731,6 +768,42 @@ def selection_cases() -> list[dict[str, Any]]:
             "/Users/test/e\u0301\u0345/node",
         ),
         (
+            "case_variant_read_root_inside_data_dir_darwin",
+            variant(reads=[DATA_DIR_DARWIN.upper() + "/pack"]),
+            darwin,
+            DATA_DIR_DARWIN,
+        ),
+        (
+            "case_variant_read_root_inside_data_dir_linux_ok",
+            variant(reads=[DATA_DIR_DARWIN.upper() + "/pack"]),
+            linux,
+            DATA_DIR_DARWIN,
+        ),
+        (
+            "data_dir_inside_case_variant_workspace_darwin",
+            variant(workspace="/Users/test/WS"),
+            darwin,
+            "/Users/test/ws/node",
+        ),
+        (
+            "data_dir_inside_case_variant_workspace_linux_ok",
+            variant(workspace="/Users/test/WS"),
+            linux,
+            "/Users/test/ws/node",
+        ),
+        (
+            "precomposed_ypogegrammeni_read_root_darwin",
+            variant(reads=["/Users/test/\u1f80\u0300"]),
+            darwin,
+            "/Users/test/\u03b1\u0313\u0300\u0345/node",
+        ),
+        (
+            "precomposed_ypogegrammeni_read_root_linux_ok",
+            variant(reads=["/Users/test/\u1f80\u0300"]),
+            linux,
+            "/Users/test/\u03b1\u0313\u0300\u0345/node",
+        ),
+        (
             "darwin_unassigned_in_reads",
             variant(reads=["/opt/a\u0378"]),
             darwin,
@@ -813,6 +886,10 @@ def profile_error_cases() -> list[dict[str, Any]]:
             variant(reads=["/opt/cafe\u0301", "/opt/caf\u00e9"]),
         ),
         ("darwin_unassigned_in_workspace", variant(workspace="/tmp/\u0378")),
+        (
+            "darwin_precomposed_ypogegrammeni_pair_in_reads",
+            variant(reads=["/opt/\u03b1\u0313\u0300\u0345", "/opt/\u1f80\u0300"]),
+        ),
     ]
     out = []
     for name, policy in named:
@@ -844,6 +921,7 @@ def generate() -> dict[str, Any]:
             "linux_device_files": list(exec_policy.LINUX_DEVICES),
             "limits": {k: list(v) for k, v in exec_policy.LIMITS.items()},
             "wall_ms": list(exec_policy.WALL_MS),
+            "core_limit_bytes": exec_policy.CORE_LIMIT_BYTES,
             "max_reads": exec_policy.MAX_READS,
             "max_hosts": exec_policy.MAX_HOSTS,
             "max_path_bytes": exec_policy.MAX_PATH_BYTES,

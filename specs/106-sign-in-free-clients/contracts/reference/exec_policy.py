@@ -34,6 +34,7 @@ LIMITS = {
     "file_bytes": (4096, 1099511627776),
 }
 WALL_MS = (1, 86400000)
+CORE_LIMIT_BYTES = 0
 TOP_FIELDS = ("v", "reads", "workspace", "hosts", "limits", "time")
 HOST_FIELDS = ("host", "port")
 TIME_FIELDS = ("wall_ms",)
@@ -173,6 +174,7 @@ def _path_problem(path: str) -> str | None:
 
 
 _TABLE = json.loads((Path(__file__).resolve().parent / "path_fold.json").read_text())
+_DECOMPOSE = {chr(int(key, 16)): value for key, value in _TABLE["decompose"].items()}
 _FOLD = {chr(int(key, 16)): value for key, value in _TABLE["fold"].items()}
 _CCC = {chr(int(key, 16)): value for key, value in _TABLE["ccc"].items()}
 _ASSIGNED_STARTS = [low for low, _ in _TABLE["assigned"]]
@@ -207,16 +209,20 @@ def _ordered(text: str) -> str:
     return "".join(out + sorted(run, key=lambda mark: _CCC[mark]))
 
 
-def _fold(path: str, platform: str | None) -> str:
-    if platform != "darwin":
-        return path
+def _nfd(text: str) -> str:
     pieces = [
         _decomposed_hangul(ch)
         if 0 <= ord(ch) - HANGUL_BASE < HANGUL_COUNT
-        else _FOLD.get(ch, ch)
-        for ch in _ordered(path)
+        else _DECOMPOSE.get(ch, ch)
+        for ch in text
     ]
     return _ordered("".join(pieces))
+
+
+def _fold(path: str, platform: str | None) -> str:
+    if platform != "darwin":
+        return path
+    return _nfd("".join(_FOLD.get(ch, ch) for ch in _nfd(path)))
 
 
 def _contains(root: str, path: str, platform: str | None = None) -> bool:
@@ -447,7 +453,7 @@ def linux_plan(policy: dict[str, Any], egress_socket: str | None) -> dict[str, A
             "RLIMIT_AS": limits["memory_bytes"],
             "RLIMIT_NOFILE": limits["open_files"],
             "RLIMIT_FSIZE": limits["file_bytes"],
-            "RLIMIT_CORE": 0,
+            "RLIMIT_CORE": CORE_LIMIT_BYTES,
         },
         "watchdog": {
             "wall_ms": policy["time"]["wall_ms"],

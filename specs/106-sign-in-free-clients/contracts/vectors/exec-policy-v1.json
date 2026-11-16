@@ -8,6 +8,7 @@
       "app_sandboxed",
       "platform_unsupported"
     ],
+    "core_limit_bytes": 0,
     "darwin_base_reads": [
       "/usr",
       "/System",
@@ -723,6 +724,157 @@
         },
         "v": 1,
         "workspace": "/tmp/͸"
+      }
+    },
+    {
+      "code": "policy.path_invalid",
+      "context": {
+        "egress_socket": null,
+        "home": "/Users/test",
+        "proxy_port": null
+      },
+      "linux": {
+        "bwrap": [
+          "--unshare-user",
+          "--unshare-pid",
+          "--unshare-net",
+          "--unshare-ipc",
+          "--unshare-uts",
+          "--unshare-cgroup",
+          "--die-with-parent",
+          "--new-session",
+          "--clearenv",
+          "--ro-bind-try",
+          "/usr",
+          "/usr",
+          "--ro-bind-try",
+          "/bin",
+          "/bin",
+          "--ro-bind-try",
+          "/sbin",
+          "/sbin",
+          "--ro-bind-try",
+          "/lib",
+          "/lib",
+          "--ro-bind-try",
+          "/lib64",
+          "/lib64",
+          "--ro-bind-try",
+          "/etc",
+          "/etc",
+          "--ro-bind",
+          "/opt/ᾂ",
+          "/opt/ᾂ",
+          "--ro-bind",
+          "/opt/ᾂ",
+          "/opt/ᾂ",
+          "--bind",
+          "/private/tmp/astral/ws",
+          "/private/tmp/astral/ws",
+          "--proc",
+          "/proc",
+          "--dev",
+          "/dev",
+          "--chdir",
+          "/private/tmp/astral/ws"
+        ],
+        "egress": null,
+        "landlock": {
+          "abi": 6,
+          "device_files": [
+            "/dev/null",
+            "/dev/zero",
+            "/dev/urandom",
+            "/dev/random"
+          ],
+          "exec_read": [
+            "/usr",
+            "/bin",
+            "/sbin",
+            "/lib",
+            "/lib64",
+            "/etc",
+            "/opt/ᾂ",
+            "/opt/ᾂ"
+          ],
+          "scopes": [
+            "abstract_unix_socket",
+            "signal"
+          ],
+          "tcp_bind": [],
+          "tcp_connect": [],
+          "workspace": "/private/tmp/astral/ws",
+          "workspace_rights": "all_except_execute_and_make_sock"
+        },
+        "rlimits": {
+          "RLIMIT_AS": 536870912,
+          "RLIMIT_CORE": 0,
+          "RLIMIT_FSIZE": 104857600,
+          "RLIMIT_NOFILE": 256
+        },
+        "seccomp": {
+          "allow_socketpair": true,
+          "deny_fork": true,
+          "deny_socket_domains": [
+            "AF_UNIX"
+          ],
+          "deny_socket_types": [
+            "SOCK_DGRAM",
+            "SOCK_RAW"
+          ],
+          "deny_syscalls": [
+            "msgctl",
+            "msgget",
+            "msgrcv",
+            "msgsnd",
+            "mq_getsetattr",
+            "mq_notify",
+            "mq_open",
+            "mq_timedreceive",
+            "mq_timedsend",
+            "mq_unlink",
+            "semctl",
+            "semget",
+            "semop",
+            "semtimedop",
+            "setpgid",
+            "setsid",
+            "shmat",
+            "shmctl",
+            "shmdt",
+            "shmget"
+          ],
+          "fork_syscalls": [
+            "clone3",
+            "fork",
+            "vfork"
+          ],
+          "inet_stream_sockets": false
+        },
+        "watchdog": {
+          "processes": 1,
+          "wall_ms": 30000
+        },
+        "workspace_noexec": true
+      },
+      "name": "darwin_precomposed_ypogegrammeni_pair_in_reads",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [
+          "/opt/ᾂ",
+          "/opt/ᾂ"
+        ],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
       }
     }
   ],
@@ -2791,6 +2943,203 @@
         },
         "reads": [
           "/Users/test/éͅ"
+        ],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      },
+      "result": {
+        "backend": "linux",
+        "ok": true
+      }
+    },
+    {
+      "data_dir": "/Users/test/Library/Application Support/Astral/node",
+      "facts": {
+        "app_sandboxed": false,
+        "bwrap": false,
+        "landlock_abi": 0,
+        "platform": "darwin",
+        "sandbox_exec": true,
+        "userns": false
+      },
+      "name": "case_variant_read_root_inside_data_dir_darwin",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [
+          "/USERS/TEST/LIBRARY/APPLICATION SUPPORT/ASTRAL/NODE/pack"
+        ],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      },
+      "result": {
+        "code": "exec.policy_overlaps_data",
+        "message": "A read root or the workspace contains the node data directory.",
+        "ok": false
+      }
+    },
+    {
+      "data_dir": "/Users/test/Library/Application Support/Astral/node",
+      "facts": {
+        "app_sandboxed": false,
+        "bwrap": true,
+        "landlock_abi": 6,
+        "platform": "linux",
+        "sandbox_exec": false,
+        "userns": true
+      },
+      "name": "case_variant_read_root_inside_data_dir_linux_ok",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [
+          "/USERS/TEST/LIBRARY/APPLICATION SUPPORT/ASTRAL/NODE/pack"
+        ],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      },
+      "result": {
+        "backend": "linux",
+        "ok": true
+      }
+    },
+    {
+      "data_dir": "/Users/test/ws/node",
+      "facts": {
+        "app_sandboxed": false,
+        "bwrap": false,
+        "landlock_abi": 0,
+        "platform": "darwin",
+        "sandbox_exec": true,
+        "userns": false
+      },
+      "name": "data_dir_inside_case_variant_workspace_darwin",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/Users/test/WS"
+      },
+      "result": {
+        "code": "exec.policy_overlaps_data",
+        "message": "A read root or the workspace contains the node data directory.",
+        "ok": false
+      }
+    },
+    {
+      "data_dir": "/Users/test/ws/node",
+      "facts": {
+        "app_sandboxed": false,
+        "bwrap": true,
+        "landlock_abi": 6,
+        "platform": "linux",
+        "sandbox_exec": false,
+        "userns": true
+      },
+      "name": "data_dir_inside_case_variant_workspace_linux_ok",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/Users/test/WS"
+      },
+      "result": {
+        "backend": "linux",
+        "ok": true
+      }
+    },
+    {
+      "data_dir": "/Users/test/ᾂ/node",
+      "facts": {
+        "app_sandboxed": false,
+        "bwrap": false,
+        "landlock_abi": 0,
+        "platform": "darwin",
+        "sandbox_exec": true,
+        "userns": false
+      },
+      "name": "precomposed_ypogegrammeni_read_root_darwin",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [
+          "/Users/test/ᾂ"
+        ],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      },
+      "result": {
+        "code": "exec.policy_overlaps_data",
+        "message": "A read root or the workspace contains the node data directory.",
+        "ok": false
+      }
+    },
+    {
+      "data_dir": "/Users/test/ᾂ/node",
+      "facts": {
+        "app_sandboxed": false,
+        "bwrap": true,
+        "landlock_abi": 6,
+        "platform": "linux",
+        "sandbox_exec": false,
+        "userns": true
+      },
+      "name": "precomposed_ypogegrammeni_read_root_linux_ok",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [
+          "/Users/test/ᾂ"
         ],
         "time": {
           "wall_ms": 30000
@@ -6549,6 +6898,354 @@
           "processes": 1
         },
         "reads": [],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      }
+    },
+    {
+      "code": "policy.path_invalid",
+      "name": "reads_precomposed_acute_dot_below_pair_darwin",
+      "platform": "darwin",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [
+          "/opt/ẹ́",
+          "/opt/ẹ́"
+        ],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      }
+    },
+    {
+      "code": "ok",
+      "digest": "sha256:07808918fd1757704d47953894c69125d3fde7b47f1bf7dd49c3223b7334818c",
+      "name": "reads_precomposed_acute_dot_below_pair_linux",
+      "platform": "linux",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [
+          "/opt/ẹ́",
+          "/opt/ẹ́"
+        ],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      }
+    },
+    {
+      "code": "policy.path_invalid",
+      "name": "reads_last_hangul_syllable_pair_darwin",
+      "platform": "darwin",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [
+          "/opt/힣",
+          "/opt/힣"
+        ],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      }
+    },
+    {
+      "code": "ok",
+      "digest": "sha256:d190b77fa81042abc6f5b5c9b7bb66c0756fceedee86d4c41fbb332c2269d07f",
+      "name": "reads_last_hangul_syllable_pair_linux",
+      "platform": "linux",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [
+          "/opt/힣",
+          "/opt/힣"
+        ],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      }
+    },
+    {
+      "code": "policy.path_invalid",
+      "name": "reads_precomposed_capital_pair_darwin",
+      "platform": "darwin",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [
+          "/opt/É",
+          "/opt/é"
+        ],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      }
+    },
+    {
+      "code": "ok",
+      "digest": "sha256:978e5e76c0fc94c3e9a7fcb6d3c2a45bbe7c2af9ff0aa390ee1785e7fe57898b",
+      "name": "reads_precomposed_capital_pair_linux",
+      "platform": "linux",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [
+          "/opt/É",
+          "/opt/é"
+        ],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      }
+    },
+    {
+      "code": "policy.path_invalid",
+      "name": "reads_precomposed_ypogegrammeni_acute_pair_darwin",
+      "platform": "darwin",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [
+          "/opt/ᾴ",
+          "/opt/ᾴ"
+        ],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      }
+    },
+    {
+      "code": "ok",
+      "digest": "sha256:9c33676d10966d64bf36ebbe1c4d92b2bd58a5cbc9f464c142b5235bca41eb55",
+      "name": "reads_precomposed_ypogegrammeni_acute_pair_linux",
+      "platform": "linux",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [
+          "/opt/ᾴ",
+          "/opt/ᾴ"
+        ],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      }
+    },
+    {
+      "code": "policy.path_invalid",
+      "name": "reads_precomposed_psili_ypogegrammeni_grave_pair_darwin",
+      "platform": "darwin",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [
+          "/opt/ᾂ",
+          "/opt/ᾂ"
+        ],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      }
+    },
+    {
+      "code": "ok",
+      "digest": "sha256:4aca9f0811d890ecb84b391311bd550276fcdafdcf3ddf391e381d358df8d608",
+      "name": "reads_precomposed_psili_ypogegrammeni_grave_pair_linux",
+      "platform": "linux",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [
+          "/opt/ᾂ",
+          "/opt/ᾂ"
+        ],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      }
+    },
+    {
+      "code": "ok",
+      "digest": "sha256:11d51cd3601857d1372894d6cca2c8b5c405ee4c72ab2444f27036397722ace8",
+      "name": "read_name_prefix_of_workspace_ok",
+      "platform": "linux",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [
+          "/private/tmp/astral/w"
+        ],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      }
+    },
+    {
+      "code": "ok",
+      "digest": "sha256:598be2fe8b8a2670f8d27e47f38c377190b5e0c9c776a01337877d21adcbd563",
+      "name": "read_name_prefix_of_workspace_darwin",
+      "platform": "darwin",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [
+          "/Private/tmp/astral/W"
+        ],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      }
+    },
+    {
+      "code": "policy.path_invalid",
+      "name": "read_unit_separator",
+      "platform": "linux",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [
+          "/opt/a\u001fb"
+        ],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      }
+    },
+    {
+      "code": "policy.path_invalid",
+      "name": "read_case_variant_inside_workspace_darwin",
+      "platform": "darwin",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [
+          "/private/tmp/astral/WS/lib"
+        ],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      }
+    },
+    {
+      "code": "ok",
+      "digest": "sha256:98fe35f7e45a02bd2ff4dc26d42cfc0dec8f0cf689efc1349245fa40f4942cc5",
+      "name": "read_case_variant_inside_workspace_linux",
+      "platform": "linux",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [
+          "/private/tmp/astral/WS/lib"
+        ],
         "time": {
           "wall_ms": 30000
         },
