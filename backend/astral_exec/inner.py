@@ -8,6 +8,7 @@ import ctypes
 import json
 import os
 import resource
+import signal
 import sys
 from typing import Any
 
@@ -79,22 +80,31 @@ def _remount_noexec(libc: ctypes.CDLL, workspace: str) -> None:
         raise OSError("the workspace did not become noexec")
 
 
-def _start_forwarder(forwarder: Any, listen: str, socket_path: str, keep: set[int]) -> None:
+def _forwarder_child(forwarder: Any, listener: Any, socket_path: str) -> None:
+    null = os.open(DEVNULL, os.O_RDWR)
+    for standard in (0, 1, 2):
+        os.dup2(null, standard)
+    if null > 2:
+        os.close(null)
+    keep = listener.fileno()
+    for name in os.listdir("/proc/self/fd"):
+        fd = int(name)
+        if fd > 2 and fd != keep:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+    forwarder.serve(listener, socket_path)
+
+
+def _start_forwarder(forwarder: Any, listen: str, socket_path: str) -> None:
     host, _colon, port = listen.rpartition(":")
     listener = forwarder.build_listener(host, int(port))
     if os.fork() == 0:
-        null = os.open(DEVNULL, os.O_RDWR)
-        for standard in (0, 1, 2):
-            os.dup2(null, standard)
-        keep_open = {listener.fileno(), 0, 1, 2}
-        for fd in list(keep) | {null}:
-            if fd not in keep_open:
-                try:
-                    os.close(fd)
-                except OSError:
-                    pass
-        os.closerange(max(keep_open) + 1, 65536)
-        forwarder.serve(listener, socket_path)
+        try:
+            _forwarder_child(forwarder, listener, socket_path)
+        except BaseException:
+            pass
         os._exit(0)
     listener.close()
 
@@ -119,12 +129,13 @@ def _run(options: Any, argv: list[str]) -> None:
     _remount_noexec(libc, workspace)
     egress = plan["egress"]
     hosted = egress is not None
-    keep = {options.package_fd, options.status_fd}
     if hosted:
-        _start_forwarder(forwarder, egress["listen"], egress["socket"], keep)
+        _start_forwarder(forwarder, egress["listen"], egress["socket"])
     landlock.apply(plan["landlock"], hosted)
     seccomp.install(plan["seccomp"])
     _apply_limits(plan["rlimits"])
+    signal.signal(signal.SIGXFSZ, signal.SIG_DFL)
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
     os.write(options.status_fd, READY)
     os.closerange(3, 65536)
     os.execve(argv[0], argv, env)
@@ -144,7 +155,7 @@ def main(raw: list[str]) -> int:
     try:
         _run(options, argv)
     except BaseException as error:  # noqa: BLE001
-        _fail(options.status_fd, type(error).__name__)
+        _fail(options.status_fd, f"{type(error).__name__}: {error}")
     return 126
 
 

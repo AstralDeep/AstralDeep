@@ -4,6 +4,7 @@ The plan must equal every committed vector byte for byte, and the confined runs 
 
 from __future__ import annotations
 
+import os
 import socket
 import struct
 import threading
@@ -399,3 +400,114 @@ def test_mountinfo_translation_decodes_escapes_and_needs_a_covering_mount():
 
 def test_the_mountinfo_check_is_skipped_off_linux():
     assert _mountinfo_refuses({"reads": []}, "/var/lib/node") is False
+
+
+def test_the_landlock_kernel_seam_wraps_each_syscall():
+    log = []
+
+    def syscall(number, *args):
+        log.append((number, args))
+        return 4 if number == landlock.SYS_CREATE_RULESET else 0
+
+    kernel = landlock.Kernel(syscall=syscall, prctl=lambda *a: 0, get_errno=lambda: 13)
+    assert kernel.abi() == 4
+    assert kernel.create_ruleset(b"attr") == 4
+    kernel.add_rule(4, landlock.RULE_PATH_BENEATH, b"rule")
+    kernel.restrict(4)
+    assert any(number == landlock.SYS_ADD_RULE for number, _ in log)
+
+
+def test_the_landlock_kernel_raises_on_each_failure():
+    fail = landlock.Kernel(
+        syscall=lambda *a: -1, prctl=lambda *a: 0, get_errno=lambda: 1
+    )
+    with pytest.raises(OSError):
+        fail.create_ruleset(b"attr")
+    with pytest.raises(OSError):
+        fail.add_rule(1, landlock.RULE_PATH_BENEATH, b"rule")
+    with pytest.raises(OSError):
+        fail.restrict(1)
+    nnp = landlock.Kernel(syscall=lambda *a: 0, prctl=lambda *a: 1, get_errno=lambda: 1)
+    with pytest.raises(OSError):
+        nnp.restrict(1)
+    assert landlock.Kernel(
+        syscall=lambda *a: -5, prctl=lambda *a: 0, get_errno=lambda: 1
+    ).abi() == 0
+
+
+def test_inner_reads_json_from_a_pipe():
+    from astral_exec import inner
+
+    read_fd, write_fd = os.pipe()
+    os.write(write_fd, b'{"a": 1}')
+    os.close(write_fd)
+    assert inner._read_json(read_fd) == {"a": 1}
+
+
+def test_inner_applies_the_rlimits_in_order(monkeypatch):
+    from astral_exec import inner
+
+    calls = []
+    monkeypatch.setattr(
+        inner.resource, "setrlimit", lambda which, pair: calls.append((which, pair))
+    )
+    inner._apply_limits(
+        {
+            "RLIMIT_AS": 10,
+            "RLIMIT_NOFILE": 20,
+            "RLIMIT_FSIZE": 30,
+            "RLIMIT_CORE": 0,
+        }
+    )
+    assert calls == [
+        (inner.resource.RLIMIT_NOFILE, (20, 20)),
+        (inner.resource.RLIMIT_FSIZE, (30, 30)),
+        (inner.resource.RLIMIT_CORE, (0, 0)),
+        (inner.resource.RLIMIT_AS, (10, 10)),
+    ]
+
+
+def test_inner_fail_writes_a_reason_and_exits(monkeypatch):
+    from astral_exec import inner
+
+    read_fd, write_fd = os.pipe()
+
+    def fake_exit(code):
+        raise SystemExit(code)
+
+    monkeypatch.setattr(inner.os, "_exit", fake_exit)
+    with pytest.raises(SystemExit) as caught:
+        inner._fail(write_fd, "boom")
+    assert caught.value.code == 126
+    os.close(write_fd)
+    assert os.read(read_fd, 64) == b"fail boom"
+    os.close(read_fd)
+
+
+def test_inner_main_reports_a_failure_through_the_status_descriptor(monkeypatch):
+    from astral_exec import inner
+
+    read_fd, write_fd = os.pipe()
+    dead_read, dead_write = os.pipe()
+    os.close(dead_read)
+    os.close(dead_write)
+    monkeypatch.setattr(
+        inner.os, "_exit", lambda code: (_ for _ in ()).throw(SystemExit(code))
+    )
+    argv = [
+        "--package-fd",
+        "0",
+        "--plan-fd",
+        str(dead_read),
+        "--env-fd",
+        str(dead_write),
+        "--status-fd",
+        str(write_fd),
+        "--",
+        "/bin/true",
+    ]
+    with pytest.raises(SystemExit):
+        inner.main(argv)
+    os.close(write_fd)
+    assert os.read(read_fd, 200).startswith(b"fail ")
+    os.close(read_fd)

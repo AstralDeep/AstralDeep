@@ -168,6 +168,14 @@ def build(machine: str, deny_fork: bool, inet_stream_sockets: bool) -> bytes:
 
 def _real_prctl(option: int, arg2: int, arg3: int) -> int:
     libc = ctypes.CDLL(None, use_errno=True)
+    libc.prctl.argtypes = [
+        ctypes.c_int,
+        ctypes.c_ulong,
+        ctypes.c_void_p,
+        ctypes.c_ulong,
+        ctypes.c_ulong,
+    ]
+    libc.prctl.restype = ctypes.c_int
     result = libc.prctl(option, arg2, arg3, 0, 0)
     if result != 0:
         code = ctypes.get_errno()
