@@ -370,7 +370,7 @@ Groups of cases:
 | Keys | `key_*`, each form, the lookalikes that are not reserved and each malformed form |
 | Record | `record_*`, every field rule, the size limit at 32768 and 32769 bytes, the limits at and one past 80, 128, 32 and 16, the unsupported reasons and `record_order_*` for their order |
 | State | `state_*`, every state and reason, `tools` placement and limits |
-| Put | valid, node consent, the window at 600000 and 600001 ms before and 0 and 1 ms after, wrong digest and kind, tampered and high-S signatures, re-carried values on another member's feed and on the node's feed, removed and unknown consenting devices, a forged removed approval, and `fold_order_*` for each adjacent pair of section 6.1 that can fail together |
+| Put | valid, node consent, a malformed consent object, the window at 600000 and 600001 ms before and 0 and 1 ms after, wrong digest and kind, tampered and high-S signatures, re-carried values on another member's feed and on the node's feed, removed and unknown consenting devices, a forged removed approval, and `fold_order_*` for each adjacent pair of section 6.1 that can fail together |
 | Remove | without consent, by the node, by a removed device, with a consent field, and a put after a removal |
 | Winner | a later put, a later invalid put, an equal clock broken by feed, an equal millisecond broken by the counter, and arrival order |
 | State fold | own device, another device, a removed member, the latest state, a later unreadable state, several devices, tools from a node, and a state for an unlisted connection |

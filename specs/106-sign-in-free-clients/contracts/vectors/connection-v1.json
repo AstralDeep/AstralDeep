@@ -16210,6 +16210,128 @@
         "ok": {
           "connections": [],
           "ignored": {
+            "sha256:4db803c246f0c99dc5af9b613b3f00d91e1dde48f36c67a5116b4c22d54816da": "connection.malformed"
+          },
+          "removed_approvals": []
+        }
+      },
+      "input": {
+        "events": [
+          {
+            "after": [],
+            "body": {
+              "consent": {
+                "clock": {
+                  "ms": 1794445200000,
+                  "n": 0
+                },
+                "device": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+                "digest": "sha256:904de894fd3edea10f6cbeb5ecfcc2047773e3cb4985cb32d4b105dd0018b36b",
+                "kind": "connection",
+                "note": "x",
+                "sig": "EPV7tuKi4DivfCSE0OWjU0Ld2b_HPBoWRixa3tm-tUcTEkLaVEQdi-IlWtZRFA_-lJ7drZoqkXUdGsRHBK94rg",
+                "v": 1
+              },
+              "key": "connection/44c3d55c24475a6459b19b5879e3936a",
+              "value": {
+                "auth": {
+                  "client_id": null,
+                  "issuer": "https://login.research.example",
+                  "resource": "https://mcp.research.example/mcp",
+                  "scheme": "oauth",
+                  "scopes": [
+                    "mcp.read",
+                    "mcp.tools"
+                  ]
+                },
+                "device": null,
+                "egress": [
+                  "login.research.example",
+                  "mcp.research.example"
+                ],
+                "endpoint": "https://mcp.research.example/mcp",
+                "flow": "phi",
+                "id": "44c3d55c24475a6459b19b5879e3936a",
+                "kind": "mcp-http",
+                "local": false,
+                "name": "First",
+                "tools": [
+                  {
+                    "hash": "sha256:1aecae58d08399ba76c51a7afc6edf0ff623c4d70361d2a3e663bdfae1cc1c18",
+                    "name": "lookup"
+                  },
+                  {
+                    "hash": "sha256:41d37c1c5cedfce12f33f4cc50530377f785608c079d306466f72d0f5f45f00b",
+                    "name": "search"
+                  }
+                ],
+                "v": 1
+              }
+            },
+            "clock": {
+              "ms": 1794445200000,
+              "n": 0
+            },
+            "feed": "98dbF54AHip3sZoiSvNc6YZDqglrC4XbULQOJNYyqHQ",
+            "id": "sha256:4db803c246f0c99dc5af9b613b3f00d91e1dde48f36c67a5116b4c22d54816da",
+            "labels": {
+              "confidentiality": "private",
+              "integrity": "owner"
+            },
+            "scope": "mesh",
+            "seq": 1,
+            "type": "settings.set"
+          }
+        ],
+        "legacy_servers": [],
+        "members": {
+          "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146": {
+            "feeds": [
+              "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY"
+            ],
+            "kind": "pocket",
+            "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE"
+          },
+          "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c": {
+            "feeds": [
+              "98dbF54AHip3sZoiSvNc6YZDqglrC4XbULQOJNYyqHQ"
+            ],
+            "kind": "desktop",
+            "presence": "BCp9Kf0eZjRdqdF0vzbv833DVCUwjrnRdn6MDc_QCVtwigBiz78fP24SXkgK0azaXzJa3bZkoAjPetPi-nr2grs"
+          },
+          "sha256:8d212a14e09d4a6e7ac7e0d385dc0c9f363ac57a18f64109675bb39c7e5f88f9": {
+            "feeds": [
+              "45KOxSlVwiUodt6U_ZM-aYYzteGs0VTgXOnJQ27pdPU"
+            ],
+            "kind": "node",
+            "presence": "BEAKyJY7J3JY_3vMcQ58o63lEsmdA7IAV-c_XrsWzM7Tpdj7vnIbZIBNd7fopgvqTN6H3tHBQa821Hj64wxlwos"
+          },
+          "sha256:f3ea926c04008300e4d818ebaef633712b6cd1e0f587f7fcb6052456df08ac7d": {
+            "feeds": [
+              "cHdw1QEbPLkXLxrQM6AZ4P_j8fPIyMvqNNLBBkGXYLg"
+            ],
+            "kind": "satellite",
+            "presence": "BP_xjnS1bz0DPi3k12txbWPE2gUuvQNiml6l7O7MmTQLa72PJXVfJJIVUGO2d1tAXfzehVHSzDGpLRUCetv-53Y"
+          }
+        },
+        "removed": {
+          "sha256:db19eadb01c5419897d86eba86016afe5cb56a5720ff232b742bf17303ec132a": {
+            "feeds": [
+              "99fBC94IcLLi-ZnO2ZP7JJLOUhMVp9jOD1KaVWNSmo0"
+            ],
+            "kind": "desktop",
+            "presence": "BAiTDiaaFHLbVlx9088R2l__FANlP86UWwd_5SHtH8O6Xb6b3GKYZqnoMzULos9Omq28R_dLfWyHBve749R13nI"
+          }
+        }
+      },
+      "kind": "connection_fold",
+      "name": "fold_consent_shape_malformed"
+    },
+    {
+      "expect": {
+        "ok": {
+          "connections": [],
+          "ignored": {
             "sha256:f40dec45e0a4f7f4fad24b5ee0a27bcd21b0e34bf6250d79df5824a3a56f26e5": "connection.malformed"
           },
           "removed_approvals": []

@@ -282,6 +282,7 @@ EXPECTED = {
     },
     "fold_put_without_consent": {"ignored": ["connection.consent_missing"]},
     "fold_put_record_malformed": {"ignored": ["connection.malformed"]},
+    "fold_consent_shape_malformed": {"ignored": ["connection.malformed"]},
     "fold_put_id_differs_from_key": {"ignored": ["connection.malformed"]},
     "fold_order_malformed_before_consent_missing": {
         "ignored": ["connection.malformed"]
