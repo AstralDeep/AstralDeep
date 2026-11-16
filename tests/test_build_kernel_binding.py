@@ -255,7 +255,7 @@ def _provider_fixture(binding):
     repo = {"full_name": builder.KERNEL_REPOSITORY_NAME, "id": builder.KERNEL_REPOSITORY_ID}
     run = {
         "id": 17, "event": "push", "status": "completed", "conclusion": "success",
-        "head_branch": builder.KERNEL_BRANCH, "head_sha": binding["source"]["commit"],
+        "head_branch": "main", "head_sha": binding["source"]["commit"],
         "repository": repo, "path": builder.KERNEL_WORKFLOW_PATH, "name": builder.KERNEL_WORKFLOW_NAME,
     }
     artifact = {
@@ -265,7 +265,7 @@ def _provider_fixture(binding):
         "workflow_run": {
             "id": 17, "repository_id": builder.KERNEL_REPOSITORY_ID,
             "head_repository_id": builder.KERNEL_REPOSITORY_ID,
-            "head_sha": binding["source"]["commit"], "head_branch": builder.KERNEL_BRANCH,
+            "head_sha": binding["source"]["commit"], "head_branch": "main",
         },
     }
     return run, artifact, archive_bytes
@@ -307,9 +307,27 @@ def test_fetch_downloads_verified_provider_artifact(kernel_checkout, binding, tm
     assert calls[0][0][2:6] == ["verify", "--root", str(output), "--kind"]
 
 
+@pytest.mark.parametrize("branch", ["main", "k/integration"])
+def test_provider_identity_accepts_the_kernel_default_branch_and_its_retired_name(binding, branch):
+    run, artifact, _ = _provider_fixture(binding)
+    run["head_branch"] = artifact["workflow_run"]["head_branch"] = branch
+    expected_digest = artifact["digest"].removeprefix("sha256:")
+    assert builder._artifact_identity(run, artifact, 17, 29, expected_digest, "linux/arm64", binding) == (
+        expected_digest, artifact["size_in_bytes"])
+
+
+def test_provider_identity_requires_the_artifact_branch_to_match_its_run(binding):
+    run, artifact, _ = _provider_fixture(binding)
+    artifact["workflow_run"]["head_branch"] = "k/integration"
+    expected_digest = artifact["digest"].removeprefix("sha256:")
+    with pytest.raises(builder.BuildError, match="not bound to the verified run"):
+        builder._artifact_identity(run, artifact, 17, 29, expected_digest, "linux/arm64", binding)
+
+
 @pytest.mark.parametrize(("field", "value", "message"), [
     ("conclusion", "failure", "successful push"),
     ("head_sha", "0" * 40, "branch or source"),
+    ("head_branch", "candidate", "branch or source"),
     ("path", "other.yml", "unexpected workflow"),
     ("id", 18, "successful push"),
 ])
@@ -343,7 +361,7 @@ def test_fetch_rejects_artifact_linkage_and_download_digest_mismatch(binding, tm
     artifact["workflow_run"]["head_branch"] = "other"
     with pytest.raises(builder.BuildError, match="not bound to the verified run"):
         builder._artifact_identity(run, artifact, 17, 29, expected_digest, "linux/arm64", binding)
-    artifact["workflow_run"]["head_branch"] = builder.KERNEL_BRANCH
+    artifact["workflow_run"]["head_branch"] = "main"
     responses = iter((run, artifact, archive + b"bad"))
     monkeypatch.setattr(builder, "gh_api", lambda *args, **kwargs: next(responses))
     with pytest.raises(builder.BuildError, match="differs from its API size or digest"):

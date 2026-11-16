@@ -26,7 +26,8 @@ PLATFORMS = {"linux/arm64": "linux-aarch64", "linux/amd64": "linux-x86_64"}
 INSTALLER_PATH = ROOT / "scripts" / "install_kernel.py"
 KERNEL_REPOSITORY_NAME = "AstralDeep/AstralKernel"
 KERNEL_REPOSITORY_ID = 1455890728
-KERNEL_BRANCH = "k/integration"
+# k/integration was the Kernel default branch before main; runs qualified there stay valid.
+KERNEL_BRANCHES = frozenset({"main", "k/integration"})
 KERNEL_WORKFLOW_PATH = ".github/workflows/ci.yml"
 KERNEL_WORKFLOW_NAME = "Kernel qualification"
 MAX_PROVIDER_ARCHIVE_BYTES = 64 * 1024 * 1024
@@ -159,7 +160,7 @@ def _artifact_identity(run: dict[str, Any], artifact: dict[str, Any], run_id: in
     commit = binding["source"]["commit"]
     require(run.get("id") == run_id and run.get("event") == "push" and run.get("status") == "completed"
             and run.get("conclusion") == "success", "Kernel provider run is not a successful push")
-    require(run.get("head_branch") == KERNEL_BRANCH and run.get("head_sha") == commit,
+    require(run.get("head_branch") in KERNEL_BRANCHES and run.get("head_sha") == commit,
             "Kernel provider run branch or source differs from the binding")
     repository = run.get("repository")
     require(isinstance(repository, dict) and repository.get("full_name") == KERNEL_REPOSITORY_NAME
@@ -172,7 +173,7 @@ def _artifact_identity(run: dict[str, Any], artifact: dict[str, Any], run_id: in
     require(artifact.get("id") == artifact_id and isinstance(artifact_run, dict)
             and artifact_run.get("id") == run_id and artifact_run.get("repository_id") == KERNEL_REPOSITORY_ID
             and artifact_run.get("head_repository_id") == KERNEL_REPOSITORY_ID
-            and artifact_run.get("head_sha") == commit and artifact_run.get("head_branch") == KERNEL_BRANCH,
+            and artifact_run.get("head_sha") == commit and artifact_run.get("head_branch") == run["head_branch"],
             "Kernel provider artifact is not bound to the verified run")
     expected_name = f"kernel-{PLATFORMS[platform_name]}"
     require(artifact.get("name") == expected_name, "Kernel provider artifact name does not match the platform")
