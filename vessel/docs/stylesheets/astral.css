@@ -1,0 +1,244 @@
+/* Astral's design tokens (AstralProjection's astral.css) mapped onto Material for MkDocs' variables.
+   Dark (slate) is the default scheme; the light scheme keeps the same primary and accent at readable contrast. */
+
+:root {
+  --astral-bg: 18 18 20;
+  --astral-surface: 27 27 31;
+  --astral-primary: 124 58 237;
+  --astral-secondary: 110 110 120;
+  --astral-text: 236 236 239;
+  --astral-muted: 147 147 155;
+  --astral-accent: 167 139 250;
+  --astral-success: 94 194 143;
+  --astral-warning: 212 169 74;
+  --astral-error: 225 114 114;
+  --astral-info: 154 140 242;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+}
+
+[data-md-color-scheme="slate"] {
+  --md-hue: 240;
+  --md-default-bg-color: rgb(var(--astral-bg));
+  --md-default-fg-color: rgb(var(--astral-text) / 0.87);
+  --md-default-fg-color--light: rgb(var(--astral-muted));
+  --md-default-fg-color--lighter: rgb(var(--astral-muted) / 0.55);
+  --md-default-fg-color--lightest: rgb(var(--astral-text) / 0.08);
+  --md-typeset-color: rgb(var(--astral-text));
+  --md-primary-fg-color: rgb(var(--astral-surface));
+  --md-primary-fg-color--light: rgb(var(--astral-surface));
+  --md-primary-fg-color--dark: rgb(var(--astral-bg));
+  --md-primary-bg-color: rgb(var(--astral-text));
+  --md-primary-bg-color--light: rgb(var(--astral-muted));
+  --md-accent-fg-color: rgb(var(--astral-accent));
+  --md-accent-fg-color--transparent: rgb(var(--astral-accent) / 0.1);
+  --md-typeset-a-color: rgb(var(--astral-accent));
+  --md-code-bg-color: rgb(var(--astral-surface));
+  --md-code-fg-color: rgb(var(--astral-text));
+  --md-code-hl-color: rgb(var(--astral-primary) / 0.25);
+  --md-footer-bg-color: rgb(var(--astral-surface));
+  --md-footer-bg-color--dark: rgb(var(--astral-bg));
+  --md-footer-fg-color: rgb(var(--astral-text));
+  --md-footer-fg-color--light: rgb(var(--astral-muted));
+  --md-footer-fg-color--lighter: rgb(var(--astral-muted) / 0.7);
+  --md-shadow-z1: 0 1px 2px rgb(0 0 0 / 0.25);
+  --astral-border: rgb(255 255 255 / 0.07);
+  --astral-on-primary: 255 255 255;
+}
+
+/* Light: white surfaces, the primary violet for links (5.7:1 on white), and a darker violet on hover. */
+[data-md-color-scheme="default"] {
+  --md-default-bg-color: rgb(255 255 255);
+  --md-default-fg-color: rgb(24 24 28 / 0.87);
+  --md-default-fg-color--light: rgb(84 84 94);
+  --md-default-fg-color--lighter: rgb(84 84 94 / 0.55);
+  --md-default-fg-color--lightest: rgb(24 24 28 / 0.07);
+  --md-typeset-color: rgb(24 24 28);
+  --md-primary-fg-color: rgb(var(--astral-primary));
+  --md-primary-fg-color--light: rgb(var(--astral-accent));
+  --md-primary-fg-color--dark: rgb(91 33 182);
+  --md-primary-bg-color: rgb(255 255 255);
+  --md-primary-bg-color--light: rgb(255 255 255 / 0.75);
+  --md-accent-fg-color: rgb(91 33 182);
+  --md-accent-fg-color--transparent: rgb(var(--astral-primary) / 0.1);
+  --md-typeset-a-color: rgb(var(--astral-primary));
+  --md-code-bg-color: rgb(245 243 255);
+  --md-code-fg-color: rgb(36 36 44);
+  --md-code-hl-color: rgb(var(--astral-accent) / 0.3);
+  --md-footer-bg-color: rgb(var(--astral-bg));
+  --md-footer-bg-color--dark: rgb(10 10 12);
+  --md-footer-fg-color: rgb(var(--astral-text));
+  --md-footer-fg-color--light: rgb(var(--astral-muted));
+  --md-footer-fg-color--lighter: rgb(var(--astral-muted) / 0.7);
+  --astral-border: rgb(24 24 28 / 0.1);
+  --astral-on-primary: 255 255 255;
+}
+
+body,
+.md-typeset {
+  font-feature-settings: "kern", "liga";
+}
+
+/* The header carries a primary rule underneath, as Astral's surfaces do. */
+.md-header {
+  border-bottom: 1px solid var(--astral-border);
+  box-shadow: none;
+}
+
+[data-md-color-scheme="slate"] .md-header,
+[data-md-color-scheme="slate"] .md-tabs {
+  background-color: rgb(var(--astral-surface));
+}
+
+.md-header__title {
+  font-weight: 600;
+}
+
+.md-typeset h1 {
+  color: var(--md-typeset-color);
+  font-weight: 700;
+}
+
+.md-typeset h2,
+.md-typeset h3 {
+  font-weight: 600;
+}
+
+.md-typeset a:hover {
+  color: var(--md-accent-fg-color);
+}
+
+.md-nav__link--active,
+.md-nav__item .md-nav__link--active {
+  color: var(--md-typeset-a-color);
+}
+
+/* Radii: 6px for small controls and inline code, 10px for blocks, 14px for large panels. */
+.md-typeset code {
+  border-radius: var(--radius-sm);
+}
+
+.md-typeset pre > code,
+.md-typeset .highlight,
+.md-typeset .highlighttable {
+  border-radius: var(--radius-md);
+}
+
+.md-typeset .admonition,
+.md-typeset details {
+  border-radius: var(--radius-md);
+  border-width: 0 0 0 4px;
+  box-shadow: none;
+  background-color: var(--md-code-bg-color);
+  font-size: 0.75rem;
+}
+
+.md-typeset table:not([class]) {
+  border-radius: var(--radius-md);
+  border: 1px solid var(--astral-border);
+  font-size: 0.7rem;
+}
+
+.md-typeset table:not([class]) th {
+  background-color: var(--md-code-bg-color);
+  font-weight: 600;
+}
+
+.md-search__form,
+.md-search__output {
+  border-radius: var(--radius-sm);
+}
+
+.md-search__inner {
+  border-radius: var(--radius-lg);
+}
+
+.md-typeset .md-button {
+  border-radius: var(--radius-sm);
+}
+
+.md-typeset .md-button--primary {
+  background-color: rgb(var(--astral-primary));
+  border-color: rgb(var(--astral-primary));
+  color: rgb(var(--astral-on-primary));
+}
+
+/* Admonition colors from Astral's state tokens. */
+.md-typeset .admonition.note,
+.md-typeset details.note,
+.md-typeset .admonition.info,
+.md-typeset details.info {
+  border-color: rgb(var(--astral-info));
+}
+
+.md-typeset .note > .admonition-title,
+.md-typeset .note > summary,
+.md-typeset .info > .admonition-title,
+.md-typeset .info > summary {
+  background-color: rgb(var(--astral-info) / 0.12);
+}
+
+.md-typeset .note > .admonition-title::before,
+.md-typeset .note > summary::before,
+.md-typeset .info > .admonition-title::before,
+.md-typeset .info > summary::before {
+  background-color: rgb(var(--astral-info));
+}
+
+.md-typeset .admonition.tip,
+.md-typeset details.tip,
+.md-typeset .admonition.success,
+.md-typeset details.success {
+  border-color: rgb(var(--astral-success));
+}
+
+.md-typeset .tip > .admonition-title,
+.md-typeset .tip > summary,
+.md-typeset .success > .admonition-title,
+.md-typeset .success > summary {
+  background-color: rgb(var(--astral-success) / 0.12);
+}
+
+.md-typeset .tip > .admonition-title::before,
+.md-typeset .tip > summary::before,
+.md-typeset .success > .admonition-title::before,
+.md-typeset .success > summary::before {
+  background-color: rgb(var(--astral-success));
+}
+
+.md-typeset .admonition.warning,
+.md-typeset details.warning {
+  border-color: rgb(var(--astral-warning));
+}
+
+.md-typeset .warning > .admonition-title,
+.md-typeset .warning > summary {
+  background-color: rgb(var(--astral-warning) / 0.12);
+}
+
+.md-typeset .warning > .admonition-title::before,
+.md-typeset .warning > summary::before {
+  background-color: rgb(var(--astral-warning));
+}
+
+.md-typeset .admonition.danger,
+.md-typeset details.danger {
+  border-color: rgb(var(--astral-error));
+}
+
+.md-typeset .danger > .admonition-title,
+.md-typeset .danger > summary {
+  background-color: rgb(var(--astral-error) / 0.12);
+}
+
+.md-typeset .danger > .admonition-title::before,
+.md-typeset .danger > summary::before {
+  background-color: rgb(var(--astral-error));
+}
+
+/* In the light scheme the warning and success tokens are too pale for text, so darken titles only. */
+[data-md-color-scheme="default"] .md-typeset .admonition-title,
+[data-md-color-scheme="default"] .md-typeset summary {
+  color: rgb(24 24 28);
+}
