@@ -35,7 +35,8 @@ The "needed by" column is this plan's proposal.
 | 5. PHI on the device | 2 | 3, 4 |
 | 6. Sharing | 1 and 5 | 4 |
 | 7. Keycloak removal | 1 to 6 finished on macOS and iOS | Nothing |
-| 8. Product pass and final verification | 1 to 7 | Nothing |
+| R. Repository consolidation | Vessel move: nothing. Plane move: phase 1 landed and the consumer check | 1 to 7 |
+| 8. Product pass and final verification | 1 to 7 and R | Nothing |
 
 - Phase 1 blocks everything after it, phase 4 included. No spike result feeds phases 1, 5, 6 and 7, so
   the spec gives no fallback for them.
@@ -343,6 +344,32 @@ waits for the rest so the final rerun covers every exit criterion.
 `backend/orchestrator/device_login.py` goes with the rest. Android and Windows lose their sign-in
 code and open to a plain "not available yet" screen (O22).
 
+## Phase R: repository consolidation
+
+**Goal.** Fewer repositories that always change together (spec section 17, O30 to O36).
+**Depends on.** Nothing for the Vessel move. Phase 1 landed and the consumer check for the Plane
+move. **Repositories.** AstralDeep, AstralVessel, AstralPlane, LETS, LETS-demo, mcp_server_examples,
+astraldeep.github.io. **Contracts.** None.
+
+**Work.**
+1. Move AstralVessel into Deep's `vessel/` with its history. `astralvessel` keeps its package,
+   manifest and command, gets its own test job, releases with `vessel-v` tags, and keeps its docs
+   URLs. Transfer its open issues, rebuild or close its open pull requests, then archive it.
+2. Check Plane's consumers and write the result. Then move AstralPlane into Deep's `plane/` with its
+   history, keep its package, migration registry, `SCHEMA_REVISION` and boundary, point the
+   composition check at the in-tree package, add the boundary test, and archive it.
+3. Scan LETS-demo's history for secrets, move it into LETS with its own build target, and archive it.
+4. Review each MCP example. Rewrite only those that fit today's model into Deep `examples/`, then
+   archive `mcp_server_examples`.
+5. Update `AGENTS.md` routing, this plan's landing order and the site's links for the new layout.
+
+**Exit criteria.**
+- `astralvessel` installs and runs from Deep's tree and its tests pass.
+- Deep boots on the in-tree Plane with the same schema revision and migration digest, and the
+  boundary test fails when Deep code imports Plane internals.
+- Each moved repository is archived with a pointer, and its open issues are transferred.
+- The site's Vessel links resolve.
+
 ## Phase 8: product pass and final verification
 
 **Goal.** The finished product feels coherent to the owner and to the agents that use it, on the Mac,
@@ -377,7 +404,8 @@ A change lands in this order so no repository pins something that does not exist
 4. **AstralVessel.** Pins the new Deep and kernel, since it bundles both.
 5. **AstralProjection.** Last. Its kernel library pin moves here, and the clients render Deep's chrome.
 
-AstralPrimitives does not change. LETS changes only if phase 5 needs it. **Open item.** The spec
+AstralPrimitives does not change. LETS changes only if phase 5 needs it. After phase R, steps 2 and 4 fold
+into step 3: Plane and Vessel land inside AstralDeep and pin nothing there. **Open item.** The spec
 does not say how each repository pins the kernel. T1.8 records the mechanism and every later bump
 uses it.
 
