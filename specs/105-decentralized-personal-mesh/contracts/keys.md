@@ -17,6 +17,8 @@ Signing rules are in `event.md` section 3. The certificate that ties the four ke
 
 ## 2. Key groups and epochs
 
+> The `phi` group is now defined by [phi-destinations.md](../../106-sign-in-free-clients/contracts/phi-destinations.md), and its chat PHI key rule lives there too.
+
 A **key group** is a set of devices that share encryption keys. There are two in version 1.
 
 - `personal`: the owner's own devices and nodes.
