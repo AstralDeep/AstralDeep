@@ -7,7 +7,7 @@ These documents fix the formats that spec 106 revises or adds. Each one has a Py
 | Document | Format version | Covers | Vectors | Reference |
 |---|---|---|---|---|
 | [roster-v2.md](roster-v2.md) | `astral.roster/v2` | The accountless roster, device add and removal, stop and resume, creation and recovery export | `vectors/roster-v2.json`, `vectors/crypto-v2.json` | `reference/generate_local_vectors.py` |
-| [caller-ticket.md](caller-ticket.md) | `astral.caller/v1` | The owner-minted caller ticket, the holder proof, the verification order and codes, revocation | `vectors/caller-v1.json` | `reference/caller_ticket.py`, `reference/generate_caller_vectors.py` |
+| [caller-ticket.md](caller-ticket.md) | `astral.caller/v1` | The owner-minted caller ticket, the holder proof, the holder text forms, the verification order and codes, revocation | `vectors/caller-v1.json` | `reference/caller_ticket.py`, `reference/generate_caller_vectors.py` |
 
 A change to a format raises its version. A document, its vectors and its reference module change together, and the reference tests pass before the change merges.
 

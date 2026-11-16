@@ -35,6 +35,10 @@ LIFETIMES = {"1h": 3600, "1d": 86400, "7d": 604800, "30d": 2592000}
 DEFAULT_LIFETIME = "7d"
 FUTURE_SKEW_MS = 300000
 PROOF_WINDOW_MS = 120000
+PROOF_AHEAD_MS = 5000
+RESTART_PAUSE_MS = 5000
+MINTER_KINDS = ("desktop", "pocket", "satellite")
+HOLDER_TEXT = "astral-caller-holder:v1:"
 TOOL_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,63}")
 TICKET_FIELDS = {
     "v",
@@ -57,6 +61,7 @@ CODES = (
     "caller.mesh_mismatch",
     "caller.wrong_node",
     "caller.device_removed",
+    "caller.wrong_minter",
     "caller.bad_signature",
     "caller.stopped",
     "caller.expired",
@@ -116,7 +121,7 @@ def check_ticket(value: Any) -> dict[str, Any]:
     bad = bad or not (
         isinstance(label, str)
         and 1 <= len(label) <= MAX_LABEL
-        and not any(unicodedata.category(c) == "Cc" for c in label)
+        and not any(unicodedata.category(c) in ("Cc", "Cf") for c in label)
     )
     if bad:
         raise MeshError("caller.malformed", "field value")
@@ -162,9 +167,13 @@ def _decode(header: Any, prefix: str, code: str) -> Any:
     ):
         raise MeshError(code, "header")
     try:
-        return strict_loads(b64url_decode(header[len(prefix) :]))
-    except MeshError as exc:
-        raise MeshError(code, exc.code) from exc
+        raw = b64url_decode(header[len(prefix) :])
+        value = strict_loads(raw)
+        if canonical(value) != raw:
+            raise MeshError(code, "not canonical")
+    except (MeshError, ValueError, RecursionError) as exc:
+        raise MeshError(code, "undecodable") from exc
+    return value
 
 
 def sign_ticket(presence_scalar: int, body: dict[str, Any]) -> dict[str, Any]:
@@ -203,7 +212,7 @@ def _verify_with(public: bytes, context: str, obj: dict[str, Any], alg: str) -> 
 class Verifier:
     def __init__(self, state: dict[str, Any]) -> None:
         self.state = state
-        self.seen: dict[str, int] = {}
+        self.seen: dict[tuple[str, str], int] = {}
 
     def verify(
         self, authorization: Any, proof_value: Any, request: dict[str, Any]
@@ -219,6 +228,8 @@ class Verifier:
         member = state["members"].get(device)
         if member is None or device in state["removed"]:
             raise MeshError("caller.device_removed")
+        if member["kind"] not in MINTER_KINDS:
+            raise MeshError("caller.wrong_minter")
         if not _verify_with(
             b64url_decode(member["presence"]), TICKET_CONTEXT, ticket_object, "p256"
         ):
@@ -230,7 +241,7 @@ class Verifier:
             raise MeshError("caller.expired")
         if ticket_object["issued_ms"] > now + FUTURE_SKEW_MS:
             raise MeshError("caller.not_yet_valid")
-        if ticket_object["id"] in state["revoked"]:
+        if ticket_object["id"] in revoked_ids(state["revokes"]):
             raise MeshError("caller.revoked")
         wanted = (ticket_object["id"], request["method"], request["target"])
         if (proof["ticket"], proof["method"], proof["target"]) != wanted or proof[
@@ -238,8 +249,8 @@ class Verifier:
         ] != body_digest(request["body"].encode()):
             raise MeshError("caller.proof_mismatch")
         if (
-            abs(now - proof["ms"]) > PROOF_WINDOW_MS
-            or proof["ms"] < state["started_ms"]
+            not now - PROOF_WINDOW_MS <= proof["ms"] <= now + PROOF_AHEAD_MS
+            or proof["ms"] < state["started_ms"] + RESTART_PAUSE_MS
         ):
             raise MeshError("caller.proof_stale")
         if not _verify_with(
@@ -247,18 +258,21 @@ class Verifier:
         ):
             raise MeshError("caller.proof_bad_signature")
         self.seen = {
-            n: ms for n, ms in self.seen.items() if now - ms <= PROOF_WINDOW_MS
+            k: ms for k, ms in self.seen.items() if now <= ms + PROOF_WINDOW_MS
         }
-        if proof["nonce"] in self.seen:
+        key = (ticket_object["id"], proof["nonce"])
+        if key in self.seen:
             raise MeshError("caller.replayed")
-        self.seen[proof["nonce"]] = proof["ms"]
-        tool = self._covered(ticket_object, request["tool"])
-        return {
+        self.seen[key] = proof["ms"]
+        out = {
             "caller": ticket_object["id"],
             "label": ticket_object["label"],
             "mesh": ticket_object["mesh"],
-            "tool": tool,
         }
+        tool = request.get("tool")
+        if tool is None:
+            return {**out, "tools": [t["name"] for t in ticket_object["tools"]]}
+        return {**out, "tool": self._covered(ticket_object, tool)}
 
     def _covered(self, ticket_object: dict[str, Any], name: str) -> str:
         covered = {t["name"]: t["def"] for t in ticket_object["tools"]}
@@ -298,12 +312,50 @@ def _result(verifier: Verifier, step: dict[str, Any]) -> dict[str, Any]:
         return {"error": exc.code}
 
 
+def parse_holder_text(text: str) -> str:
+    if not isinstance(text, str) or not text.startswith(HOLDER_TEXT):
+        raise MeshError("caller.malformed", "holder form")
+    body = text[len(HOLDER_TEXT) :]
+    if not _raw(body, 32):
+        raise MeshError("caller.malformed", "holder key")
+    return body
+
+
+def parse_key_text(text: str) -> dict[str, str]:
+    if not isinstance(text, str) or not text.startswith(KEY_TEXT):
+        raise MeshError("caller.malformed", "key form")
+    body = text[len(KEY_TEXT) :]
+    if not _raw(body, 32):
+        raise MeshError("caller.malformed", "key seed")
+    public = b64url_encode(crypto.ed25519_public(b64url_decode(body)))
+    return {"holder": public, "holder_text": HOLDER_TEXT + public}
+
+
+def _guard(call: Any) -> dict[str, Any]:
+    try:
+        return {"ok": call()}
+    except MeshError as exc:
+        return {"error": exc.code}
+
+
 def run(kind: str, case_input: dict[str, Any]) -> dict[str, Any]:
     if kind == "caller_verify":
         return _result(Verifier(case_input["state"]), case_input)
     if kind == "caller_verify_sequence":
-        verifier = Verifier(case_input["state"])
-        return {"ok": {"results": [_result(verifier, s) for s in case_input["steps"]]}}
+        state = case_input["state"]
+        verifier = Verifier(state)
+        results = []
+        for step in case_input["steps"]:
+            if "restart" in step:
+                verifier = Verifier({**state, **step["restart"]})
+            if "state" in step:
+                verifier.state = {**verifier.state, **step["state"]}
+            results.append(_result(verifier, step))
+        return {"ok": {"results": results}}
     if kind == "caller_revoke_fold":
-        return {"ok": revoke_fold(case_input)}
+        return _guard(lambda: revoke_fold(case_input))
+    if kind == "caller_holder_text":
+        return _guard(lambda: {"holder": parse_holder_text(case_input["text"])})
+    if kind == "caller_key_text":
+        return _guard(lambda: parse_key_text(case_input["text"]))
     raise KeyError(kind)

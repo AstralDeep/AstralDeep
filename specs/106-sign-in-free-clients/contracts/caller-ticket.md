@@ -15,10 +15,10 @@ A JSON object with exactly these fields. Any other field is `caller.malformed`.
 | `v` | The integer 1 |
 | `id` | base64url of 16 random bytes |
 | `mesh` | The mesh id, `sha256:` and 64 lowercase hex characters |
-| `device` | The minting member, a device id |
+| `device` | The minting member, a device id. Its roster kind must be `desktop`, `pocket` or `satellite` |
 | `node` | The target member, a device id of kind `node` |
 | `holder` | base64url of the caller's raw 32 byte Ed25519 public key |
-| `label` | 1 to 64 characters typed by the owner, no control characters |
+| `label` | 1 to 64 Unicode code points typed by the owner, no control (Cc) or format (Cf) characters |
 | `tools` | 1 to 32 entries sorted by `name` and without repeats, each with exactly `name` and `def` |
 | `issued_ms` | Mint time in milliseconds |
 | `expires_ms` | Expiry in milliseconds |
@@ -41,8 +41,8 @@ Each request carries the header `Astral-Caller-Proof`. Its value is base64url of
 |---|---|
 | `v` | The integer 1 |
 | `ticket` | The ticket `id` |
-| `method` | The HTTP method as sent |
-| `target` | The path and query as sent, starting with `/` |
+| `method` | The HTTP method as sent, 1 to 16 characters |
+| `target` | The path and query as sent, starting with `/`, at most 2048 characters |
 | `body` | `sha256:` and the hash of the exact body bytes, the hash of the empty string for no body |
 | `ms` | Proof time in milliseconds |
 | `nonce` | base64url of 16 random bytes |
@@ -50,18 +50,23 @@ Each request carries the header `Astral-Caller-Proof`. Its value is base64url of
 
 `sig` covers `astral.caller-proof/v1\n` followed by the LETS-CJ/1 bytes of the object without `sig`. Any other field is `caller.proof_malformed`.
 
-The proof window is 120 seconds on either side of the verifier's clock. A verifier refuses a nonce it has already accepted inside the window. A verifier also refuses a proof dated before the verifier started, so a restart cannot replay an old request. The verifier keeps nonces in memory only.
+A proof is in time when `now - 120000 <= ms <= now + 5000` and `ms >= started_ms + 5000`, where `now` is the verifier's clock in milliseconds and `started_ms` is when this verifier started. Both failures are `caller.proof_stale`. The second bound means no proof that a verifier could have accepted before a restart is accepted after it. The cost is a 5 second pause after each restart.
+
+The replay store is keyed by ticket id and nonce. An entry is held until `ms + 120000`, in memory, and is shared by every process that verifies for the node. A verifier records the key only after the holder signature has verified, so a forged proof cannot use up a nonce. A leaked ticket alone does nothing, so the ticket is not a secret.
 
 ## 3. Transport
 
-The ticket travels as `Authorization: AstralCaller <base64url ticket>`, where the base64url text encodes the LETS-CJ/1 bytes of the ticket. Each header is at most 8192 characters. A header over the limit, a missing or different scheme, or text that is not canonical base64url or strict LETS-CJ/1 is malformed.
+The ticket travels as `Authorization: AstralCaller <base64url ticket>`. Only the `AstralCaller` scheme is read. Any other scheme, even with a valid ticket after it, is `caller.malformed`.
 
-Two text forms exist for copying and pasting.
+Ticket and proof bytes must be exact canonical LETS-CJ/1. A verifier decodes the base64url, parses strictly, re-encodes and compares the bytes. Spacing, key order or any other difference is `caller.malformed` for a ticket and `caller.proof_malformed` for a proof. Undecodable bytes, text that is not valid UTF-8 and any header over 8192 characters are refused before decoding, with the same codes and never with an exception.
 
-- `astral-caller-ticket:v1:<base64url>` carries the ticket bytes.
-- `astral-caller-key:v1:<base64url>` carries the 32 byte Ed25519 seed of the holder key.
+Three text forms exist for copying and pasting.
 
-The key form is a secret. The ticket form is not.
+- `astral-caller-ticket:v1:<base64url>` carries the ticket bytes. It is not a secret.
+- `astral-caller-holder:v1:<base64url>` carries the raw 32 byte Ed25519 public key of the holder. It is not a secret. Minting takes only this form.
+- `astral-caller-key:v1:<base64url>` carries the 32 byte Ed25519 seed of the holder key. It is a secret. The caller keeps it and never pastes it into a minting device. An editor that mints a ticket accepts only the holder form and refuses the key form with a message that says so.
+
+A text form with another version, padding, a non-canonical encoding or the wrong key length is `caller.malformed`. The key form derives the holder form, and the vectors pin that.
 
 ## 4. Verification
 
@@ -74,41 +79,50 @@ The verifier is given its own view of the mesh and does not read anything from t
 | `members` | Current members, each with its `presence` public key and `kind` |
 | `removed` | Removed device ids |
 | `stop` | The current stop counter |
-| `revoked` | Caller ids named by `caller:<id>` revokes |
+| `revokes` | The authority revoke keys, each `agent/tool/scope` |
 | `catalog` | The node's current catalog, tool name to definition hash |
-| `now_ms`, `started_ms` | The verifier's clock and its start time |
+| `now_ms`, `started_ms` | The verifier's clock and the time this verifier started |
 | request | `method`, `target`, `body` and the `tool` the request names |
 
 The first failure wins, in this order.
 
 | Step | Check | Code |
 |---|---|---|
-| 1 | Ticket shape, lifetime, header size | `caller.malformed` |
-| 2 | Proof shape and presence | `caller.proof_malformed` |
+| 1 | Ticket shape, exact canonical bytes, lifetime, header size | `caller.malformed` |
+| 2 | Proof shape, exact canonical bytes, header size, presence | `caller.proof_malformed` |
 | 3 | `mesh` equals the verifier's mesh | `caller.mesh_mismatch` |
 | 4 | `node` equals the verifier's node | `caller.wrong_node` |
-| 5 | `device` is a current member and not removed | `caller.device_removed` |
-| 6 | Presence signature verifies against that member's roster key | `caller.bad_signature` |
-| 7 | The current stop counter is not above the ticket's `stop` | `caller.stopped` |
-| 8 | `expires_ms` is after the verifier's clock | `caller.expired` |
-| 9 | `issued_ms` is at most 5 minutes ahead | `caller.not_yet_valid` |
-| 10 | The ticket `id` is not revoked | `caller.revoked` |
-| 11 | The proof names this ticket, method, target and body hash | `caller.proof_mismatch` |
-| 12 | The proof is inside the window and not before the verifier started | `caller.proof_stale` |
-| 13 | The holder signature verifies against `holder` | `caller.proof_bad_signature` |
-| 14 | The nonce was not accepted before inside the window | `caller.replayed` |
-| 15 | The request's tool is in the ticket | `caller.tool_not_covered` |
-| 16 | A catalog tool's `def` equals the node's current definition | `caller.tool_changed` |
+| 5 | `device` is a current member and not removed. An unknown device is treated as removed | `caller.device_removed` |
+| 6 | The member's roster kind is `desktop`, `pocket` or `satellite`. A member of kind `node` cannot mint | `caller.wrong_minter` |
+| 7 | Presence signature verifies against that member's roster key, low-S only | `caller.bad_signature` |
+| 8 | The current stop counter is not above the ticket's `stop` | `caller.stopped` |
+| 9 | `expires_ms` is after the verifier's clock, so an expiry exactly at `now_ms` is expired | `caller.expired` |
+| 10 | `issued_ms` is at most 5 minutes ahead | `caller.not_yet_valid` |
+| 11 | The ticket `id` is not revoked | `caller.revoked` |
+| 12 | The proof names this ticket, method, target and body hash | `caller.proof_mismatch` |
+| 13 | The proof is in time as defined in section 2 | `caller.proof_stale` |
+| 14 | The holder signature verifies against `holder` | `caller.proof_bad_signature` |
+| 15 | The ticket id and nonce were not recorded before | `caller.replayed` |
+| 16 | The request's tool is in the ticket | `caller.tool_not_covered` |
+| 17 | A catalog tool's `def` equals the node's current definition | `caller.tool_changed` |
 
-A tool the ticket covers that the catalog no longer lists is `caller.tool_changed`. The tool `a2a.message` has no definition, so step 16 does not apply to it. A verifier records the nonce once step 14 passes, even if step 15 or 16 then refuses the request.
+A ticket whose `stop` is above the node's stays acceptable until the node's stop reaches it, the same as the 105 ticket rule.
+
+Steps 9 and 10 cannot both fail on a ticket with a valid lifetime, because an expired ticket was issued in the past. Steps 16 and 17 cannot both fail for one tool. The vectors pin every other adjacent pair, so the order of those two pairs is not observable.
+
+A tool the ticket covers that the catalog no longer lists is `caller.tool_changed`. The tool `a2a.message` has no definition, so step 17 does not apply to it. A verifier records the nonce once step 15 passes, even if step 16 or 17 then refuses the request. A proof that fails step 14 does not use its nonce.
+
+A request that names no tool (`tool` absent or null, the MCP `tools/list` call) runs steps 1 to 15 and skips 16 and 17. The result lists the ticket's covered tool names.
 
 Two more codes sit outside the verifier because they depend on the endpoint. `caller.tool_unavailable` means the ticket covers a tool the endpoint cannot dispatch. `caller.no_catalog` means a mint was attempted against a node that has published no catalog.
 
-Deep maps `caller.malformed`, `caller.proof_malformed`, `caller.bad_signature` and `caller.proof_bad_signature` to HTTP 401 and every other code to 403. A successful check returns the caller id, the label, the mesh and the covered tool. The endpoint compares the mesh with its bound owner.
+Deep maps `caller.malformed`, `caller.proof_malformed`, `caller.bad_signature` and `caller.proof_bad_signature` to HTTP 401 and every other code to 403. A successful check returns the caller id, the label, the mesh and the covered tool, or the covered tool names when the request named none. The endpoint compares the mesh with its bound owner.
 
 ## 5. Revocation
 
-Any member revokes a ticket by writing an `auth.revoke` event whose body has agent `caller:<id>`, tool `*` and scope `*`. The authority fold accepts any agent string, so the deployed kernel folds it as an ordinary revoke that matches no real agent. The 105 grant check still passes for every ordinary action beside it, and the vector `caller_revoke_fold` pins that.
+Any member revokes a ticket by writing an `auth.revoke` event whose body has agent `caller:<id>`, tool `*` and scope `*`. Only that exact shape revokes a caller ticket. A revoke for `caller:<id>` with another tool or scope, or for another caller id, does nothing to the ticket, and the vectors pin each.
+
+The authority fold accepts any agent string, so the deployed kernel folds it as an ordinary revoke that matches no real agent. Beside it, the 105 grant check still passes for an ordinary agent action that has no grant. The vector `caller_revoke_fold` uses no grants, a caller revoke and an ordinary action, and expects the check to pass. Its control adds a revoke of `agent-a/*/*` and expects `ticket.grant_revoked`, which shows the check discriminates.
 
 Removing the minting device or raising the stop also refuses its tickets. Deployed apps that list authority entries may show a `caller:<id>` revoke row.
 
@@ -116,44 +130,35 @@ Removing the minting device or raising the stop also refuses its tickets. Deploy
 
 These parts belong to the kernel and are listed here so every implementation agrees.
 
-- `mint_caller_ticket(node, holder_key, label, tool_names, a2a, lifetime_s)` runs on an owner device. It resolves each `def` from the node's current catalog fold, so a host never supplies a hash. The kernel draws the presence prompt from the ticket fields and never from model output.
+- `mint_caller_ticket(node, holder_key, label, tool_names, a2a, lifetime_s)` runs on an owner device and takes only the public holder form of the key, never the seed. It resolves each `def` from the node's current catalog fold, so a host never supplies a hash. The kernel draws the presence prompt from the ticket fields and never from model output.
 - The minting device keeps an index of its tickets under the meta key `mesh.v2.callers`. `caller_tickets()` lists them with `revoked` and `expired`. `revoke_caller_ticket(id)` is idempotent.
 - `verify_caller_request(...)` does every check in section 4, including replay.
-- The node's published mesh catalog is the source of truth for tool names and definitions. MCP `tools/list` returns the ticket's tools that the endpoint can dispatch.
+- The node's published mesh catalog is the source of truth for tool names and definitions. MCP `tools/list` verifies with no tool and returns the ticket's tools that the endpoint can dispatch.
 
 ## 7. Vectors
 
-`vectors/caller-v1.json` uses the vector format of the roster v2 contract. State is given to the verifier directly and is built from the roster v2 test devices with public test keys. Three case kinds exist.
+`vectors/caller-v1.json` uses the vector format of the roster v2 contract. State is given to the verifier directly and is built from the roster v2 test devices with public test keys. The devices are `alice` (kind `desktop`), `bob` (`pocket`), `carol` (`satellite`) and `node` (`node`). The file publishes the holder and stranger seeds and the presence scalars under `test_keys`, so a consumer can recompute every ticket and proof byte. All of them are public test values derived from the labels the generator names.
 
-- `caller_verify` has `state`, `authorization`, `proof` and `request`. The expectation is `{"ok": {"caller", "label", "mesh", "tool"}}` or `{"error": code}`.
-- `caller_verify_sequence` has `state` and `steps`. Each step has the same fields as a single case. The expectation is `{"ok": {"results": [...]}}` with one result per step, and nonces carry from step to step.
-- `caller_revoke_fold` has `caller`, `grants`, `revokes`, `action` and `effect_kind`. The expectation lists the revoked caller ids and shows that the ordinary grant check passes.
+Case kinds:
 
-| Case | Outcome |
+- `caller_verify` has `state`, `authorization`, `proof` and `request`. The expectation is `{"ok": {"caller", "label", "mesh", "tool" or "tools"}}` or `{"error": code}`.
+- `caller_verify_sequence` has `state` and `steps`, each with the fields of a single case. A step may carry `state`, a patch merged into the verifier state before it runs, or `restart`, which replaces the verifier with a new one that has an empty replay store and the patched state. The expectation is `{"ok": {"results": [...]}}` with one result per step.
+- `caller_revoke_fold` has `caller`, `grants`, `revokes`, `action` and `effect_kind`. It expects the revoked caller ids and the pass of the ordinary grant check, or the `ticket.grant_revoked` error.
+- `caller_holder_text` and `caller_key_text` have `text`. They expect the parsed holder key, or for the key form the derived holder key and holder text.
+
+Groups of cases:
+
+| Group | Cases |
 |---|---|
-| `valid_mcp_tool` | accepted |
-| `valid_a2a_message` | accepted |
-| `lifetime_30_days_accepted` | accepted |
-| `other_tool_refused` | `caller.tool_not_covered` |
-| `a2a_not_covered_refused` | `caller.tool_not_covered` |
-| `changed_definition_refused` | `caller.tool_changed` |
-| `missing_catalog_tool_refused` | `caller.tool_changed` |
-| `expired` | `caller.expired` |
-| `lifetime_31_days` | `caller.malformed` |
-| `future_issued_ms` | `caller.not_yet_valid` |
-| `bad_presence_signature` | `caller.bad_signature` |
-| `wrong_mesh` | `caller.mesh_mismatch` |
-| `wrong_node` | `caller.wrong_node` |
-| `removed_device` | `caller.device_removed` |
-| `raised_stop` | `caller.stopped` |
-| `revoked` | `caller.revoked` |
-| `proof_method_mismatch`, `proof_target_mismatch`, `proof_body_mismatch`, `proof_ticket_mismatch` | `caller.proof_mismatch` |
-| `stale_proof`, `proof_before_verifier_start` | `caller.proof_stale` |
-| `bad_holder_signature` | `caller.proof_bad_signature` |
-| `replayed_nonce` | accepted, then `caller.replayed` |
-| `unknown_ticket_field`, `unsorted_tools`, `header_too_long`, `wrong_scheme` | `caller.malformed` |
-| `unknown_proof_field`, `missing_proof` | `caller.proof_malformed` |
-| `first_failure_wins` | `caller.mesh_mismatch` |
-| `caller_revoke_fold` | revoked id listed, ordinary grant passes |
+| Accepted | `valid_mcp_tool`, `valid_a2a_message`, `pocket_minter_accepted`, `satellite_minter_accepted`, `lifetime_30_days_accepted`, `expiry_one_ms_after_now`, `future_issued_ms_at_limit`, `label_64_code_points_accepted`, `tools_32_accepted`, the tools list cases |
+| Tool | `other_tool_refused`, `a2a_not_covered_refused`, `changed_definition_refused`, `missing_catalog_tool_refused` |
+| Lifetime and time | `expired`, `expiry_exactly_now`, `lifetime_31_days`, `lifetime_30_days_plus_1_ms`, `expires_equal_to_issued`, `expires_before_issued`, `future_issued_ms` |
+| Signer and device | `bad_presence_signature`, `high_s_presence_signature`, `wrong_mesh`, `wrong_node`, `removed_device`, `unknown_minting_device`, `node_minter_refused`, `raised_stop` |
+| Revocation | `revoked`, `revoke_for_one_tool_ignored`, `revoke_for_one_scope_ignored`, `revoke_of_another_caller_ignored`, `caller_revoke_fold`, `caller_revoke_fold_control_refuses_covered_agent` |
+| Proof | the four `proof_*_mismatch` cases, `stale_proof`, `proof_at_window_start`, `proof_ahead_5s`, `proof_ahead_beyond_5s`, `proof_at_start_pause_end`, `proof_before_start_pause_end`, `bad_holder_signature` |
+| Replay and restart | `replayed_nonce`, `same_nonce_on_another_ticket_accepted`, `restart_refuses_proof_accepted_before`, `failed_signature_does_not_use_the_nonce`, `uncovered_tool_uses_the_nonce` |
+| Order | `order_<a>_before_<b>` for each adjacent pair that can fail together, each with defects at both steps and the earlier code expected, `first_failure_wins` |
+| Shape | ticket fields, version, label length and character classes, tool count, duplicates, order, name grammar, `a2a.message` definition, holder key length, header and proof limits, canonical bytes, base64 and UTF-8 failures, scheme cases |
+| Text forms | `holder_form_accepted`, `key_form_refused_by_minting`, `key_form_derives_holder` and the malformed forms |
 
 Regenerate with `python specs/106-sign-in-free-clients/contracts/reference/generate_caller_vectors.py` and verify with `--check`.
