@@ -1,5 +1,5 @@
 """Checks the draft client metadata document and app-link association file against the MCP 2026-07-28 rules.
-Run it directly or through test_drafts.py, and the site publish task consumes the same files.
+Run it directly or through test_drafts.py.
 """
 
 from __future__ import annotations

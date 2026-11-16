@@ -274,3 +274,21 @@ def test_call_without_a_stored_credential_fails_closed() -> None:
         with pytest.raises(Refused) as refusal:
             call(connection, fx.rs_url, "tools/list")
         assert refusal.value.code == "not_signed_in"
+
+
+def test_trace_for_deepest_metadata_fallback_is_exactly_this() -> None:
+    with Fixture(FixtureConfig(metadata_at="openid_append", issuer_path="/tenant1")) as fx:
+        connection = run(fx)[0].connect()
+        assert [line.replace(fx.issuer, "<issuer>") for line in connection.trace] == [
+            "probe without token returned 401",
+            "resource metadata url taken from WWW-Authenticate",
+            "GET /.well-known/oauth-protected-resource/mcp -> found",
+            "GET /.well-known/oauth-authorization-server/tenant1 -> missing",
+            "GET /.well-known/openid-configuration/tenant1 -> missing",
+            "GET /tenant1/.well-known/openid-configuration -> found",
+            "authorization server <issuer> supports S256",
+            "registration: dynamic",
+            "iss check passed",
+            "code redeemed with resource and code_verifier",
+            "tokens stored in keystore under connection and issuer",
+        ]

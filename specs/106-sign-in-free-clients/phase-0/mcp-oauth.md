@@ -36,7 +36,7 @@ Python 3.11.15, pytest 9.1.1, ruff 0.15.21. Result: 50 passed in 1.04 s. Ruff re
 
 ## Discovery trace
 
-Fixture with issuer `http://127.0.0.1:<port>/tenant1` and metadata served only at the OpenID path-appending location. This is the last URL in the fixed order.
+This is the `adapter.trace` of test `test_trace_for_deepest_metadata_fallback_is_exactly_this`, which asserts every line. The issuer is `http://127.0.0.1:<port>/tenant1` and the metadata is served only at the OpenID path-appending location, the last URL in the fixed order. The test replaces the port-bearing issuer with `<issuer>`.
 
 ```
 probe without token returned 401
@@ -45,7 +45,7 @@ GET /.well-known/oauth-protected-resource/mcp -> found
 GET /.well-known/oauth-authorization-server/tenant1 -> missing
 GET /.well-known/openid-configuration/tenant1 -> missing
 GET /tenant1/.well-known/openid-configuration -> found
-authorization server ... supports S256
+authorization server <issuer> supports S256
 registration: dynamic
 iss check passed
 code redeemed with resource and code_verifier
@@ -57,7 +57,7 @@ Test `test_authorization_server_metadata_order` covers five placements and check
 
 When `code_challenge_methods_supported` is absent, empty, or lists only `plain`, the adapter raises `no_s256`. The fixture then records zero registrations, zero authorization requests and zero token requests, and the keystore stays empty. The tests are the three cases of `test_missing_s256_is_refused_with_nothing_granted`. `test_second_authorization_server_with_s256_is_used_when_first_lacks_it` shows the adapter skipping a server without S256 and using the next listed one.
 
-The revision text says to refuse when the field is absent. It also says clients must use S256 when capable. Spec 106 says refuse when S256 is absent from the list. The adapter follows spec 106, which is the stricter reading.
+The revision's security page (https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations) says "If `code_challenge_methods_supported` is absent, the authorization server does not support PKCE and MCP clients MUST refuse to proceed." It also says clients "MUST use the `S256` code challenge method when technically capable". It states no refusal for a list that is present without S256. Spec 106 section 7.4.1 refuses in that case too, so the adapter is stricter than the revision's explicit text. The revision's intent for that case is UNVERIFIED.
 
 ## Registration order
 
@@ -100,9 +100,14 @@ Compared with `backend/orchestrator/remote_mcp_oauth.py` and `remote_mcp_connect
 
 ## Spec 106 calls
 
-- C10, C11, C14 and the 7.4.1 order hold as written.
-- C9 holds. The keystore keyed by connection id and issuer worked with no extra field.
-- C16 and O16 hold with one risk below about `application_type`.
+- C8 (connection record holds no secret). Supports. The spike keeps tokens only in a keystore keyed by connection id and issuer, and the connection object holds none. It does not build the signed record or the event.
+- C9 (credentials in the device keystore, keyed by connection id and issuer). Supports. The keyed store worked with no extra field. The platform keystores are untouched.
+- C10 (code picks the adapter, the model never sees a token). Supports for the token half. The adapter has no model input, and the token scan passes. The adapter choice itself is not exercised.
+- C11 (system browser sign-in). Supports in outline. The browser is an injected function that returns the redirect. No real browser or platform session ran.
+- C12 (the executing device needs its own credential). Supports. `test_call_without_a_stored_credential_fails_closed` shows `not_signed_in`. Routing a prompt to the device is not touched.
+- C13 (first connect is an owner approval signed by the presence key). Does not touch it. No approval card or signature exists in the spike.
+- C14 (discovery goes through the egress path). Does not touch it. The spike uses plain urllib. It only shows that discovery needs a guard, since it refuses non-HTTPS.
+- C16 and O16. Support, with the `application_type` risk below.
 
 ## What T2.6 to T2.9 can take
 
