@@ -1,9 +1,10 @@
 """Checks the F_GETPATH canonicalization against a real macOS filesystem, where a stated case differs from the on-disk case.
-It lives in its own file so the Linux harness never has to skip it.
+It runs only when ASTRAL_EXEC_HARNESS=1 is set by hand on a Mac, and every other run skips it.
 """
 
 from __future__ import annotations
 
+import os
 import sys
 
 import pytest
@@ -12,7 +13,8 @@ from astral_exec.paths import canonical_path
 from exec_vectors import minimal_policy
 
 pytestmark = pytest.mark.skipif(
-    sys.platform != "darwin", reason="F_GETPATH exists only on macOS"
+    os.environ.get("ASTRAL_EXEC_HARNESS") != "1" or sys.platform != "darwin",
+    reason="set ASTRAL_EXEC_HARNESS=1 on a Mac to run this",
 )
 
 

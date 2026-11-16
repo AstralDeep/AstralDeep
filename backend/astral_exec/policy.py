@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from collections.abc import Callable, Mapping
 from typing import Any
@@ -21,7 +22,7 @@ from .constants import (
     TOP_FIELDS,
     WALL_MS,
 )
-from .errors import PolicyError
+from .errors import ExecRefused, PolicyError, refuse
 from .fold import assigned, contains, fold
 from .paths import path_problem
 
@@ -154,10 +155,15 @@ def _document(data: Any) -> Any:
     raise canonjson.CanonicalError("a policy is JSON text or an object")
 
 
+_VALIDATED = object()
+
+
 class Policy:
     __slots__ = ("_canonical",)
 
-    def __init__(self, canonical_bytes: bytes) -> None:
+    def __init__(self, token: object, canonical_bytes: bytes) -> None:
+        if token is not _VALIDATED:
+            raise TypeError("build a Policy with Policy.parse or Policy.load")
         self._canonical = canonical_bytes
 
     @classmethod
@@ -169,15 +175,25 @@ class Policy:
         except canonjson.CanonicalError as error:
             raise PolicyError("policy.malformed", str(error)) from error
         validate(document, platform)
-        return cls(canonjson.canonical(document))
+        return cls(_VALIDATED, canonjson.canonical(document))
 
     @classmethod
     def load(
         cls,
         data: bytes | str | Mapping[str, Any],
         platform: str,
-        *,
-        resolve: Callable[[str, str], str] = paths.canonical_path,
+        data_dir: str | None = None,
+    ) -> Policy:
+        return cls._load(data, platform, data_dir, paths.canonical_path, os.stat)
+
+    @classmethod
+    def _load(
+        cls,
+        data: bytes | str | Mapping[str, Any],
+        platform: str,
+        data_dir: str | None,
+        resolve: Callable[[str, str], str],
+        stat: Callable[[str], Any],
     ) -> Policy:
         policy = cls.parse(data, platform)
         document = policy.document
@@ -193,6 +209,10 @@ class Policy:
                 raise PolicyError(
                     "policy.path_invalid", f"{where}: not the canonical path"
                 )
+        if data_dir is not None:
+            checked = paths._check_context_path(data_dir, "data_dir", platform, resolve)
+            if paths.aliases_data_dir(document, platform, checked, stat):
+                raise ExecRefused(refuse("exec.policy_overlaps_data"))
         return policy
 
     @property

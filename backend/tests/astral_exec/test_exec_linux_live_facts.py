@@ -1,9 +1,10 @@
 """Probes the real machine and selects a backend, which only a Linux host with bubblewrap, Landlock ABI 6 and user namespaces can answer.
-The harness under scripts/exec_harness runs it, and a plain macOS run reports it as skipped.
+It runs only when ASTRAL_EXEC_HARNESS=1, which only scripts/exec_harness/run.sh sets, so a host without bubblewrap never runs it.
 """
 
 from __future__ import annotations
 
+import os
 import sys
 
 import pytest
@@ -11,7 +12,10 @@ from astral_exec import Backend, Policy, select
 from astral_exec.facts import probe
 from exec_vectors import minimal_policy
 
-pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="needs a Linux host")
+pytestmark = pytest.mark.skipif(
+    os.environ.get("ASTRAL_EXEC_HARNESS") != "1" or sys.platform != "linux",
+    reason="runs only under scripts/exec_harness/run.sh on linux",
+)
 
 
 def test_the_real_probe_finds_landlock_bwrap_and_user_namespaces():
@@ -29,3 +33,7 @@ def test_the_real_facts_select_the_linux_backend():
         Policy.parse(minimal_policy(), "linux"), facts, "/var/lib/astral/node"
     )
     assert outcome == Backend("linux")
+    assert outcome.bwrap == facts.bwrap_path and outcome.bwrap in (
+        "/usr/bin/bwrap",
+        "/bin/bwrap",
+    )

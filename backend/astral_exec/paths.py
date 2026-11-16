@@ -9,10 +9,12 @@ import sys
 from collections.abc import Callable
 from typing import Any
 
+from .constants import DARWIN_BASE, EXEC_SUBDIRECTORY, LINUX_BASE
 from .errors import ContextError
 from .fold import assigned
 
 _PATH_MAX = 1024
+_O_EVTONLY = getattr(os, "O_EVTONLY", 0x8000)
 _MAX_PATH_BYTES = 4096
 
 
@@ -36,7 +38,7 @@ def canonical_path(path: str, platform: str) -> str:
     if platform == "darwin" and sys.platform == "darwin":
         import fcntl
 
-        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+        fd = os.open(path, _O_EVTONLY | os.O_NONBLOCK | os.O_CLOEXEC)
         try:
             raw = fcntl.fcntl(fd, fcntl.F_GETPATH, bytes(_PATH_MAX))
         finally:
@@ -45,12 +47,8 @@ def canonical_path(path: str, platform: str) -> str:
     return os.path.realpath(path, strict=True)
 
 
-def canonical_context_path(
-    value: Any,
-    name: str,
-    platform: str,
-    *,
-    resolve: Callable[[str, str], str] = canonical_path,
+def _check_context_path(
+    value: Any, name: str, platform: str, resolve: Callable[[str, str], str]
 ) -> str:
     if not isinstance(value, str) or path_problem(value):
         raise ContextError(f"{name} must be an absolute normalized path")
@@ -63,3 +61,48 @@ def canonical_context_path(
     if resolved != value:
         raise ContextError(f"{name} is not the canonical path")
     return value
+
+
+def canonical_context_path(value: Any, name: str, platform: str) -> str:
+    return _check_context_path(value, name, platform, canonical_path)
+
+
+def _identities(path: str, stat: Callable[[str], Any]) -> list[tuple[int, int]]:
+    parts = path.split("/")[1:]
+    chain = []
+    for end in range(len(parts) + 1):
+        try:
+            info = stat("/" + "/".join(parts[:end]))
+        except OSError:
+            if end == len(parts):
+                return []
+            continue
+        chain.append((info.st_dev, info.st_ino))
+    return chain
+
+
+def aliases_data_dir(
+    document: dict[str, Any],
+    platform: str,
+    data_dir: str,
+    stat: Callable[[str], Any] = os.stat,
+) -> bool:
+    data_chain = _identities(data_dir, stat)
+    if not data_chain:
+        return False
+    data_id = data_chain[-1]
+    base = {"darwin": DARWIN_BASE, "linux": LINUX_BASE}.get(platform, ())
+    for root in (*base, *document["reads"]):
+        chain = _identities(root, stat)
+        if chain and (data_id in chain or chain[-1] in data_chain):
+            return True
+    chain = _identities(document["workspace"], stat)
+    if not chain:
+        return False
+    if chain[-1] in data_chain:
+        return True
+    if data_id not in chain:
+        return False
+    exec_chain = _identities(f"{data_dir}/{EXEC_SUBDIRECTORY}", stat)
+    exec_id = exec_chain[-1] if len(exec_chain) > len(data_chain) else None
+    return exec_id is None or exec_id not in chain or exec_id == chain[-1]

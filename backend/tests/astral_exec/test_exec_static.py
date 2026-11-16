@@ -22,26 +22,65 @@ CONTRACTS = REPO / "specs" / "106-sign-in-free-clients" / "contracts"
 
 
 def _modules():
-    return sorted(PACKAGE.glob("*.py"))
+    return sorted(PACKAGE.rglob("*.py"))
+
+
+def _import_offenders(source: str, name: str):
+    offenders = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            roots = [alias.name.split(".")[0] for alias in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            if node.level > 1:
+                offenders.append((name, "relative import leaves the package"))
+                continue
+            if node.level:
+                continue
+            roots = [(node.module or "").split(".")[0]]
+        elif isinstance(node, ast.Call):
+            callee = node.func
+            label = (
+                callee.attr
+                if isinstance(callee, ast.Attribute)
+                else getattr(callee, "id", "")
+            )
+            if label in ("import_module", "__import__"):
+                offenders.append((name, label))
+            continue
+        else:
+            continue
+        offenders += [
+            (name, root)
+            for root in roots
+            if root not in sys.stdlib_module_names and root != "astral_exec"
+        ]
+    return offenders
 
 
 def test_every_import_is_standard_library_or_the_package_itself():
     offenders = []
     for path in _modules():
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                roots = [alias.name.split(".")[0] for alias in node.names]
-            elif isinstance(node, ast.ImportFrom):
-                if node.level:
-                    continue
-                roots = [(node.module or "").split(".")[0]]
-            else:
-                continue
-            for root in roots:
-                if root not in sys.stdlib_module_names and root != "astral_exec":
-                    offenders.append((path.name, root))
+        offenders += _import_offenders(path.read_text(encoding="utf-8"), path.name)
     assert offenders == []
+
+
+def test_the_import_scanner_flags_dynamic_third_party_and_escaping_imports():
+    for source in (
+        "import requests",
+        "from yaml import x",
+        "import importlib\nimportlib.import_module('x')",
+        "__import__('x')",
+        "from .. import x",
+        "from ..other import x",
+    ):
+        assert _import_offenders(source, "probe.py"), source
+    for source in (
+        "import os",
+        "from . import x",
+        "from .x import y",
+        "from astral_exec import x",
+    ):
+        assert _import_offenders(source, "probe.py") == [], source
 
 
 def test_the_package_imports_in_a_bare_interpreter_with_no_site_packages():
@@ -211,16 +250,14 @@ def test_the_vector_copy_equals_the_contract_vectors():
     )
 
 
-def test_each_module_opens_with_a_short_header_naming_no_feature():
-    for path in _modules():
+def test_each_module_and_test_file_opens_with_a_short_header_naming_no_feature():
+    files = [*_modules(), *sorted(pathlib.Path(__file__).parent.glob("*.py"))]
+    for path in files:
         tree = ast.parse(path.read_text(encoding="utf-8"))
         header = ast.get_docstring(tree)
         assert header, path.name
         sentences = [s for s in header.replace("\n", " ").split(". ") if s.strip()]
         assert len(sentences) <= 3, path.name
         lowered = header.lower()
-        assert (
-            "spec 106" not in lowered
-            and "task " not in lowered
-            and "phase " not in lowered
-        )
+        for banned in ("spec 106", "task ", "phase ", "feature "):
+            assert banned not in lowered, (path.name, banned)

@@ -199,11 +199,41 @@ def test_no_environment_or_option_turns_a_refusal_into_a_run(monkeypatch):
 
 def test_the_selection_modules_never_read_the_environment():
     package = pathlib.Path(astral_exec.__file__).parent
-    for name in ("select.py", "policy.py", "errors.py", "constants.py"):
-        tree = ast.parse((package / name).read_text(encoding="utf-8"))
+    for module in sorted(package.rglob("*.py")):
+        if module.name in ("facts.py", "fold_table.py"):
+            continue
+        name = module.name
+        tree = ast.parse(module.read_text(encoding="utf-8"))
         used = {
             node.attr if isinstance(node, ast.Attribute) else node.id
             for node in ast.walk(tree)
             if isinstance(node, (ast.Attribute, ast.Name))
         }
         assert not used & {"environ", "getenv", "putenv"}, name
+
+
+def test_a_refusal_is_falsy_and_a_backend_truthy_so_truth_tests_cannot_run_a_refusal():
+    refused = select(
+        Policy.parse(minimal_policy(), "linux"),
+        {**GOOD_FACTS, "bwrap": False},
+        "/var/lib/astral/node",
+    )
+    granted = select(
+        Policy.parse(minimal_policy(), "linux"), GOOD_FACTS, "/var/lib/astral/node"
+    )
+    assert refused.ok is False and not refused
+    assert granted.ok is True and granted
+    assert (refused.to_dict()["ok"], granted.ok) == (False, True)
+    for case in SELECTION:
+        outcome = (
+            select(
+                Policy.parse(case["policy"], "linux"), case["facts"], case["data_dir"]
+            )
+            if "policy_error" not in case["result"]
+            else None
+        )
+        if outcome is not None:
+            assert (
+                bool(outcome) is case["result"]["ok"]
+                and outcome.ok is case["result"]["ok"]
+            )

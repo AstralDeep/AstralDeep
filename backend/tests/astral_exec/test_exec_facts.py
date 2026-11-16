@@ -4,13 +4,24 @@ Each probe result is fed to select, so a fact that probes wrongly changes the re
 
 from __future__ import annotations
 
+import os
+import types
+
 import pytest
 from astral_exec import Backend, Policy, Refusal, select
 from astral_exec.constants import FACT_KEYS
-from astral_exec.facts import Hooks, probe
+from astral_exec.facts import Hooks, probe, resolve_bwrap
 from exec_vectors import minimal_policy
 
 DATA_DIR = "/var/lib/astral/node"
+
+
+def _stat(mode=0o100755, uid=0):
+    return types.SimpleNamespace(st_mode=mode, st_uid=uid)
+
+
+def _missing(path):
+    raise FileNotFoundError(path)
 
 
 def _hooks(**overrides):
@@ -18,7 +29,8 @@ def _hooks(**overrides):
         "platform": "linux",
         "syscall": lambda number, a, b, c: 6,
         "executable": lambda path: path == "/usr/bin/true",
-        "which": lambda name: "/usr/bin/bwrap" if name == "bwrap" else None,
+        "stat": lambda path: _stat() if path == "/usr/bin/bwrap" else _missing(path),
+        "sandbox_check": lambda pid: 0,
         "read_text": lambda path: "1",
         "run": lambda argv: 0,
         "env": {},
@@ -99,16 +111,107 @@ def test_a_failing_or_odd_landlock_probe_reports_zero(syscall):
 
 
 def test_missing_bwrap_refuses_with_bwrap_missing():
-    outcome = _select(_hooks(which=lambda name: None))
+    outcome = _select(_hooks(stat=_missing))
     assert isinstance(outcome, Refusal) and outcome.reason == "bwrap_missing"
 
 
-def test_a_which_that_raises_counts_as_absent():
-    def which(name):
-        raise OSError("path walk failed")
+def test_a_stat_that_raises_counts_as_absent():
+    def stat(path):
+        raise OSError("stat failed")
 
-    facts = probe(_hooks(which=which))
-    assert facts["bwrap"] is False
+    assert probe(_hooks(stat=stat))["bwrap"] is False
+
+
+@pytest.mark.parametrize(
+    "info",
+    [
+        _stat(uid=1000),
+        _stat(mode=0o100775),
+        _stat(mode=0o100757),
+        _stat(mode=0o100644),
+        _stat(mode=0o040755),
+        _stat(mode=0o120777),
+    ],
+    ids=[
+        "not_root",
+        "group_writable",
+        "world_writable",
+        "not_executable",
+        "directory",
+        "symlink_mode",
+    ],
+)
+def test_a_bwrap_that_is_not_root_owned_and_locked_down_is_absent(info):
+    facts = probe(_hooks(stat=lambda path: info))
+    assert facts["bwrap"] is False and facts.bwrap_path is None
+    outcome = _select(_hooks(stat=lambda path: info))
+    assert isinstance(outcome, Refusal) and outcome.reason == "bwrap_missing"
+
+
+def test_bwrap_is_looked_up_only_at_fixed_absolute_paths():
+    asked = []
+
+    def stat(path):
+        asked.append(path)
+        return _missing(path)
+
+    assert resolve_bwrap(_hooks(stat=stat)) is None
+    assert asked == ["/usr/bin/bwrap", "/bin/bwrap"]
+
+
+def test_the_second_fixed_path_is_used_when_the_first_is_absent():
+    hooks = _hooks(
+        stat=lambda path: _stat() if path == "/bin/bwrap" else _missing(path)
+    )
+    assert resolve_bwrap(hooks) == "/bin/bwrap"
+    assert probe(hooks).bwrap_path == "/bin/bwrap"
+
+
+def test_the_trial_and_the_selected_backend_use_the_resolved_binary():
+    seen = []
+
+    def run(argv):
+        seen.append(argv[0])
+        return 0
+
+    hooks = _hooks(run=run)
+    facts = probe(hooks)
+    assert facts.bwrap_path == "/usr/bin/bwrap" and seen == ["/usr/bin/bwrap"]
+    outcome = select(Policy.parse(minimal_policy(), "linux"), facts, DATA_DIR)
+    assert outcome == Backend("linux") and outcome.bwrap == "/usr/bin/bwrap"
+
+
+@pytest.mark.parametrize(
+    "path_value", [None, "", ".", "bin:", ":/usr/bin", "relative/dir"]
+)
+def test_a_stand_in_bwrap_in_the_working_directory_is_never_found(
+    tmp_path, monkeypatch, path_value
+):
+    (tmp_path / "bwrap").write_text("#!/bin/sh\nexit 0\n")
+    (tmp_path / "bwrap").chmod(0o755)
+    (tmp_path / "bin").mkdir()
+    (tmp_path / "bin" / "bwrap").write_text("#!/bin/sh\nexit 0\n")
+    (tmp_path / "bin" / "bwrap").chmod(0o755)
+    monkeypatch.chdir(tmp_path)
+    if path_value is None:
+        monkeypatch.delenv("PATH", raising=False)
+    else:
+        monkeypatch.setenv("PATH", path_value)
+    real = Hooks(platform="linux", syscall=lambda n, a, b, c: 6, env={})
+    found = resolve_bwrap(real)
+    assert found is None or found in ("/usr/bin/bwrap", "/bin/bwrap")
+    assert found != str(tmp_path / "bwrap")
+    stand_in = Hooks(
+        platform="linux",
+        syscall=lambda n, a, b, c: 6,
+        stat=lambda path: (
+            os.stat(tmp_path / "bwrap") if path == "bwrap" else _missing(path)
+        ),
+        run=lambda argv: 0,
+        executable=lambda path: True,
+        read_text=lambda path: "1",
+    )
+    assert probe(stand_in)["bwrap"] is False
 
 
 def test_the_bwrap_trial_decides_userns_and_runs_the_confinement_flags():
@@ -172,10 +275,22 @@ def test_garbage_sysctls_defer_to_the_trial():
     assert probe(_hooks(read_text=lambda name: "banana"))["userns"] is True
 
 
-def test_without_bwrap_the_sysctls_alone_answer_userns():
-    no_bwrap = {"which": lambda name: None}
-    assert probe(_hooks(**no_bwrap))["userns"] is True
-    assert probe(_hooks(read_text=lambda name: "0", **no_bwrap))["userns"] is False
+def test_without_a_trial_userns_is_false_whatever_the_sysctls_say():
+    no_bwrap = {"stat": _missing}
+
+    def run(argv):
+        raise AssertionError("no trial without bwrap")
+
+    assert probe(_hooks(run=run, **no_bwrap))["userns"] is False
+    assert (
+        probe(_hooks(run=run, read_text=lambda name: "1", **no_bwrap))["userns"]
+        is False
+    )
+
+    def unreadable(name):
+        raise FileNotFoundError(name)
+
+    assert probe(_hooks(run=run, read_text=unreadable, **no_bwrap))["userns"] is False
 
 
 def test_no_true_binary_means_no_trial_and_no_userns():
@@ -207,7 +322,7 @@ def test_darwin_finds_sandbox_exec_and_ignores_linux_probes():
         executable=lambda path: path == "/usr/bin/sandbox-exec",
         syscall=_raises(AssertionError("never called on darwin")),
         run=lambda argv: (_ for _ in ()).throw(AssertionError("no trial on darwin")),
-        which=lambda name: None,
+        stat=_missing,
     )
     facts = probe(hooks)
     assert facts == {
@@ -239,6 +354,46 @@ def test_the_app_sandbox_is_detected_on_darwin(env):
     assert probe(hooks)["app_sandboxed"] is True
     outcome = _select(hooks)
     assert isinstance(outcome, Refusal) and outcome.reason == "app_sandboxed"
+
+
+def test_sandbox_check_is_the_primary_app_sandbox_signal():
+    seen = []
+
+    def check(pid):
+        seen.append(pid)
+        return 1
+
+    hooks = _hooks(
+        platform="darwin",
+        executable=lambda path: True,
+        sandbox_check=check,
+        pid=lambda: 4242,
+    )
+    assert probe(hooks)["app_sandboxed"] is True
+    assert seen == [4242]
+    outcome = _select(hooks)
+    assert isinstance(outcome, Refusal) and outcome.reason == "app_sandboxed"
+
+
+def test_an_unavailable_or_failing_sandbox_check_reports_sandboxed_on_darwin():
+    def broken(pid):
+        raise OSError("symbol missing")
+
+    for check in (broken, lambda pid: None):
+        hooks = _hooks(
+            platform="darwin", executable=lambda path: True, sandbox_check=check
+        )
+        assert probe(hooks)["app_sandboxed"] is True
+
+
+def test_a_clean_sandbox_check_with_a_clean_environment_is_not_sandboxed():
+    hooks = _hooks(
+        platform="darwin",
+        executable=lambda path: True,
+        sandbox_check=lambda pid: 0,
+        env={},
+    )
+    assert probe(hooks)["app_sandboxed"] is False
 
 
 def test_an_empty_container_id_is_not_a_sandbox():

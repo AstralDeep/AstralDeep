@@ -32,7 +32,7 @@ trap 'docker rm -f "$name" >/dev/null 2>&1 || true' EXIT INT TERM
 
 args=(run --rm --name "$name" --user 1000:1000
   --security-opt seccomp=unconfined --security-opt apparmor=unconfined --security-opt systempaths=unconfined
-  -v "$repo:/src:ro" -e PYTHONDONTWRITEBYTECODE=1 -w /src)
+  -v "$repo:/src:ro" -e PYTHONDONTWRITEBYTECODE=1 -e ASTRAL_EXEC_HARNESS=1 -w /src)
 
 path="/src/backend"
 source_dir="/src/backend/astral_exec"

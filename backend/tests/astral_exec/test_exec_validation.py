@@ -1,5 +1,5 @@
 """Runs every committed validation vector through astral_exec.Policy and pins the parsing edge cases the vectors do not name.
-The vector file is a copy of the Task 1 contract vectors, so a failure here means the product package disagrees with the reference.
+The vector file is a copy of the contract vectors, so a failure here means the product package disagrees with the reference.
 """
 
 from __future__ import annotations

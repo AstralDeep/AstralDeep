@@ -29,6 +29,13 @@ class Refusal:
     extras: tuple[tuple[str, Any], ...] = ()
 
     @property
+    def ok(self) -> bool:
+        return False
+
+    def __bool__(self) -> bool:
+        return False
+
+    @property
     def details(self) -> dict[str, Any]:
         return dict(self.extras)
 

@@ -5,7 +5,7 @@ It returns a Backend or a Refusal, reads no environment and has no override, so 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from .constants import (
@@ -24,6 +24,11 @@ from .policy import Policy
 @dataclass(frozen=True)
 class Backend:
     name: str
+    bwrap: str | None = field(default=None, compare=False)
+
+    @property
+    def ok(self) -> bool:
+        return True
 
 
 def _is_int(value: Any) -> bool:
@@ -99,7 +104,7 @@ def select(
             return refuse("exec.backend_unavailable", "bwrap_missing")
         if not checked["userns"]:
             return refuse("exec.backend_unavailable", "userns_denied")
-        return Backend("linux")
+        return Backend("linux", getattr(facts, "bwrap_path", None))
     if platform == "darwin":
         if not checked["sandbox_exec"]:
             return refuse("exec.backend_unavailable", "sandbox_exec_missing")
