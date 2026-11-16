@@ -247,8 +247,6 @@ async def test_write_uses_original_credential_verification_on_every_retry(contro
 
     app, _, read, repo = controls
     app.dependency_overrides.clear()
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
-    monkeypatch.setenv("MOCK_AUTH", "false")
     monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-frontend")
     monkeypatch.setattr(auth, "_get_keycloak_config", lambda: ("https://iam.example/realms/test", "astral-frontend", ""))
     monkeypatch.setattr("shared.jwks_cache.get_jwks", AsyncMock(return_value={"keys": []}))

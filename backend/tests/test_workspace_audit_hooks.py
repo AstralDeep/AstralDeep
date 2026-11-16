@@ -244,7 +244,6 @@ def _fake_async_client(payload=None, fail=False):
 
 
 def _refresh_env(monkeypatch, db):
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
     monkeypatch.setenv("KEYCLOAK_AUTHORITY", "http://keycloak.test/realms/astral")
     monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-frontend")
     monkeypatch.delenv("KEYCLOAK_CLIENT_SECRET", raising=False)

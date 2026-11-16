@@ -54,7 +54,6 @@ _SESSION_OWNER_SEQUENCE = itertools.count(1)
 def session_fixture(runtime, monkeypatch, signing_key, *, owner=None):
     monkeypatch.setenv("WEB_SESSION_ENC_KEY", Fernet.generate_key().decode())
     monkeypatch.setenv("WEB_SESSION_SECRET", "synthetic-private-cookie-key")
-    monkeypatch.setenv("MOCK_AUTH", "false")
     monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://request-authority.invalid/realm")
     monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-web")
     monkeypatch.setenv("KEYCLOAK_CLIENT_SECRET", "synthetic-secret")

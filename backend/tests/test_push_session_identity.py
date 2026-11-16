@@ -49,7 +49,6 @@ def harness(runtime, signing_key, monkeypatch):
     monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", KEY)
     monkeypatch.setenv("WEB_SESSION_ENC_KEY", KEY)
     monkeypatch.setenv("WEB_SESSION_SECRET", "synthetic-push-session-cookie")
-    monkeypatch.setenv("MOCK_AUTH", "false")
     monkeypatch.setenv("KEYCLOAK_AUTHORITY", ISSUER)
     monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-web")
     monkeypatch.setenv("KEYCLOAK_ALLOWED_AZP", CLIENT + "," + OTHER_CLIENT)

@@ -47,7 +47,6 @@ def env(monkeypatch):
     monkeypatch.setenv("WEB_SESSION_SECRET", "kiosk-test-secret")
     monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-frontend")
     monkeypatch.setenv("KIOSK_DEVICE_CLIENT", "astral-kiosk")
-    monkeypatch.delenv("USE_MOCK_AUTH", raising=False)
     wa._KIOSK_FLOWS.clear()
     wa._SESSIONS.clear()
     yield
