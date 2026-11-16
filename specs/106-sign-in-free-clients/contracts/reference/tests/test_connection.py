@@ -223,7 +223,8 @@ EXPECTED = {
     },
     "fold_removal_without_consent": {},
     "fold_removal_by_node": {},
-    "fold_removal_by_removed_device_ignored": {
+    "fold_removal_by_removed_device_stands": {},
+    "fold_removal_by_unknown_feed_ignored": {
         "listed": ["First:ok"],
         "ignored": ["connection.writer_not_member"],
     },

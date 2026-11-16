@@ -538,6 +538,7 @@ def _check_event(
     members: dict[str, Any],
     removed: dict[str, Any],
     feed_owner: dict[str, str],
+    roster_owner: dict[str, str],
 ) -> dict[str, Any]:
     body = event["body"]
     if event.get("scope") != "mesh" or event.get("labels") != LABELS:
@@ -545,7 +546,7 @@ def _check_event(
     key = parse_key(body["key"])
     if key["form"] == "record":
         if set(body) == {"key", "value"} and body["value"] is None:
-            _writer_counts(event, feed_owner)
+            _writer_counts(event, roster_owner)
             return {"form": "remove", "id": key["id"]}
         if (
             set(body) not in ({"key", "value"}, {"key", "value", "consent"})
@@ -567,6 +568,7 @@ def fold(state: dict[str, Any]) -> dict[str, Any]:
     members, removed = state["members"], state["removed"]
     legacy = set(state.get("legacy_servers", []))
     feed_owner = {f: d for d, m in members.items() for f in m["feeds"]}
+    roster_owner = {f: d for d, m in {**removed, **members}.items() for f in m["feeds"]}
     heads: dict[str, tuple[Any, dict[str, Any], dict[str, Any]]] = {}
     pending: dict[str, tuple[Any, dict[str, Any]]] = {}
     states: dict[str, dict[str, tuple[Any, Any]]] = {}
@@ -576,7 +578,7 @@ def fold(state: dict[str, Any]) -> dict[str, Any]:
     ):
         rank = mesh_fold.order_key(event)
         try:
-            checked = _check_event(event, members, removed, feed_owner)
+            checked = _check_event(event, members, removed, feed_owner, roster_owner)
         except MeshError as error:
             ignored[event["id"]] = error.code
             if isinstance(error, RemovedApproval):

@@ -172,7 +172,7 @@ Step 7 stops any other member, a node included, from carrying an older consented
 
 ### 6.2 A remove
 
-A remove needs no consent. Its body is exactly `key` and a null `value`, otherwise `connection.malformed`. A body that also carries a consent is malformed. Its feed must belong to a current member, otherwise `connection.writer_not_member`.
+A remove needs no consent. Its body is exactly `key` and a null `value`, otherwise `connection.malformed`. A body that also carries a consent is malformed. Its feed must belong to a current member or a removed one, otherwise `connection.writer_not_member` (section 6.4).
 
 ### 6.3 A state
 
@@ -188,9 +188,15 @@ For each connection and device the latest valid state wins. States attach only t
 
 ### 6.4 Removed members
 
-The fold reads current members only, as the authority fold reads only their presence keys. A put whose consenting device was later removed fails step 5. An older valid put for the same id stands, as an older consented grant does. The fold also lists it in `removed_approvals` when the removed device really approved it: its feed is that device's feed, the signature verifies against that device's last presence key, the window holds, and it is later than the connection's winner or the connection has none. The host shows "approved by a removed device" until the owner approves it again from another device.
+Puts and removes treat a removed device differently, on purpose. Removing access is the safe direction.
 
-A remove or a state written by a device that was later removed is `connection.writer_not_member`. So a connection that a removed device removed comes back with the last value a current member approved. That value was consented by a current member that is not a node, and every device whose credential was deleted reads `not_signed_in`. The vector `fold_removal_by_removed_device_ignored` pins this.
+- A put counts only while its consenting device is a current member, as the authority fold reads only current presence keys. A put whose consenting device was later removed fails step 5.
+- A remove that was valid when written stands even after its writer is removed. A removed device's feed holds only the events it wrote before its removal cutoff, so the fold reads removes from the feeds of current and removed members. An owner who removed a connection on a phone and later removed the lost phone does not see the connection come back. A remove from a feed that no roster device ever owned is still `connection.writer_not_member`.
+- A state counts only from a current member, because a removed device holds no credential the mesh should show.
+
+For a put whose approver was removed, an older valid put for the same id stands, as an older consented grant does. The fold also lists the put in `removed_approvals` when the removed device really approved it: its feed is that device's feed, the signature verifies against that device's last presence key, the window holds, and it is later than the connection's winner or the connection has none. The host shows "approved by a removed device" until the owner approves it again from another device.
+
+The vectors `fold_put_consenting_device_removed` and `fold_removal_by_removed_device_stands` pin the two sides, and `fold_state_of_removed_member` pins the state rule.
 
 ### 6.5 Output
 
@@ -371,7 +377,7 @@ Groups of cases:
 | Record | `record_*`, every field rule, and each limit at and one past its value: 32768 bytes, a name of 80, 128 tools, a tool name of 128, 32 scopes, a scope of 256, a `client_id` of 1024, 16 egress entries, a URL of 2048, port 65535, a host of 253 and a label of 63. Also the unsupported reasons and `record_order_*` for their order |
 | State | `state_*`, every state and reason, `tools` placement and limits |
 | Put | valid, node consent, a malformed consent object, the window at 600000 and 600001 ms before and 0 and 1 ms after, wrong digest and kind, tampered and high-S signatures, re-carried values on another member's feed and on the node's feed, removed and unknown consenting devices, a forged removed approval, removed approvals with a bad signature, outside the window, before a remove and after one, and `fold_order_*` for each adjacent pair of section 6.1 that can fail together |
-| Remove | without consent, by the node, by a removed device, with a consent field, and a put after a removal |
+| Remove | without consent, by the node, by a removed device (it stands), from a feed no roster device owned, with a consent field, and a put after a removal |
 | Winner | a later put, a later invalid put, an equal clock broken by feed, an equal millisecond broken by the counter, and arrival order |
 | State fold | own device, another device, a removed member, the latest state, a later unreadable state, several devices, tools from a node, and a state for an unlisted connection |
 | View | unknown kind, an unsupported put after a supported one, scheme `key`, server id collisions with an ok, an unsupported and a legacy holder, and a local record naming the node |
