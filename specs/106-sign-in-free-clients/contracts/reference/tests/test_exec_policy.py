@@ -128,6 +128,27 @@ EXPECTED_VALIDATION = {
     "two_to_the_64_in_extra_key": "policy.malformed",
     "float_in_limit": "policy.malformed",
     "two_to_the_64_in_limit": "policy.malformed",
+    "read_multibyte_over_4096_bytes": "policy.path_invalid",
+    "read_multibyte_4096_bytes_accepted": "ok",
+    "reads_sharp_s_pair_darwin": "policy.path_invalid",
+    "reads_sharp_s_pair_linux": "ok",
+    "reads_ligature_pair_darwin": "policy.path_invalid",
+    "reads_ligature_pair_linux": "ok",
+    "read_unassigned_darwin": "policy.path_invalid",
+    "read_unassigned_linux": "ok",
+    "workspace_unassigned_darwin": "policy.path_invalid",
+    "reads_hangul_pair_darwin": "policy.path_invalid",
+    "reads_hangul_tail_pair_darwin": "policy.path_invalid",
+    "reads_mark_order_pair_darwin": "policy.path_invalid",
+    "reads_mark_order_pair_before_base_darwin": "policy.path_invalid",
+    "reads_same_class_marks_distinct_darwin": "ok",
+    "read_assigned_range_start_darwin": "ok",
+    "read_assigned_range_end_darwin": "ok",
+    "read_unassigned_after_range_darwin": "policy.path_invalid",
+    "host_253_characters_accepted": "ok",
+    "host_254_characters": "policy.host_invalid",
+    "host_digit_then_letter_label_ok": "ok",
+    "host_bad_hex_label_ok": "ok",
 }
 
 EXPECTED_SELECTION = {
@@ -157,6 +178,11 @@ EXPECTED_SELECTION = {
     "workspace_inside_data_dir_refused": ("exec.policy_overlaps_data", None),
     "workspace_equals_data_dir_refused": ("exec.policy_overlaps_data", None),
     "workspace_under_data_exec_ok": ("ok", "seatbelt"),
+    "darwin_case_pair_in_reads": ("policy.path_invalid", None),
+    "linux_case_pair_in_reads_ok": ("ok", "linux"),
+    "unicode_16_case_pair_read_root_darwin": ("exec.policy_overlaps_data", None),
+    "unicode_16_case_pair_read_root_linux_ok": ("ok", "linux"),
+    "darwin_unassigned_in_reads": ("policy.path_invalid", None),
     "workspace_equals_data_exec_refused": ("exec.policy_overlaps_data", None),
     "workspace_exec_lookalike_refused": ("exec.policy_overlaps_data", None),
     "workspace_under_data_exec_linux_ok": ("ok", "linux"),
@@ -204,15 +230,15 @@ def test_unknown_key_is_refused_not_ignored() -> None:
     policy = copy.deepcopy(PROFILES["minimal"]["policy"])
     policy["extra"] = 1
     with pytest.raises(exec_policy.PolicyError) as caught:
-        exec_policy.parse(policy)
+        exec_policy.parse(policy, None)
     assert caught.value.code == "policy.unknown_field"
 
 
 def test_parse_accepts_bytes_and_text_with_one_digest() -> None:
     policy = PROFILES["minimal"]["policy"]
     raw = json.dumps(policy, indent=3)
-    from_text = exec_policy.parse(raw)
-    from_bytes = exec_policy.parse(raw.encode("utf-8"))
+    from_text = exec_policy.parse(raw, None)
+    from_bytes = exec_policy.parse(raw.encode("utf-8"), None)
     assert from_text == from_bytes == policy
     assert exec_policy.digest(from_text) == PROFILES["minimal"]["digest"]
 
@@ -238,9 +264,7 @@ MINIMAL_PROFILE = """\
 (allow process-exec* (subpath "/usr"))
 (allow process-exec* (subpath "/System"))
 (allow process-exec* (subpath "/Library"))
-(allow process-exec* (subpath "/private/etc"))
 (allow process-exec* (subpath "/private/var/db/dyld"))
-(allow process-exec* (subpath "/dev"))
 (allow process-exec* (subpath "/bin"))
 (allow process-exec* (subpath "/sbin"))
 (allow process-info* (target self))
@@ -255,11 +279,15 @@ MINIMAL_PROFILE = """\
 (allow file-read* (subpath "/private/etc"))
 (allow file-read* (subpath "/private/var/db/dyld"))
 (allow file-read* (subpath "/dev"))
+(allow file-read-metadata (subpath "/bin") (subpath "/sbin"))
 (allow file-read* file-write* (subpath "/private/tmp/astral/ws"))
 
 (deny process-exec* (subpath "/private/tmp/astral/ws"))
 (deny file-map-executable (subpath "/private/tmp/astral/ws"))
 (deny mach-lookup (global-name "com.apple.dnssd.service"))
+(deny mach-lookup (global-name "com.apple.trustd") (global-name "com.apple.trustd.agent") (global-name "com.apple.system.notification_center") (global-name "com.apple.analyticsd") (global-name "com.apple.analyticsd.messagetracer") (global-name "com.apple.diagnosticd") (global-name "com.apple.osanalytics.osanalyticshelper") (xpc-service-name-prefix ""))
+(deny mach-lookup (global-name "com.apple.logd") (global-name "com.apple.logd.events") (global-name "com.apple.system.logger"))
+(deny network-outbound (literal "/private/var/run/syslog"))
 (deny file-read* (subpath "/Users/test/Library/Keychains"))
 (deny file-read* (subpath "/Library/Keychains"))
 (deny file-read* (subpath "/System/Library/Keychains"))
@@ -304,13 +332,14 @@ def test_profile_never_opens_unwanted_rights(name: str) -> None:
     assert text.index("(deny file-read*") > text.rindex("(allow file-read*")
 
 
+EMPTY_PREFIX = re.compile(r'\(allow\b[^\n]*-prefix[ \t]+""')
 UNFILTERED = re.compile(
     r"\(allow[ \t]+(?:[\w*-]+[ \t]+)*(?:mach\*|mach-lookup|process-exec\*|signal)[ \t]*\)"
 )
 
 
 def unfiltered_allows(text: str) -> list[str]:
-    return UNFILTERED.findall(text)
+    return UNFILTERED.findall(text) + EMPTY_PREFIX.findall(text)
 
 
 @pytest.mark.parametrize(
@@ -321,6 +350,8 @@ def unfiltered_allows(text: str) -> list[str]:
         "(allow process-fork mach-lookup)",
         "(allow process-exec*)",
         "(allow signal)",
+        '(allow mach-lookup (xpc-service-name-prefix ""))',
+        '(allow mach-lookup (global-name "a") (xpc-service-name-prefix ""))',
         "(version 1)\n(allow  mach-lookup )\n",
     ],
 )
@@ -335,6 +366,8 @@ def test_checker_refuses_unfiltered_allows(text: str) -> None:
         '(deny mach-lookup (global-name "com.apple.dnssd.service"))',
         "(allow signal (target self))",
         '(allow process-exec* (subpath "/usr"))',
+        '(deny mach-lookup (xpc-service-name-prefix ""))',
+        '(allow mach-lookup (xpc-service-name-prefix "com.example."))',
     ],
 )
 def test_checker_passes_filtered_rules(text: str) -> None:
@@ -362,8 +395,10 @@ def test_exec_scope_is_base_reads_and_bin_sbin_only() -> None:
         for line in case["seatbelt"].splitlines()
         if line.startswith("(allow process-exec*")
     ]
-    roots = DOC["constants"]["darwin_base_reads"] + case["policy"]["reads"]
-    roots += DOC["constants"]["darwin_exec_only"]
+    base = DOC["constants"]["darwin_exec_base"]
+    assert base == ["/usr", "/System", "/Library", "/private/var/db/dyld"]
+    assert "/dev" not in base and "/private/etc" not in base
+    roots = base + case["policy"]["reads"] + DOC["constants"]["darwin_exec_only"]
     assert lines == [f'(allow process-exec* (subpath "{root}"))' for root in roots]
     assert DOC["constants"]["darwin_exec_only"] == ["/bin", "/sbin"]
     reads = [
@@ -378,8 +413,9 @@ def test_workspace_is_never_executable_on_either_backend() -> None:
     for case in PROFILES.values():
         assert case["linux"]["workspace_noexec"] is True
         assert case["linux"]["seccomp"]["deny_socket_domains"] == ["AF_UNIX"]
+        assert case["linux"]["seccomp"]["allow_socketpair"] is True
         grants = case["linux"]["landlock"]["workspace_rights"]
-        assert "execute" in grants
+        assert grants == "all_except_execute_and_make_sock"
 
 
 @pytest.mark.parametrize("name", [c["name"] for c in DOC["context_errors"]])
@@ -410,12 +446,14 @@ def test_processes_one_has_no_fork_and_two_has_fork() -> None:
 
 def test_empty_hosts_means_no_network_and_nonempty_means_proxy_port_only() -> None:
     quiet, hosted = PROFILES["minimal"], PROFILES["full"]
-    assert "network" not in quiet["seatbelt"]
+    assert "(allow network" not in quiet["seatbelt"]
     assert quiet["linux"]["egress"] is None
     assert quiet["linux"]["landlock"]["tcp_connect"] == []
     assert quiet["linux"]["seccomp"]["inet_stream_sockets"] is False
     port = hosted["context"]["proxy_port"]
-    lines = [line for line in hosted["seatbelt"].splitlines() if "network" in line]
+    lines = [
+        line for line in hosted["seatbelt"].splitlines() if "(allow network" in line
+    ]
     assert lines == [f'(allow network-outbound (remote ip "localhost:{port}"))']
     assert hosted["linux"]["landlock"]["tcp_connect"] == [3128]
     assert hosted["linux"]["egress"] == {
@@ -487,6 +525,12 @@ def test_selection_case(name: str) -> None:
     case = SELECTION[name]
     code, reason = EXPECTED_SELECTION[name]
     policy = case["policy"]
+    if code.startswith("policy."):
+        with pytest.raises(exec_policy.PolicyError) as caught:
+            exec_policy.select(policy, case["facts"], case["data_dir"])
+        assert caught.value.code == code
+        assert case["result"] == {"policy_error": code}
+        return
     result = exec_policy.select(policy, case["facts"], case["data_dir"])
     assert result == case["result"]
     if code == "ok":
@@ -557,3 +601,83 @@ def test_generator_output_matches_committed_vectors() -> None:
     import generate_exec_vectors
 
     assert generate_exec_vectors.render() == VECTORS.read_text(encoding="utf-8")
+
+
+def test_denied_services_and_syslog_are_in_every_profile() -> None:
+    constants = DOC["constants"]
+    for case in PROFILES.values():
+        text = case["seatbelt"]
+        for name in constants["denied_services"] + constants["denied_log_services"]:
+            assert f'(global-name "{name}")' in text
+        assert '(xpc-service-name-prefix "")' in text
+        assert text.count("(deny mach-lookup") == 3
+        assert (
+            f'(deny network-outbound (literal "{constants["syslog_socket"]}"))' in text
+        )
+        assert '(allow file-read-metadata (subpath "/bin") (subpath "/sbin"))\n' in text
+
+
+def test_bin_and_sbin_are_metadata_only_on_macos() -> None:
+    for case in PROFILES.values():
+        for line in case["seatbelt"].splitlines():
+            if line.startswith("(allow file-read*"):
+                assert '"/bin"' not in line and '"/sbin"' not in line
+
+
+def test_lone_surrogate_path_is_refused() -> None:
+    policy = copy.deepcopy(PROFILES["minimal"]["policy"])
+    policy["reads"] = ["/opt/\ud800"]
+    for platform in (None, "darwin", "linux"):
+        with pytest.raises(exec_policy.PolicyError) as caught:
+            exec_policy.parse(policy, platform)
+        assert caught.value.code == "policy.path_invalid"
+
+
+def test_platform_is_a_required_argument() -> None:
+    with pytest.raises(TypeError):
+        exec_policy.parse(PROFILES["minimal"]["policy"])  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize("name", [c["name"] for c in DOC["profile_errors"]])
+def test_renderers_pass_their_platform_to_parse(name: str) -> None:
+    case = next(c for c in DOC["profile_errors"] if c["name"] == name)
+    ctx = case["context"]
+    with pytest.raises(exec_policy.PolicyError) as caught:
+        exec_policy.seatbelt_profile(case["policy"], ctx["home"], ctx["proxy_port"])
+    assert caught.value.code == case["code"] == "policy.path_invalid"
+    assert exec_policy.linux_plan(case["policy"], None) == case["linux"]
+
+
+def test_path_fold_table_matches_its_stated_pairs() -> None:
+    fold = exec_policy._fold
+    assert DOC["constants"]["path_fold_unicode"] == "16.0.0"
+    assert fold("/A", "darwin") == fold("/a", "darwin") == "/a"
+    assert fold("/STRASSE", "darwin") == fold("/stra\u00dfe", "darwin")
+    assert fold("/\ufb01", "darwin") == "/fi"
+    assert fold("/\ua7dc", "darwin") == fold("/\u019b", "darwin")
+    assert fold("/caf\u00e9", "darwin") == fold("/cafe\u0301", "darwin")
+    assert fold("/e\u0327\u0301", "darwin") == fold("/e\u0301\u0327", "darwin")
+    assert fold("/\uac01", "darwin") == "/\u1100\u1161\u11a8"
+    assert fold("/A", "linux") == "/A"
+    assert not exec_policy._assigned("\u0378")
+    assert exec_policy._assigned("\ua7dc")
+
+
+def test_fold_table_generator_refuses_other_unicode_versions() -> None:
+    import generate_path_fold
+
+    if exec_policy._TABLE["unicode"] != "16.0.0":
+        pytest.fail("the committed table is not Unicode 16.0")
+    assert generate_path_fold.UNICODE_VERSION == "16.0.0"
+
+
+def test_renderers_refuse_bad_context_values() -> None:
+    policy = PROFILES["full"]["policy"]
+    exec_policy.seatbelt_profile(policy, "/Users/test", 65535)
+    exec_policy.seatbelt_profile(policy, "/Users/test", 1)
+    for port in (0, 65536, True, None):
+        with pytest.raises(exec_policy.ContextError):
+            exec_policy.seatbelt_profile(policy, "/Users/test", port)
+    with pytest.raises(exec_policy.ContextError):
+        exec_policy.seatbelt_profile(policy, "/Users/te\u0378st", 3128)
+    exec_policy.linux_plan(policy, "/run/user/1000/astral/call-1.sock")

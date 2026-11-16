@@ -4,10 +4,11 @@ It reuses the preserved mesh reference for LETS-CJ/1 bytes, and the vectors in v
 
 from __future__ import annotations
 
+import bisect
 import hashlib
+import json
 import re
 import sys
-import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -110,6 +111,23 @@ FORK_SYSCALLS = ("clone3", "fork", "vfork")
 HOST_LABEL = re.compile(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?")
 NUMERIC_LABEL = re.compile(r"[0-9]+|0x[0-9a-f]*")
 DARWIN_EXEC_ONLY = ("/bin", "/sbin")
+DARWIN_EXEC_BASE = ("/usr", "/System", "/Library", "/private/var/db/dyld")
+DARWIN_METADATA_ONLY = ("/bin", "/sbin")
+DENIED_SERVICES = (
+    "com.apple.trustd",
+    "com.apple.trustd.agent",
+    "com.apple.system.notification_center",
+    "com.apple.analyticsd",
+    "com.apple.analyticsd.messagetracer",
+    "com.apple.diagnosticd",
+    "com.apple.osanalytics.osanalyticshelper",
+)
+DENIED_LOG_SERVICES = (
+    "com.apple.logd",
+    "com.apple.logd.events",
+    "com.apple.system.logger",
+)
+SYSLOG_SOCKET = "/private/var/run/syslog"
 DNSSD_SERVICE = "com.apple.dnssd.service"
 EXEC_SUBDIRECTORY = "exec"
 FACT_KEYS = (
@@ -147,18 +165,54 @@ def _path_problem(path: str) -> str | None:
         return "too long"
     if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in path):
         return "control character"
-    if not path.startswith("/") or path == "/":
-        return "must be absolute and not the root"
+    if not path.startswith("/"):
+        return "must be absolute"
     if any(part in ("", ".", "..") for part in path[1:].split("/")):
         return "not normalized"
     return None
 
 
+_TABLE = json.loads((Path(__file__).resolve().parent / "path_fold.json").read_text())
+_FOLD = {chr(int(key, 16)): value for key, value in _TABLE["fold"].items()}
+_CCC = {chr(int(key, 16)): value for key, value in _TABLE["ccc"].items()}
+_ASSIGNED_STARTS = [low for low, _ in _TABLE["assigned"]]
+HANGUL_BASE, HANGUL_COUNT = 0xAC00, 11172
+JAMO_L, JAMO_V, JAMO_T = 0x1100, 0x1161, 0x11A7
+JAMO_V_COUNT, JAMO_T_COUNT = 21, 28
+
+
+def _assigned(char: str) -> bool:
+    cp = ord(char)
+    at = bisect.bisect_right(_ASSIGNED_STARTS, cp) - 1
+    return at >= 0 and cp <= _TABLE["assigned"][at][1]
+
+
+def _decomposed_hangul(char: str) -> str:
+    index = ord(char) - HANGUL_BASE
+    lead, rest = divmod(index, JAMO_V_COUNT * JAMO_T_COUNT)
+    vowel, tail = divmod(rest, JAMO_T_COUNT)
+    out = chr(JAMO_L + lead) + chr(JAMO_V + vowel)
+    return out + (chr(JAMO_T + tail) if tail else "")
+
+
 def _fold(path: str, platform: str | None) -> str:
     if platform != "darwin":
         return path
-    decomposed = unicodedata.normalize("NFD", path)
-    return unicodedata.normalize("NFD", decomposed.casefold())
+    pieces = [
+        _decomposed_hangul(ch)
+        if 0 <= ord(ch) - HANGUL_BASE < HANGUL_COUNT
+        else _FOLD.get(ch, ch)
+        for ch in path
+    ]
+    out: list[str] = []
+    run: list[str] = []
+    for ch in "".join(pieces):
+        if _CCC.get(ch):
+            run.append(ch)
+            continue
+        out += sorted(run, key=lambda mark: _CCC[mark]) + [ch]
+        run = []
+    return "".join(out + sorted(run, key=lambda mark: _CCC[mark]))
 
 
 def _contains(root: str, path: str, platform: str | None = None) -> bool:
@@ -175,10 +229,12 @@ def _object(value: Any, fields: tuple[str, ...], where: str) -> None:
         raise PolicyError("policy.malformed", f"{where} is missing a field")
 
 
-def _checked_path(value: Any, where: str) -> str:
+def _checked_path(value: Any, where: str, platform: str | None) -> str:
     if not isinstance(value, str):
         raise PolicyError("policy.malformed", f"{where} must be a string")
     problem = _path_problem(value)
+    if problem is None and platform == "darwin" and not all(map(_assigned, value)):
+        problem = "unassigned code point"
     if problem:
         raise PolicyError("policy.path_invalid", f"{where}: {problem}")
     return value
@@ -202,9 +258,7 @@ def _checked_host(value: Any, where: str) -> dict[str, Any]:
     return value
 
 
-def parse(
-    data: bytes | str | dict[str, Any], platform: str | None = None
-) -> dict[str, Any]:
+def parse(data: bytes | str | dict[str, Any], platform: str | None) -> dict[str, Any]:
     if isinstance(data, (bytes, str)):
         try:
             policy = strict_loads(data)
@@ -223,7 +277,7 @@ def parse(
     previous = None
     seen: set[str] = set()
     for index, path in enumerate(reads):
-        _checked_path(path, f"reads[{index}]")
+        _checked_path(path, f"reads[{index}]", platform)
         if previous is not None and path <= previous:
             raise PolicyError(
                 "policy.path_invalid", f"reads[{index}] not sorted and unique"
@@ -235,7 +289,7 @@ def parse(
             )
         seen.add(folded)
         previous = path
-    workspace = _checked_path(policy["workspace"], "workspace")
+    workspace = _checked_path(policy["workspace"], "workspace", platform)
     for path in reads:
         if _contains(workspace, path, platform) or _contains(path, workspace, platform):
             raise PolicyError(
@@ -272,29 +326,31 @@ def parse(
 
 
 def digest(policy: dict[str, Any]) -> str:
-    return "sha256:" + hashlib.sha256(canonical(parse(policy))).hexdigest()
+    return "sha256:" + hashlib.sha256(canonical(parse(policy, None))).hexdigest()
 
 
 def quote(value: str) -> str:
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def _checked_context_path(value: Any, name: str) -> str:
+def _checked_context_path(value: Any, name: str, platform: str | None = None) -> str:
     if not isinstance(value, str) or _path_problem(value):
         raise ContextError(f"{name} must be an absolute normalized path")
+    if platform == "darwin" and not all(map(_assigned, value)):
+        raise ContextError(f"{name} holds an unassigned code point")
     return value
 
 
 def seatbelt_profile(policy: dict[str, Any], home: str, proxy_port: int | None) -> str:
-    policy = parse(policy)
-    home = _checked_context_path(home, "home")
+    policy = parse(policy, "darwin")
+    home = _checked_context_path(home, "home", "darwin")
     if policy["hosts"] and not (_is_int(proxy_port) and 1 <= proxy_port <= 65535):
         raise ContextError("a policy with hosts needs a proxy port from 1 to 65535")
     workspace = policy["workspace"]
     lines = ["(version 1)", "(deny default)", '(import "system.sb")', ""]
     lines += [
         f"(allow process-exec* (subpath {quote(root)}))"
-        for root in (*DARWIN_BASE, *policy["reads"], *DARWIN_EXEC_ONLY)
+        for root in (*DARWIN_EXEC_BASE, *policy["reads"], *DARWIN_EXEC_ONLY)
     ]
     if policy["limits"]["processes"] > 1:
         lines.append("(allow process-fork)")
@@ -306,15 +362,22 @@ def seatbelt_profile(policy: dict[str, Any], home: str, proxy_port: int | None) 
         "(allow file-ioctl)",
         "",
     ]
-    lines += [
-        f"(allow file-read* (subpath {quote(root)}))"
-        for root in (*DARWIN_BASE, *policy["reads"])
-    ]
+    lines += [f"(allow file-read* (subpath {quote(root)}))" for root in DARWIN_BASE]
+    metadata = " ".join(f"(subpath {quote(root)})" for root in DARWIN_METADATA_ONLY)
+    lines.append(f"(allow file-read-metadata {metadata})")
+    lines += [f"(allow file-read* (subpath {quote(root)}))" for root in policy["reads"]]
     lines += [f"(allow file-read* file-write* (subpath {quote(workspace)}))", ""]
     lines += [
         f"(deny process-exec* (subpath {quote(workspace)}))",
         f"(deny file-map-executable (subpath {quote(workspace)}))",
         f'(deny mach-lookup (global-name "{DNSSD_SERVICE}"))',
+        "(deny mach-lookup "
+        + " ".join(f'(global-name "{name}")' for name in DENIED_SERVICES)
+        + ' (xpc-service-name-prefix ""))',
+        "(deny mach-lookup "
+        + " ".join(f'(global-name "{name}")' for name in DENIED_LOG_SERVICES)
+        + ")",
+        f"(deny network-outbound (literal {quote(SYSLOG_SOCKET)}))",
     ]
     lines += [
         f"(deny file-read* (subpath {quote(root)}))"
@@ -326,7 +389,7 @@ def seatbelt_profile(policy: dict[str, Any], home: str, proxy_port: int | None) 
 
 
 def linux_plan(policy: dict[str, Any], egress_socket: str | None) -> dict[str, Any]:
-    policy = parse(policy)
+    policy = parse(policy, "linux")
     hosted = bool(policy["hosts"])
     if hosted:
         egress_socket = _checked_context_path(egress_socket, "egress_socket")
@@ -374,6 +437,7 @@ def linux_plan(policy: dict[str, Any], egress_socket: str | None) -> dict[str, A
             "inet_stream_sockets": hosted,
             "deny_socket_types": ["SOCK_DGRAM", "SOCK_RAW"],
             "deny_socket_domains": ["AF_UNIX"],
+            "allow_socketpair": True,
         },
         "rlimits": {
             "RLIMIT_AS": limits["memory_bytes"],
@@ -423,7 +487,7 @@ def select(
     facts = _facts(facts)
     platform = facts["platform"]
     policy = parse(policy, platform)
-    data_dir = _checked_context_path(data_dir, "data_dir")
+    data_dir = _checked_context_path(data_dir, "data_dir", platform)
     base = {"darwin": DARWIN_BASE, "linux": LINUX_BASE}.get(platform, ())
     workspace = policy["workspace"]
     overlaps = any(

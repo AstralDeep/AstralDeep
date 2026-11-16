@@ -16,6 +16,12 @@
       "/private/var/db/dyld",
       "/dev"
     ],
+    "darwin_exec_base": [
+      "/usr",
+      "/System",
+      "/Library",
+      "/private/var/db/dyld"
+    ],
     "darwin_exec_only": [
       "/bin",
       "/sbin"
@@ -23,6 +29,24 @@
     "darwin_keychain_denials": [
       "/Library/Keychains",
       "/System/Library/Keychains"
+    ],
+    "darwin_metadata_only": [
+      "/bin",
+      "/sbin"
+    ],
+    "denied_log_services": [
+      "com.apple.logd",
+      "com.apple.logd.events",
+      "com.apple.system.logger"
+    ],
+    "denied_services": [
+      "com.apple.trustd",
+      "com.apple.trustd.agent",
+      "com.apple.system.notification_center",
+      "com.apple.analyticsd",
+      "com.apple.analyticsd.messagetracer",
+      "com.apple.diagnosticd",
+      "com.apple.osanalytics.osanalyticshelper"
     ],
     "dnssd_service": "com.apple.dnssd.service",
     "egress_socket": "/run/astral/egress.sock",
@@ -94,7 +118,9 @@
       "sandbox_exec_missing": "/usr/bin/sandbox-exec is missing, and untrusted tools need it on macOS.",
       "userns_denied": "Unprivileged user namespaces are disabled, and bubblewrap needs them to confine untrusted tools."
     },
+    "path_fold_unicode": "16.0.0",
     "proxy_port": 3128,
+    "syslog_socket": "/private/var/run/syslog",
     "validation_codes": [
       "policy.malformed",
       "policy.unknown_field",
@@ -110,6 +136,41 @@
     ]
   },
   "context_errors": [
+    {
+      "data_dir": "/var/lib/astral/node",
+      "facts": {
+        "app_sandboxed": false,
+        "bwrap": true,
+        "landlock_abi": 6,
+        "sandbox_exec": false,
+        "userns": true
+      },
+      "name": "facts_platform_missing"
+    },
+    {
+      "data_dir": "/var/lib/astral/node",
+      "facts": {
+        "app_sandboxed": false,
+        "bwrap": true,
+        "landlock_abi": 6,
+        "platform": null,
+        "sandbox_exec": false,
+        "userns": true
+      },
+      "name": "facts_platform_null"
+    },
+    {
+      "data_dir": "/Users/test/͸",
+      "facts": {
+        "app_sandboxed": false,
+        "bwrap": false,
+        "landlock_abi": 0,
+        "platform": "darwin",
+        "sandbox_exec": true,
+        "userns": false
+      },
+      "name": "data_dir_unassigned_darwin"
+    },
     {
       "data_dir": "/var/lib/astral/node",
       "facts": {
@@ -221,6 +282,447 @@
       "name": "data_dir_root"
     }
   ],
+  "profile_errors": [
+    {
+      "code": "policy.path_invalid",
+      "context": {
+        "egress_socket": null,
+        "home": "/Users/test",
+        "proxy_port": null
+      },
+      "linux": {
+        "bwrap": [
+          "--unshare-user",
+          "--unshare-pid",
+          "--unshare-net",
+          "--unshare-ipc",
+          "--unshare-uts",
+          "--unshare-cgroup",
+          "--die-with-parent",
+          "--new-session",
+          "--clearenv",
+          "--ro-bind-try",
+          "/usr",
+          "/usr",
+          "--ro-bind-try",
+          "/bin",
+          "/bin",
+          "--ro-bind-try",
+          "/sbin",
+          "/sbin",
+          "--ro-bind-try",
+          "/lib",
+          "/lib",
+          "--ro-bind-try",
+          "/lib64",
+          "/lib64",
+          "--ro-bind-try",
+          "/etc",
+          "/etc",
+          "--ro-bind",
+          "/opt/A",
+          "/opt/A",
+          "--ro-bind",
+          "/opt/a",
+          "/opt/a",
+          "--bind",
+          "/private/tmp/astral/ws",
+          "/private/tmp/astral/ws",
+          "--proc",
+          "/proc",
+          "--dev",
+          "/dev",
+          "--chdir",
+          "/private/tmp/astral/ws"
+        ],
+        "egress": null,
+        "landlock": {
+          "abi": 6,
+          "device_files": [
+            "/dev/null",
+            "/dev/zero",
+            "/dev/urandom",
+            "/dev/random"
+          ],
+          "exec_read": [
+            "/usr",
+            "/bin",
+            "/sbin",
+            "/lib",
+            "/lib64",
+            "/etc",
+            "/opt/A",
+            "/opt/a"
+          ],
+          "scopes": [
+            "abstract_unix_socket",
+            "signal"
+          ],
+          "tcp_bind": [],
+          "tcp_connect": [],
+          "workspace": "/private/tmp/astral/ws",
+          "workspace_rights": "all_except_execute_and_make_sock"
+        },
+        "rlimits": {
+          "RLIMIT_AS": 536870912,
+          "RLIMIT_FSIZE": 104857600,
+          "RLIMIT_NOFILE": 256
+        },
+        "seccomp": {
+          "allow_socketpair": true,
+          "deny_fork": true,
+          "deny_socket_domains": [
+            "AF_UNIX"
+          ],
+          "deny_socket_types": [
+            "SOCK_DGRAM",
+            "SOCK_RAW"
+          ],
+          "deny_syscalls": [
+            "msgctl",
+            "msgget",
+            "msgrcv",
+            "msgsnd",
+            "mq_getsetattr",
+            "mq_notify",
+            "mq_open",
+            "mq_timedreceive",
+            "mq_timedsend",
+            "mq_unlink",
+            "semctl",
+            "semget",
+            "semop",
+            "semtimedop",
+            "setpgid",
+            "setsid",
+            "shmat",
+            "shmctl",
+            "shmdt",
+            "shmget"
+          ],
+          "fork_syscalls": [
+            "clone3",
+            "fork",
+            "vfork"
+          ],
+          "inet_stream_sockets": false
+        },
+        "watchdog": {
+          "processes": 1,
+          "wall_ms": 30000
+        },
+        "workspace_noexec": true
+      },
+      "name": "darwin_case_pair_in_reads",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [
+          "/opt/A",
+          "/opt/a"
+        ],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      }
+    },
+    {
+      "code": "policy.path_invalid",
+      "context": {
+        "egress_socket": null,
+        "home": "/Users/test",
+        "proxy_port": null
+      },
+      "linux": {
+        "bwrap": [
+          "--unshare-user",
+          "--unshare-pid",
+          "--unshare-net",
+          "--unshare-ipc",
+          "--unshare-uts",
+          "--unshare-cgroup",
+          "--die-with-parent",
+          "--new-session",
+          "--clearenv",
+          "--ro-bind-try",
+          "/usr",
+          "/usr",
+          "--ro-bind-try",
+          "/bin",
+          "/bin",
+          "--ro-bind-try",
+          "/sbin",
+          "/sbin",
+          "--ro-bind-try",
+          "/lib",
+          "/lib",
+          "--ro-bind-try",
+          "/lib64",
+          "/lib64",
+          "--ro-bind-try",
+          "/etc",
+          "/etc",
+          "--ro-bind",
+          "/opt/café",
+          "/opt/café",
+          "--ro-bind",
+          "/opt/café",
+          "/opt/café",
+          "--bind",
+          "/private/tmp/astral/ws",
+          "/private/tmp/astral/ws",
+          "--proc",
+          "/proc",
+          "--dev",
+          "/dev",
+          "--chdir",
+          "/private/tmp/astral/ws"
+        ],
+        "egress": null,
+        "landlock": {
+          "abi": 6,
+          "device_files": [
+            "/dev/null",
+            "/dev/zero",
+            "/dev/urandom",
+            "/dev/random"
+          ],
+          "exec_read": [
+            "/usr",
+            "/bin",
+            "/sbin",
+            "/lib",
+            "/lib64",
+            "/etc",
+            "/opt/café",
+            "/opt/café"
+          ],
+          "scopes": [
+            "abstract_unix_socket",
+            "signal"
+          ],
+          "tcp_bind": [],
+          "tcp_connect": [],
+          "workspace": "/private/tmp/astral/ws",
+          "workspace_rights": "all_except_execute_and_make_sock"
+        },
+        "rlimits": {
+          "RLIMIT_AS": 536870912,
+          "RLIMIT_FSIZE": 104857600,
+          "RLIMIT_NOFILE": 256
+        },
+        "seccomp": {
+          "allow_socketpair": true,
+          "deny_fork": true,
+          "deny_socket_domains": [
+            "AF_UNIX"
+          ],
+          "deny_socket_types": [
+            "SOCK_DGRAM",
+            "SOCK_RAW"
+          ],
+          "deny_syscalls": [
+            "msgctl",
+            "msgget",
+            "msgrcv",
+            "msgsnd",
+            "mq_getsetattr",
+            "mq_notify",
+            "mq_open",
+            "mq_timedreceive",
+            "mq_timedsend",
+            "mq_unlink",
+            "semctl",
+            "semget",
+            "semop",
+            "semtimedop",
+            "setpgid",
+            "setsid",
+            "shmat",
+            "shmctl",
+            "shmdt",
+            "shmget"
+          ],
+          "fork_syscalls": [
+            "clone3",
+            "fork",
+            "vfork"
+          ],
+          "inet_stream_sockets": false
+        },
+        "watchdog": {
+          "processes": 1,
+          "wall_ms": 30000
+        },
+        "workspace_noexec": true
+      },
+      "name": "darwin_nfc_nfd_pair_in_reads",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [
+          "/opt/café",
+          "/opt/café"
+        ],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      }
+    },
+    {
+      "code": "policy.path_invalid",
+      "context": {
+        "egress_socket": null,
+        "home": "/Users/test",
+        "proxy_port": null
+      },
+      "linux": {
+        "bwrap": [
+          "--unshare-user",
+          "--unshare-pid",
+          "--unshare-net",
+          "--unshare-ipc",
+          "--unshare-uts",
+          "--unshare-cgroup",
+          "--die-with-parent",
+          "--new-session",
+          "--clearenv",
+          "--ro-bind-try",
+          "/usr",
+          "/usr",
+          "--ro-bind-try",
+          "/bin",
+          "/bin",
+          "--ro-bind-try",
+          "/sbin",
+          "/sbin",
+          "--ro-bind-try",
+          "/lib",
+          "/lib",
+          "--ro-bind-try",
+          "/lib64",
+          "/lib64",
+          "--ro-bind-try",
+          "/etc",
+          "/etc",
+          "--bind",
+          "/tmp/͸",
+          "/tmp/͸",
+          "--proc",
+          "/proc",
+          "--dev",
+          "/dev",
+          "--chdir",
+          "/tmp/͸"
+        ],
+        "egress": null,
+        "landlock": {
+          "abi": 6,
+          "device_files": [
+            "/dev/null",
+            "/dev/zero",
+            "/dev/urandom",
+            "/dev/random"
+          ],
+          "exec_read": [
+            "/usr",
+            "/bin",
+            "/sbin",
+            "/lib",
+            "/lib64",
+            "/etc"
+          ],
+          "scopes": [
+            "abstract_unix_socket",
+            "signal"
+          ],
+          "tcp_bind": [],
+          "tcp_connect": [],
+          "workspace": "/tmp/͸",
+          "workspace_rights": "all_except_execute_and_make_sock"
+        },
+        "rlimits": {
+          "RLIMIT_AS": 536870912,
+          "RLIMIT_FSIZE": 104857600,
+          "RLIMIT_NOFILE": 256
+        },
+        "seccomp": {
+          "allow_socketpair": true,
+          "deny_fork": true,
+          "deny_socket_domains": [
+            "AF_UNIX"
+          ],
+          "deny_socket_types": [
+            "SOCK_DGRAM",
+            "SOCK_RAW"
+          ],
+          "deny_syscalls": [
+            "msgctl",
+            "msgget",
+            "msgrcv",
+            "msgsnd",
+            "mq_getsetattr",
+            "mq_notify",
+            "mq_open",
+            "mq_timedreceive",
+            "mq_timedsend",
+            "mq_unlink",
+            "semctl",
+            "semget",
+            "semop",
+            "semtimedop",
+            "setpgid",
+            "setsid",
+            "shmat",
+            "shmctl",
+            "shmdt",
+            "shmget"
+          ],
+          "fork_syscalls": [
+            "clone3",
+            "fork",
+            "vfork"
+          ],
+          "inet_stream_sockets": false
+        },
+        "watchdog": {
+          "processes": 1,
+          "wall_ms": 30000
+        },
+        "workspace_noexec": true
+      },
+      "name": "darwin_unassigned_in_workspace",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/tmp/͸"
+      }
+    }
+  ],
   "profiles": [
     {
       "context": {
@@ -300,6 +802,7 @@
           "RLIMIT_NOFILE": 256
         },
         "seccomp": {
+          "allow_socketpair": true,
           "deny_fork": true,
           "deny_socket_domains": [
             "AF_UNIX"
@@ -359,7 +862,7 @@
         "v": 1,
         "workspace": "/private/tmp/astral/ws"
       },
-      "seatbelt": "(version 1)\n(deny default)\n(import \"system.sb\")\n\n(allow process-exec* (subpath \"/usr\"))\n(allow process-exec* (subpath \"/System\"))\n(allow process-exec* (subpath \"/Library\"))\n(allow process-exec* (subpath \"/private/etc\"))\n(allow process-exec* (subpath \"/private/var/db/dyld\"))\n(allow process-exec* (subpath \"/dev\"))\n(allow process-exec* (subpath \"/bin\"))\n(allow process-exec* (subpath \"/sbin\"))\n(allow process-info* (target self))\n(allow signal (target self))\n(allow signal (target children))\n(allow sysctl-read)\n(allow file-ioctl)\n\n(allow file-read* (subpath \"/usr\"))\n(allow file-read* (subpath \"/System\"))\n(allow file-read* (subpath \"/Library\"))\n(allow file-read* (subpath \"/private/etc\"))\n(allow file-read* (subpath \"/private/var/db/dyld\"))\n(allow file-read* (subpath \"/dev\"))\n(allow file-read* file-write* (subpath \"/private/tmp/astral/ws\"))\n\n(deny process-exec* (subpath \"/private/tmp/astral/ws\"))\n(deny file-map-executable (subpath \"/private/tmp/astral/ws\"))\n(deny mach-lookup (global-name \"com.apple.dnssd.service\"))\n(deny file-read* (subpath \"/Users/test/Library/Keychains\"))\n(deny file-read* (subpath \"/Library/Keychains\"))\n(deny file-read* (subpath \"/System/Library/Keychains\"))\n"
+      "seatbelt": "(version 1)\n(deny default)\n(import \"system.sb\")\n\n(allow process-exec* (subpath \"/usr\"))\n(allow process-exec* (subpath \"/System\"))\n(allow process-exec* (subpath \"/Library\"))\n(allow process-exec* (subpath \"/private/var/db/dyld\"))\n(allow process-exec* (subpath \"/bin\"))\n(allow process-exec* (subpath \"/sbin\"))\n(allow process-info* (target self))\n(allow signal (target self))\n(allow signal (target children))\n(allow sysctl-read)\n(allow file-ioctl)\n\n(allow file-read* (subpath \"/usr\"))\n(allow file-read* (subpath \"/System\"))\n(allow file-read* (subpath \"/Library\"))\n(allow file-read* (subpath \"/private/etc\"))\n(allow file-read* (subpath \"/private/var/db/dyld\"))\n(allow file-read* (subpath \"/dev\"))\n(allow file-read-metadata (subpath \"/bin\") (subpath \"/sbin\"))\n(allow file-read* file-write* (subpath \"/private/tmp/astral/ws\"))\n\n(deny process-exec* (subpath \"/private/tmp/astral/ws\"))\n(deny file-map-executable (subpath \"/private/tmp/astral/ws\"))\n(deny mach-lookup (global-name \"com.apple.dnssd.service\"))\n(deny mach-lookup (global-name \"com.apple.trustd\") (global-name \"com.apple.trustd.agent\") (global-name \"com.apple.system.notification_center\") (global-name \"com.apple.analyticsd\") (global-name \"com.apple.analyticsd.messagetracer\") (global-name \"com.apple.diagnosticd\") (global-name \"com.apple.osanalytics.osanalyticshelper\") (xpc-service-name-prefix \"\"))\n(deny mach-lookup (global-name \"com.apple.logd\") (global-name \"com.apple.logd.events\") (global-name \"com.apple.system.logger\"))\n(deny network-outbound (literal \"/private/var/run/syslog\"))\n(deny file-read* (subpath \"/Users/test/Library/Keychains\"))\n(deny file-read* (subpath \"/Library/Keychains\"))\n(deny file-read* (subpath \"/System/Library/Keychains\"))\n"
     },
     {
       "context": {
@@ -439,6 +942,7 @@
           "RLIMIT_NOFILE": 256
         },
         "seccomp": {
+          "allow_socketpair": true,
           "deny_fork": false,
           "deny_socket_domains": [
             "AF_UNIX"
@@ -498,7 +1002,7 @@
         "v": 1,
         "workspace": "/private/tmp/astral/ws"
       },
-      "seatbelt": "(version 1)\n(deny default)\n(import \"system.sb\")\n\n(allow process-exec* (subpath \"/usr\"))\n(allow process-exec* (subpath \"/System\"))\n(allow process-exec* (subpath \"/Library\"))\n(allow process-exec* (subpath \"/private/etc\"))\n(allow process-exec* (subpath \"/private/var/db/dyld\"))\n(allow process-exec* (subpath \"/dev\"))\n(allow process-exec* (subpath \"/bin\"))\n(allow process-exec* (subpath \"/sbin\"))\n(allow process-fork)\n(allow process-info* (target self))\n(allow signal (target self))\n(allow signal (target children))\n(allow sysctl-read)\n(allow file-ioctl)\n\n(allow file-read* (subpath \"/usr\"))\n(allow file-read* (subpath \"/System\"))\n(allow file-read* (subpath \"/Library\"))\n(allow file-read* (subpath \"/private/etc\"))\n(allow file-read* (subpath \"/private/var/db/dyld\"))\n(allow file-read* (subpath \"/dev\"))\n(allow file-read* file-write* (subpath \"/private/tmp/astral/ws\"))\n\n(deny process-exec* (subpath \"/private/tmp/astral/ws\"))\n(deny file-map-executable (subpath \"/private/tmp/astral/ws\"))\n(deny mach-lookup (global-name \"com.apple.dnssd.service\"))\n(deny file-read* (subpath \"/Users/test/Library/Keychains\"))\n(deny file-read* (subpath \"/Library/Keychains\"))\n(deny file-read* (subpath \"/System/Library/Keychains\"))\n"
+      "seatbelt": "(version 1)\n(deny default)\n(import \"system.sb\")\n\n(allow process-exec* (subpath \"/usr\"))\n(allow process-exec* (subpath \"/System\"))\n(allow process-exec* (subpath \"/Library\"))\n(allow process-exec* (subpath \"/private/var/db/dyld\"))\n(allow process-exec* (subpath \"/bin\"))\n(allow process-exec* (subpath \"/sbin\"))\n(allow process-fork)\n(allow process-info* (target self))\n(allow signal (target self))\n(allow signal (target children))\n(allow sysctl-read)\n(allow file-ioctl)\n\n(allow file-read* (subpath \"/usr\"))\n(allow file-read* (subpath \"/System\"))\n(allow file-read* (subpath \"/Library\"))\n(allow file-read* (subpath \"/private/etc\"))\n(allow file-read* (subpath \"/private/var/db/dyld\"))\n(allow file-read* (subpath \"/dev\"))\n(allow file-read-metadata (subpath \"/bin\") (subpath \"/sbin\"))\n(allow file-read* file-write* (subpath \"/private/tmp/astral/ws\"))\n\n(deny process-exec* (subpath \"/private/tmp/astral/ws\"))\n(deny file-map-executable (subpath \"/private/tmp/astral/ws\"))\n(deny mach-lookup (global-name \"com.apple.dnssd.service\"))\n(deny mach-lookup (global-name \"com.apple.trustd\") (global-name \"com.apple.trustd.agent\") (global-name \"com.apple.system.notification_center\") (global-name \"com.apple.analyticsd\") (global-name \"com.apple.analyticsd.messagetracer\") (global-name \"com.apple.diagnosticd\") (global-name \"com.apple.osanalytics.osanalyticshelper\") (xpc-service-name-prefix \"\"))\n(deny mach-lookup (global-name \"com.apple.logd\") (global-name \"com.apple.logd.events\") (global-name \"com.apple.system.logger\"))\n(deny network-outbound (literal \"/private/var/run/syslog\"))\n(deny file-read* (subpath \"/Users/test/Library/Keychains\"))\n(deny file-read* (subpath \"/Library/Keychains\"))\n(deny file-read* (subpath \"/System/Library/Keychains\"))\n"
     },
     {
       "context": {
@@ -586,6 +1090,7 @@
           "RLIMIT_NOFILE": 256
         },
         "seccomp": {
+          "allow_socketpair": true,
           "deny_fork": true,
           "deny_socket_domains": [
             "AF_UNIX"
@@ -650,7 +1155,7 @@
         "v": 1,
         "workspace": "/private/tmp/astral/ws"
       },
-      "seatbelt": "(version 1)\n(deny default)\n(import \"system.sb\")\n\n(allow process-exec* (subpath \"/usr\"))\n(allow process-exec* (subpath \"/System\"))\n(allow process-exec* (subpath \"/Library\"))\n(allow process-exec* (subpath \"/private/etc\"))\n(allow process-exec* (subpath \"/private/var/db/dyld\"))\n(allow process-exec* (subpath \"/dev\"))\n(allow process-exec* (subpath \"/bin\"))\n(allow process-exec* (subpath \"/sbin\"))\n(allow process-info* (target self))\n(allow signal (target self))\n(allow signal (target children))\n(allow sysctl-read)\n(allow file-ioctl)\n\n(allow file-read* (subpath \"/usr\"))\n(allow file-read* (subpath \"/System\"))\n(allow file-read* (subpath \"/Library\"))\n(allow file-read* (subpath \"/private/etc\"))\n(allow file-read* (subpath \"/private/var/db/dyld\"))\n(allow file-read* (subpath \"/dev\"))\n(allow file-read* file-write* (subpath \"/private/tmp/astral/ws\"))\n\n(deny process-exec* (subpath \"/private/tmp/astral/ws\"))\n(deny file-map-executable (subpath \"/private/tmp/astral/ws\"))\n(deny mach-lookup (global-name \"com.apple.dnssd.service\"))\n(deny file-read* (subpath \"/Users/test/Library/Keychains\"))\n(deny file-read* (subpath \"/Library/Keychains\"))\n(deny file-read* (subpath \"/System/Library/Keychains\"))\n\n(allow network-outbound (remote ip \"localhost:49152\"))\n"
+      "seatbelt": "(version 1)\n(deny default)\n(import \"system.sb\")\n\n(allow process-exec* (subpath \"/usr\"))\n(allow process-exec* (subpath \"/System\"))\n(allow process-exec* (subpath \"/Library\"))\n(allow process-exec* (subpath \"/private/var/db/dyld\"))\n(allow process-exec* (subpath \"/bin\"))\n(allow process-exec* (subpath \"/sbin\"))\n(allow process-info* (target self))\n(allow signal (target self))\n(allow signal (target children))\n(allow sysctl-read)\n(allow file-ioctl)\n\n(allow file-read* (subpath \"/usr\"))\n(allow file-read* (subpath \"/System\"))\n(allow file-read* (subpath \"/Library\"))\n(allow file-read* (subpath \"/private/etc\"))\n(allow file-read* (subpath \"/private/var/db/dyld\"))\n(allow file-read* (subpath \"/dev\"))\n(allow file-read-metadata (subpath \"/bin\") (subpath \"/sbin\"))\n(allow file-read* file-write* (subpath \"/private/tmp/astral/ws\"))\n\n(deny process-exec* (subpath \"/private/tmp/astral/ws\"))\n(deny file-map-executable (subpath \"/private/tmp/astral/ws\"))\n(deny mach-lookup (global-name \"com.apple.dnssd.service\"))\n(deny mach-lookup (global-name \"com.apple.trustd\") (global-name \"com.apple.trustd.agent\") (global-name \"com.apple.system.notification_center\") (global-name \"com.apple.analyticsd\") (global-name \"com.apple.analyticsd.messagetracer\") (global-name \"com.apple.diagnosticd\") (global-name \"com.apple.osanalytics.osanalyticshelper\") (xpc-service-name-prefix \"\"))\n(deny mach-lookup (global-name \"com.apple.logd\") (global-name \"com.apple.logd.events\") (global-name \"com.apple.system.logger\"))\n(deny network-outbound (literal \"/private/var/run/syslog\"))\n(deny file-read* (subpath \"/Users/test/Library/Keychains\"))\n(deny file-read* (subpath \"/Library/Keychains\"))\n(deny file-read* (subpath \"/System/Library/Keychains\"))\n\n(allow network-outbound (remote ip \"localhost:49152\"))\n"
     },
     {
       "context": {
@@ -746,6 +1251,7 @@
           "RLIMIT_NOFILE": 256
         },
         "seccomp": {
+          "allow_socketpair": true,
           "deny_fork": false,
           "deny_socket_domains": [
             "AF_UNIX"
@@ -821,7 +1327,7 @@
         "v": 1,
         "workspace": "/private/tmp/astral/ws"
       },
-      "seatbelt": "(version 1)\n(deny default)\n(import \"system.sb\")\n\n(allow process-exec* (subpath \"/usr\"))\n(allow process-exec* (subpath \"/System\"))\n(allow process-exec* (subpath \"/Library\"))\n(allow process-exec* (subpath \"/private/etc\"))\n(allow process-exec* (subpath \"/private/var/db/dyld\"))\n(allow process-exec* (subpath \"/dev\"))\n(allow process-exec* (subpath \"/Users/test/.local/share/python/3.11\"))\n(allow process-exec* (subpath \"/opt/astral/node-pack\"))\n(allow process-exec* (subpath \"/bin\"))\n(allow process-exec* (subpath \"/sbin\"))\n(allow process-fork)\n(allow process-info* (target self))\n(allow signal (target self))\n(allow signal (target children))\n(allow sysctl-read)\n(allow file-ioctl)\n\n(allow file-read* (subpath \"/usr\"))\n(allow file-read* (subpath \"/System\"))\n(allow file-read* (subpath \"/Library\"))\n(allow file-read* (subpath \"/private/etc\"))\n(allow file-read* (subpath \"/private/var/db/dyld\"))\n(allow file-read* (subpath \"/dev\"))\n(allow file-read* (subpath \"/Users/test/.local/share/python/3.11\"))\n(allow file-read* (subpath \"/opt/astral/node-pack\"))\n(allow file-read* file-write* (subpath \"/private/tmp/astral/ws\"))\n\n(deny process-exec* (subpath \"/private/tmp/astral/ws\"))\n(deny file-map-executable (subpath \"/private/tmp/astral/ws\"))\n(deny mach-lookup (global-name \"com.apple.dnssd.service\"))\n(deny file-read* (subpath \"/Users/test/Library/Keychains\"))\n(deny file-read* (subpath \"/Library/Keychains\"))\n(deny file-read* (subpath \"/System/Library/Keychains\"))\n\n(allow network-outbound (remote ip \"localhost:49152\"))\n"
+      "seatbelt": "(version 1)\n(deny default)\n(import \"system.sb\")\n\n(allow process-exec* (subpath \"/usr\"))\n(allow process-exec* (subpath \"/System\"))\n(allow process-exec* (subpath \"/Library\"))\n(allow process-exec* (subpath \"/private/var/db/dyld\"))\n(allow process-exec* (subpath \"/Users/test/.local/share/python/3.11\"))\n(allow process-exec* (subpath \"/opt/astral/node-pack\"))\n(allow process-exec* (subpath \"/bin\"))\n(allow process-exec* (subpath \"/sbin\"))\n(allow process-fork)\n(allow process-info* (target self))\n(allow signal (target self))\n(allow signal (target children))\n(allow sysctl-read)\n(allow file-ioctl)\n\n(allow file-read* (subpath \"/usr\"))\n(allow file-read* (subpath \"/System\"))\n(allow file-read* (subpath \"/Library\"))\n(allow file-read* (subpath \"/private/etc\"))\n(allow file-read* (subpath \"/private/var/db/dyld\"))\n(allow file-read* (subpath \"/dev\"))\n(allow file-read-metadata (subpath \"/bin\") (subpath \"/sbin\"))\n(allow file-read* (subpath \"/Users/test/.local/share/python/3.11\"))\n(allow file-read* (subpath \"/opt/astral/node-pack\"))\n(allow file-read* file-write* (subpath \"/private/tmp/astral/ws\"))\n\n(deny process-exec* (subpath \"/private/tmp/astral/ws\"))\n(deny file-map-executable (subpath \"/private/tmp/astral/ws\"))\n(deny mach-lookup (global-name \"com.apple.dnssd.service\"))\n(deny mach-lookup (global-name \"com.apple.trustd\") (global-name \"com.apple.trustd.agent\") (global-name \"com.apple.system.notification_center\") (global-name \"com.apple.analyticsd\") (global-name \"com.apple.analyticsd.messagetracer\") (global-name \"com.apple.diagnosticd\") (global-name \"com.apple.osanalytics.osanalyticshelper\") (xpc-service-name-prefix \"\"))\n(deny mach-lookup (global-name \"com.apple.logd\") (global-name \"com.apple.logd.events\") (global-name \"com.apple.system.logger\"))\n(deny network-outbound (literal \"/private/var/run/syslog\"))\n(deny file-read* (subpath \"/Users/test/Library/Keychains\"))\n(deny file-read* (subpath \"/Library/Keychains\"))\n(deny file-read* (subpath \"/System/Library/Keychains\"))\n\n(allow network-outbound (remote ip \"localhost:49152\"))\n"
     },
     {
       "context": {
@@ -909,6 +1415,7 @@
           "RLIMIT_NOFILE": 256
         },
         "seccomp": {
+          "allow_socketpair": true,
           "deny_fork": true,
           "deny_socket_domains": [
             "AF_UNIX"
@@ -971,7 +1478,7 @@
         "v": 1,
         "workspace": "/private/tmp/astral/ws \"q\" \\ é"
       },
-      "seatbelt": "(version 1)\n(deny default)\n(import \"system.sb\")\n\n(allow process-exec* (subpath \"/usr\"))\n(allow process-exec* (subpath \"/System\"))\n(allow process-exec* (subpath \"/Library\"))\n(allow process-exec* (subpath \"/private/etc\"))\n(allow process-exec* (subpath \"/private/var/db/dyld\"))\n(allow process-exec* (subpath \"/dev\"))\n(allow process-exec* (subpath \"/opt/a\\\"b\"))\n(allow process-exec* (subpath \"/opt/café dir\"))\n(allow process-exec* (subpath \"/bin\"))\n(allow process-exec* (subpath \"/sbin\"))\n(allow process-info* (target self))\n(allow signal (target self))\n(allow signal (target children))\n(allow sysctl-read)\n(allow file-ioctl)\n\n(allow file-read* (subpath \"/usr\"))\n(allow file-read* (subpath \"/System\"))\n(allow file-read* (subpath \"/Library\"))\n(allow file-read* (subpath \"/private/etc\"))\n(allow file-read* (subpath \"/private/var/db/dyld\"))\n(allow file-read* (subpath \"/dev\"))\n(allow file-read* (subpath \"/opt/a\\\"b\"))\n(allow file-read* (subpath \"/opt/café dir\"))\n(allow file-read* file-write* (subpath \"/private/tmp/astral/ws \\\"q\\\" \\\\ é\"))\n\n(deny process-exec* (subpath \"/private/tmp/astral/ws \\\"q\\\" \\\\ é\"))\n(deny file-map-executable (subpath \"/private/tmp/astral/ws \\\"q\\\" \\\\ é\"))\n(deny mach-lookup (global-name \"com.apple.dnssd.service\"))\n(deny file-read* (subpath \"/Users/test/Library/Keychains\"))\n(deny file-read* (subpath \"/Library/Keychains\"))\n(deny file-read* (subpath \"/System/Library/Keychains\"))\n"
+      "seatbelt": "(version 1)\n(deny default)\n(import \"system.sb\")\n\n(allow process-exec* (subpath \"/usr\"))\n(allow process-exec* (subpath \"/System\"))\n(allow process-exec* (subpath \"/Library\"))\n(allow process-exec* (subpath \"/private/var/db/dyld\"))\n(allow process-exec* (subpath \"/opt/a\\\"b\"))\n(allow process-exec* (subpath \"/opt/café dir\"))\n(allow process-exec* (subpath \"/bin\"))\n(allow process-exec* (subpath \"/sbin\"))\n(allow process-info* (target self))\n(allow signal (target self))\n(allow signal (target children))\n(allow sysctl-read)\n(allow file-ioctl)\n\n(allow file-read* (subpath \"/usr\"))\n(allow file-read* (subpath \"/System\"))\n(allow file-read* (subpath \"/Library\"))\n(allow file-read* (subpath \"/private/etc\"))\n(allow file-read* (subpath \"/private/var/db/dyld\"))\n(allow file-read* (subpath \"/dev\"))\n(allow file-read-metadata (subpath \"/bin\") (subpath \"/sbin\"))\n(allow file-read* (subpath \"/opt/a\\\"b\"))\n(allow file-read* (subpath \"/opt/café dir\"))\n(allow file-read* file-write* (subpath \"/private/tmp/astral/ws \\\"q\\\" \\\\ é\"))\n\n(deny process-exec* (subpath \"/private/tmp/astral/ws \\\"q\\\" \\\\ é\"))\n(deny file-map-executable (subpath \"/private/tmp/astral/ws \\\"q\\\" \\\\ é\"))\n(deny mach-lookup (global-name \"com.apple.dnssd.service\"))\n(deny mach-lookup (global-name \"com.apple.trustd\") (global-name \"com.apple.trustd.agent\") (global-name \"com.apple.system.notification_center\") (global-name \"com.apple.analyticsd\") (global-name \"com.apple.analyticsd.messagetracer\") (global-name \"com.apple.diagnosticd\") (global-name \"com.apple.osanalytics.osanalyticshelper\") (xpc-service-name-prefix \"\"))\n(deny mach-lookup (global-name \"com.apple.logd\") (global-name \"com.apple.logd.events\") (global-name \"com.apple.system.logger\"))\n(deny network-outbound (literal \"/private/var/run/syslog\"))\n(deny file-read* (subpath \"/Users/test/Library/Keychains\"))\n(deny file-read* (subpath \"/Library/Keychains\"))\n(deny file-read* (subpath \"/System/Library/Keychains\"))\n"
     }
   ],
   "selection": [
@@ -2085,6 +2592,172 @@
       "result": {
         "backend": "seatbelt",
         "ok": true
+      }
+    },
+    {
+      "data_dir": "/Users/test/Library/Application Support/Astral/node",
+      "facts": {
+        "app_sandboxed": false,
+        "bwrap": false,
+        "landlock_abi": 0,
+        "platform": "darwin",
+        "sandbox_exec": true,
+        "userns": false
+      },
+      "name": "darwin_case_pair_in_reads",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [
+          "/opt/A",
+          "/opt/a"
+        ],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      },
+      "result": {
+        "policy_error": "policy.path_invalid"
+      }
+    },
+    {
+      "data_dir": "/var/lib/astral/node",
+      "facts": {
+        "app_sandboxed": false,
+        "bwrap": true,
+        "landlock_abi": 6,
+        "platform": "linux",
+        "sandbox_exec": false,
+        "userns": true
+      },
+      "name": "linux_case_pair_in_reads_ok",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [
+          "/opt/A",
+          "/opt/a"
+        ],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      },
+      "result": {
+        "backend": "linux",
+        "ok": true
+      }
+    },
+    {
+      "data_dir": "/Users/test/ƛ/node",
+      "facts": {
+        "app_sandboxed": false,
+        "bwrap": false,
+        "landlock_abi": 0,
+        "platform": "darwin",
+        "sandbox_exec": true,
+        "userns": false
+      },
+      "name": "unicode_16_case_pair_read_root_darwin",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [
+          "/Users/test/Ƛ"
+        ],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      },
+      "result": {
+        "code": "exec.policy_overlaps_data",
+        "message": "A read root or the workspace contains the node data directory.",
+        "ok": false
+      }
+    },
+    {
+      "data_dir": "/Users/test/ƛ/node",
+      "facts": {
+        "app_sandboxed": false,
+        "bwrap": true,
+        "landlock_abi": 6,
+        "platform": "linux",
+        "sandbox_exec": false,
+        "userns": true
+      },
+      "name": "unicode_16_case_pair_read_root_linux_ok",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [
+          "/Users/test/Ƛ"
+        ],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      },
+      "result": {
+        "backend": "linux",
+        "ok": true
+      }
+    },
+    {
+      "data_dir": "/Users/test/Library/Application Support/Astral/node",
+      "facts": {
+        "app_sandboxed": false,
+        "bwrap": false,
+        "landlock_abi": 0,
+        "platform": "darwin",
+        "sandbox_exec": true,
+        "userns": false
+      },
+      "name": "darwin_unassigned_in_reads",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [
+          "/opt/a͸"
+        ],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      },
+      "result": {
+        "policy_error": "policy.path_invalid"
       }
     },
     {
@@ -5161,6 +5834,488 @@
       "code": "policy.malformed",
       "name": "two_to_the_64_in_limit",
       "raw": "{\"hosts\": [], \"limits\": {\"file_bytes\": 104857600, \"memory_bytes\": 18446744073709551616, \"open_files\": 256, \"processes\": 1}, \"reads\": [], \"time\": {\"wall_ms\": 30000}, \"v\": 1, \"workspace\": \"/private/tmp/astral/ws\"}"
+    },
+    {
+      "code": "policy.path_invalid",
+      "name": "read_multibyte_over_4096_bytes",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [
+          "/éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé"
+        ],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      }
+    },
+    {
+      "code": "ok",
+      "digest": "sha256:699ea986b88995752015b915ac0d0201429f48616e1bf8ef7eda7ff965f3ec6e",
+      "name": "read_multibyte_4096_bytes_accepted",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [
+          "/éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééa"
+        ],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      }
+    },
+    {
+      "code": "policy.path_invalid",
+      "name": "reads_sharp_s_pair_darwin",
+      "platform": "darwin",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [
+          "/opt/STRASSE",
+          "/opt/straße"
+        ],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      }
+    },
+    {
+      "code": "ok",
+      "digest": "sha256:ddc093c44647549ba57d959f8dac9a2965abf1ca297ca1c115c279bc328f697b",
+      "name": "reads_sharp_s_pair_linux",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [
+          "/opt/STRASSE",
+          "/opt/straße"
+        ],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      }
+    },
+    {
+      "code": "policy.path_invalid",
+      "name": "reads_ligature_pair_darwin",
+      "platform": "darwin",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [
+          "/opt/file",
+          "/opt/ﬁle"
+        ],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      }
+    },
+    {
+      "code": "ok",
+      "digest": "sha256:35e660ba21726dbd284528a91a61b8157f075103ba99cb38ff29782e60d1028a",
+      "name": "reads_ligature_pair_linux",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [
+          "/opt/file",
+          "/opt/ﬁle"
+        ],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      }
+    },
+    {
+      "code": "policy.path_invalid",
+      "name": "read_unassigned_darwin",
+      "platform": "darwin",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [
+          "/opt/a͸"
+        ],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      }
+    },
+    {
+      "code": "ok",
+      "digest": "sha256:9c4185537c368c8937e97cb55dedd032d3e6e138fceb397536830ac02161e379",
+      "name": "read_unassigned_linux",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [
+          "/opt/a͸"
+        ],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      }
+    },
+    {
+      "code": "policy.path_invalid",
+      "name": "workspace_unassigned_darwin",
+      "platform": "darwin",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/tmp/͸"
+      }
+    },
+    {
+      "code": "policy.path_invalid",
+      "name": "reads_hangul_pair_darwin",
+      "platform": "darwin",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [
+          "/opt/가",
+          "/opt/가"
+        ],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      }
+    },
+    {
+      "code": "policy.path_invalid",
+      "name": "reads_hangul_tail_pair_darwin",
+      "platform": "darwin",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [
+          "/opt/각",
+          "/opt/각"
+        ],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      }
+    },
+    {
+      "code": "policy.path_invalid",
+      "name": "reads_mark_order_pair_darwin",
+      "platform": "darwin",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [
+          "/opt/ȩ́",
+          "/opt/ȩ́"
+        ],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      }
+    },
+    {
+      "code": "policy.path_invalid",
+      "name": "reads_mark_order_pair_before_base_darwin",
+      "platform": "darwin",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [
+          "/opt/ȩ́x",
+          "/opt/ȩ́x"
+        ],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      }
+    },
+    {
+      "code": "ok",
+      "digest": "sha256:d2755458b7b01efa256bb0e659ec34c0c3d3a55208922feead6a8c39794006e8",
+      "name": "reads_same_class_marks_distinct_darwin",
+      "platform": "darwin",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [
+          "/opt/á̂",
+          "/opt/ấ"
+        ],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      }
+    },
+    {
+      "code": "ok",
+      "digest": "sha256:d62fdd76ce2dda1eae9e8fcf0be62d20ecaddb709f5bd10b7883a6457f45171c",
+      "name": "read_assigned_range_start_darwin",
+      "platform": "darwin",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [
+          "/opt/ͺ"
+        ],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      }
+    },
+    {
+      "code": "ok",
+      "digest": "sha256:5a04699f483bc1052c68d7c3a437d1c6904d556bb08b7bc275420c9637b81179",
+      "name": "read_assigned_range_end_darwin",
+      "platform": "darwin",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [
+          "/opt/ͷ"
+        ],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      }
+    },
+    {
+      "code": "policy.path_invalid",
+      "name": "read_unassigned_after_range_darwin",
+      "platform": "darwin",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [
+          "/opt/͹"
+        ],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      }
+    },
+    {
+      "code": "ok",
+      "digest": "sha256:943847780d0f11d7ecdea68825f1369433c6dc0bee282f80069a3d4031ccf21a",
+      "name": "host_253_characters_accepted",
+      "policy": {
+        "hosts": [
+          {
+            "host": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "port": 443
+          }
+        ],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      }
+    },
+    {
+      "code": "policy.host_invalid",
+      "name": "host_254_characters",
+      "policy": {
+        "hosts": [
+          {
+            "host": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "port": 443
+          }
+        ],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      }
+    },
+    {
+      "code": "ok",
+      "digest": "sha256:8a8612ebcb8802bb2a49d199fdbf898f954e7199f1cde1838f292ce6a8609305",
+      "name": "host_digit_then_letter_label_ok",
+      "policy": {
+        "hosts": [
+          {
+            "host": "example.1a",
+            "port": 443
+          }
+        ],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      }
+    },
+    {
+      "code": "ok",
+      "digest": "sha256:3fb6f08ee02305916a56a2730907d91db68efbe48e033440cce2c38ada667c07",
+      "name": "host_bad_hex_label_ok",
+      "policy": {
+        "hosts": [
+          {
+            "host": "example.0xg",
+            "port": 443
+          }
+        ],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      }
     }
   ]
 }

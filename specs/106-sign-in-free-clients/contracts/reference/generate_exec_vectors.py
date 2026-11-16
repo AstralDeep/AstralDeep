@@ -79,6 +79,13 @@ def without(policy: dict[str, Any], *path: Any) -> dict[str, Any]:
     return out
 
 
+def host_of_length(length: int) -> str:
+    labels = ["a" * 63, "b" * 63, "c" * 63, "d" * (length - 192)]
+    host = ".".join(labels)
+    assert len(host) == length
+    return host
+
+
 def validation_cases() -> list[dict[str, Any]]:
     cases: list[tuple[str, str, Any, bool, str | None]] = []
 
@@ -360,6 +367,92 @@ def validation_cases() -> list[dict[str, Any]]:
             '"memory_bytes": 536870912', '"memory_bytes": 18446744073709551616'
         ),
     )
+    multibyte_over = "/" + "\u00e9" * 2048
+    multibyte_exact = "/" + "\u00e9" * 2047 + "a"
+    policy("read_multibyte_over_4096_bytes", bad_path, variant(reads=[multibyte_over]))
+    policy("read_multibyte_4096_bytes_accepted", ok, variant(reads=[multibyte_exact]))
+    policy(
+        "reads_sharp_s_pair_darwin",
+        bad_path,
+        variant(reads=["/opt/STRASSE", "/opt/stra\u00dfe"]),
+        "darwin",
+    )
+    policy(
+        "reads_sharp_s_pair_linux",
+        ok,
+        variant(reads=["/opt/STRASSE", "/opt/stra\u00dfe"]),
+    )
+    policy(
+        "reads_ligature_pair_darwin",
+        bad_path,
+        variant(reads=["/opt/file", "/opt/\ufb01le"]),
+        "darwin",
+    )
+    policy(
+        "reads_ligature_pair_linux",
+        ok,
+        variant(reads=["/opt/file", "/opt/\ufb01le"]),
+    )
+    policy(
+        "read_unassigned_darwin", bad_path, variant(reads=["/opt/a\u0378"]), "darwin"
+    )
+    policy("read_unassigned_linux", ok, variant(reads=["/opt/a\u0378"]))
+    policy(
+        "workspace_unassigned_darwin",
+        bad_path,
+        variant(workspace="/tmp/\u0378"),
+        "darwin",
+    )
+    for name, pair, code in (
+        ("reads_hangul_pair_darwin", ["/opt/\u1100\u1161", "/opt/\uac00"], bad_path),
+        (
+            "reads_hangul_tail_pair_darwin",
+            ["/opt/\u1100\u1161\u11a8", "/opt/\uac01"],
+            bad_path,
+        ),
+        (
+            "reads_mark_order_pair_darwin",
+            ["/opt/e\u0301\u0327", "/opt/e\u0327\u0301"],
+            bad_path,
+        ),
+        (
+            "reads_mark_order_pair_before_base_darwin",
+            ["/opt/e\u0301\u0327x", "/opt/e\u0327\u0301x"],
+            bad_path,
+        ),
+        (
+            "reads_same_class_marks_distinct_darwin",
+            ["/opt/a\u0301\u0302", "/opt/a\u0302\u0301"],
+            ok,
+        ),
+    ):
+        policy(name, code, variant(reads=pair), "darwin")
+    policy(
+        "read_assigned_range_start_darwin", ok, variant(reads=["/opt/\u037a"]), "darwin"
+    )
+    policy(
+        "read_assigned_range_end_darwin", ok, variant(reads=["/opt/\u0377"]), "darwin"
+    )
+    policy(
+        "read_unassigned_after_range_darwin",
+        bad_path,
+        variant(reads=["/opt/\u0379"]),
+        "darwin",
+    )
+    policy(
+        "host_253_characters_accepted",
+        ok,
+        variant(hosts=hosts((host_of_length(253), 443))),
+    )
+    policy(
+        "host_254_characters",
+        bad_host,
+        variant(hosts=hosts((host_of_length(254), 443))),
+    )
+    policy(
+        "host_digit_then_letter_label_ok", ok, variant(hosts=hosts(("example.1a", 443)))
+    )
+    policy("host_bad_hex_label_ok", ok, variant(hosts=hosts(("example.0xg", 443))))
     out = []
     for name, code, value, is_raw, platform in cases:
         entry: dict[str, Any] = {"name": name, "code": code}
@@ -421,6 +514,15 @@ def facts(platform: str, **changes: Any) -> dict[str, Any]:
     }
     base.update(changes)
     return base
+
+
+def selected(
+    policy: dict[str, Any], platform_facts: dict[str, Any], data_dir: str
+) -> dict[str, Any]:
+    try:
+        return exec_policy.select(policy, platform_facts, data_dir)
+    except exec_policy.PolicyError as error:
+        return {"policy_error": error.code}
 
 
 def selection_cases() -> list[dict[str, Any]]:
@@ -583,6 +685,36 @@ def selection_cases() -> list[dict[str, Any]]:
         ),
         ("sibling_of_data_dir_ok", MINIMAL, darwin, DATA_DIR_DARWIN),
         (
+            "darwin_case_pair_in_reads",
+            variant(reads=["/opt/A", "/opt/a"]),
+            darwin,
+            DATA_DIR_DARWIN,
+        ),
+        (
+            "linux_case_pair_in_reads_ok",
+            variant(reads=["/opt/A", "/opt/a"]),
+            linux,
+            DATA_DIR_LINUX,
+        ),
+        (
+            "unicode_16_case_pair_read_root_darwin",
+            variant(reads=["/Users/test/\ua7dc"]),
+            darwin,
+            "/Users/test/\u019b/node",
+        ),
+        (
+            "unicode_16_case_pair_read_root_linux_ok",
+            variant(reads=["/Users/test/\ua7dc"]),
+            linux,
+            "/Users/test/\u019b/node",
+        ),
+        (
+            "darwin_unassigned_in_reads",
+            variant(reads=["/opt/a\u0378"]),
+            darwin,
+            DATA_DIR_DARWIN,
+        ),
+        (
             "overlap_beats_shadow",
             variant(reads=["/var/lib"]),
             facts("linux", mode="shadow"),
@@ -607,13 +739,20 @@ def selection_cases() -> list[dict[str, Any]]:
             "policy": policy,
             "facts": platform_facts,
             "data_dir": data_dir,
-            "result": exec_policy.select(policy, platform_facts, data_dir),
+            "result": selected(policy, platform_facts, data_dir),
         }
         for name, policy, platform_facts, data_dir in rows
     ]
 
 
 CONTEXT_ERRORS = [
+    (
+        "facts_platform_missing",
+        {k: v for k, v in facts("linux").items() if k != "platform"},
+        DATA_DIR_LINUX,
+    ),
+    ("facts_platform_null", {**facts("linux"), "platform": None}, DATA_DIR_LINUX),
+    ("data_dir_unassigned_darwin", facts("darwin"), "/Users/test/\u0378"),
     ("facts_unknown_key", {**facts("linux"), "kernel": "7.0"}, DATA_DIR_LINUX),
     ("facts_missing_key", {"platform": "linux"}, DATA_DIR_LINUX),
     (
@@ -644,6 +783,35 @@ def context_error_cases() -> list[dict[str, Any]]:
     return out
 
 
+def profile_error_cases() -> list[dict[str, Any]]:
+    named = [
+        ("darwin_case_pair_in_reads", variant(reads=["/opt/A", "/opt/a"])),
+        (
+            "darwin_nfc_nfd_pair_in_reads",
+            variant(reads=["/opt/cafe\u0301", "/opt/caf\u00e9"]),
+        ),
+        ("darwin_unassigned_in_workspace", variant(workspace="/tmp/\u0378")),
+    ]
+    out = []
+    for name, policy in named:
+        try:
+            exec_policy.seatbelt_profile(policy, HOME, None)
+        except exec_policy.PolicyError as error:
+            code = error.code
+        else:
+            raise SystemExit(f"{name}: expected a policy error")
+        out.append(
+            {
+                "name": name,
+                "policy": policy,
+                "context": {"home": HOME, "proxy_port": None, "egress_socket": None},
+                "code": code,
+                "linux": exec_policy.linux_plan(policy, None),
+            }
+        )
+    return out
+
+
 def generate() -> dict[str, Any]:
     return {
         "constants": {
@@ -658,7 +826,13 @@ def generate() -> dict[str, Any]:
             "max_hosts": exec_policy.MAX_HOSTS,
             "max_path_bytes": exec_policy.MAX_PATH_BYTES,
             "host_ports": list(exec_policy.HOST_PORTS),
+            "darwin_exec_base": list(exec_policy.DARWIN_EXEC_BASE),
             "darwin_exec_only": list(exec_policy.DARWIN_EXEC_ONLY),
+            "darwin_metadata_only": list(exec_policy.DARWIN_METADATA_ONLY),
+            "denied_services": list(exec_policy.DENIED_SERVICES),
+            "denied_log_services": list(exec_policy.DENIED_LOG_SERVICES),
+            "syslog_socket": exec_policy.SYSLOG_SOCKET,
+            "path_fold_unicode": exec_policy._TABLE["unicode"],
             "dnssd_service": exec_policy.DNSSD_SERVICE,
             "exec_subdirectory": exec_policy.EXEC_SUBDIRECTORY,
             "fact_keys": list(exec_policy.FACT_KEYS),
@@ -671,6 +845,7 @@ def generate() -> dict[str, Any]:
         },
         "validation": validation_cases(),
         "profiles": profile_cases(),
+        "profile_errors": profile_error_cases(),
         "selection": selection_cases(),
         "context_errors": context_error_cases(),
     }

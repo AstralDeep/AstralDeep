@@ -24,7 +24,9 @@ A JSON object with exactly these fields. Any other field is `policy.unknown_fiel
 A path is a string of at most 4096 UTF-8 bytes. It starts with `/`, is not `/` itself, has no empty, `.` or `..` component, has no trailing slash and holds no control character (below U+0020 or U+007F). Anything else is `policy.path_invalid`. 
 Paths are canonical. A caller passes the real path with every symlink resolved and, on macOS, the case and Unicode form the disk reports, because Seatbelt matches resolved paths. The reference cannot read a disk, so it does not check this. The executor's policy loader (it reads the disk) refuses a policy whose stated spelling differs from its canonical form. Reads need not be NFC. The disk's own form is the canonical one, and the reference keeps the stated bytes.
 
-On `darwin` the reference compares paths after NFD normalization and case folding, because APFS is case and normalization insensitive. That fold applies to repeated read roots, to read roots against the workspace and to every data directory check. On any other platform comparison is by bytes. The platform is an input of parsing, and the vectors say which one a case uses.
+On `darwin` the reference compares paths after case folding and NFD normalization, because APFS is case and normalization insensitive. That fold applies to repeated read roots, to read roots against the workspace and to every data directory check. On any other platform comparison is by bytes. The platform is a required input of parsing (the value `null` means no fold), both renderers pass their own (`darwin` for the Seatbelt profile, `linux` for the plan), and the vectors say which one a case uses.
+
+The fold is the committed table `reference/path_fold.json`, generated from Unicode 16.0 by `reference/generate_path_fold.py` (run it with a Python whose `unicodedata` is 16.0, as `--check` does). Each code point maps to its full case fold then NFD form. Hangul syllables decompose by the standard algorithm, and the table's combining classes put marks in canonical order. A `darwin` path that holds a code point unassigned in Unicode 16.0 is `policy.path_invalid`, so a newer character can never hide an overlap. The same refusal covers `home` and the data directory (a caller error there). The task 2 loader canonicalizes the read roots, the workspace, `home` and the data directory with `fcntl` `F_GETPATH` on an open descriptor, which returns the on-disk spelling. A case-sensitive APFS volume holds two names the fold treats as one, so the fold over-refuses there, and that is the safe direction.
 
 `reads` is sorted by the UTF-8 bytes of each path and holds no repeats. A read root that equals, contains or sits inside the workspace is `policy.path_invalid`, because the workspace is never executable.
 
@@ -75,7 +77,7 @@ Strings use the escaping of `ComputerSandboxProfile.quote`: wrap in double quote
 (deny default)
 (import "system.sb")
 
-(allow process-exec* (subpath "<root>"))              base roots, then read roots, then /bin and /sbin
+(allow process-exec* (subpath "<root>"))              exec roots, then read roots, then /bin and /sbin
 (allow process-fork)                                  only when processes is above 1
 (allow process-info* (target self))
 (allow signal (target self))
@@ -83,12 +85,17 @@ Strings use the escaping of `ComputerSandboxProfile.quote`: wrap in double quote
 (allow sysctl-read)
 (allow file-ioctl)
 
-(allow file-read* (subpath "<base root>"))            one line per base root, then one per read root
+(allow file-read* (subpath "<base root>"))            one line per base root
+(allow file-read-metadata (subpath "/bin") (subpath "/sbin"))
+(allow file-read* (subpath "<read root>"))            one line per read root
 (allow file-read* file-write* (subpath "<workspace>"))
 
 (deny process-exec* (subpath "<workspace>"))
 (deny file-map-executable (subpath "<workspace>"))
 (deny mach-lookup (global-name "com.apple.dnssd.service"))
+(deny mach-lookup (global-name "com.apple.trustd") ... (xpc-service-name-prefix ""))
+(deny mach-lookup (global-name "com.apple.logd") (global-name "com.apple.logd.events") (global-name "com.apple.system.logger"))
+(deny network-outbound (literal "/private/var/run/syslog"))
 (deny file-read* (subpath "<home>/Library/Keychains"))
 (deny file-read* (subpath "/Library/Keychains"))
 (deny file-read* (subpath "/System/Library/Keychains"))
@@ -96,14 +103,15 @@ Strings use the escaping of `ComputerSandboxProfile.quote`: wrap in double quote
 (allow network-outbound (remote ip "localhost:<proxy port>"))   only when hosts is not empty
 ```
 
-The text ends with one newline and the annotations on the right are not part of it. A blank line separates sections, and the last section and its blank line are absent when `hosts` is empty. The base roots, in order, are `/usr`, `/System`, `/Library`, `/private/etc`, `/private/var/db/dyld` and `/dev`.
+The text ends with one newline and the annotations on the right are not part of it. A blank line separates sections, and the last section and its blank line are absent when `hosts` is empty. The base read roots, in order, are `/usr`, `/System`, `/Library`, `/private/etc`, `/private/var/db/dyld` and `/dev`. The exec roots are `/usr`, `/System`, `/Library` and `/private/var/db/dyld`, which leaves out `/private/etc` and `/dev`. The first long deny line lists, in order, `com.apple.trustd`, `com.apple.trustd.agent`, `com.apple.system.notification_center`, `com.apple.analyticsd`, `com.apple.analyticsd.messagetracer`, `com.apple.diagnosticd` and `com.apple.osanalytics.osanalyticshelper`, then the empty XPC prefix. The vectors hold the exact text.
 
 Rules the text encodes:
 
 - Later rules win, so the deny lines follow every allow.
-- Executing is allowed only under the base roots, the read roots and `/bin` and `/sbin`. `/bin` and `/sbin` are exec-only and add no read access. Linux matches this, since its base roots hold `/bin` and `/sbin` and nothing else outside the read roots can execute.
+- Executing is allowed only under the exec roots, the read roots and `/bin` and `/sbin`. On macOS `/bin` and `/sbin` are exec plus metadata only, so a shell finds bare command names and file contents stay unreadable. On Linux `/bin` and `/sbin` are base roots and readable. Neither platform can execute anything else outside the read roots.
 - The workspace refuses `execve` and executable mappings (`file-map-executable`), so a library written there cannot load. A dylib in a read root still loads.
-- There is no unfiltered `mach-lookup` allow. The import supplies the services Python and `/bin/sh` need, and the one deny closes the DNS service so the child cannot resolve names itself. A service the child needs later is a named `global-name` in a new policy version. Any profile text with an unfiltered `mach-lookup` or `process-exec*` allow is a defect, and the reference tests refuse it.
+- There is no unfiltered `mach-lookup` allow. The imported `system.sb` lets a child reach XPC services that load from the network outside its profile, so the profile denies every XPC service by the empty prefix. It also denies the DNS service (the child cannot resolve names itself), `trustd` (it would fetch certificate URLs outside the egress proxy), the notification center and the analytics and diagnostic daemons. A tool that verifies TLS through Security.framework therefore fails closed. Python's OpenSSL path does not need `trustd`, and a live check runs a Python HTTPS request through a local proxy with these denies in force. A service the child needs later is a named `global-name` in a new policy version. Any profile text with an unfiltered `mach-lookup` or `process-exec*` allow, or any allow with an empty prefix, is a defect, and the reference tests refuse it. A live test lists the lookups that stay refused.
+- The loggers (`logd`, `logd.events`, the `system.logger` service and the `/private/var/run/syslog` socket) are denied. Otherwise child text lands in the persistent unified log, which is a retention path for patient data.
 - Signals reach the child itself and its children only.
 - Nothing allows `network-bind`, `network-inbound` or the mDNSResponder socket. The proxy resolves names.
 - SBPL accepts only `localhost` or `*` as a remote host name, so the one outbound rule covers `127.0.0.1` and `::1` on the proxy port. The proxy binds both addresses on that port, which keeps any other listener off it.
@@ -120,7 +128,7 @@ The renderer takes the policy and, when `hosts` is not empty, the host path of t
 | `landlock` | `abi` 6, `exec_read`, `device_files`, `workspace`, `workspace_rights`, `tcp_connect`, `tcp_bind`, `scopes` |
 | `workspace_noexec` | Always `true`. The workspace is mounted `noexec`, so `execve` and executable mappings of its files fail, including `ld.so <file>` |
 | `egress` | `null`, or `{"listen": "127.0.0.1:3128", "socket": "/run/astral/egress.sock"}` |
-| `seccomp` | `deny_syscalls`, `deny_fork`, `fork_syscalls`, `inet_stream_sockets`, `deny_socket_types` |
+| `seccomp` | `deny_syscalls`, `deny_fork`, `fork_syscalls`, `inet_stream_sockets`, `deny_socket_types`, `deny_socket_domains`, `allow_socketpair` |
 | `rlimits` | `RLIMIT_AS`, `RLIMIT_NOFILE`, `RLIMIT_FSIZE` |
 | `watchdog` | `wall_ms` and `processes`, enforced by the monitoring parent |
 
@@ -135,7 +143,7 @@ The `bwrap` arguments are, in this order:
 
 Landlock grants `exec_read` (the base roots then the read roots) read and execute, the four `device_files` (`/dev/null`, `/dev/zero`, `/dev/urandom`, `/dev/random`) read and write, and the workspace every right except execute and `MAKE_SOCK`. It handles TCP bind and connect with no bind grant, and allows connect only to port 3128 when `hosts` is not empty. It sets both scopes at ABI 6. The ABI never drops below 6.
 
-Seccomp denies `deny_syscalls`, which are the SysV IPC calls, the POSIX message queue calls, `setsid` and `setpgid`. It allows AF_INET and AF_INET6 sockets only when `inet_stream_sockets` is true, and then only `SOCK_STREAM`. Datagram and raw sockets stay denied. `deny_socket_domains` is `["AF_UNIX"]`, so the child cannot create Unix sockets. The egress forwarder runs outside the child's filter, and the child reaches it over TCP port 3128. When `deny_fork` is true (`processes` is 1), `fork_syscalls` are denied and `clone` is denied unless it creates a thread.
+Seccomp denies `deny_syscalls`, which are the SysV IPC calls, the POSIX message queue calls, `setsid` and `setpgid`. It allows AF_INET and AF_INET6 sockets only when `inet_stream_sockets` is true, and then only `SOCK_STREAM`. Datagram and raw sockets stay denied. `deny_socket_domains` is `["AF_UNIX"]`, so `socket(AF_UNIX)` is denied. `allow_socketpair` is `true`, so `socketpair` still works. The egress forwarder runs outside the child's filter, and the child reaches it over TCP port 3128. When `deny_fork` is true (`processes` is 1), `fork_syscalls` are denied and `clone` is denied unless it creates a thread.
 
 `RLIMIT_AS`, `RLIMIT_NOFILE` and `RLIMIT_FSIZE` come from `memory_bytes`, `open_files` and `file_bytes`. The `watchdog` holds the wall clock and, for `processes` above 1, the process count the parent enforces over the child tree.
 
@@ -153,7 +161,7 @@ The selector takes a validated policy, platform facts and the node data director
 | `sandbox_exec` | `/usr/bin/sandbox-exec` exists |
 | `app_sandboxed` | The process runs in an App Sandbox container |
 
-A bad facts object or data directory is a caller error, and the caller refuses to run the tool. The result is `{"ok": true, "backend": "seatbelt"}`, `{"ok": true, "backend": "linux"}` or a refusal. A refusal is `{"ok": false, "code", "message"}` with `reason` and its extra keys when the code is `exec.backend_unavailable`. The first row that matches wins.
+A bad facts object or data directory is a caller error, and the caller refuses to run the tool. The result is `{"ok": true, "backend": "seatbelt"}`, `{"ok": true, "backend": "linux"}` or a refusal. A policy that fails validation for the platform raises its policy error instead (for example a case pair in `reads` on `darwin`), and the selection vectors write that as `{"policy_error": "<code>"}`. A refusal is `{"ok": false, "code", "message"}` with `reason` and its extra keys when the code is `exec.backend_unavailable`. The first row that matches wins.
 
 | Order | Condition | Code and reason |
 |---|---|---|
@@ -186,7 +194,8 @@ Every message names the missing piece in plain words. The exact texts, including
 - `validation`: named cases with a `policy` object or `raw` text, an optional `platform` and the expected `code` (`ok` when valid, with the `digest`).
 - `profiles`: valid policies with their context (`home`, `proxy_port`, `egress_socket`), the digest, the exact Seatbelt text and the Linux plan. Cases cover `processes` 1 and 2, empty and non-empty `hosts` and a path that needs quoting.
 - `selection`: policies, facts and data directory with the exact result. Cases cover every refusal reason, both backends, the shadow refusal, data directory overlap (case and Unicode variants, read roots inside and containing, the `exec/` rule both ways) and the order of checks.
-- `context_errors`: facts or data directories the selector refuses as caller errors, such as an unknown key or a null probe result.
+- `context_errors`: facts or data directories the selector refuses as caller errors, such as an unknown key, a missing or null platform or a null probe result.
+- `profile_errors`: policies the Seatbelt renderer refuses with a policy error because of the `darwin` fold, each with the Linux plan that still renders.
 
 ## 9. Versioning
 
