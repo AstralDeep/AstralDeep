@@ -490,3 +490,10 @@ def test_the_marker_sweep_ends_a_marked_process_only_when_fork_is_allowed(
         planted.kill()
         planted.wait()
         launcher.stdout.close()
+
+
+def test_a_very_fast_tool_always_exits_zero_with_no_outcome_code(call):
+    policy = call()
+    for _ in range(50):
+        outcome = run(policy, ["/usr/bin/true"], {}, None)
+        assert (outcome.code, outcome.exit_code) == (None, 0), outcome.stderr

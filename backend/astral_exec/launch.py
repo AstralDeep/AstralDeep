@@ -12,6 +12,7 @@ import os
 import secrets
 import selectors
 import signal
+import stat as stat_module
 import subprocess
 import sys
 import tempfile
@@ -42,6 +43,7 @@ READ_CHUNK = 65536
 STATUS_LIMIT_BYTES = 256
 NPROC_SLACK = 32
 PROFILE_SUBDIR = "exec-profiles"
+TEARDOWN_WAIT_SECONDS = 5.0
 SANDBOX_EXEC_FAILURES = frozenset({64, 65, 71})
 RUN_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "run.py")
 STOP_SIGNALS = (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)
@@ -140,13 +142,31 @@ def _prepare(
     return _Call(document, _checked_argv(argv), child_env, marker, profile)
 
 
-def _write_profile(text: str, data_dir: str) -> str:
+def _profile_folder(data_dir: str) -> str:
     folder = os.path.join(data_dir, PROFILE_SUBDIR)
-    os.makedirs(folder, exist_ok=True)
-    os.chmod(folder, 0o700)
+    try:
+        os.mkdir(folder, 0o700)
+    except FileExistsError:
+        pass
+    info = os.lstat(folder)
+    if stat_module.S_ISLNK(info.st_mode) or not stat_module.S_ISDIR(info.st_mode):
+        raise ContextError("the profile folder is not a real directory")
+    if info.st_uid != os.geteuid():
+        raise ContextError("the profile folder is not owned by this user")
+    if info.st_mode & 0o077:
+        raise ContextError("the profile folder is group or world accessible")
+    return folder
+
+
+def _write_profile(text: str, data_dir: str) -> str:
+    folder = _profile_folder(data_dir)
     fd, path = tempfile.mkstemp(prefix="profile-", suffix=".sb", dir=folder)
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        handle.write(text)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+    except BaseException:
+        _remove(path)
+        raise
     return path
 
 
@@ -366,11 +386,14 @@ def _end(proc: subprocess.Popen, watch: Any, log: _DigestLog) -> bool:
             survivors = watch.end()
         except Exception as error:
             log.warning("exec teardown failed: %s", type(error).__name__)
-    if survivors is None and proc.returncode is None:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass
+    if survivors is None:
+        if proc.returncode is None:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+            return False
+        return watch is None
     if survivors:
         log.warning("exec processes survived teardown count=%d", len(survivors))
     return survivors == set()
@@ -392,8 +415,9 @@ def _supervise(
     marker: str,
     data: bytes | None,
     watch_factory: Callable[[int, bytes | None], Any] = Watch,
-    log: _DigestLog = _log("none"),
+    log: _DigestLog | None = None,
 ) -> Outcome:
+    log = log if log is not None else _log("none")
     deadline = time.monotonic() + wall_ms / 1000
     entry = f"{LAUNCH_MARKER}={marker}".encode() if limits["processes"] > 1 else None
     streams = None
@@ -404,8 +428,13 @@ def _supervise(
         try:
             encoded = json.dumps(dict(env)).encode()
             streams = _Streams(proc, status_fd, env_fd, encoded, data)
-            watch = watch_factory(proc.pid, entry)
-            code = _monitor(proc, streams, watch, limits, deadline)
+            try:
+                watch = watch_factory(proc.pid, entry)
+            except OSError:
+                if proc.poll() is None:
+                    raise
+            if watch is not None:
+                code = _monitor(proc, streams, watch, limits, deadline)
         except Exception as error:
             log.warning("exec monitor failed: %s", type(error).__name__)
             code = "exec.launch_failed"
@@ -415,7 +444,12 @@ def _supervise(
                 ended = _end(proc, watch, log)
                 if streams is not None:
                     streams.drain(DRAIN_SECONDS, log)
-                proc.wait()
+                try:
+                    proc.wait(timeout=TEARDOWN_WAIT_SECONDS)
+                except subprocess.TimeoutExpired:
+                    log.warning(
+                        "exec child did not exit after teardown pid=%d", proc.pid
+                    )
             finally:
                 signal.pthread_sigmask(signal.SIG_SETMASK, blocked)
     finally:
@@ -459,16 +493,13 @@ def _launch(
             log.info("exec refused code=%s", call.code)
             return Outcome(call.code, None, refusal=call)
         data = _checked_stdin(stdin)
-        profile = _write_profile(call.profile, policy.loaded_for[1])
     except Exception as error:
         log.warning("exec launch failed before start: %s", type(error).__name__)
         return Outcome("exec.launch_failed", None)
+    profile = None
     try:
-        try:
-            proc, status_fd, env_fd = _spawn(call, profile, capture, data)
-        except Exception as error:
-            log.warning("exec launch failed at spawn: %s", type(error).__name__)
-            return Outcome("exec.launch_failed", None)
+        profile = _write_profile(call.profile, policy.loaded_for[1])
+        proc, status_fd, env_fd = _spawn(call, profile, capture, data)
         log.info("exec launch backend=seatbelt pid=%d", proc.pid)
         outcome = _supervise(
             proc,
@@ -483,8 +514,12 @@ def _launch(
         )
         log.info("exec outcome code=%s exit=%s", outcome.code, outcome.exit_code)
         return outcome
+    except Exception as error:
+        log.warning("exec launch failed at spawn: %s", type(error).__name__)
+        return Outcome("exec.launch_failed", None)
     finally:
-        _remove(profile)
+        if profile is not None:
+            _remove(profile)
 
 
 def _run(
@@ -542,6 +577,7 @@ def main(args: Sequence[str]) -> int:
     options = parser.parse_args(args[:split])
     previous = {signum: signal.signal(signum, _stop) for signum in STOP_SIGNALS}
     try:
+        digest = "none"
         try:
             facts = probe()
             with open(options.policy, "rb") as handle:
@@ -549,13 +585,14 @@ def main(args: Sequence[str]) -> int:
             policy = Policy.load(
                 data, facts["platform"], options.data_dir, options.home
             )
+            digest = policy.digest()
             env = _read_env(options.env_file)
         except ExecRefused as error:
             return _refused(error.code, error.refusal.message)
         except PolicyError as error:
             return _refused(error.code, str(error))
         except Exception as error:
-            _log("none").warning("exec launch failed before start: %s", error)
+            _log(digest).warning("exec launch failed before start: %s", error)
             return _refused("exec.launch_failed", MESSAGES["exec.launch_failed"])
         return _status(_launch(policy, args[split + 1 :], env, None, facts, False))
     except _Stopped as stopped:

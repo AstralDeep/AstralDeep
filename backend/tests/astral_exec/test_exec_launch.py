@@ -9,6 +9,7 @@ import json
 import os
 import runpy
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -21,6 +22,7 @@ import pytest
 from astral_exec import Policy, constants, launch, watchdog
 from astral_exec import run as run_command
 from astral_exec.constants import LAUNCH_MARKER, MESSAGES, REFUSED_EXIT_STATUS
+from astral_exec.errors import ContextError
 from astral_exec.facts import Facts
 from astral_exec.launch import Outcome
 from astral_exec.watchdog import (
@@ -589,10 +591,22 @@ def ready_fds(status=b"exec"):
     return env_pipe(status), env_write
 
 
+SUPERVISE_DIGEST = "sha256:feedfed"
+
+
 def supervise(proc, fake, wall_ms=60000, data=None, limits=LIMITS, status=b"exec"):
     status_fd, env_fd = ready_fds(status)
     return launch._supervise(
-        proc, status_fd, env_fd, {"A": "1"}, limits, wall_ms, "feedface", data, fake
+        proc,
+        status_fd,
+        env_fd,
+        {"A": "1"},
+        limits,
+        wall_ms,
+        "feedface",
+        data,
+        fake,
+        log=launch._log(SUPERVISE_DIGEST),
     )
 
 
@@ -1155,3 +1169,116 @@ def test_a_fork_loop_cannot_grow_past_the_nproc_backstop():
     )
     assert status == run_command.READY, err
     assert 0 < int(out) < 200
+
+
+def test_every_supervise_warning_line_carries_the_digest(caplog):
+    with caplog.at_level(logging.WARNING, logger="astral_exec.launch"):
+        supervise(spawn("import time; time.sleep(600)"), FakeWatch(fail=True))
+        survivor = FakeWatch()
+        survivor.end = lambda: {1234}
+        supervise(spawn("pass"), survivor)
+        refused = FakeWatch()
+        supervise(
+            spawn("import sys; sys.stderr.write('sandbox-exec: no'); sys.exit(65)"),
+            refused,
+        )
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("monitor failed" in m for m in messages)
+    assert any("survived teardown" in m for m in messages)
+    assert messages
+    for message in messages:
+        assert message.startswith("digest=" + SUPERVISE_DIGEST), message
+
+
+def test_a_drain_warning_line_carries_the_digest(monkeypatch, caplog):
+    monkeypatch.setattr(launch, "DRAIN_SECONDS", 0.05)
+    code = (
+        "import os, subprocess, sys\n"
+        "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(5)'],"
+        " stdout=sys.stdout, start_new_session=True)\n"
+    )
+    with caplog.at_level(logging.WARNING, logger="astral_exec.launch"):
+        supervise(spawn(code), FakeWatch())
+    stuck = [r.getMessage() for r in caplog.records if "stayed open" in r.getMessage()]
+    assert stuck and all(m.startswith("digest=" + SUPERVISE_DIGEST) for m in stuck)
+
+
+def test_a_child_that_will_not_reap_does_not_hang_teardown(monkeypatch, caplog):
+    proc = spawn("pass")
+
+    def never(timeout=None):
+        raise subprocess.TimeoutExpired(proc.args, timeout or 0)
+
+    monkeypatch.setattr(proc, "wait", never)
+    with caplog.at_level(logging.WARNING, logger="astral_exec.launch"):
+        outcome = supervise(proc, FakeWatch())
+    assert "did not exit after teardown" in caplog.text
+    assert outcome.code is None
+    monkeypatch.undo()
+    if proc.poll() is None:
+        proc.kill()
+    proc.wait()
+
+
+def test_a_child_that_exits_before_the_first_sample_is_a_normal_exit():
+    def no_watch(root, marker):
+        raise OSError("gone before the first sample")
+
+    proc = spawn("import sys; sys.exit(7)")
+    proc.wait()
+    outcome = supervise(proc, no_watch)
+    assert (outcome.code, outcome.exit_code) == (None, 7)
+
+
+def _make_folder(tmp_path, kind):
+    data = (tmp_path / "data").resolve()
+    data.mkdir()
+    folder = data / launch.PROFILE_SUBDIR
+    if kind == "symlink":
+        (tmp_path / "elsewhere").mkdir()
+        folder.symlink_to(tmp_path / "elsewhere")
+    elif kind == "loose":
+        folder.mkdir(mode=0o755)
+        folder.chmod(0o755)
+    elif kind == "file":
+        folder.write_text("not a dir")
+    return str(data)
+
+
+@pytest.mark.parametrize("kind", ["symlink", "loose", "file"])
+def test_a_tampered_profile_folder_is_refused(tmp_path, kind):
+    data = _make_folder(tmp_path, kind)
+    with pytest.raises(ContextError):
+        launch._write_profile("(version 1)\n", data)
+
+
+def test_a_fresh_profile_folder_is_created_private_and_used(tmp_path):
+    data = str((tmp_path / "data").resolve())
+    os.makedirs(data)
+    path = launch._write_profile("(version 1)\n", data)
+    folder = os.path.join(data, launch.PROFILE_SUBDIR)
+    assert stat.S_IMODE(os.lstat(folder).st_mode) == 0o700
+    assert os.stat(path).st_mode & 0o777 == 0o600
+    assert path.startswith(folder + os.sep)
+    launch._remove(path)
+
+
+def test_a_write_failure_removes_the_profile_file(monkeypatch, tmp_path):
+    data = str((tmp_path / "data").resolve())
+    os.makedirs(data)
+    seen = []
+    real_mkstemp = tempfile.mkstemp
+
+    def recording(*args, **kwargs):
+        fd, path = real_mkstemp(*args, **kwargs)
+        seen.append(path)
+        return fd, path
+
+    def failing_fdopen(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(launch.tempfile, "mkstemp", recording)
+    monkeypatch.setattr(launch.os, "fdopen", failing_fdopen)
+    with pytest.raises(OSError):
+        launch._write_profile("(version 1)\n", data)
+    assert len(seen) == 1 and not os.path.exists(seen[0])
