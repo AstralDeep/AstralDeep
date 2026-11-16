@@ -159,16 +159,18 @@ broker for release verification or publication.
 
 ## Knowledge vault and handoffs
 
-The active knowledge vault is the sibling repository at `../kos-wiki-v2`; `../kos-wiki` is historical. Before reading or saving knowledge, follow the active vault's `AGENTS.md` for schema, provenance, tier routing, sensitivity, intake and Git operations. Use `index.md` to route, read the relevant curated pages and tail of `log.md`, and check `to-file/` and any active `sessions/resume-*.md`; consult `local/index.md` and `local/profile.md` for personal-tier work. Vault claims must be verified against the live repositories.
+The active knowledge vault is the sibling repository at `../kos-wiki-v2`; the old `../kos-wiki` is historical. Before reading or saving knowledge, follow the active vault's `AGENTS.md` for schema, provenance, tier routing, sensitivity, intake, and Git operations. Use its `index.md` to route, then read the relevant pages and the tail of `log.md`; consult `local/index.md` and `local/profile.md` when working in the personal tier. Check `to-file/` at session start and after sync, and read any active `sessions/resume-*.md` when present. The vault is project memory, not current-state authority; verify its claims against the live repositories.
 
 The user has established an always-on checkpoint rule: whenever a major checkpoint occurs — a
 branch is pushed for handoff, a spec/plan/tasks phase finishes, a PR opens or merges, a feature or
 release changes state, or a durable decision is made — update the vault before declaring the
 checkpoint complete. First read that vault's `AGENTS.md`, refresh the repository anchor, revise the
-affected curated pages (never `raw/`), update `index.md` and `log.md`, then commit and push the vault
-when its remote is available. The machine-written `sessions/` breadcrumb is not a substitute for the
-curated update. Keep the vault commit separate from product-repository commits, and report explicitly
-if the vault commit or push is blocked.
+affected curated pages in the correct tier (never raw sources), and update that tier's `index.md`
+and `log.md`. Commit and push according to the active wiki's tier rules and authorization; normal
+team-content batches may sync to the global remote, personal-scope content requires a direct human
+command before reaching any remote, and ultra-private content never enters Git. The machine-written
+`sessions/` breadcrumb is not a substitute for the curated update. Keep vault commits separate from
+product-repository commits, and report explicitly if a required vault commit or push is blocked.
 
 ## Handoff standard
 
