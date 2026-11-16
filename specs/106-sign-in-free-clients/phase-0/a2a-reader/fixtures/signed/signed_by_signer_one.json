@@ -1,0 +1,54 @@
+{
+  "capabilities": {
+    "extendedAgentCard": true,
+    "streaming": true
+  },
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "description": "Fixture card for the reader tests.",
+  "name": "Fixture Agent",
+  "securityRequirements": [
+    {
+      "schemes": {
+        "tok": {
+          "list": []
+        }
+      }
+    }
+  ],
+  "securitySchemes": {
+    "tok": {
+      "httpAuthSecurityScheme": {
+        "scheme": "bearer"
+      }
+    }
+  },
+  "signatures": [
+    {
+      "protected": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImZpeHR1cmUtc2lnbmVyLW9uZSIsInR5cCI6IkpPU0UifQ",
+      "signature": "MJvYi-ADZouk2QbUQeegFTEnsBzD-hdUgsN5--05_mfJfzISqxHSmYQTB1a1yjQag6PTe8YRKDlj0o3qRZaVww"
+    }
+  ],
+  "skills": [
+    {
+      "description": "Echoes text.",
+      "id": "echo",
+      "name": "Echo",
+      "tags": [
+        "echo"
+      ]
+    }
+  ],
+  "supportedInterfaces": [
+    {
+      "protocolBinding": "JSONRPC",
+      "protocolVersion": "1.0",
+      "url": "https://agent.example.org/a2a/v1"
+    }
+  ],
+  "version": "1.0.0"
+}
