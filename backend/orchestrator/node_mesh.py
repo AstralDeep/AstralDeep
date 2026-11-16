@@ -1,4 +1,4 @@
-"""The node's peer in its owner's mesh: it opens the pinned kernel binding with the node's own keys, a software signer and a node device kind, shows a pairing offer, reports mesh status for the descriptor, and refuses to bind, serve or sync a mesh listing a seeded development device (shared/dev_mesh_keys.py) unless ASTRAL_ENV is development.
+"""The node's peer in its owner's mesh: it opens the pinned kernel binding with the node's own keys, a software signer and a node device kind, serves a pairing offer only to a holder of the node's private pairing secret, reports mesh status for the descriptor, and refuses to bind, serve or sync a mesh listing a seeded development device (shared/dev_mesh_keys.py) unless ASTRAL_ENV is development.
 node_api.py serves it, node_mailbox.py supervises the node's mailbox beside it, node_mesh_chat.py moves chat activity through it, and nothing else imports the kernel binding.
 """
 
@@ -6,13 +6,18 @@ from __future__ import annotations
 
 import asyncio
 import gc
+import hmac
 import inspect
 import importlib
 import json
 import logging
 import os
 import re
+import secrets
+import stat
+import tempfile
 import threading
+import time
 import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -43,6 +48,11 @@ ENVIRONMENT_ENV = "ASTRAL_ENV"
 DEVELOPMENT = "development"
 DEVELOPMENT_MESH = "node.development_mesh"
 ROSTER_CHANGES = frozenset({"ROSTER_CHANGED", "RosterChanged", "ENROLLMENT", "Enrollment"})
+PAIRING_SECRET_FILE = "pairing-secret"
+PAIRING_SECRET_BYTES = 32
+OFFERS_PER_WINDOW = 5
+OFFER_WINDOW_SECONDS = 60.0
+MESH_ID = re.compile(r"sha256:[0-9a-f]{64}")
 
 
 class NodeMeshError(Exception):
@@ -183,6 +193,64 @@ def _signer(binding: Any, keys: node_mesh_keys.NodeMeshKeys) -> Any:
     return NodeSigner()
 
 
+class PairingSecret:
+    def __init__(self, directory: Path):
+        self._directory = Path(directory)
+        self._path = self._directory / PAIRING_SECRET_FILE
+        self._lock = threading.Lock()
+        self._closed = False
+
+    def open(self) -> None:
+        with self._lock:
+            self._closed = False
+            if not self._trusted():
+                self._write()
+
+    def ensure(self) -> None:
+        with self._lock:
+            if not self._closed and not self._trusted():
+                self._write()
+
+    def rotate(self) -> None:
+        with self._lock:
+            if not self._closed:
+                self._write()
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+            self._path.unlink(missing_ok=True)
+
+    def matches(self, presented: str) -> bool:
+        with self._lock:
+            if not self._trusted():
+                return False
+            stored = self._path.read_bytes()
+            return bool(stored) and hmac.compare_digest(stored, presented.encode())
+
+    def _trusted(self) -> bool:
+        try:
+            info = self._path.lstat()
+        except FileNotFoundError:
+            return False
+        return stat.S_ISREG(info.st_mode) and not stat.S_IMODE(info.st_mode) & 0o077
+
+    def _write(self) -> None:
+        self._directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if stat.S_IMODE(self._directory.stat().st_mode) & 0o077:
+            self._directory.chmod(0o700)
+        descriptor, temporary = tempfile.mkstemp(prefix=".pairing-secret-", dir=self._directory)
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(secrets.token_urlsafe(PAIRING_SECRET_BYTES).encode())
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, self._path)
+        except BaseException:
+            Path(temporary).unlink(missing_ok=True)
+            raise
+
+
 def _relay(binding: Any, relay: Sequence[str]) -> Any:
     if relay == ("default",):
         return binding.RelayChoice.DEFAULT()
@@ -278,6 +346,9 @@ class NodeMesh:
         self._quarantined = False
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._checks: set = set()
+        self._pairing = PairingSecret(self._data_dir)
+        self._offer_lock = asyncio.Lock()
+        self._served: List[float] = []
 
     @property
     def kernel(self) -> Any:
@@ -317,11 +388,13 @@ class NodeMesh:
             self._keys = keys
             self._listener = _Listener(binding)
             self._listener.subscribe(self._watch)
+            self._listener.subscribe(self._watch_pairing)
             self._loop = asyncio.get_running_loop()
             self._quarantined = False
             (self._data_dir / KERNEL_DIR).mkdir(mode=0o700, parents=True, exist_ok=True)
             checked = await self._check_stored_mesh(keys)
             if self._quarantined:
+                self._pairing.close()
                 self._started = True
                 return
             await self._start_mailbox()
@@ -331,6 +404,10 @@ class NodeMesh:
                 )
                 try:
                     await self._kernel.start_network()
+                    if self._enrollment(await self._kernel.mesh_status()) in ENROLLED_STATES:
+                        self._pairing.close()
+                    else:
+                        await asyncio.to_thread(self._pairing.open)
                 except BaseException:
                     await self._kernel.stop_network()
                     raise
@@ -423,6 +500,11 @@ class NodeMesh:
         if loop is not None and (stage == "JOINED" or _variant(change) in ROSTER_CHANGES):
             loop.call_soon_threadsafe(self._schedule_check)
 
+    def _watch_pairing(self, change: Any) -> None:
+        progress = getattr(change, "progress", None)
+        if progress is not None and _variant(progress) == "JOINED":
+            self._pairing.close()
+
     def _schedule_check(self) -> None:
         task = asyncio.get_running_loop().create_task(self._check_development_mesh(), name="node-mesh-development-check")
         self._checks.add(task)
@@ -491,6 +573,7 @@ class NodeMesh:
                 self._personal_owner = None
                 self._owner_binding = {"state": "setup_required", "code": "mesh.not_enrolled"}
                 return None
+            self._pairing.close()
 
             def bind():
                 principal = getattr(kernel, "mesh_principal", None)
@@ -575,6 +658,32 @@ class NodeMesh:
             "endpoint_address": address,
             "mailbox": self._mailbox_snapshot(),
         }
+
+    async def serve_offer(self, presented: str) -> Dict[str, Any]:
+        async with self._offer_lock:
+            status = await self._request_call(self.kernel.mesh_status)
+            enrolled = self._enrollment(status) in ENROLLED_STATES
+            if not await asyncio.to_thread(self._pairing.matches, presented):
+                if not enrolled:
+                    await asyncio.to_thread(self._pairing.ensure)
+                raise NodeMeshError("node.pairing_secret_required", 401)
+            try:
+                owner = node_identity.bound_owner()
+            except node_identity.NodeIdentityError:
+                raise NodeMeshError("node.owner_binding_unavailable", 503) from None
+            if owner is not None and MESH_ID.fullmatch(owner) is None:
+                raise NodeMeshError("node.legacy_owner", 409)
+            if enrolled:
+                self._pairing.close()
+                return {"state": "enrolled", "mesh_id": status.mesh_id, "member_id": status.device_id}
+            now = time.monotonic()
+            self._served = [served for served in self._served if now - served < OFFER_WINDOW_SECONDS]
+            if len(self._served) >= OFFERS_PER_WINDOW:
+                raise NodeMeshError("node.pairing_rate_limited", 429)
+            offer = await self.pairing_offer()
+            self._served.append(now)
+            await asyncio.to_thread(self._pairing.rotate)
+            return {"state": "offer", "code": offer["code"], "payload": offer["payload"], "expires_ms": offer["expires_ms"]}
 
     def _mailbox_snapshot(self) -> Optional[Dict[str, Any]]:
         if self._mailbox_error is not None:

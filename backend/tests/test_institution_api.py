@@ -45,7 +45,6 @@ def env(tmp_path, monkeypatch):
     monkeypatch.delenv(ip.APPROVAL_ENV, raising=False)
     monkeypatch.delenv(ni.ISSUERS_ENV, raising=False)
     ni.reset_cache()
-    node_api.reset_state()
     fake.Kernel.instances.clear()
     actor = owner_actor()
     app = FastAPI()
@@ -54,7 +53,6 @@ def env(tmp_path, monkeypatch):
     app.dependency_overrides[mesh_api._store] = lambda: None
     holder = SimpleNamespace(app=app, actor=actor, tmp=tmp_path, monkeypatch=monkeypatch)
     yield holder
-    node_api.reset_state()
     institution_runtime.set_current(None)
     nmc.install(None)
     ni.reset_cache()
@@ -139,10 +137,10 @@ async def test_other_profiles_do_not_answer(env):
         assert (await http.post("/api/institution/pairing", json={})).status_code == 404
 
 
-async def test_the_personal_pairing_route_is_not_open_on_an_institution_node(env):
+async def test_the_personal_pairing_offer_is_not_open_on_an_institution_node(env):
     async with client(env) as http:
-        response = await http.post("/api/node/pairing", json={})
-    assert response.status_code == 404
+        response = await http.post("/api/node/mesh/offer")
+    assert (response.status_code, response.json()["detail"]) == (404, "node_profile_inactive")
 
 
 async def test_an_owner_opens_a_pairing_offer_in_their_own_mesh(env):
