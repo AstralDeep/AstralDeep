@@ -1,6 +1,7 @@
 # Tasks for spec 106
 
-**Date:** 2026-11-13. **Status:** nothing started. No task is done. It begins after spec 105 merges.
+**Date:** 2026-11-13. **Status (2026-11-15):** phase 0 is in progress. Spec 105 is complete, and part of
+phase 1 landed early with its closure. See [Progress](#progress-2026-11-15).
 Read [spec.md](spec.md) for intent and [plan.md](plan.md) for order and exit criteria. Evidence for
 the paths is in [research.md](research.md). A path "decided in this task" means the spec and research
 name no location, and the task records the choice.
@@ -14,6 +15,30 @@ Columns are repository, work, where it lands and what closes it. `Deep` is Astra
 is AstralProjection, `Kernel` is AstralKernel, `Site` is `astraldeep.github.io`. `105 contracts` is
 `specs/105-decentralized-personal-mesh/contracts/` with its `reference/` and `vectors/` folders.
 
+## Progress, 2026-11-15
+
+The owner asked for accountless mesh creation before 106 started, recorded in
+[clarification-local-mesh-creation.md](clarification-local-mesh-creation.md). That work shipped with
+spec 105 (Deep `20fdab4f` and `8e9d0c73`, Kernel and Projection composed there). It covers these
+tasks in part. Nothing below is checked off until its own closing condition is shown.
+
+| Task | State | What exists and what is left |
+|---|---|---|
+| T1.1 | Decided in practice | The v2 roster lives in this spec's `contracts/`. Record the rule for later contracts |
+| T1.2 | Partly done | [contracts/roster-v2.md](contracts/roster-v2.md) drops `attest`, `issuer` and genesis `issuers`. It keeps `phi_authority` and `phi_approval`, which T1.2 drops. The 105 `roster.md` and `vectors/attestation.json` are unchanged |
+| T1.3 | Open | 105 `event.md` and the reference still carry `astral.attestation/v1` |
+| T1.5 | Done in code | Kernel `create_mesh()` and `confirm_mesh_recovery()` replace the issuer calls. The network-blocked creation test still needs naming |
+| T1.6 | Partly done | Identity attestation is gone. `attestation.rs` now holds the PHI approval statements and keeps its old name |
+| T1.10 | Partly done | Personal mesh receivers bind to the verified mesh id (Deep `39c3ab5f`). `backend/shared/node_identity.py` still derives ids from issuers |
+| T1.16 | Done in code | Create a Mesh on macOS and iOS makes no identity-provider request. The network-blocked pairing check is live and waits for the final phase |
+| T1.17 | Partly done | The `AGENTS.md` security row is reworded (Deep `73debd1b`). The other five section 13 rows are not applied |
+| T1.7, T1.11 to T1.15, T1.19 | Open | Mock auth (about 100 backend files), the bearer path, Vessel's `KEYCLOAK_*` pairing and the watch device grant remain |
+
+Owner direction, 2026-11-15: CI wiring and live device checks wait until the very end, and the
+program closes with a UI/UX and agent-experience pass on the Mac, iPhone and watch apps. Phase 8
+holds both. A *(live)* task in phases 0 to 7 is done in code when its automated part passes, and its
+live part runs in T8.7.
+
 ## Owner tasks
 
 | ID | Task | Needed by |
@@ -23,6 +48,7 @@ is AstralProjection, `Kernel` is AstralKernel, `Site` is `astraldeep.github.io`.
 | TO.4 | Approve publishing the metadata document and app-link files on `astraldeep.github.io` | T0.13, T2.15 |
 | TO.6 | Complete every live sign-in and key entry, and every Touch ID prompt, during verification | Each *(live)* task |
 | TO.7 | Approve the PHI accuracy measure proposed in T5.3 | Phase 5 |
+| TO.8 | Review the phase 8 product pass findings and rule on any that change a decision | Phase 8 |
 
 ## Phase 0: spikes
 
@@ -172,3 +198,15 @@ is AstralProjection, `Kernel` is AstralKernel, `Site` is `astraldeep.github.io`.
 | T7.5 | Deep | CI check that searches non-test product code for Keycloak | `.github/workflows/` and `scripts/`, decided in this task | Check finds nothing and fails when one is added |
 | T7.6 | Projection | Delete the Android and Windows sign-in code. Both apps open to a plain "not available yet" screen (O22) | `android-client/`, `windows-client/` | Both apps build and show the screen. Their Keycloak code is gone |
 | T7.7 | Deep | Rerun every earlier exit criterion on macOS and iOS | Verification report | All pass. Live ones shown again *(live)* |
+
+## Phase 8: product pass and final verification
+
+| ID | Repo | Work | Lands | Closes with |
+|---|---|---|---|---|
+| T8.1 | Projection | UI/UX pass on the Mac app over every surface 106 adds or changes: create and join, recovery words, pairing, the connections list, the first-connect card, sign-in prompts, key entry, the PHI destination card, the uncertain-match prompt, contacts and grants, sandbox and node states, and failure screens | `apple-clients/AstralApp/` | Each finding fixed or ruled on by the owner (TO.8). Before and after screenshots |
+| T8.2 | Projection | The same pass on the iPhone app, including the no-node path where the phone labels and gates its own content | `apple-clients/AstralApp/` | Same as T8.1 |
+| T8.3 | Projection | Watch pass. The watch as a companion of its iPhone: relay states, the phone out of reach, and what the watch may and may not start | The watch target under `apple-clients/` | Same as T8.1 |
+| T8.4 | Deep, Projection, Vessel | Agent-experience pass. How models and outside agents meet 106: tool descriptions, refusal codes and reasons an agent can act on, approval and consent prompts, owner-minted ticket scripts, the Vessel command line, stable automation identifiers and accessible names | Files decided in this task | Each finding fixed or ruled on by the owner (TO.8) |
+| T8.5 | Projection | Fix the findings from T8.1 to T8.4 that need a client change, on all three surfaces together | `apple-clients/` | `swift test` and the affected unsigned `xcodebuild` schemes pass |
+| T8.6 | All | Wire the CI work deferred from earlier phases (T4.14, T7.5 and the fixture suites) and run every repository's full CI | `.github/workflows/` in each repository | Hosted CI passes inside the 30 minute cap |
+| T8.7 | All | Run every *(live)* part deferred from phases 0 to 7 on a real Mac, iPhone and watch, with the owner present for each sign-in, key and Touch ID prompt (TO.6). This includes T7.7 | Verification report | Every live exit criterion recorded |

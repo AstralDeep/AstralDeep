@@ -1,6 +1,6 @@
 # Plan for spec 106
 
-**Date:** 2026-11-13. **Status:** plan only, nothing started. It begins after spec 105 merges. This is a
+**Date:** 2026-11-13. **Status (2026-11-15):** phase 0 in progress. Spec 105 is complete. This is a
 program plan in the shape of 105's: phases, the work in each repository, and how to tell a phase is
 finished. The tasks for every phase are in [tasks.md](tasks.md).
 **Companions:** [spec.md](spec.md), [tasks.md](tasks.md), [research.md](research.md).
@@ -11,7 +11,7 @@ planned and nothing is built.
 
 ## Preconditions
 
-1. **Spec 105 is merged.** Every phase starts after it. This plan edits 105's contracts.
+1. **Spec 105 is merged.** Met on 2026-11-15. This plan edits 105's contracts.
 2. **Plane on SQLite is enabled in Deep.** Phase 4 needs it. **Today** Deep still calls
    `create_postgres_runtime` and expects PostgreSQL's registry (research C86 to C88, C199).
 3. **One question only the owner can answer** (spec section 16). The owner deferred it until phase 0
@@ -35,6 +35,7 @@ The "needed by" column is this plan's proposal.
 | 5. PHI on the device | 2 | 3, 4 |
 | 6. Sharing | 1 and 5 | 4 |
 | 7. Keycloak removal | 1 to 6 finished on macOS and iOS | Nothing |
+| 8. Product pass and final verification | 1 to 7 | Nothing |
 
 - Phase 1 blocks everything after it, phase 4 included. No spike result feeds phases 1, 5, 6 and 7, so
   the spec gives no fallback for them.
@@ -43,6 +44,9 @@ The "needed by" column is this plan's proposal.
   "Specified", "implemented", "test-passing", "live-verified", "merged" and "deployed" are reported
   separately.
 - Client order is macOS, then iOS, then the Vessel command line. Android and Windows are paused (O9).
+- **Owner direction, 2026-11-15.** CI wiring and live device checks wait until the very end. Each
+  phase finishes on its local automated criteria. Its CI job and its *(live)* criteria run in phase 8,
+  which also holds a UI/UX and agent-experience pass on the Mac, iPhone and watch apps.
 - **Contract rule.** 105's contracts README says a format change raises its version and that the
   document, its vectors and its reference module change together. Every contract task here closes only
   when all three are in one change and the reference tests pass.
@@ -334,6 +338,29 @@ waits for the rest so the final rerun covers every exit criterion.
 **Decided.** The watch has been a companion of its iPhone since phase 1 (O21), so
 `backend/orchestrator/device_login.py` goes with the rest. Android and Windows lose their sign-in
 code and open to a plain "not available yet" screen (O22).
+
+## Phase 8: product pass and final verification
+
+**Goal.** The finished product feels coherent to the owner and to the agents that use it, on the Mac,
+the iPhone and the watch. Then everything deferred is qualified.
+**Depends on.** Phases 1 to 7 done in code. **Repositories.** AstralProjection first, then AstralDeep
+and AstralVessel for the agent side. **Contracts.** None, unless a finding changes one.
+
+**Work.**
+1. A UI/UX pass on each surface 106 adds or changes, Mac first, then iPhone, then the watch. Clear
+   layout and direct actions over helper prose, with every state, error, permission and approval
+   detail kept, as `AGENTS.md` asks.
+2. An agent-experience pass: tool descriptions, refusal codes an agent can act on, approval prompts,
+   owner-minted ticket scripts, the Vessel command line, automation identifiers and accessible names.
+3. Fix what the passes find on all three surfaces together. The owner rules on any finding that
+   changes a decision.
+4. Wire the deferred CI jobs and run every repository's full CI. Run every deferred *(live)* criterion
+   with the owner present.
+
+**Exit criteria.**
+- Every finding is fixed or carries the owner's ruling.
+- Hosted CI passes in every repository inside the 30 minute cap.
+- Every *(live)* criterion from phases 0 to 7 is recorded on real devices.
 
 ## Cross-repository landing order
 
