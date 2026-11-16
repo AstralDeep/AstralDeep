@@ -13,20 +13,8 @@ SECOND = "https://other-idp.example/realms/astral"
 
 
 @pytest.fixture
-def idp(monkeypatch, tmp_path):
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
-    monkeypatch.setenv("KEYCLOAK_AUTHORITY", AUTHORITY)
-    monkeypatch.setenv("KEYCLOAK_CLIENT_ID", CLIENT_ID)
-    monkeypatch.delenv("KEYCLOAK_ALLOWED_AZP", raising=False)
-    monkeypatch.delenv("AGENT_SERVICE_CLIENT_ID", raising=False)
-    monkeypatch.delenv(ni.ISSUERS_ENV, raising=False)
-    monkeypatch.delenv(ni.PROFILE_ENV, raising=False)
-    monkeypatch.delenv(ni.OWNER_ENV, raising=False)
-    monkeypatch.setenv(ni.DATA_DIR_ENV, str(tmp_path / "node"))
-    ni.reset_cache()
-    issuer = FakeIssuer()
-    serve(monkeypatch, issuer)
-    return issuer
+def idp(server_identity):
+    return server_identity.issuer
 
 
 async def refusal(token, **kwargs):
@@ -188,15 +176,6 @@ async def test_a2a_agent_posture_accepts_the_agent_service_client(idp, monkeypat
     assert claims is not None
 
 
-async def test_mock_auth_keeps_the_bare_test_user(monkeypatch):
-    monkeypatch.setenv("USE_MOCK_AUTH", "true")
-    from orchestrator.orchestrator import Orchestrator
-    from shared.a2a_security import A2ASecurityValidator
-
-    assert (await Orchestrator.validate_token(object(), "dev-token"))["sub"] == "test_user"
-    assert (await A2ASecurityValidator().validate_token("dev-token"))["sub"] == "test_user"
-
-
 async def test_mcp_tokens_map_to_the_same_owner_and_respect_the_node_binding(idp, monkeypatch):
     from jose import jwt as jose_jwt
 
@@ -257,11 +236,3 @@ async def test_agent_service_audience_does_not_open_human_entry_paths(idp):
     assert await A2ASecurityValidator().validate_token(token) is not None
     for path in ("rest", "websocket", "a2a"):
         assert await _verify_path(path, token) is None
-
-
-@pytest.mark.parametrize("audience", [None, "unrelated-service"])
-async def test_a2a_mock_audience_policy_remains_fail_closed(idp, monkeypatch, audience):
-    from shared.a2a_security import A2ASecurityValidator
-
-    monkeypatch.setenv("USE_MOCK_AUTH", "true")
-    assert await A2ASecurityValidator(require_first_party_user=True).validate_token(idp.token(aud=audience)) is None

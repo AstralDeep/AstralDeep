@@ -1,13 +1,20 @@
 """Tests for orchestrator/web_auth.py: the _validate_next open-redirect guard,
-shell_gate's redirect decision for GET /, the bounded /auth/error page, and mock-mode
-role derivation.
+shell_gate's redirect decision for GET /, the bounded /auth/error page, and role derivation
+from a real signed session token.
 """
 
 import time
 import uuid
 from urllib.parse import quote
 
+import pytest
+
 from orchestrator import web_auth
+
+
+@pytest.fixture(autouse=True)
+def _server_profile(server_identity):
+    return server_identity
 
 
 class _FakeURL:
@@ -61,13 +68,7 @@ def test_validate_next_empty_falls_back_to_root():
     assert web_auth._validate_next("   ") == "/"
 
 
-def test_shell_gate_mock_mode_never_gates(monkeypatch):
-    monkeypatch.setenv("USE_MOCK_AUTH", "true")
-    assert web_auth.shell_gate(_FakeRequest()) is None
-
-
-def test_shell_gate_unauthenticated_redirects_preserving_deep_link(monkeypatch):
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
+def test_shell_gate_unauthenticated_redirects_preserving_deep_link():
     chat_id = str(uuid.uuid4())
     req = _FakeRequest(path="/", query=f"chat={chat_id}")
     target = web_auth.shell_gate(req)
@@ -76,13 +77,11 @@ def test_shell_gate_unauthenticated_redirects_preserving_deep_link(monkeypatch):
     assert f"chat={chat_id}" not in target.split("next=", 1)[0]
 
 
-def test_shell_gate_unauthenticated_plain_root(monkeypatch):
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
+def test_shell_gate_unauthenticated_plain_root():
     assert web_auth.shell_gate(_FakeRequest(path="/")) == "/auth/login?next=%2F"
 
 
-def test_shell_gate_valid_session_passes(monkeypatch):
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
+def test_shell_gate_valid_session_passes():
     sid = f"sess-{uuid.uuid4()}"
     web_auth._SESSIONS[sid] = {
         "access_token": "tok-abc",
@@ -98,8 +97,7 @@ def test_shell_gate_valid_session_passes(monkeypatch):
         web_auth._SESSIONS.pop(sid, None)
 
 
-def test_shell_gate_tampered_cookie_gates(monkeypatch):
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
+def test_shell_gate_tampered_cookie_gates():
     sid = f"sess-{uuid.uuid4()}"
     web_auth._SESSIONS[sid] = {
         "access_token": "tok-abc", "refresh_token": "r",
@@ -147,6 +145,16 @@ def test_sign_in_pages_use_the_graphite_palette_and_no_midnight_literals():
             assert literal.lower() not in body.lower(), (name, literal)
 
 
-def test_session_roles_mock_mode(monkeypatch):
-    monkeypatch.setenv("USE_MOCK_AUTH", "true")
-    assert web_auth.session_roles(_FakeRequest()) == ["admin", "user"]
+def test_session_roles_come_from_the_signed_session_token(server_identity):
+    sid = f"sess-{uuid.uuid4()}"
+    token = server_identity.token("root", roles=("admin", "user"))
+    web_auth._SESSIONS[sid] = {"access_token": token, "refresh_token": "r", "sub": "root", "created_at": time.time()}
+    try:
+        req = _FakeRequest(cookies={web_auth.COOKIE_NAME: web_auth._sign(sid)})
+        assert set(web_auth.session_roles(req)) == {"admin", "user"}
+    finally:
+        web_auth._SESSIONS.pop(sid, None)
+
+
+def test_session_roles_without_a_session_are_empty():
+    assert web_auth.session_roles(_FakeRequest()) == []
