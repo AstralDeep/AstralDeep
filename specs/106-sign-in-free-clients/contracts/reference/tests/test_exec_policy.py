@@ -166,6 +166,15 @@ EXPECTED_VALIDATION = {
     "read_unit_separator": "policy.path_invalid",
     "read_case_variant_inside_workspace_darwin": "policy.path_invalid",
     "read_case_variant_inside_workspace_linux": "ok",
+    "utf8_bom_prefix": "policy.malformed",
+    "utf16le_with_bom": "policy.malformed",
+    "utf16le_no_bom": "policy.malformed",
+    "utf16be_with_bom": "policy.malformed",
+    "utf16be_no_bom": "policy.malformed",
+    "utf32le_with_bom": "policy.malformed",
+    "utf32be_with_bom": "policy.malformed",
+    "invalid_utf8_continuation": "policy.malformed",
+    "invalid_utf8_overlong": "policy.malformed",
 }
 
 EXPECTED_SELECTION = {
@@ -234,7 +243,12 @@ EXPECTED_SELECTION = {
 def outcome(case: dict) -> str:
     try:
         exec_policy.parse(
-            case["raw"] if "raw" in case else case["policy"], case.get("platform")
+            bytes.fromhex(case["bytes_hex"])
+            if "bytes_hex" in case
+            else case["raw"]
+            if "raw" in case
+            else case["policy"],
+            case.get("platform"),
         )
     except exec_policy.PolicyError as error:
         return error.code
