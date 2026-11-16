@@ -62,3 +62,14 @@ class ServerIdentity:
 
     def headers(self, subject: str, roles=("user",), **claims) -> dict:
         return {"Authorization": f"Bearer {self.token(subject, roles=roles, **claims)}"}
+
+    def mcp_token(self, subject: str, scopes=None, roles=("user",), **claims) -> str:
+        from orchestrator import mcp_authz
+
+        granted = mcp_authz.MCP_SCOPES if scopes is None else scopes
+        claims.setdefault("aud", mcp_authz.MCP_AUDIENCE)
+        claims.setdefault("scope", " ".join(granted))
+        return self.token(subject, roles=roles, **claims)
+
+    def mcp_headers(self, subject: str, scopes=None, roles=("user",), **claims) -> dict:
+        return {"Authorization": f"Bearer {self.mcp_token(subject, scopes, roles, **claims)}"}
