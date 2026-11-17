@@ -221,10 +221,13 @@ def evaluate_posture(values: Mapping[str, str]) -> tuple[list[str], list[str]]:
         return raw(name).strip()
 
     mock_on = get("USE_MOCK_AUTH").lower() in MOCK_AUTH_VALUES
+    personal = get("ASTRAL_NODE_PROFILE").lower() == "personal"
     problems: list[str] = []
     advisories: list[str] = []
     typesafe = [name for name in TYPESAFE_VARS if get(name)]
     if get("ASTRAL_ENV").lower() in DEV_VALUES:
+        if mock_on:
+            advisories.append("USE_MOCK_AUTH is ignored: mock auth was removed.")
         if typesafe:
             advisories.append(
                 f"{', '.join(typesafe)} set: TypeSafe routing configuration is never read "
@@ -239,9 +242,8 @@ def evaluate_posture(values: Mapping[str, str]) -> tuple[list[str], list[str]]:
         )
     if mock_on:
         problems.append(
-            "USE_MOCK_AUTH is enabled outside development: mock authentication accepts "
-            "any token as an admin user. Set USE_MOCK_AUTH=false and configure "
-            "KEYCLOAK_*, or set ASTRAL_ENV=development (local use only)."
+            "USE_MOCK_AUTH is set but mock auth was removed. Unset USE_MOCK_AUTH; "
+            "a personal node authenticates with mesh keys and a server node needs KEYCLOAK_*."
         )
     if not (raw("WEB_SESSION_ENC_KEY") or raw("OFFLINE_GRANT_ENC_KEY")):
         problems.append(
@@ -260,7 +262,7 @@ def evaluate_posture(values: Mapping[str, str]) -> tuple[list[str], list[str]]:
             "AUDIT_HMAC_SECRET is unset or still a shipped development placeholder: the "
             "audit hash chain would be forgeable. Set a high-entropy value."
         )
-    if not mock_on:
+    if not personal:
         for variable in ("KEYCLOAK_AUTHORITY", "KEYCLOAK_CLIENT_ID", "KEYCLOAK_CLIENT_SECRET"):
             if not get(variable):
                 problems.append(f"{variable} is unset: the OIDC sign-in flow cannot operate.")
@@ -270,7 +272,7 @@ def evaluate_posture(values: Mapping[str, str]) -> tuple[list[str], list[str]]:
             "AGENT_API_KEY is a shipped placeholder or too short (under 16 characters): "
             "set a high-entropy value so agent registrations cannot be forged."
         )
-    elif not agent_key and not mock_on:
+    elif not agent_key:
         advisories.append(
             "AGENT_API_KEY is unset: agent registrations will be refused (fail closed). "
             "Configure it if this deployment should run specialist agents."
@@ -864,8 +866,7 @@ def _keycloak_findings(
     http_probe: Callable[[str, float], HttpResult],
     http_timeout: float,
 ) -> list[Finding]:
-    mock_on = str(values.get("USE_MOCK_AUTH", "") or "").strip().lower() in MOCK_AUTH_VALUES
-    if mock_on:
+    if str(values.get("ASTRAL_NODE_PROFILE", "") or "").strip().lower() == "personal":
         return []
     authority = str(values.get("KEYCLOAK_AUTHORITY", "") or "").strip()
     if not authority:
@@ -874,11 +875,10 @@ def _keycloak_findings(
                 "services.keycloak",
                 PROBLEM,
                 "services.keycloak-unconfigured",
-                "mock authentication is off but KEYCLOAK_AUTHORITY is empty: there is "
+                "KEYCLOAK_AUTHORITY is empty on a server-profile node: there is "
                 "no configured sign-in path.",
                 "Set KEYCLOAK_AUTHORITY, KEYCLOAK_CLIENT_ID, and KEYCLOAK_CLIENT_SECRET "
-                "in .env (or set USE_MOCK_AUTH=true with ASTRAL_ENV=development for "
-                "local development).",
+                "in .env, or set ASTRAL_NODE_PROFILE=personal for a personal node.",
             )
         ]
     try:

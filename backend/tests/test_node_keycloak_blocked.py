@@ -20,7 +20,6 @@ def issuer(tmp_path, monkeypatch):
     monkeypatch.setenv("ASTRAL_ENV", "production")
     monkeypatch.setenv(ni.PROFILE_ENV, ni.PERSONAL)
     monkeypatch.setenv(ni.DATA_DIR_ENV, str(tmp_path / "node"))
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
     monkeypatch.setenv("KEYCLOAK_AUTHORITY", AUTHORITY)
     monkeypatch.setenv("KEYCLOAK_CLIENT_ID", CLIENT_ID)
     for name in (ni.OWNER_ENV, ni.ISSUERS_ENV, "KEYCLOAK_ALLOWED_AZP", "JWKS_STALE_GRACE_SECONDS"):
