@@ -26,6 +26,21 @@ class HostKeystore:
     pass
 
 
+class HostLauncher:
+    pass
+
+
+class HostLauncherError(Exception):
+    class Failed(Exception):
+        pass
+
+
+class HostLaunchedServer:
+    def __init__(self, url, bearer):
+        self.url = url
+        self.bearer = bearer
+
+
 class HostKeystoreError(Exception):
     class Failed(Exception):
         pass
@@ -329,6 +344,9 @@ class Kernel:
 
     def set_keystore(self, keystore):
         self.keystore = keystore
+
+    def set_launcher(self, launcher):
+        self.launcher = launcher
 
     async def close(self):
         self.closed = True

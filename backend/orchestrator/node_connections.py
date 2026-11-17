@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from orchestrator.node_mesh import NodeMesh, NodeMeshError
+from orchestrator.node_stdio_launcher import RUNS_ELSEWHERE
 
 LEGACY_AGENT_ID = "__remote_mcp_connections__"
 LEGACY_KEY_PREFIX = "remote_mcp_"
@@ -25,7 +26,15 @@ def _device(state: Any) -> Dict[str, Any]:
     }
 
 
-def _connection(info: Any) -> Dict[str, Any]:
+def _launch(info: Any, refusal: Optional[str]) -> Optional[str]:
+    if info.kind != "mcp-stdio":
+        return None
+    if getattr(info, "device", None) not in (None, info.this_device.device):
+        return RUNS_ELSEWHERE
+    return refusal
+
+
+def _connection(info: Any, refusal: Optional[str] = None) -> Dict[str, Any]:
     return {
         "id": info.id,
         "name": info.name,
@@ -41,6 +50,7 @@ def _connection(info: Any) -> Dict[str, Any]:
         "pending_tools": None if info.pending_tools is None else [tool.name for tool in info.pending_tools],
         "approved_by": info.approved_by,
         "approved_by_removed_device": bool(info.approved_by_removed_device),
+        "launch": _launch(info, refusal),
         "supported_here": bool(info.supported_here),
         "unsupported": info.unsupported,
         "attention": info.attention,
@@ -68,7 +78,7 @@ async def status(
         listed = await mesh.request_call(mesh.kernel.connections)
     except NodeMeshError as exc:
         return {**UNAVAILABLE, "code": exc.code}
-    connections: List[Dict[str, Any]] = [_connection(info) for info in listed]
+    connections: List[Dict[str, Any]] = [_connection(info, mesh.stdio_refusal) for info in listed]
     states: Dict[str, int] = {}
     for item in connections:
         key = item["this_device"]["state"]
