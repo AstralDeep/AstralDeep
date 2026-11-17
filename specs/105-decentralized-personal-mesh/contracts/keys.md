@@ -1,3 +1,5 @@
+> Wraps of a chat's content keys to a contact's device are defined by [share.md](../../106-sign-in-free-clients/contracts/share.md) and [contacts.md](../../106-sign-in-free-clients/contracts/contacts.md). The keys a device holds here are unchanged.
+
 # Key contract, `astral.keys/v1`
 
 This contract fixes the keys a device holds, key groups and epochs, content keys, the wrapping format `astral.wrap/v1`, the recovery key with its 24-word encoding, and the encrypted backup file.

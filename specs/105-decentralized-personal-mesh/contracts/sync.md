@@ -1,3 +1,5 @@
+> The share session `astral/share/1`, a second session kind for contacts, is defined by [share.md](../../106-sign-in-free-clients/contracts/share.md), and contacts and grants by [contacts.md](../../106-sign-in-free-clients/contracts/contacts.md). This member session is unchanged.
+
 # Sync contract, `astral.sync/v1`
 
 Peers exchange events over the transport ALPN `astral/sync/1`. This document fixes the messages, the order of a session, how received events are accepted, how bodies are fetched and withheld, checkpoints, fork and shortened-feed evidence, and the rule for a restored device.
