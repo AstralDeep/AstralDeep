@@ -82,7 +82,9 @@ def dark_pixels(ppm: bytes) -> int:
 def render(document: bytes, directory: Path) -> int:
     target = directory / "page.pdf"
     target.write_bytes(document)
-    done = subprocess.run(["pdftoppm", "-r", "36", str(target)], capture_output=True, cwd=directory, check=False)
+    for stale in directory.glob("page-*.ppm"):
+        stale.unlink()
+    done = subprocess.run(["pdftoppm", "-r", "36", str(target), "page"], capture_output=True, cwd=directory, check=False)
     pages = sorted(directory.glob("page-*.ppm"))
     return dark_pixels(pages[0].read_bytes()) if done.returncode == 0 and pages else -1
 

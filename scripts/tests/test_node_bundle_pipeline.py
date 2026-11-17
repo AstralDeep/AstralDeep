@@ -263,3 +263,70 @@ def test_assembly_refuses_a_pack_that_carries_a_build_path(assembly, monkeypatch
     with pytest.raises(ap.PackError, match="leak.txt"):
         build(assembly)
     assert not (assembly.root / "out").exists()
+
+
+def natives_folder(root):
+    folder = root / "natives-folder"
+    write(folder, "bin/pdftoppm", b"tool", mode=0o755)
+    write(folder, "lib/libmagic.1.dylib")
+    (folder / "lib" / "libmagic.dylib").symlink_to("libmagic.1.dylib")
+    return folder
+
+
+@pytest.fixture
+def natives_assembly(assembly, monkeypatch):
+    folder = natives_folder(assembly.root)
+    assembly.settings["platforms"]["macos-arm64"]["natives"] = {"sources_lock": "natives/sources.lock.json"}
+    assembly.settings["spacy_model"] = {"name": "en_core_web_lg", "url": "https://example.invalid/model.whl",
+                                        "size": 5, "sha256": "0" * 64}
+    calls = []
+    module = SimpleNamespace(
+        build=lambda lock, out, cache, work: calls.append(("build", lock.name, out.name)) or folder,
+        require_receipt_for=lambda natives, lock: calls.append(("receipt", natives.name, lock.name)),
+        summary=lambda natives: {"lock_sha256": "f" * 64},
+    )
+    monkeypatch.setattr(ap, "natives_module", lambda: module)
+    monkeypatch.setattr(ap, "fetch_pinned", lambda pin, cache: cache / "model.whl")
+    assembly.natives, assembly.calls = folder, calls
+    return assembly
+
+
+def test_a_pack_with_natives_builds_them_stages_them_beside_the_mailbox_and_installs_the_model(natives_assembly):
+    descriptor = build(natives_assembly, mailbox=natives_assembly.mailbox)
+    manifest = json.loads((natives_assembly.root / "out" / "node-pack-manifest.json").read_text())
+    assert natives_assembly.calls == [("build", "sources.lock.json", "natives")]
+    paths = {entry["path"] for entry in manifest["files"]}
+    assert {"bin/pdftoppm", "bin/astral-mailbox", "lib/libmagic.1.dylib", "lib/libmagic.dylib"} <= paths
+    assert manifest["natives"] == {"lock_sha256": "f" * 64}
+    assert manifest["spacy_model"]["name"] == "en_core_web_lg"
+    installs = [command for command, _ in natives_assembly.commands if command[-1].endswith("model.whl")]
+    assert len(installs) == 1 and {"--no-index", "--no-deps"} <= set(installs[0])
+    assert descriptor.is_file()
+
+
+def test_prebuilt_natives_must_match_the_recipe_lock(natives_assembly):
+    ap.assemble("macos-arm64", natives_assembly.root / "out", natives_assembly.kernel, natives_assembly.root / "work",
+                natives=natives_assembly.natives)
+    assert natives_assembly.calls == [("receipt", "natives-folder", "sources.lock.json")]
+
+
+def test_natives_that_fail_their_receipt_stop_the_assembly(natives_assembly, monkeypatch):
+    def stale(natives, lock):
+        raise ap.PackError("the natives folder was built from a different sources lock")
+
+    monkeypatch.setattr(ap, "natives_module", lambda: SimpleNamespace(require_receipt_for=stale))
+    with pytest.raises(ap.PackError, match="different sources lock"):
+        ap.assemble("macos-arm64", natives_assembly.root / "out", natives_assembly.kernel,
+                    natives_assembly.root / "work", natives=natives_assembly.natives)
+    assert not (natives_assembly.root / "out").exists()
+
+
+def test_the_cli_takes_a_natives_folder(natives_assembly, capsys):
+    ap.main(["--out", str(natives_assembly.root / "out"), "--work", str(natives_assembly.root / "work"),
+             "--kernel-dir", str(natives_assembly.kernel), "--natives", str(natives_assembly.natives)])
+    assert "archive " in capsys.readouterr().out
+    assert natives_assembly.calls[0][0] == "receipt"
+
+
+def test_the_real_natives_module_loads_from_the_bundle_directory():
+    assert ap.natives_module().__name__.endswith("build_macos")
