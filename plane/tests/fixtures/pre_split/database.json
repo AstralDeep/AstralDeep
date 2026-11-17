@@ -1,0 +1,121 @@
+{
+  "fixtureKind": "synthetic-non-phi-pre-split",
+  "owners": [
+    "fixture-owner-a",
+    "fixture-owner-b"
+  ],
+  "records": {
+    "audit": [
+      {
+        "digest": "1111111111111111111111111111111111111111111111111111111111111111",
+        "eventId": "00000000-0000-4000-8000-000000000401",
+        "eventClass": "agent_tool_call",
+        "ownerId": "fixture-owner-a",
+        "precedingDigest": "0000000000000000000000000000000000000000000000000000000000000000",
+        "sequenceAfterUpgrade": 1
+      },
+      {
+        "digest": "2222222222222222222222222222222222222222222222222222222222222222",
+        "eventId": "00000000-0000-4000-8000-000000000402",
+        "eventClass": "agent_tool_call",
+        "ownerId": "fixture-owner-a",
+        "precedingDigest": "1111111111111111111111111111111111111111111111111111111111111111",
+        "sequenceAfterUpgrade": 2
+      },
+      {
+        "digest": "3333333333333333333333333333333333333333333333333333333333333333",
+        "eventId": "00000000-0000-4000-8000-000000000403",
+        "eventClass": "auth",
+        "ownerId": "fixture-owner-b",
+        "precedingDigest": "0000000000000000000000000000000000000000000000000000000000000000",
+        "sequenceAfterUpgrade": 1
+      }
+    ],
+    "artifacts": [
+      {
+        "artifactId": "artifact-1",
+        "blobKey": "fixture-owner-a/artifact-1/artifact.txt",
+        "ownerId": "fixture-owner-a"
+      },
+      {
+        "artifactId": "artifact-2",
+        "blobKey": "fixture-owner-b/artifact-2/summary.json",
+        "deletedAt": 1040,
+        "ownerId": "fixture-owner-b"
+      }
+    ],
+    "history": [
+      {
+        "conversationId": "conversation-1",
+        "ownerId": "fixture-owner-a"
+      },
+      {
+        "conversationId": "conversation-2",
+        "ownerId": "fixture-owner-b"
+      }
+    ],
+    "preferences": [
+      {
+        "ownerId": "fixture-owner-a",
+        "theme": "synthetic-dark"
+      },
+      {
+        "ownerId": "fixture-owner-b",
+        "theme": "synthetic-light"
+      }
+    ],
+    "qualityAudit": [
+      {
+        "runId": "qualification-run-1",
+        "type": "run"
+      },
+      {
+        "caseId": "qualification-case-1",
+        "runId": "qualification-run-1",
+        "type": "case"
+      },
+      {
+        "caseId": "qualification-case-1",
+        "evidenceId": "qualification-evidence-1",
+        "type": "evidence"
+      },
+      {
+        "auditId": "qualification-audit-1",
+        "caseId": "qualification-case-1",
+        "type": "audit"
+      },
+      {
+        "artifactId": "qualification-artifact-1",
+        "runId": "qualification-run-1",
+        "type": "artifact"
+      }
+    ],
+    "remote": [
+      {
+        "machineId": "machine-1",
+        "ownerId": "fixture-owner-a"
+      }
+    ],
+    "scheduler": [
+      {
+        "operationId": "00000000-0000-4000-8000-000000000201",
+        "ownerId": "fixture-owner-a"
+      }
+    ],
+    "voice": [
+      {
+        "ownerId": "fixture-owner-a",
+        "sessionId": "00000000-0000-4000-8000-000000000301",
+        "turnId": "00000000-0000-4000-8000-000000000302"
+      }
+    ],
+    "workspaces": [
+      {
+        "layoutRevision": 3,
+        "ownerId": "fixture-owner-a",
+        "workspaceId": "synthetic-layout"
+      }
+    ]
+  },
+  "schemaRevision": "066.001"
+}

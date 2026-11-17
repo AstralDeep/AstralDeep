@@ -38,7 +38,7 @@ def test_phase_b_modules_are_not_imported_when_flag_is_absent():
     environment["PYTHONPATH"] = os.pathsep.join(
         (
             str(ROOT / "backend"),
-            str(component_source("AstralPlane", "src")),
+            str(ROOT / "plane" / "src"),
             str(component_source("AstralProjection", "backend")),
             str(component_source("AstralPrimitives")),
             str(component_source("LETS", "src")),

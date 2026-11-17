@@ -137,7 +137,7 @@ def test_project_schema_symlink_is_refused(tmp_path):
 
 
 def test_pinned_project_registry_matches_qualified_digest():
-    root = Path(__file__).resolve().parents[2] / "components/AstralPlane"
+    root = Path(__file__).resolve().parents[2] / "plane"
     assert (
         composition._plane_migration_digest(root)
         == "dde302967743cf8f6f5d55e82f8355ef405823dfee638909c3a2f11b85f5cb27"

@@ -787,3 +787,94 @@ def test_cli_writes_the_same_deterministic_report(
     assert exit_code == 0
     assert json.loads(capsys.readouterr().out) == report.to_dict()
     assert json.loads(output.read_text(encoding="utf-8")) == report.to_dict()
+
+
+IN_TREE_PATH = "plane"
+IN_TREE_SPEC = provenance.ComponentSpec(
+    "astral-plane", IN_TREE_PATH, PLANE_URL, "provenance/extraction.json", in_tree=True
+)
+
+
+def _in_tree_composition(path: str = IN_TREE_PATH) -> dict[str, Any]:
+    return {
+        "format": "astral.composition/v2",
+        "components": {},
+        "in_tree": {
+            "astral-plane": {"path": path, "contract_version": "astralplane.contract/v1"}
+        },
+    }
+
+
+@pytest.fixture
+def imported(checkout: Checkout, tmp_path: Path) -> Checkout:
+    root = tmp_path / "AstralDeepMoved"
+    _init(root, "main", DEEP_URL)
+    _git(root, "fetch", "--quiet", "--no-tags", os.fspath(checkout.root), checkout.source_commit)
+    _git(root, "reset", "--quiet", "--hard", checkout.source_commit)
+    _git(root, "fetch", "--quiet", "--no-tags", os.fspath(checkout.component), checkout.target)
+    _git(root, "subtree", "add", f"--prefix={IN_TREE_PATH}", checkout.target, "-m",
+         "Move AstralPlane into plane/ with its history")
+    _write_json(root / "config" / "astral-composition.json", _in_tree_composition())
+    _write(root / ".gitmodules", "")
+    _commit(root, "Compose the in-tree Plane")
+    return Checkout(root, root / IN_TREE_PATH, checkout.source_commit, checkout.source_blob,
+                    checkout.baseline, checkout.target, root / IN_TREE_PATH / "provenance" / "extraction.json",
+                    checkout.manifest, {DEEP_URL: checkout.remotes[DEEP_URL]})
+
+
+def _verify_in_tree(checkout: Checkout) -> Any:
+    return provenance.verify_migration_provenance(
+        checkout.root, schema_path=SCHEMA, components=(IN_TREE_SPEC,), remote_probe=checkout.probe
+    )
+
+
+def test_in_tree_plane_manifest_verifies_against_the_imported_history(imported: Checkout) -> None:
+    report = _verify_in_tree(imported)
+    assert report.ok, report.diagnostics
+    assert "astral-plane" in report.verified_repositories
+
+
+def test_in_tree_plane_is_never_probed_as_a_remote(imported: Checkout) -> None:
+    probed: list[str] = []
+
+    def probe(repository: str) -> Any:
+        probed.append(repository)
+        return imported.remotes[repository]
+
+    provenance.verify_migration_provenance(
+        imported.root, schema_path=SCHEMA, components=(IN_TREE_SPEC,), remote_probe=probe
+    )
+    assert probed == [DEEP_URL]
+
+
+def test_in_tree_plane_needs_its_composition_entry(imported: Checkout) -> None:
+    _write_json(imported.root / "config" / "astral-composition.json",
+                {"format": "astral.composition/v2", "components": {}, "in_tree": {}})
+    assert "E_COMPONENT_CONFIG" in _codes(_verify_in_tree(imported), "astral-plane")
+
+
+def test_in_tree_plane_composition_path_must_match(imported: Checkout) -> None:
+    _write_json(imported.root / "config" / "astral-composition.json", _in_tree_composition("elsewhere"))
+    assert "E_COMPONENT_PATH" in _codes(_verify_in_tree(imported), "astral-plane")
+
+
+def test_in_tree_plane_needs_its_import_commit(imported: Checkout, tmp_path: Path) -> None:
+    flat = tmp_path / "AstralDeepFlat"
+    _init(flat, "main", DEEP_URL)
+    _git(flat, "fetch", "--quiet", "--no-tags", os.fspath(imported.root), "HEAD")
+    _git(flat, "reset", "--quiet", "--hard", f"{imported.source_commit}")
+    _git(flat, "checkout", "--quiet", "FETCH_HEAD", "--", ".")
+    _write(flat / ".gitmodules", "")
+    _commit(flat, "Copy the files without their history")
+    flat_checkout = Checkout(flat, flat / IN_TREE_PATH, imported.source_commit, imported.source_blob,
+                             imported.baseline, imported.target, imported.manifest_path,
+                             imported.manifest, imported.remotes)
+    assert "E_IMPORT_COMMIT" in _codes(_verify_in_tree(flat_checkout), "astral-plane")
+
+
+def test_in_tree_plane_manifest_must_stay_the_imported_bytes(imported: Checkout) -> None:
+    document = json.loads(imported.manifest_path.read_text(encoding="utf-8"))
+    document["selectionRoots"] = ["changed"]
+    _write_json(imported.manifest_path, document)
+    _commit(imported.root, "Edit the provenance record")
+    assert "E_MANIFEST_WORKTREE" in _codes(_verify_in_tree(imported), "astral-plane")

@@ -97,7 +97,7 @@ def test_embedded_plane_qualification_measures_owner_upgrade_and_integrity_tools
     assert '--baseline-root "$RUNNER_TEMP/plane-consumer-baseline.git"' in plane
     assert '--github-env "$GITHUB_ENV"' in plane
     assert "consumer-baseline.json" in plane
-    assert 'base_component="$PLANE_BASE_COMPONENT_SHA"' in plane
+    assert '"$PLANE_BASE_DEEP_SHA"' in plane and "PLANE_BASE_TREE" in plane
     assert plane.index("scripts.prepare_plane_upgrade_baseline") < plane.index("pytest -q")
     for module in (
         "scripts.qualify_main_upgrade",

@@ -5,7 +5,7 @@
 target-version = "py311"
 
 # The component submodules and the in-tree packages with their own manifests
-# (vessel) have their own verification gates.  AstralDeep's repo-root lint must
+# (vessel, plane) have their own verification gates.  AstralDeep's repo-root lint must
 # cover Deep-owned code, not re-lint them under the parent's policy.
 exclude = [
   ".venv",
@@ -14,4 +14,5 @@ exclude = [
   "backend/data",
   "components",
   "vessel",
+  "plane",
 ]

@@ -1,0 +1,154 @@
+name: AstralPlane CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.26"
+          python-version: "3.11"
+      - run: uv lock --check
+      - run: uv sync --frozen --group ci
+      - run: uv run --frozen --group ci ruff check .
+      - run: uv run --frozen --group ci python tests/architecture/test_dependency_direction.py
+      - name: Record immutable test and qualification policy changes
+        env:
+          REVIEW_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+          REVIEW_HEAD: ${{ github.sha }}
+        run: |
+          uv run --frozen --group ci python scripts/ci_review_diagnostics.py \
+            --base "$REVIEW_BASE" --head "$REVIEW_HEAD" --output ci-review-diagnostics.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: plane-ci-review-${{ github.sha }}
+          path: ci-review-diagnostics.json
+          if-no-files-found: error
+
+  postgresql:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    env:
+      ASTRALPLANE_TEST_POSTGRES_DSN: postgresql://astralplane:astralplane_ci@127.0.0.1:5432/astralplane
+      ASTRALDEEP_SOURCE_REPO: ${{ github.workspace }}/source-deep
+      ASTRALPLANE_FAULT_REPORT: acceptance-faults.json
+    services:
+      postgres:
+        image: postgres:17-alpine@sha256:dc17045ccfd343b49600570ea734b9c4991cf1c3f3302e67df51e3b402dd55c4
+        env:
+          POSTGRES_USER: astralplane
+          POSTGRES_PASSWORD: astralplane_ci
+          POSTGRES_DB: astralplane
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U astralplane -d astralplane"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.26"
+          python-version: "3.11"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: AstralDeep/AstralDeep
+          ref: fc113c4f99121b2053bb71523835c5c4743f1f56
+          path: source-deep
+      - run: uv sync --frozen --group ci
+      - name: Qualify populated upgrade from exact current main
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          MAIN_SHA="$(git rev-parse refs/remotes/origin/main)"
+          uv run --frozen --group ci python scripts/qualify_main_upgrade.py \
+            --baseline-sha "$MAIN_SHA" --report main-upgrade.json
+      - name: Run the complete Python suite against PostgreSQL
+        run: |
+          uv run --frozen --group ci pytest -q -p no:cacheprovider --durations=25 \
+            --cov=astralplane --cov=examples --cov=scripts.check_changed_coverage \
+            --cov=scripts.import_staging_fixture \
+            --cov=scripts.migrate_qualification_database \
+            --cov=scripts.qualify_main_upgrade --cov=scripts.check_acceptance_faults \
+            --cov=scripts.ci_review_diagnostics \
+            --cov-branch --cov-report=xml --cov-fail-under=88.75
+      - name: Require the PostgreSQL acceptance fault receipt
+        run: |
+          uv run --frozen --group ci python -c "import json; r=json.load(open('acceptance-faults.json')); assert r['status']=='passed' and r['control']=='passed' and len(r['faults'])==6 and all(f['status']=='killed' for f in r['faults'])"
+      - name: Decide changed-line coverage for BASE_SHA..HEAD
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$BASE_SHA" =~ ^[0-9a-f]{40}$ || "$BASE_SHA" == 0000000000000000000000000000000000000000 ]]; then
+            echo "::error::Changed-line coverage needs a non-zero 40-hex BASE_SHA from the event."
+            exit 1
+          fi
+          uv run --frozen --group ci diff-cover coverage.xml \
+            --compare-branch "$BASE_SHA" --diff-range-notation '..' \
+            --ignore-staged --ignore-unstaged --format json:changed-coverage.json
+          uv run --frozen --group ci python scripts/check_changed_coverage.py \
+            --report changed-coverage.json --base-sha "$BASE_SHA" --fail-under 90
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: plane-postgresql-evidence-${{ github.sha }}
+          path: |
+            main-upgrade.json
+            acceptance-faults.json
+            coverage.xml
+            changed-coverage.json
+          if-no-files-found: error
+
+  package-compatibility:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.14"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.26"
+          python-version: ${{ matrix.python-version }}
+      - run: uv lock --check
+      - run: uv build --build-constraints tooling/python-ci/build-requirements.lock.txt --require-hashes
+      - name: Install and import the wheel in a clean environment
+        shell: bash
+        run: |
+          uv venv --python "${{ matrix.python-version }}" --seed .package-smoke
+          .package-smoke/bin/python -m pip install --no-deps dist/*.whl
+          .package-smoke/bin/python -c "import astralplane; assert astralplane.CONTRACT_VERSION == 'astralplane.contract/v1'"
+
+  gates:
+    if: always()
+    needs: [quality, postgresql, package-compatibility]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every owner gate
+        shell: bash
+        run: |
+          [[ '${{ needs.quality.result }}' == 'success' ]]
+          [[ '${{ needs.postgresql.result }}' == 'success' ]]
+          [[ '${{ needs['package-compatibility'].result }}' == 'success' ]]

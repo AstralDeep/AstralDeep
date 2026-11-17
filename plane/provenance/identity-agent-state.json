@@ -1,0 +1,64 @@
+{
+  "schemaVersion": "astralplane.repository-slice/v1",
+  "slice": "identity-and-agent-state",
+  "status": "implemented_composition_in_progress",
+  "schemaRevision": "074.004",
+  "migrationRequired": false,
+  "baseline": "066.001",
+  "publicFactories": [
+    "create_agent_repository",
+    "create_draft_agent_repository",
+    "create_identity_repository",
+    "create_tool_policy_state_repository"
+  ],
+  "tables": [
+    "agent_host_session",
+    "agent_ownership",
+    "agent_runtime_instance",
+    "agent_runtime_request",
+    "agent_scopes",
+    "agent_trust",
+    "draft_agents",
+    "draft_artifact_publication",
+    "draft_transition",
+    "tool_overrides",
+    "tool_permissions",
+    "user_agent",
+    "user_agent_revision",
+    "user_preferences",
+    "users"
+  ],
+  "invariants": [
+    "caller-owned transactions",
+    "owner predicates on ordinary reads and writes",
+    "immutable replay identities",
+    "compare-and-set lifecycle revisions",
+    "locked preference-document merge",
+    "advisory-locked administrative policy-marker reconciliation in the caller transaction",
+    "no authentication or authorization decision in Plane"
+  ],
+  "focusedVerification": {
+    "command": "python -m pytest -q tests/repositories/test_identity.py tests/repositories/test_tool_policy.py tests/repositories/test_agents.py tests/repositories/test_drafts.py tests/test_api.py",
+    "status": "passed",
+    "passed": 71,
+    "failed": 0
+  },
+  "agentFocusedCoverage": {
+    "command": "python -m coverage run --branch --source=astralplane.repositories.agents -m pytest -q tests/repositories/test_agents.py && python -m coverage report -m",
+    "status": "passed",
+    "lineAndBranchCoverage": "90%"
+  },
+  "baselineVerification": {
+    "command": "uv run --no-sync pytest tests/test_baseline.py::test_extracted_baseline_covers_the_declared_table_inventory tests/test_baseline.py::test_extracted_baseline_executes_every_schema_chunk_without_host_state -q",
+    "status": "passed",
+    "passed": 2,
+    "failed": 0
+  },
+  "livePostgresVerification": {
+    "command": "python -m pytest -q tests/integration/test_empty_database_startup.py::test_user_agent_policy_reconciliation_is_concurrent_idempotent_and_rollback_safe",
+    "status": "passed",
+    "passed": 1,
+    "failed": 0
+  },
+  "deepCutover": "in_progress"
+}

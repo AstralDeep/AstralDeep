@@ -229,7 +229,7 @@ def run(root: Path, output: Path, *, timeout: int = SUITE_TIMEOUT_SECONDS, group
         "PYTHONDONTWRITEBYTECODE": "1",
         "PYTHONPATH": os.pathsep.join((str(POLICY_ROOT / "scripts"),
                                       str(root / "backend"), str(root),
-                                      str(root / "components/AstralPlane/src"),
+                                      str(root / "plane/src"),
                                       str(root / "components/LETS/src"))),
         "COVERAGE_FILE": str(output / ".coverage"),
         "ASTRAL_ENV": "development",

@@ -31,6 +31,7 @@ from astralplane import (
     SCHEMA_REVISION,
     SQLITE_DATA_PLANE_REVISION,
     SQLITE_MIGRATION_DIGEST,
+    SQLITE_SCHEMA_STRUCTURE_DIGEST,
     RepositoryCatalog,
     StreamingBlobStore,
     create_repository_catalog,
@@ -39,9 +40,8 @@ from astralplane import (
     create_attachment_materialization_coordinator,
     create_streaming_blob_store,
     inspect_compatibility,
+    is_sqlite_url,
 )
-from astralplane.database.sqlite import is_sqlite_url
-from astralplane.database.sqlite_migrations import SQLITE_SCHEMA_STRUCTURE_DIGEST
 from astralplane.repositories.agents import AgentPolicyReconciliationResult
 
 from orchestrator.agent_constitution import USER_AGENT_POLICY_REVISION

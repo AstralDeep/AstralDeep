@@ -1,0 +1,494 @@
+{
+  "permits": [
+    {
+      "action_id": "00000000-0000-4000-8000-000000000008",
+      "assignment_id": "00000000-0000-4000-8000-000000000002",
+      "attempt_id": "00000000-0000-4000-8000-000000000009",
+      "dispatch_token": "00000000-0000-4000-8000-00000000000a",
+      "request_digest": "349dba76a6a77119ba2ad74ad75bedc8c163792efff08cd1940e42a661310327"
+    },
+    {
+      "action_id": "00000000-0000-4000-8000-000000000013",
+      "assignment_id": "00000000-0000-4000-8000-00000000000d",
+      "attempt_id": "00000000-0000-4000-8000-000000000014",
+      "dispatch_token": "00000000-0000-4000-8000-000000000015",
+      "request_digest": "349dba76a6a77119ba2ad74ad75bedc8c163792efff08cd1940e42a661310327"
+    }
+  ],
+  "schema_revision": "088.001",
+  "source_commit": "718021ba019abcd3a04ffbd6b80b88e51395bda6",
+  "source_sha256": {
+    "src/astralplane/repositories/assignment_models.py": "57d2477c20cb50804a6fa2215cfec570dd15a544261022a16868b8a671a6b7df",
+    "src/astralplane/repositories/assignments.py": "bf922c60c1d10b047b13b83659a3cec1543ab6069ba989c258acc6f70e5be428"
+  },
+  "synthetic": true,
+  "tables": {
+    "assignment_operation_receipt": [
+      {
+        "assignment_id": "00000000-0000-4000-8000-000000000002",
+        "caller_key": "upgrade-0",
+        "command_digest": "a8cdafb2ccbf6c58d136839d9a0e0e2e491880d1fad779b792bcbd78979c64e2",
+        "created_at": "2026-09-12 12:06:51.046159+00:00",
+        "credential_id": null,
+        "live_assignment_id": "00000000-0000-4000-8000-000000000002",
+        "origin_namespace": "web",
+        "owner_id": "owner"
+      },
+      {
+        "assignment_id": "00000000-0000-4000-8000-00000000000d",
+        "caller_key": "upgrade-1",
+        "command_digest": "a8cdafb2ccbf6c58d136839d9a0e0e2e491880d1fad779b792bcbd78979c64e2",
+        "created_at": "2026-09-12 12:06:51.057466+00:00",
+        "credential_id": null,
+        "live_assignment_id": "00000000-0000-4000-8000-00000000000d",
+        "origin_namespace": "web",
+        "owner_id": "owner"
+      }
+    ],
+    "persistent_assignment": [
+      {
+        "data": {
+          "activity_sequence": 0,
+          "approved_action_id": null,
+          "assignment_id": "00000000-0000-4000-8000-000000000002",
+          "checkpoint": {
+            "schema_version": 1
+          },
+          "claim_generation": 1,
+          "claim_token": "00000000-0000-4000-8000-000000000004",
+          "claimed_by": "fixture",
+          "claimed_wake_generation": 1,
+          "consecutive_failures": 0,
+          "control_epoch": 1,
+          "controls": {},
+          "created_at": "2026-09-12T12:06:51.045517+00:00",
+          "definition": {
+            "allowed_tools": [],
+            "completion_condition": null,
+            "consented_scopes": [
+              "tools:read"
+            ],
+            "conversation_id": null,
+            "cost_quote_coverage": null,
+            "instructions": "Summarize new public releases",
+            "limits": {
+              "elapsed_ms": 1000000,
+              "max_concurrent_tasks": 2,
+              "max_depth": 4,
+              "max_retries": 3,
+              "max_tasks": 32,
+              "model_calls": 100,
+              "tokens": 100000,
+              "tool_calls": 1000
+            },
+            "name": "Watch releases",
+            "offline_grant_id": null,
+            "source": {}
+          },
+          "execution_profile": "one_shot",
+          "initial_definition_digest": "ae2f00710f43fde46a8d51d77f1cfd12bfec452fd616afcc6e9e14bb14513a1c",
+          "instruction_revision": 1,
+          "last_check_at": null,
+          "lease_expires_at": "2026-09-12T12:07:21.047253+00:00",
+          "lifecycle": "active",
+          "next_retry_at": null,
+          "next_wake_at": "2026-09-12T12:06:51.045517+00:00",
+          "operation": {
+            "authority": {
+              "expires_at": "2026-09-12T12:16:51.043939+00:00",
+              "origin": "interactive",
+              "owner_id": "owner",
+              "reference_id": "session-reference",
+              "reference_kind": "session"
+            },
+            "deadline_at": "2026-09-12T12:11:51.043939+00:00",
+            "kind": "chat",
+            "source_retention": "none",
+            "version": 1
+          },
+          "operation_binding": {
+            "execution_generation": 1,
+            "execution_lease_token": "00000000-0000-4000-8000-000000000006",
+            "operation_id": "00000000-0000-4000-8000-000000000005"
+          },
+          "owner_id": "owner",
+          "phase": "checking",
+          "plans": {},
+          "safe_error_code": null,
+          "source_batches": {},
+          "state_version": 4,
+          "submission_digest": "a8cdafb2ccbf6c58d136839d9a0e0e2e491880d1fad779b792bcbd78979c64e2",
+          "submission_id": "00000000-0000-4000-8000-000000000003",
+          "tasks": [],
+          "updated_at": "2026-09-12T12:06:51.052953+00:00",
+          "usage": {
+            "daily": {},
+            "day": "2026-09-12",
+            "money_status": "unknown",
+            "outstanding": {
+              "elapsed_ms": 1000,
+              "model_calls": 0,
+              "tokens": 0,
+              "tool_calls": 1
+            },
+            "spent": {}
+          },
+          "wake_generation": 1,
+          "wake_reason": "created"
+        },
+        "execution_profile": "one_shot",
+        "id": "00000000-0000-4000-8000-000000000002",
+        "lease_expires_at": "2026-09-12 12:07:21.047253+00:00",
+        "lifecycle": "active",
+        "next_wake_at": "2026-09-12 12:06:51.045517+00:00",
+        "owner_user_id": "owner",
+        "state_version": 4,
+        "submission_digest": "a8cdafb2ccbf6c58d136839d9a0e0e2e491880d1fad779b792bcbd78979c64e2",
+        "submission_id": "00000000-0000-4000-8000-000000000003"
+      },
+      {
+        "data": {
+          "activity_sequence": 0,
+          "approved_action_id": null,
+          "assignment_id": "00000000-0000-4000-8000-00000000000d",
+          "checkpoint": {
+            "schema_version": 1
+          },
+          "claim_generation": 1,
+          "claim_token": "00000000-0000-4000-8000-00000000000f",
+          "claimed_by": "fixture",
+          "claimed_wake_generation": 1,
+          "consecutive_failures": 0,
+          "control_epoch": 1,
+          "controls": {},
+          "created_at": "2026-09-12T12:06:51.056972+00:00",
+          "definition": {
+            "allowed_tools": [],
+            "completion_condition": null,
+            "consented_scopes": [
+              "tools:read"
+            ],
+            "conversation_id": null,
+            "cost_quote_coverage": null,
+            "instructions": "Summarize new public releases",
+            "limits": {
+              "elapsed_ms": 1000000,
+              "max_concurrent_tasks": 2,
+              "max_depth": 4,
+              "max_retries": 3,
+              "max_tasks": 32,
+              "model_calls": 100,
+              "tokens": 100000,
+              "tool_calls": 1000
+            },
+            "name": "Watch releases",
+            "offline_grant_id": "00000000-0000-4000-8000-00000000000b",
+            "source": {}
+          },
+          "execution_profile": "one_shot",
+          "initial_definition_digest": "53172c2c3f643b061116f91346512fe17cf59927344fada650df8268c99477c0",
+          "instruction_revision": 1,
+          "last_check_at": null,
+          "lease_expires_at": "2026-09-12T12:07:21.058275+00:00",
+          "lifecycle": "active",
+          "next_retry_at": null,
+          "next_wake_at": "2026-09-12T12:06:51.056972+00:00",
+          "operation": {
+            "authority": {
+              "expires_at": "2026-09-12T12:16:51.043358+00:00",
+              "origin": "scheduled",
+              "owner_id": "owner",
+              "reference_id": "00000000-0000-4000-8000-00000000000b",
+              "reference_kind": "offline_grant"
+            },
+            "deadline_at": "2026-09-12T12:11:51.043358+00:00",
+            "kind": "chat",
+            "source_retention": "none",
+            "version": 1
+          },
+          "operation_binding": {
+            "execution_generation": 1,
+            "execution_lease_token": "00000000-0000-4000-8000-000000000011",
+            "operation_id": "00000000-0000-4000-8000-000000000010"
+          },
+          "owner_id": "owner",
+          "phase": "checking",
+          "plans": {},
+          "safe_error_code": null,
+          "source_batches": {},
+          "state_version": 5,
+          "submission_digest": "a8cdafb2ccbf6c58d136839d9a0e0e2e491880d1fad779b792bcbd78979c64e2",
+          "submission_id": "00000000-0000-4000-8000-00000000000e",
+          "tasks": [],
+          "updated_at": "2026-09-12T12:06:51.067506+00:00",
+          "usage": {
+            "daily": {},
+            "day": "2026-09-12",
+            "money_status": "unknown",
+            "outstanding": {
+              "elapsed_ms": 1000,
+              "model_calls": 0,
+              "tokens": 0,
+              "tool_calls": 1
+            },
+            "spent": {}
+          },
+          "wake_generation": 1,
+          "wake_reason": "created"
+        },
+        "execution_profile": "one_shot",
+        "id": "00000000-0000-4000-8000-00000000000d",
+        "lease_expires_at": "2026-09-12 12:07:21.058275+00:00",
+        "lifecycle": "active",
+        "next_wake_at": "2026-09-12 12:06:51.056972+00:00",
+        "owner_user_id": "owner",
+        "state_version": 5,
+        "submission_digest": "a8cdafb2ccbf6c58d136839d9a0e0e2e491880d1fad779b792bcbd78979c64e2",
+        "submission_id": "00000000-0000-4000-8000-00000000000e"
+      }
+    ],
+    "persistent_assignment_action": [
+      {
+        "action_key": "00000000-0000-4000-8000-000000000007",
+        "assignment_id": "00000000-0000-4000-8000-000000000002",
+        "data": {
+          "action_id": "00000000-0000-4000-8000-000000000008",
+          "assignment_id": "00000000-0000-4000-8000-000000000002",
+          "attempts": [
+            {
+              "assignment_fence": {
+                "assignment_id": "00000000-0000-4000-8000-000000000002",
+                "claim_generation": 1,
+                "claim_token": "00000000-0000-4000-8000-000000000004",
+                "control_epoch": 1,
+                "instruction_revision": 1,
+                "owner_id": "owner"
+              },
+              "attempt_id": "00000000-0000-4000-8000-000000000009",
+              "binding": {
+                "execution_generation": 1,
+                "execution_lease_token": "00000000-0000-4000-8000-000000000006",
+                "operation_id": "00000000-0000-4000-8000-000000000005"
+              },
+              "dispatch_token": "00000000-0000-4000-8000-00000000000a",
+              "maximum": {
+                "currency": null,
+                "elapsed_ms": 1000,
+                "model_calls": 0,
+                "spend_micro_units": null,
+                "tokens": 0,
+                "tool_calls": 1
+              },
+              "outcome": null,
+              "quote_digest": null,
+              "quote_expires_at": null,
+              "state": "started"
+            }
+          ],
+          "control_epoch": 1,
+          "decision": null,
+          "foreground_admission": null,
+          "instruction_revision": 1,
+          "intent": {
+            "action_key": "00000000-0000-4000-8000-000000000007",
+            "approval_expires_at": null,
+            "boundary": "unreplayable",
+            "downstream_key": null,
+            "event_id": null,
+            "interactive_only": false,
+            "maximum": {
+              "currency": null,
+              "elapsed_ms": 1000,
+              "model_calls": 0,
+              "spend_micro_units": null,
+              "tokens": 0,
+              "tool_calls": 1
+            },
+            "permission_digest": "dd6076d8bad9e17f86a4d5bf4c341fefea560e1b79e13e5d819d357ada282172",
+            "precondition_digest": "99e4b69a4e0299072e0a412ec90abd6948f6914fc398409b7ffdfd2181c96594",
+            "quote_digest": null,
+            "quote_expires_at": null,
+            "request": {
+              "tool": "web-research-1.fetch_page",
+              "url": "https://example.org"
+            },
+            "request_digest": "349dba76a6a77119ba2ad74ad75bedc8c163792efff08cd1940e42a661310327",
+            "sensitivity": "ordinary",
+            "task_id": null
+          },
+          "intent_digest": "c122b016dd51b5513652268e34d2df702ac94780ef3472444129b99e9527c536",
+          "owner_id": "owner",
+          "reconciliation": null,
+          "result": null,
+          "state": "started"
+        },
+        "id": "00000000-0000-4000-8000-000000000008",
+        "owner_user_id": "owner",
+        "state": "started"
+      },
+      {
+        "action_key": "00000000-0000-4000-8000-000000000012",
+        "assignment_id": "00000000-0000-4000-8000-00000000000d",
+        "data": {
+          "action_id": "00000000-0000-4000-8000-000000000013",
+          "assignment_id": "00000000-0000-4000-8000-00000000000d",
+          "attempts": [
+            {
+              "assignment_fence": {
+                "assignment_id": "00000000-0000-4000-8000-00000000000d",
+                "claim_generation": 1,
+                "claim_token": "00000000-0000-4000-8000-00000000000f",
+                "control_epoch": 1,
+                "instruction_revision": 1,
+                "owner_id": "owner"
+              },
+              "attempt_id": "00000000-0000-4000-8000-000000000014",
+              "binding": {
+                "execution_generation": 1,
+                "execution_lease_token": "00000000-0000-4000-8000-000000000011",
+                "operation_id": "00000000-0000-4000-8000-000000000010"
+              },
+              "dispatch_token": "00000000-0000-4000-8000-000000000015",
+              "maximum": {
+                "currency": null,
+                "elapsed_ms": 1000,
+                "model_calls": 0,
+                "spend_micro_units": null,
+                "tokens": 0,
+                "tool_calls": 1
+              },
+              "outcome": {
+                "actual": null,
+                "evidence_reference": null,
+                "outcome": "uncertain",
+                "result": {},
+                "result_digest": "f6479fb8b44dd26536a84759bcb12b21f851e7fe92184e8bd2b75e27a1440b41",
+                "result_disposition": {
+                  "available": false,
+                  "binding_key_id": null,
+                  "reason": "stale_execution",
+                  "references": [],
+                  "version": 1
+                }
+              },
+              "quote_digest": null,
+              "quote_expires_at": null,
+              "settlement_signature": "131e951fb96c3d577a2aab83aba5b7906fa3ae2ec68418efee97db7c980e88f6",
+              "state": "uncertain"
+            }
+          ],
+          "control_epoch": 1,
+          "decision": null,
+          "foreground_admission": null,
+          "instruction_revision": 1,
+          "intent": {
+            "action_key": "00000000-0000-4000-8000-000000000012",
+            "approval_expires_at": null,
+            "boundary": "unreplayable",
+            "downstream_key": null,
+            "event_id": null,
+            "interactive_only": false,
+            "maximum": {
+              "currency": null,
+              "elapsed_ms": 1000,
+              "model_calls": 0,
+              "spend_micro_units": null,
+              "tokens": 0,
+              "tool_calls": 1
+            },
+            "permission_digest": "dd6076d8bad9e17f86a4d5bf4c341fefea560e1b79e13e5d819d357ada282172",
+            "precondition_digest": "99e4b69a4e0299072e0a412ec90abd6948f6914fc398409b7ffdfd2181c96594",
+            "quote_digest": null,
+            "quote_expires_at": null,
+            "request": {
+              "tool": "web-research-1.fetch_page",
+              "url": "https://example.org"
+            },
+            "request_digest": "349dba76a6a77119ba2ad74ad75bedc8c163792efff08cd1940e42a661310327",
+            "sensitivity": "ordinary",
+            "task_id": null
+          },
+          "intent_digest": "cc7f9fb7eb7b98034e91fad92450a92be0d8b74f58e1b0bae002e6a57eb3f7ff",
+          "owner_id": "owner",
+          "reconciliation": null,
+          "result": {
+            "actual": null,
+            "evidence_reference": null,
+            "outcome": "uncertain",
+            "reacquisition_reason": "stale_execution",
+            "result": {},
+            "result_available": false,
+            "result_digest": "f6479fb8b44dd26536a84759bcb12b21f851e7fe92184e8bd2b75e27a1440b41",
+            "result_disposition": {
+              "available": false,
+              "binding_key_id": null,
+              "reason": "stale_execution",
+              "references": [],
+              "version": 1
+            }
+          },
+          "state": "uncertain"
+        },
+        "id": "00000000-0000-4000-8000-000000000013",
+        "owner_user_id": "owner",
+        "state": "uncertain"
+      }
+    ],
+    "persistent_assignment_activity": [],
+    "user_offline_grant": [
+      {
+        "agent_id": null,
+        "created_at": null,
+        "expires_at": 9999999999999,
+        "id": "00000000-0000-4000-8000-000000000001",
+        "issued_at": 1,
+        "refresh_token_enc": {
+          "$bytea": "6f70617175652d746573742d6f6e6c79"
+        },
+        "revoked_at": null,
+        "updated_at": null,
+        "user_id": "owner"
+      },
+      {
+        "agent_id": null,
+        "created_at": null,
+        "expires_at": 9999999999999,
+        "id": "00000000-0000-4000-8000-00000000000b",
+        "issued_at": 1,
+        "refresh_token_enc": {
+          "$bytea": "6f70617175652d746573742d6f6e6c79"
+        },
+        "revoked_at": null,
+        "updated_at": null,
+        "user_id": "owner"
+      },
+      {
+        "agent_id": null,
+        "created_at": null,
+        "expires_at": 9999999999999,
+        "id": "00000000-0000-4000-8000-00000000000c",
+        "issued_at": 1,
+        "refresh_token_enc": {
+          "$bytea": "6f70617175652d746573742d6f6e6c79"
+        },
+        "revoked_at": null,
+        "updated_at": null,
+        "user_id": "owner"
+      }
+    ],
+    "web_session": [
+      {
+        "access_token_enc": "synthetic-cipher-access",
+        "created_at": 1789214811,
+        "hard_expires_at": 1789218411,
+        "interactive_anchor": 1789214811,
+        "last_refresh_at": 1789214811,
+        "refresh_token_enc": "synthetic-cipher-refresh",
+        "resumed": false,
+        "sid": "session-reference",
+        "user_id": "owner"
+      }
+    ]
+  },
+  "test_uuid_source": "canonical UUID4 sequence; itertools.count(1), UUID(int=next(counter), version=4)"
+}

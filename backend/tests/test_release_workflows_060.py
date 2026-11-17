@@ -723,7 +723,7 @@ def test_release_readiness_component_consumers_verify_exact_initialized_gitlinks
 def test_release_readiness_backend_producer_mounts_plane_source_read_only() -> None:
     backend = _workflow_job(_workflow_text(READINESS), "backend-producer")
     assert (
-        '-v "$PWD/components/AstralPlane:/app/components/AstralPlane:ro"'
+        '-v "$PWD/plane:/app/plane:ro"'
         in backend
     )
 

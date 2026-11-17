@@ -8,10 +8,12 @@ import os
 import sys
 
 from astralplane.database.migrations import (
-    CURRENT_DATA_PLANE_REVISION, MIGRATION_REGISTRY, MigrationRunner,
+    CURRENT_DATA_PLANE_REVISION,
+    MIGRATION_REGISTRY,
+    MigrationRunner,
 )
-from astralplane.database.postgres import create_postgres_driver_pool
 from astralplane.database.pool import ConnectionPool
+from astralplane.database.postgres import create_postgres_driver_pool
 from astralplane.database.transaction import PlaneDatabase
 
 

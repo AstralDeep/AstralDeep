@@ -1,5 +1,5 @@
 {
-  "format": "astral.composition/v1",
+  "format": "astral.composition/v2",
   "astraldeep_contract_version": "astraldeep.composition/v1",
   "components": {
     "astral-projection": {
@@ -14,12 +14,6 @@
       "commit": "11645bc80d8cb08534f21e3731715dc2fe6b4cad",
       "contract_version": "0.1.0"
     },
-    "astral-plane": {
-      "repository": "https://github.com/AstralDeep/AstralPlane.git",
-      "path": "components/AstralPlane",
-      "commit": "f8f2a637f7b026f200b6e925a651faada13a4116",
-      "contract_version": "astralplane.contract/v1"
-    },
     "astral-primitives": {
       "repository": "https://github.com/AstralDeep/AstralPrimitives.git",
       "path": "components/AstralPrimitives",
@@ -32,6 +26,12 @@
       "commit": "13213061b6ebfc5fa1c81d0c65046b60fa1b7e3e",
       "ref": "v1.1.2",
       "contract_version": "1.1.2"
+    }
+  },
+  "in_tree": {
+    "astral-plane": {
+      "path": "plane",
+      "contract_version": "astralplane.contract/v1"
     }
   },
   "availability": {
