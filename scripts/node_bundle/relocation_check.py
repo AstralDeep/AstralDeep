@@ -68,7 +68,11 @@ sys.exit(0 if kind == "application/pdf" else 1)
 """
 
 
-LOADED_PATTERN = re.compile(r"calling init: (.+?)\s*$", re.MULTILINE)
+LOADED_PATTERNS = (
+    re.compile(r"calling init: (.+?)\s*$", re.MULTILINE),
+    re.compile(r"trying file=(.+?)\s*$", re.MULTILINE),
+)
+RENDER_CHECK = Path(__file__).resolve().parent / "linux" / "native_render_check.py"
 LOAD_PROBE = "import astral_kernel, PIL._imaging, bcrypt, cryptography.hazmat.bindings._rust, psycopg2, numpy"
 
 
@@ -128,24 +132,43 @@ def native_problems(root: Path) -> list[str]:
     problems = []
     for tool in NATIVE_TOOLS:
         result = subprocess.run(
-            [str(root / "native" / "bin" / tool), "-v"], env=CHILD_ENV, capture_output=True, text=True,
+            [str(root / "native" / "bin" / tool), "-v"], env={**CHILD_ENV, **native_environment(root)}, capture_output=True, text=True,
             timeout=CHILD_TIMEOUT, check=False,
         )
         if result.returncode != 0:
             problems.append(f"native {tool} -v exited {result.returncode}: {result.stderr.strip()[-200:]}")
     magic = subprocess.run(
         [str(root / "python" / "bin" / "python3.11"), "-I", "-B", "-c", NATIVE_SCRIPT, str(root)],
-        env={**CHILD_ENV, "MAGIC": str(root / "native" / "share" / "magic.mgc")}, capture_output=True, text=True,
+        env={**CHILD_ENV, **native_environment(root)}, capture_output=True, text=True,
         timeout=CHILD_TIMEOUT, check=False,
     )
     if magic.returncode != 0:
         problems.append(f"libmagic did not identify a PDF from the pack: {(magic.stdout + magic.stderr).strip()[-300:]}")
+    render = subprocess.run(
+        [str(root / "python" / "bin" / "python3.11"), "-I", "-B", str(RENDER_CHECK), str(root)],
+        env={**CHILD_ENV, **native_environment(root)}, capture_output=True, text=True, timeout=CHILD_TIMEOUT, check=False,
+    )
+    print(render.stdout, end="")
+    if render.returncode != 0:
+        problems.append(f"PDF rendering failed: {(render.stdout + render.stderr).strip()[-500:]}")
     return problems
 
 
+def native_environment(root: Path) -> dict[str, str]:
+    native = root / "native"
+    environment = {"PATH": os.pathsep.join([str(native / "bin"), CHILD_ENV["PATH"]]), "MAGIC": str(native / "share" / "magic.mgc")}
+    fonts = native / "etc" / "fonts"
+    if (fonts / "fonts.conf").is_file():
+        environment.update(FONTCONFIG_FILE=str(fonts / "fonts.conf"), FONTCONFIG_PATH=str(fonts))
+    return environment
+
+
 def foreign_libraries(trace: str, root: Path) -> list[str]:
+    candidates = {path for pattern in LOADED_PATTERNS for path in pattern.findall(trace)}
     found = []
-    for path in sorted(set(LOADED_PATTERN.findall(trace))):
+    for path in sorted(candidates):
+        if not os.path.isfile(path):
+            continue
         name = os.path.basename(path)
         inside = os.path.realpath(path).startswith(str(root.resolve()) + os.sep)
         if not inside and name not in elfaudit.SYSTEM_LIBRARIES and not name.startswith("ld-linux"):
@@ -154,18 +177,23 @@ def foreign_libraries(trace: str, root: Path) -> list[str]:
 
 
 def loaded_library_problems(root: Path) -> list[str]:
-    environment = {**CHILD_ENV, "LD_DEBUG": "libs"}
+    environment = {**CHILD_ENV, **native_environment(root), "LD_DEBUG": "libs"}
     runs = {
         "interpreter": [str(root / "python" / "bin" / "python3.11"), "-I", "-B", "-c", LOAD_PROBE],
         "mailbox": [str(root / "bin" / "astral-mailbox"), "--help"],
+        "pdftoppm": [str(root / "native" / "bin" / "pdftoppm"), "-v"],
+        "pdfinfo": [str(root / "native" / "bin" / "pdfinfo"), "-v"],
     }
     problems = []
     for label, command in runs.items():
         if not Path(command[0]).is_file():
+            problems.append(f"{label} is missing from the pack")
             continue
         result = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=CHILD_TIMEOUT, check=False)
-        if label == "interpreter" and result.returncode != 0:
-            problems.append(f"loading the native modules failed: {result.stderr.strip()[-300:]}")
+        if result.returncode != 0:
+            problems.append(f"{label} exited {result.returncode}: {result.stderr.strip()[-300:]}")
+        if label == "mailbox" and "astral-mailbox serve" not in result.stdout:
+            problems.append("the mailbox did not print its usage")
         problems += [f"{label} loaded {path} from outside the pack" for path in foreign_libraries(result.stderr, root)]
     return problems
 

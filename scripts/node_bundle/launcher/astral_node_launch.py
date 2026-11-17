@@ -45,6 +45,10 @@ def configure(arguments: argparse.Namespace, root: Path = PACK_ROOT) -> dict[str
         values["PATH"] = os.pathsep.join([str(native / "bin"), values.get("PATH", os.environ.get("PATH", ""))])
         if (native / "share" / "magic.mgc").is_file():
             values.setdefault("MAGIC", str(native / "share" / "magic.mgc"))
+        fonts = native / "etc" / "fonts"
+        if (fonts / "fonts.conf").is_file():
+            values.setdefault("FONTCONFIG_FILE", str(fonts / "fonts.conf"))
+            values.setdefault("FONTCONFIG_PATH", str(fonts))
     return values
 
 

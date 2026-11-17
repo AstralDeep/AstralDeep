@@ -85,6 +85,36 @@ def link_system_needs(stage: Path, root: Path, directories: list[Path]) -> None:
         set_search_path(path, ":".join([*existing.runpath, *existing.rpath, f"$ORIGIN/{relative}"]))
 
 
+FONTS_CONF = """<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">
+<fontconfig>
+  <dir prefix="relative">../../fonts</dir>
+  <cachedir prefix="xdg">astral-node-fontconfig</cachedir>
+  <include>conf.d</include>
+</fontconfig>
+"""
+
+
+def bundle_fonts(root: Path, spec: dict) -> None:
+    fonts = root / "fonts"
+    configuration = root / "etc" / "fonts"
+    (configuration / "conf.d").mkdir(parents=True)
+    fonts.mkdir()
+    sources = sorted(Path(spec["directory"]).glob("*.otf"))
+    if not sources:
+        raise NativeError(f"no fonts under {spec['directory']}")
+    for source in sources:
+        shutil.copy2(source, fonts / source.name)
+    copied = 0
+    for pattern in spec["patterns"]:
+        for source in sorted(Path(spec["conf_directory"]).glob(pattern)):
+            shutil.copy2(source.resolve(), configuration / "conf.d" / source.name)
+            copied += 1
+    if not copied:
+        raise NativeError("no font configuration files matched")
+    (configuration / "fonts.conf").write_text(FONTS_CONF)
+
+
 def bundle(stage: Path, spec: dict, architecture: str) -> dict:
     root = stage / NATIVE_DIR
     shutil.rmtree(root, ignore_errors=True)
@@ -105,6 +135,7 @@ def bundle(stage: Path, spec: dict, architecture: str) -> dict:
         pending.append(target)
     close_over_needs(root, directories, pending)
     link_system_needs(stage, root, directories)
+    bundle_fonts(root, spec["fonts"])
     for name, source in spec["data"].items():
         destination = root / "share" / name
         destination.parent.mkdir(exist_ok=True)

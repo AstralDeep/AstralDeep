@@ -15,6 +15,7 @@ import tarfile
 import tempfile
 import urllib.parse
 import urllib.request
+import zipfile
 from pathlib import Path
 
 import manifest as pack_manifest
@@ -321,12 +322,23 @@ def check_binding(kernel: dict, entries: dict, mailbox: Path | None) -> Path:
 KERNEL_FILES = ("bin/astral-mailbox", "python/lib/python3.11/site-packages/astral_kernel/libastral_kernel_ffi.so")
 
 
-def seal_linux(stage: Path, spec: dict) -> dict:
+KERNEL_LIBRARY = "astral_kernel/libastral_kernel_ffi.so"
+
+
+def bound_kernel_digests(wheel: Path, mailbox: Path) -> dict[str, str]:
+    with zipfile.ZipFile(wheel) as archive:
+        library = pack_manifest.sha256_bytes(archive.read(KERNEL_LIBRARY))
+    return {KERNEL_FILES[0]: pack_manifest.sha256_file(mailbox), KERNEL_FILES[1]: library}
+
+
+def seal_linux(stage: Path, spec: dict, bound: dict[str, str]) -> dict:
     sys.path.insert(0, str(HERE / "linux"))
     import elfaudit
     import natives
 
     received = {name: pack_manifest.sha256_file(stage / name) for name in KERNEL_FILES if (stage / name).is_file()}
+    if received != bound:
+        raise PackError("the Kernel files staged in the pack are not the bytes of the bound wheel and mailbox")
     bundled = natives.bundle(stage, spec["natives"], platform_module.machine())
     floor = tuple(int(part) for part in spec["glibc_floor"].split("."))
     problems, newest = elfaudit.audit_tree(stage, floor)
@@ -337,7 +349,7 @@ def seal_linux(stage: Path, spec: dict) -> dict:
         "glibc_required": ".".join(map(str, newest)),
         "natives": {**bundled, "source_image": spec["natives"]["source_image"]},
         "kernel_search_path_patch": {
-            name: {"received_sha256": digest, "shipped_sha256": pack_manifest.sha256_file(stage / name)}
+            name: {"bound_sha256": digest, "shipped_sha256": pack_manifest.sha256_file(stage / name)}
             for name, digest in received.items()
         },
     }
@@ -434,7 +446,7 @@ def assemble(platform: str, output: Path, kernel_dir: Path, work: Path, mailbox:
     copy_launcher(stage, components_root / "scripts" / "node_bundle" / "launcher")
     native_inputs = {}
     if "linux" in target:
-        native_inputs = seal_linux(stage, target["linux"])
+        native_inputs = seal_linux(stage, target["linux"], bound_kernel_digests(kernel["wheel"], mailbox))
     bake_bytecode(python, stage)
     scan_for_leaks(stage, [work, repo, components_root])
 

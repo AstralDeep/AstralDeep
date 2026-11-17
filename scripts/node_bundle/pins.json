@@ -54,7 +54,8 @@
             "libgcc-s1",
             "libstdc++6",
             "libcrypt1",
-            "zlib1g"
+            "zlib1g",
+            "fonts-urw-base35"
           ],
           "binaries": [
             "pdftoppm",
@@ -65,8 +66,19 @@
           ],
           "data": {
             "magic.mgc": "/usr/lib/file/magic.mgc"
+          },
+          "fonts": {
+            "directory": "/usr/share/fonts/opentype/urw-base35",
+            "conf_directory": "/etc/fonts/conf.d",
+            "patterns": [
+              "30-metric-aliases.conf",
+              "61-urw-*.conf"
+            ]
           }
-        }
+        },
+        "known_limits": [
+          "Non-embedded CJK fonts render without glyphs: poppler reads its CJK maps from a fixed system path that a relocated pack cannot redirect, so poppler-data is not shipped."
+        ]
       }
     },
     "linux-x86_64": {
@@ -99,7 +111,8 @@
             "libgcc-s1",
             "libstdc++6",
             "libcrypt1",
-            "zlib1g"
+            "zlib1g",
+            "fonts-urw-base35"
           ],
           "binaries": [
             "pdftoppm",
@@ -110,8 +123,19 @@
           ],
           "data": {
             "magic.mgc": "/usr/lib/file/magic.mgc"
+          },
+          "fonts": {
+            "directory": "/usr/share/fonts/opentype/urw-base35",
+            "conf_directory": "/etc/fonts/conf.d",
+            "patterns": [
+              "30-metric-aliases.conf",
+              "61-urw-*.conf"
+            ]
           }
-        }
+        },
+        "known_limits": [
+          "Non-embedded CJK fonts render without glyphs: poppler reads its CJK maps from a fixed system path that a relocated pack cannot redirect, so poppler-data is not shipped."
+        ]
       }
     }
   },

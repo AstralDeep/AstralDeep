@@ -9,6 +9,7 @@ import struct
 import subprocess
 import sys
 import tarfile
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -172,6 +173,9 @@ def fake_image(monkeypatch, tmp_path):
     put(library_dir, "libz.so.1", make_elf(["libc.so.6"]))
     put(library_dir, "pdftoppm", make_elf(["libmagic.so.1", "libc.so.6"]))
     put(library_dir, "magic.mgc", b"mgc")
+    put(library_dir / "fonts", "NimbusSans-Regular.otf", b"font")
+    put(library_dir / "conf", "61-urw-nimbus-sans.conf", b"<conf/>")
+    put(library_dir / "conf", "30-metric-aliases.conf", b"<conf/>")
     calls = []
     monkeypatch.setattr(natives, "library_directories", lambda architecture: [library_dir])
     monkeypatch.setattr(natives, "locate_binary", lambda name: library_dir / name)
@@ -180,10 +184,15 @@ def fake_image(monkeypatch, tmp_path):
     return library_dir, calls
 
 
+def fonts_spec(library_dir):
+    return {"directory": str(library_dir / "fonts"), "conf_directory": str(library_dir / "conf"),
+            "patterns": ["30-metric-aliases.conf", "61-urw-*.conf"]}
+
+
 def test_native_bundling_copies_the_library_closure_and_points_every_file_into_the_pack(monkeypatch, tmp_path):
     library_dir, calls = fake_image(monkeypatch, tmp_path)
     spec = {"packages": ["poppler-utils"], "binaries": ["pdftoppm"], "libraries": ["libmagic.so.1"],
-            "data": {"magic.mgc": str(library_dir / "magic.mgc")}}
+            "data": {"magic.mgc": str(library_dir / "magic.mgc")}, "fonts": fonts_spec(library_dir)}
     stage = tmp_path / "stage"
     stage.mkdir()
     bundled = natives.bundle(stage, spec, "aarch64")
@@ -197,7 +206,8 @@ def test_native_bundling_copies_the_library_closure_and_points_every_file_into_t
 
 def test_native_bundling_is_repeatable_and_copies_package_notices(monkeypatch, tmp_path):
     library_dir, _ = fake_image(monkeypatch, tmp_path)
-    spec = {"packages": ["definitely-not-a-package"], "binaries": ["pdftoppm"], "libraries": [], "data": {}}
+    spec = {"packages": ["definitely-not-a-package"], "binaries": ["pdftoppm"], "libraries": [], "data": {},
+            "fonts": fonts_spec(library_dir)}
     stage = tmp_path / "stage"
     stage.mkdir()
     first = natives.bundle(stage, spec, "aarch64")
@@ -210,7 +220,7 @@ def test_native_bundling_fails_when_the_image_lacks_a_library(monkeypatch, tmp_p
     stage = tmp_path / "stage"
     stage.mkdir()
     with pytest.raises(natives.NativeError):
-        natives.bundle(stage, {"packages": [], "binaries": [], "libraries": ["libmissing.so.1"], "data": {}}, "aarch64")
+        natives.bundle(stage, {"packages": [], "binaries": [], "libraries": ["libmissing.so.1"], "data": {}, "fonts": {}}, "aarch64")
     monkeypatch.undo()
     with pytest.raises(natives.NativeError):
         natives.locate_binary("definitely-not-a-binary")
@@ -435,10 +445,15 @@ def test_the_built_pack_records_the_bound_kernel_wheel_and_mailbox_and_every_sea
     assert manifest["kernel"]["mailbox"] == bound["mailbox"]
     patches = manifest["kernel_search_path_patch"]
     assert set(patches) == set(assemble_kernel_files())
-    assert patches["bin/astral-mailbox"]["received_sha256"] == bound["mailbox"]["sha256"]
+    assert patches["bin/astral-mailbox"]["bound_sha256"] == bound["mailbox"]["sha256"]
+    folder = os.environ.get(bl.KERNEL_ARTIFACTS_ENV)
+    if folder and (Path(folder) / bound["wheel"]["file"]).is_file():
+        with zipfile.ZipFile(Path(folder) / bound["wheel"]["file"]) as archive:
+            member = hashlib.sha256(archive.read(ap.KERNEL_LIBRARY)).hexdigest()
+        assert patches[ap.KERNEL_FILES[1]]["bound_sha256"] == member
     for name, record in patches.items():
         assert hashlib.sha256((pack / name).read_bytes()).hexdigest() == record["shipped_sha256"]
-        assert (record["received_sha256"] != record["shipped_sha256"]) == bool(elfaudit.read_dynamic(pack / name).runpath)
+        assert (record["bound_sha256"] != record["shipped_sha256"]) == bool(elfaudit.read_dynamic(pack / name).runpath)
     assert any(entry["name"] == "astral-kernel" for entry in manifest["installed_distributions"])
 
 
@@ -598,19 +613,131 @@ def test_container_build_paths_are_distinctive_enough_for_the_leak_scan_not_to_m
     assert bl.BUILD_ROOT == "/astral-node-build"
 
 
-def test_loaded_library_trace_flags_only_libraries_from_outside_the_pack(tmp_path):
+def test_loaded_library_trace_flags_only_existing_libraries_from_outside_the_pack(tmp_path):
     inside = tmp_path / "python" / "lib" / "libgcc_s.so.1"
-    inside.parent.mkdir(parents=True)
-    inside.write_bytes(b"x")
-    trace = "\n".join(f"  1: calling init: {path}" for path in (
-        inside, "/lib/aarch64-linux-gnu/libc.so.6", "/lib/ld-linux-aarch64.so.1", "/usr/lib/aarch64-linux-gnu/libz.so.1",
-    ))
-    assert relocation_check.foreign_libraries(trace, tmp_path) == ["/usr/lib/aarch64-linux-gnu/libz.so.1"]
-    assert relocation_check.foreign_libraries("", tmp_path) == []
+    outside = tmp_path / "elsewhere" / "libz.so.1"
+    system = tmp_path / "lib" / "libc.so.6"
+    for path in (inside, outside, system, tmp_path / "lib" / "ld-linux-aarch64.so.1"):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x")
+    pack = tmp_path / "python"
+    trace = "\n".join([
+        f"  1: calling init: {inside}", f"  1: calling init: {system}", f"  1: trying file={tmp_path}/lib/ld-linux-aarch64.so.1",
+        f"  1: trying file={outside}", "  1: trying file=/does/not/exist/libfoo.so.1",
+    ])
+    assert relocation_check.foreign_libraries(trace, pack) == [str(outside)]
+    assert relocation_check.foreign_libraries("", pack) == []
     spaced = tmp_path / "relocated copy" / "python" / "lib" / "libz.so.1"
     spaced.parent.mkdir(parents=True)
     spaced.write_bytes(b"x")
-    assert relocation_check.foreign_libraries(f"  9: calling init: {spaced}\n", tmp_path / "relocated copy") == []
+    assert relocation_check.foreign_libraries(f"  9: trying file={spaced}\n", tmp_path / "relocated copy") == []
+
+
+def test_the_check_environment_matches_what_the_launcher_sets_for_native_tools(tmp_path):
+    fonts = tmp_path / "native" / "etc" / "fonts"
+    fonts.mkdir(parents=True)
+    (fonts / "fonts.conf").write_text("<fontconfig/>")
+    environment = relocation_check.native_environment(tmp_path)
+    assert environment["FONTCONFIG_FILE"] == str(fonts / "fonts.conf") and environment["FONTCONFIG_PATH"] == str(fonts)
+    assert environment["PATH"].startswith(str(tmp_path / "native" / "bin"))
+    assert "FONTCONFIG_FILE" not in relocation_check.native_environment(tmp_path / "none")
+
+
+def test_font_bundling_ships_the_fonts_and_a_configuration_that_points_only_inside_the_pack(monkeypatch, tmp_path):
+    library_dir, _ = fake_image(monkeypatch, tmp_path)
+    root = tmp_path / "stage" / "native"
+    natives.bundle_fonts(root, fonts_spec(library_dir))
+    configuration = (root / "etc" / "fonts" / "fonts.conf").read_text()
+    assert '<dir prefix="relative">../../fonts</dir>' in configuration
+    assert not re.search(r"<dir>|<dir [^>]*>/|<include>/", configuration)
+    assert (root / "fonts" / "NimbusSans-Regular.otf").is_file()
+    assert sorted(path.name for path in (root / "etc" / "fonts" / "conf.d").iterdir()) == ["30-metric-aliases.conf", "61-urw-nimbus-sans.conf"]
+
+
+def test_font_bundling_refuses_a_missing_font_directory_and_missing_configuration(monkeypatch, tmp_path):
+    library_dir, _ = fake_image(monkeypatch, tmp_path)
+    with pytest.raises(natives.NativeError, match="no fonts"):
+        natives.bundle_fonts(tmp_path / "a", {**fonts_spec(library_dir), "directory": str(tmp_path / "none")})
+    with pytest.raises(natives.NativeError, match="configuration"):
+        natives.bundle_fonts(tmp_path / "b", {**fonts_spec(library_dir), "patterns": ["nothing-*.conf"]})
+
+
+def test_the_launcher_points_fontconfig_at_the_pack_when_it_ships_fonts(tmp_path):
+    import argparse
+
+    env = tmp_path / "node.env"
+    env.write_text("ASTRAL_NODE_PROFILE=personal\n")
+    fonts = tmp_path / "native" / "etc" / "fonts"
+    fonts.mkdir(parents=True)
+    (fonts / "fonts.conf").write_text("<fontconfig/>")
+    values = launch.configure(argparse.Namespace(host="127.0.0.1", port=1, env_file=env, allow_remote=False), tmp_path)
+    assert values["FONTCONFIG_FILE"] == str(fonts / "fonts.conf") and values["FONTCONFIG_PATH"] == str(fonts)
+
+
+def test_linux_pins_ship_a_pinned_font_package_and_record_the_cjk_limit():
+    pins = ap.load_pins()
+    for platform in ("linux-aarch64", "linux-x86_64"):
+        linux = pins["platforms"][platform]["linux"]
+        assert "fonts-urw-base35" in linux["natives"]["packages"]
+        assert any("CJK" in limit for limit in linux["known_limits"])
+    assert "fonts-urw-base35=" in bl.DOCKERFILE.read_text()
+
+
+def load_render_module():
+    import importlib
+
+    return importlib.import_module("native_render_check")
+
+
+def test_the_render_check_builds_well_formed_pdfs_with_correct_cross_reference_offsets():
+    render = load_render_module()
+    document = render.text_pdf("Helvetica")
+    assert document.startswith(b"%PDF-1.4") and b"/BaseFont /Helvetica" in document and b"FontDescriptor" not in document
+    table = int(document.rsplit(b"startxref\n", 1)[1].split()[0])
+    assert document[table:table + 4] == b"xref"
+    for number, line in enumerate(document[table:].split(b"\n")[3:8], 1):
+        offset = int(line.split()[0])
+        assert document[offset:].startswith(f"{number} 0 obj".encode())
+
+
+def test_the_render_check_counts_dark_pixels_and_tells_blank_from_filled():
+    pytest.importorskip("PIL")
+    from PIL import Image
+
+    render = load_render_module()
+    assert render.dark_fraction(Image.new("L", (10, 10), 255)) == (0, 0.0)
+    assert render.dark_fraction(Image.new("L", (10, 10), 0)) == (100, 1.0)
+    assert b"DCTDecode" in render.jpeg_page_pdf()
+
+
+def test_the_pack_relocation_runs_the_render_check_and_it_exists():
+    assert relocation_check.RENDER_CHECK.is_file()
+
+
+def test_the_mailbox_must_exit_zero_and_print_its_usage_in_the_clean_image_run():
+    source = (BUNDLE / "relocation_check.py").read_text()
+    assert "the mailbox did not print its usage" in source and "exited {result.returncode}" in source
+
+
+def test_bound_kernel_digests_come_from_the_wheel_member_and_the_mailbox(tmp_path):
+    import zipfile
+
+    wheel = tmp_path / "k.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr(ap.KERNEL_LIBRARY, b"library")
+    mailbox = put(tmp_path, "mb", b"mailbox")
+    assert ap.bound_kernel_digests(wheel, mailbox) == {
+        ap.KERNEL_FILES[0]: hashlib.sha256(b"mailbox").hexdigest(), ap.KERNEL_FILES[1]: hashlib.sha256(b"library").hexdigest(),
+    }
+
+
+def test_sealing_refuses_kernel_files_that_are_not_the_bound_bytes(tmp_path):
+    stage = tmp_path / "stage"
+    put(stage, ap.KERNEL_FILES[0], b"changed")
+    put(stage, ap.KERNEL_FILES[1], b"library")
+    bound = {ap.KERNEL_FILES[0]: hashlib.sha256(b"mailbox").hexdigest(), ap.KERNEL_FILES[1]: hashlib.sha256(b"library").hexdigest()}
+    with pytest.raises(ap.PackError, match="bound wheel and mailbox"):
+        ap.seal_linux(stage, {}, bound)
 
 
 def test_the_default_kernel_directory_comes_from_the_environment_first(monkeypatch, tmp_path):
@@ -618,3 +745,27 @@ def test_the_default_kernel_directory_comes_from_the_environment_first(monkeypat
     assert bl.default_kernel_dir() == tmp_path
     monkeypatch.delenv(bl.KERNEL_ARTIFACTS_ENV)
     assert bl.default_kernel_dir() in (None, bl.DEFAULT_KERNEL_DIR)
+
+
+@needs_pack
+def test_the_recorded_bound_library_digest_is_the_one_inside_the_bound_wheel():
+    manifest = json.loads((PACK_DIR / "node-pack-manifest.json").read_text())
+    folder = os.environ.get(bl.KERNEL_ARTIFACTS_ENV)
+    wheel = Path(folder or "/nonexistent") / BINDING["artifacts"][manifest["platform"]]["wheel"]["file"]
+    if not wheel.is_file():
+        pytest.skip(f"the bound wheel is not available: set {bl.KERNEL_ARTIFACTS_ENV} to the verified Kernel artifacts folder")
+    with zipfile.ZipFile(wheel) as archive:
+        member = hashlib.sha256(archive.read(ap.KERNEL_LIBRARY)).hexdigest()
+    assert manifest["kernel_search_path_patch"][ap.KERNEL_FILES[1]]["bound_sha256"] == member
+
+
+@needs_pack
+def test_the_built_pack_ships_fonts_and_a_configuration_that_stays_inside_it(pack):
+    manifest = json.loads((PACK_DIR / "node-pack-manifest.json").read_text())
+    assert "fonts-urw-base35" in {entry["name"] for entry in manifest["natives"]["packages"]}
+    assert (pack / "native" / "licenses" / "fonts-urw-base35.copyright").is_file()
+    assert list((pack / "native" / "fonts").glob("*.otf"))
+    configuration = (pack / "native" / "etc" / "fonts" / "fonts.conf").read_text()
+    assert 'prefix="relative"' in configuration and "/usr/share" not in configuration
+    for conf in (pack / "native" / "etc" / "fonts" / "conf.d").iterdir():
+        assert "/usr/share/fonts" not in conf.read_text()

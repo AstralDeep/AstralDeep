@@ -15,5 +15,6 @@ RUN rm -f /etc/apt/sources.list /etc/apt/sources.list.d/debian.sources \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         ca-certificates git patchelf python3 \
         libmagic1=1:5.44-3 libmagic-mgc=1:5.44-3 poppler-utils=22.12.0-2+deb12u3 \
+        fonts-urw-base35=20200910-7 \
     && rm -rf /var/lib/apt/lists/* \
     && git config --system --add safe.directory '*'
