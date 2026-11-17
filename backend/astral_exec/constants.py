@@ -52,8 +52,38 @@ LAUNCH_MARKER = "ASTRAL_EXEC_MARKER"
 REFUSED_EXIT_STATUS = 125
 OUTPUT_LIMIT_BYTES = 8 * 1024 * 1024
 TRAMPOLINE_READY = b"exec"
+NAMESPACE_DENIED = "userns_denied"
 LINUX_BASE = ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc")
+LINUX_DEVICES = ("/dev/null", "/dev/zero", "/dev/urandom", "/dev/random")
 LANDLOCK_ABI = 6
+PROXY_PORT = 3128
+EGRESS_SOCKET = "/run/astral/egress.sock"
+DENIED_SYSCALLS = (
+    "io_uring_enter",
+    "io_uring_register",
+    "io_uring_setup",
+    "msgctl",
+    "msgget",
+    "msgrcv",
+    "msgsnd",
+    "mq_getsetattr",
+    "mq_notify",
+    "mq_open",
+    "mq_timedreceive",
+    "mq_timedsend",
+    "mq_unlink",
+    "semctl",
+    "semget",
+    "semop",
+    "semtimedop",
+    "setpgid",
+    "setsid",
+    "shmat",
+    "shmctl",
+    "shmdt",
+    "shmget",
+)
+FORK_SYSCALLS = ("clone3", "fork", "vfork")
 BWRAP_PATHS = ("/usr/bin/bwrap", "/bin/bwrap")
 EXEC_SUBDIRECTORY = "exec"
 FACT_KEYS = (
@@ -62,6 +92,7 @@ FACT_KEYS = (
     "landlock_abi",
     "bwrap",
     "userns",
+    "euid",
     "sandbox_exec",
     "app_sandboxed",
 )
@@ -78,10 +109,15 @@ BACKEND_REASONS = (
     "landlock_abi",
     "bwrap_missing",
     "userns_denied",
+    "root_node",
     "sandbox_exec_missing",
     "app_sandboxed",
     "platform_unsupported",
 )
+PROC_CHILDREN_MISSING = "proc_children_missing"
+HOST_MESSAGES = {
+    PROC_CHILDREN_MISSING: "This Linux kernel has no /proc children files (CONFIG_PROC_CHILDREN), and the process limit cannot be enforced without them.",
+}
 EXEC_CODES = (
     "exec.backend_unavailable",
     "exec.agent_server_unsupported",
@@ -106,6 +142,7 @@ MESSAGES = {
     "landlock_abi": "This Linux kernel offers Landlock ABI {observed} and untrusted tools need ABI {required} or newer.",
     "bwrap_missing": "bubblewrap (bwrap) is not installed, and untrusted tools need it.",
     "userns_denied": "Unprivileged user namespaces are disabled, and bubblewrap needs them to confine untrusted tools.",
+    "root_node": "This node runs as root, and bubblewrap would map root to root inside the sandbox. Run the node as an unprivileged user.",
     "sandbox_exec_missing": "/usr/bin/sandbox-exec is missing, and untrusted tools need it on macOS.",
     "app_sandboxed": "The App Sandboxed build cannot confine child processes, so it cannot host untrusted tools. Use the direct-download build.",
     "platform_unsupported": "No confinement backend exists for {platform}.",

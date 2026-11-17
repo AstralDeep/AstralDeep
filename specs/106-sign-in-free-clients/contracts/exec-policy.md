@@ -139,7 +139,7 @@ The renderer takes the policy and, when `hosts` is not empty, the host path of t
 | `landlock` | `abi` 6, `exec_read`, `device_files`, `workspace`, `workspace_rights`, `tcp_connect`, `tcp_bind`, `scopes` |
 | `workspace_noexec` | Always `true`. The workspace is mounted `noexec`, so `execve` and executable mappings of its files fail, including `ld.so <file>` |
 | `egress` | `null`, or `{"listen": "127.0.0.1:3128", "socket": "/run/astral/egress.sock"}` |
-| `seccomp` | `deny_syscalls`, `deny_fork`, `fork_syscalls`, `inet_stream_sockets`, `deny_socket_types`, `deny_socket_domains`, `allow_socketpair` |
+| `seccomp` | `deny_syscalls`, `deny_fork`, `fork_syscalls`, `socket_allow`, `allow_socketpair` |
 | `rlimits` | `RLIMIT_AS`, `RLIMIT_NOFILE`, `RLIMIT_FSIZE`, `RLIMIT_CORE` |
 | `watchdog` | `wall_ms` and `processes`, enforced by the monitoring parent |
 
@@ -154,7 +154,7 @@ The `bwrap` arguments are, in this order:
 
 Landlock grants `exec_read` (the base roots then the read roots) read and execute, the four `device_files` (`/dev/null`, `/dev/zero`, `/dev/urandom`, `/dev/random`) read and write, and the workspace every right except execute and `MAKE_SOCK`. It handles TCP bind and connect with no bind grant, and allows connect only to port 3128 when `hosts` is not empty. It sets both scopes at ABI 6. The ABI never drops below 6.
 
-Seccomp denies `deny_syscalls`, which are the SysV IPC calls, the POSIX message queue calls, `setsid` and `setpgid`. It allows AF_INET and AF_INET6 sockets only when `inet_stream_sockets` is true, and then only `SOCK_STREAM`. Datagram and raw sockets stay denied. `deny_socket_domains` is `["AF_UNIX"]`, so `socket(AF_UNIX)` is denied. `allow_socketpair` is `true`, so `socketpair` still works. The egress forwarder runs outside the child's filter, and the child reaches it over TCP port 3128. When `deny_fork` is true (`processes` is 1), `fork_syscalls` are denied and `clone` is denied unless it creates a thread.
+Seccomp denies `deny_syscalls`, which are the SysV IPC calls, the POSIX message queue calls, the three io_uring calls (`io_uring_setup`, `io_uring_enter` and `io_uring_register`, because io_uring opens sockets without the `socket` syscall), `setsid` and `setpgid`. The `socket` syscall is allowlisted. `socket_allow` lists the only `domain` and `type` pairs it may use, which are AF_INET and AF_INET6 with SOCK_STREAM when `hosts` is not empty and no pair at all when `hosts` is empty. The type is compared after the SOCK_NONBLOCK and SOCK_CLOEXEC flags are masked off. Every other family and type fails with EPERM, so datagram and raw sockets, AF_UNIX, AF_NETLINK, AF_VSOCK and the rest stay denied. `allow_socketpair` is `true`, so `socketpair` still works. The egress forwarder runs outside the child's filter, and the child reaches it over TCP port 3128. When `deny_fork` is true (`processes` is 1), `fork_syscalls` are denied and `clone` is denied unless it creates a thread.
 
 `RLIMIT_AS`, `RLIMIT_NOFILE` and `RLIMIT_FSIZE` come from `memory_bytes`, `open_files` and `file_bytes`. `RLIMIT_CORE` is `core_limit_bytes` (0) as a hard limit, the same value the macOS launcher sets (section 4), because a core file would retain the child's memory. The `watchdog` holds the wall clock and, for `processes` above 1, the process count the parent enforces over the child tree.
 
@@ -169,8 +169,11 @@ The selector takes a validated policy, platform facts and the node data director
 | `landlock_abi` | The kernel's Landlock ABI, 0 when absent |
 | `bwrap` | bubblewrap is installed |
 | `userns` | Unprivileged user namespaces work |
+| `euid` | The node's effective user id, a non-negative integer |
 | `sandbox_exec` | `/usr/bin/sandbox-exec` exists |
 | `app_sandboxed` | The process runs in an App Sandbox container |
+
+A node running as root is refused because bubblewrap maps user 0 to user 0, so the tool would own root files under the granted base roots. The `euid` check applies to the Linux backend only.
 
 A bad facts object or data directory is a caller error, and the caller refuses to run the tool. The result is `{"ok": true, "backend": "seatbelt"}`, `{"ok": true, "backend": "linux"}` or a refusal. A policy that fails validation for the platform raises its policy error instead (for example a case pair in `reads` on `darwin`), and the selection vectors write that as `{"policy_error": "<code>"}`. A refusal is `{"ok": false, "code", "message"}` with `reason` and its extra keys when the code is `exec.backend_unavailable`. The first row that matches wins.
 
@@ -181,11 +184,12 @@ A bad facts object or data directory is a caller error, and the caller refuses t
 | 3 | Linux and `landlock_abi` below 6 | `exec.backend_unavailable`, reason `landlock_abi`, with `observed` and `required` |
 | 4 | Linux and no bubblewrap | `exec.backend_unavailable`, reason `bwrap_missing` |
 | 5 | Linux and no user namespaces | `exec.backend_unavailable`, reason `userns_denied` |
-| 6 | Linux | `linux` |
-| 7 | macOS and no `sandbox-exec` | `exec.backend_unavailable`, reason `sandbox_exec_missing` |
-| 8 | macOS and App Sandboxed | `exec.backend_unavailable`, reason `app_sandboxed` |
-| 9 | macOS | `seatbelt` |
-| 10 | Any other platform | `exec.backend_unavailable`, reason `platform_unsupported`, with `platform` |
+| 6 | Linux and `euid` is 0 | `exec.backend_unavailable`, reason `root_node` |
+| 7 | Linux | `linux` |
+| 8 | macOS and no `sandbox-exec` | `exec.backend_unavailable`, reason `sandbox_exec_missing` |
+| 9 | macOS and App Sandboxed | `exec.backend_unavailable`, reason `app_sandboxed` |
+| 10 | macOS | `seatbelt` |
+| 11 | Any other platform | `exec.backend_unavailable`, reason `platform_unsupported`, with `platform` |
 
 The workspace may lie inside the data directory only under `<data>/exec/`, and `<data>/exec` itself does not qualify. Comparisons use the platform's fold from section 1, so on `darwin` a case or Unicode variant of the data directory still overlaps.
 
@@ -209,5 +213,7 @@ Every message names the missing piece in plain words. The exact texts, including
 - `profile_errors`: policies the Seatbelt renderer refuses with a policy error because of the `darwin` fold, each with the Linux plan that still renders.
 
 ## 9. Versioning
+
+This document was amended before release without a version change, because `astral.exec-policy/v1` has no consumer outside this program. The amendment replaced the socket type and domain denial lists with the `socket_allow` allowlist, denied the io_uring calls and added the `euid` fact with the `root_node` refusal.
 
 A change to a rule, a base root, a limit range or the profile text raises the format version. This document, the vectors and the reference module change together, and `generate_exec_vectors.py --check` and the reference tests pass before a change merges.

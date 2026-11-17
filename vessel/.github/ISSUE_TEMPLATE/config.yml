@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/AstralDeep/AstralVessel/security/advisories/new
+    about: Report privately. Please do not open a public issue.
+  - name: Documentation
+    url: https://astraldeep.github.io/AstralVessel/
+    about: Guides and reference.

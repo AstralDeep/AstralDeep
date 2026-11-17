@@ -4,6 +4,7 @@
       "landlock_abi",
       "bwrap_missing",
       "userns_denied",
+      "root_node",
       "sandbox_exec_missing",
       "app_sandboxed",
       "platform_unsupported"
@@ -58,6 +59,7 @@
       "landlock_abi",
       "bwrap",
       "userns",
+      "euid",
       "sandbox_exec",
       "app_sandboxed"
     ],
@@ -116,6 +118,7 @@
       "exec.time_limit": "The tool ran past its time limit and was stopped.",
       "landlock_abi": "This Linux kernel offers Landlock ABI {observed} and untrusted tools need ABI {required} or newer.",
       "platform_unsupported": "No confinement backend exists for {platform}.",
+      "root_node": "This node runs as root, and bubblewrap would map root to root inside the sandbox. Run the node as an unprivileged user.",
       "sandbox_exec_missing": "/usr/bin/sandbox-exec is missing, and untrusted tools need it on macOS.",
       "userns_denied": "Unprivileged user namespaces are disabled, and bubblewrap needs them to confine untrusted tools."
     },
@@ -142,6 +145,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": true,
+        "euid": 1000,
         "landlock_abi": 6,
         "sandbox_exec": false,
         "userns": true
@@ -153,6 +157,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": true,
+        "euid": 1000,
         "landlock_abi": 6,
         "platform": null,
         "sandbox_exec": false,
@@ -165,6 +170,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": false,
+        "euid": 1000,
         "landlock_abi": 0,
         "platform": "darwin",
         "sandbox_exec": true,
@@ -177,6 +183,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": true,
+        "euid": 1000,
         "kernel": "7.0",
         "landlock_abi": 6,
         "platform": "linux",
@@ -197,6 +204,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": true,
+        "euid": 1000,
         "landlock_abi": null,
         "platform": "linux",
         "sandbox_exec": false,
@@ -209,6 +217,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": "error",
+        "euid": 1000,
         "landlock_abi": 6,
         "platform": "linux",
         "sandbox_exec": false,
@@ -221,6 +230,33 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": true,
+        "euid": null,
+        "landlock_abi": 6,
+        "platform": "linux",
+        "sandbox_exec": false,
+        "userns": true
+      },
+      "name": "facts_euid_null"
+    },
+    {
+      "data_dir": "/var/lib/astral/node",
+      "facts": {
+        "app_sandboxed": false,
+        "bwrap": true,
+        "euid": -1,
+        "landlock_abi": 6,
+        "platform": "linux",
+        "sandbox_exec": false,
+        "userns": true
+      },
+      "name": "facts_euid_negative"
+    },
+    {
+      "data_dir": "/var/lib/astral/node",
+      "facts": {
+        "app_sandboxed": false,
+        "bwrap": true,
+        "euid": 1000,
         "landlock_abi": true,
         "platform": "linux",
         "sandbox_exec": false,
@@ -233,6 +269,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": true,
+        "euid": 1000,
         "landlock_abi": -1,
         "platform": "linux",
         "sandbox_exec": false,
@@ -245,6 +282,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": true,
+        "euid": 1000,
         "landlock_abi": 6,
         "mode": "audit",
         "platform": "linux",
@@ -263,6 +301,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": true,
+        "euid": 1000,
         "landlock_abi": 6,
         "platform": "linux",
         "sandbox_exec": false,
@@ -275,6 +314,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": true,
+        "euid": 1000,
         "landlock_abi": 6,
         "platform": "linux",
         "sandbox_exec": false,
@@ -373,14 +413,10 @@
         "seccomp": {
           "allow_socketpair": true,
           "deny_fork": true,
-          "deny_socket_domains": [
-            "AF_UNIX"
-          ],
-          "deny_socket_types": [
-            "SOCK_DGRAM",
-            "SOCK_RAW"
-          ],
           "deny_syscalls": [
+            "io_uring_enter",
+            "io_uring_register",
+            "io_uring_setup",
             "msgctl",
             "msgget",
             "msgrcv",
@@ -407,7 +443,7 @@
             "fork",
             "vfork"
           ],
-          "inet_stream_sockets": false
+          "socket_allow": []
         },
         "watchdog": {
           "processes": 1,
@@ -524,14 +560,10 @@
         "seccomp": {
           "allow_socketpair": true,
           "deny_fork": true,
-          "deny_socket_domains": [
-            "AF_UNIX"
-          ],
-          "deny_socket_types": [
-            "SOCK_DGRAM",
-            "SOCK_RAW"
-          ],
           "deny_syscalls": [
+            "io_uring_enter",
+            "io_uring_register",
+            "io_uring_setup",
             "msgctl",
             "msgget",
             "msgrcv",
@@ -558,7 +590,7 @@
             "fork",
             "vfork"
           ],
-          "inet_stream_sockets": false
+          "socket_allow": []
         },
         "watchdog": {
           "processes": 1,
@@ -667,14 +699,10 @@
         "seccomp": {
           "allow_socketpair": true,
           "deny_fork": true,
-          "deny_socket_domains": [
-            "AF_UNIX"
-          ],
-          "deny_socket_types": [
-            "SOCK_DGRAM",
-            "SOCK_RAW"
-          ],
           "deny_syscalls": [
+            "io_uring_enter",
+            "io_uring_register",
+            "io_uring_setup",
             "msgctl",
             "msgget",
             "msgrcv",
@@ -701,7 +729,7 @@
             "fork",
             "vfork"
           ],
-          "inet_stream_sockets": false
+          "socket_allow": []
         },
         "watchdog": {
           "processes": 1,
@@ -815,14 +843,10 @@
         "seccomp": {
           "allow_socketpair": true,
           "deny_fork": true,
-          "deny_socket_domains": [
-            "AF_UNIX"
-          ],
-          "deny_socket_types": [
-            "SOCK_DGRAM",
-            "SOCK_RAW"
-          ],
           "deny_syscalls": [
+            "io_uring_enter",
+            "io_uring_register",
+            "io_uring_setup",
             "msgctl",
             "msgget",
             "msgrcv",
@@ -849,7 +873,7 @@
             "fork",
             "vfork"
           ],
-          "inet_stream_sockets": false
+          "socket_allow": []
         },
         "watchdog": {
           "processes": 1,
@@ -960,14 +984,10 @@
         "seccomp": {
           "allow_socketpair": true,
           "deny_fork": true,
-          "deny_socket_domains": [
-            "AF_UNIX"
-          ],
-          "deny_socket_types": [
-            "SOCK_DGRAM",
-            "SOCK_RAW"
-          ],
           "deny_syscalls": [
+            "io_uring_enter",
+            "io_uring_register",
+            "io_uring_setup",
             "msgctl",
             "msgget",
             "msgrcv",
@@ -994,7 +1014,7 @@
             "fork",
             "vfork"
           ],
-          "inet_stream_sockets": false
+          "socket_allow": []
         },
         "watchdog": {
           "processes": 1,
@@ -1101,14 +1121,10 @@
         "seccomp": {
           "allow_socketpair": true,
           "deny_fork": false,
-          "deny_socket_domains": [
-            "AF_UNIX"
-          ],
-          "deny_socket_types": [
-            "SOCK_DGRAM",
-            "SOCK_RAW"
-          ],
           "deny_syscalls": [
+            "io_uring_enter",
+            "io_uring_register",
+            "io_uring_setup",
             "msgctl",
             "msgget",
             "msgrcv",
@@ -1135,7 +1151,7 @@
             "fork",
             "vfork"
           ],
-          "inet_stream_sockets": false
+          "socket_allow": []
         },
         "watchdog": {
           "processes": 2,
@@ -1250,14 +1266,10 @@
         "seccomp": {
           "allow_socketpair": true,
           "deny_fork": true,
-          "deny_socket_domains": [
-            "AF_UNIX"
-          ],
-          "deny_socket_types": [
-            "SOCK_DGRAM",
-            "SOCK_RAW"
-          ],
           "deny_syscalls": [
+            "io_uring_enter",
+            "io_uring_register",
+            "io_uring_setup",
             "msgctl",
             "msgget",
             "msgrcv",
@@ -1284,7 +1296,16 @@
             "fork",
             "vfork"
           ],
-          "inet_stream_sockets": true
+          "socket_allow": [
+            {
+              "domain": "AF_INET",
+              "type": "SOCK_STREAM"
+            },
+            {
+              "domain": "AF_INET6",
+              "type": "SOCK_STREAM"
+            }
+          ]
         },
         "watchdog": {
           "processes": 1,
@@ -1412,14 +1433,10 @@
         "seccomp": {
           "allow_socketpair": true,
           "deny_fork": false,
-          "deny_socket_domains": [
-            "AF_UNIX"
-          ],
-          "deny_socket_types": [
-            "SOCK_DGRAM",
-            "SOCK_RAW"
-          ],
           "deny_syscalls": [
+            "io_uring_enter",
+            "io_uring_register",
+            "io_uring_setup",
             "msgctl",
             "msgget",
             "msgrcv",
@@ -1446,7 +1463,16 @@
             "fork",
             "vfork"
           ],
-          "inet_stream_sockets": true
+          "socket_allow": [
+            {
+              "domain": "AF_INET",
+              "type": "SOCK_STREAM"
+            },
+            {
+              "domain": "AF_INET6",
+              "type": "SOCK_STREAM"
+            }
+          ]
         },
         "watchdog": {
           "processes": 8,
@@ -1577,14 +1603,10 @@
         "seccomp": {
           "allow_socketpair": true,
           "deny_fork": true,
-          "deny_socket_domains": [
-            "AF_UNIX"
-          ],
-          "deny_socket_types": [
-            "SOCK_DGRAM",
-            "SOCK_RAW"
-          ],
           "deny_syscalls": [
+            "io_uring_enter",
+            "io_uring_register",
+            "io_uring_setup",
             "msgctl",
             "msgget",
             "msgrcv",
@@ -1611,7 +1633,7 @@
             "fork",
             "vfork"
           ],
-          "inet_stream_sockets": false
+          "socket_allow": []
         },
         "watchdog": {
           "processes": 1,
@@ -1647,6 +1669,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": false,
+        "euid": 1000,
         "landlock_abi": 0,
         "platform": "darwin",
         "sandbox_exec": true,
@@ -1678,6 +1701,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": true,
+        "euid": 1000,
         "landlock_abi": 6,
         "platform": "linux",
         "sandbox_exec": false,
@@ -1709,6 +1733,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": true,
+        "euid": 1000,
         "landlock_abi": 7,
         "platform": "linux",
         "sandbox_exec": false,
@@ -1740,6 +1765,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": true,
+        "euid": 1000,
         "landlock_abi": 5,
         "platform": "linux",
         "sandbox_exec": false,
@@ -1775,6 +1801,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": true,
+        "euid": 1000,
         "landlock_abi": 0,
         "platform": "linux",
         "sandbox_exec": false,
@@ -1810,6 +1837,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": false,
+        "euid": 1000,
         "landlock_abi": 6,
         "platform": "linux",
         "sandbox_exec": false,
@@ -1843,6 +1871,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": true,
+        "euid": 1000,
         "landlock_abi": 6,
         "platform": "linux",
         "sandbox_exec": false,
@@ -1875,7 +1904,108 @@
       "data_dir": "/var/lib/astral/node",
       "facts": {
         "app_sandboxed": false,
+        "bwrap": true,
+        "euid": 0,
+        "landlock_abi": 6,
+        "platform": "linux",
+        "sandbox_exec": false,
+        "userns": true
+      },
+      "name": "linux_root_node",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      },
+      "result": {
+        "code": "exec.backend_unavailable",
+        "message": "This node runs as root, and bubblewrap would map root to root inside the sandbox. Run the node as an unprivileged user.",
+        "ok": false,
+        "reason": "root_node"
+      }
+    },
+    {
+      "data_dir": "/var/lib/astral/node",
+      "facts": {
+        "app_sandboxed": false,
+        "bwrap": true,
+        "euid": 0,
+        "landlock_abi": 6,
+        "platform": "linux",
+        "sandbox_exec": false,
+        "userns": false
+      },
+      "name": "linux_userns_beats_root",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      },
+      "result": {
+        "code": "exec.backend_unavailable",
+        "message": "Unprivileged user namespaces are disabled, and bubblewrap needs them to confine untrusted tools.",
+        "ok": false,
+        "reason": "userns_denied"
+      }
+    },
+    {
+      "data_dir": "/Users/test/Library/Application Support/Astral/node",
+      "facts": {
+        "app_sandboxed": false,
         "bwrap": false,
+        "euid": 0,
+        "landlock_abi": 0,
+        "platform": "darwin",
+        "sandbox_exec": true,
+        "userns": false
+      },
+      "name": "darwin_root_ok",
+      "policy": {
+        "hosts": [],
+        "limits": {
+          "file_bytes": 104857600,
+          "memory_bytes": 536870912,
+          "open_files": 256,
+          "processes": 1
+        },
+        "reads": [],
+        "time": {
+          "wall_ms": 30000
+        },
+        "v": 1,
+        "workspace": "/private/tmp/astral/ws"
+      },
+      "result": {
+        "backend": "seatbelt",
+        "ok": true
+      }
+    },
+    {
+      "data_dir": "/var/lib/astral/node",
+      "facts": {
+        "app_sandboxed": false,
+        "bwrap": false,
+        "euid": 1000,
         "landlock_abi": 5,
         "platform": "linux",
         "sandbox_exec": false,
@@ -1911,6 +2041,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": false,
+        "euid": 1000,
         "landlock_abi": 6,
         "platform": "linux",
         "sandbox_exec": false,
@@ -1944,6 +2075,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": false,
+        "euid": 1000,
         "landlock_abi": 0,
         "platform": "darwin",
         "sandbox_exec": false,
@@ -1977,6 +2109,7 @@
       "facts": {
         "app_sandboxed": true,
         "bwrap": false,
+        "euid": 1000,
         "landlock_abi": 0,
         "platform": "darwin",
         "sandbox_exec": true,
@@ -2010,6 +2143,7 @@
       "facts": {
         "app_sandboxed": true,
         "bwrap": false,
+        "euid": 1000,
         "landlock_abi": 0,
         "platform": "darwin",
         "sandbox_exec": false,
@@ -2043,6 +2177,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": false,
+        "euid": 1000,
         "landlock_abi": 0,
         "platform": "win32",
         "sandbox_exec": false,
@@ -2077,6 +2212,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": false,
+        "euid": 1000,
         "landlock_abi": 0,
         "mode": "shadow",
         "platform": "darwin",
@@ -2110,6 +2246,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": true,
+        "euid": 1000,
         "landlock_abi": 6,
         "mode": "shadow",
         "platform": "linux",
@@ -2143,6 +2280,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": true,
+        "euid": 1000,
         "landlock_abi": 6,
         "platform": "linux",
         "sandbox_exec": false,
@@ -2177,6 +2315,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": true,
+        "euid": 1000,
         "landlock_abi": 6,
         "platform": "linux",
         "sandbox_exec": false,
@@ -2211,6 +2350,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": true,
+        "euid": 1000,
         "landlock_abi": 6,
         "platform": "linux",
         "sandbox_exec": false,
@@ -2243,6 +2383,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": false,
+        "euid": 1000,
         "landlock_abi": 0,
         "platform": "darwin",
         "sandbox_exec": true,
@@ -2275,6 +2416,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": true,
+        "euid": 1000,
         "landlock_abi": 6,
         "platform": "linux",
         "sandbox_exec": false,
@@ -2307,6 +2449,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": false,
+        "euid": 1000,
         "landlock_abi": 0,
         "platform": "darwin",
         "sandbox_exec": true,
@@ -2339,6 +2482,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": false,
+        "euid": 1000,
         "landlock_abi": 0,
         "platform": "darwin",
         "sandbox_exec": true,
@@ -2371,6 +2515,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": false,
+        "euid": 1000,
         "landlock_abi": 0,
         "platform": "darwin",
         "sandbox_exec": true,
@@ -2402,6 +2547,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": false,
+        "euid": 1000,
         "landlock_abi": 0,
         "platform": "darwin",
         "sandbox_exec": true,
@@ -2434,6 +2580,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": false,
+        "euid": 1000,
         "landlock_abi": 0,
         "platform": "darwin",
         "sandbox_exec": true,
@@ -2466,6 +2613,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": true,
+        "euid": 1000,
         "landlock_abi": 6,
         "platform": "linux",
         "sandbox_exec": false,
@@ -2497,6 +2645,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": true,
+        "euid": 1000,
         "landlock_abi": 6,
         "platform": "linux",
         "sandbox_exec": false,
@@ -2531,6 +2680,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": false,
+        "euid": 1000,
         "landlock_abi": 0,
         "platform": "darwin",
         "sandbox_exec": true,
@@ -2565,6 +2715,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": true,
+        "euid": 1000,
         "landlock_abi": 6,
         "platform": "linux",
         "sandbox_exec": false,
@@ -2598,6 +2749,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": false,
+        "euid": 1000,
         "landlock_abi": 0,
         "platform": "darwin",
         "sandbox_exec": true,
@@ -2629,6 +2781,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": false,
+        "euid": 1000,
         "landlock_abi": 0,
         "platform": "darwin",
         "sandbox_exec": true,
@@ -2661,6 +2814,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": false,
+        "euid": 1000,
         "landlock_abi": 0,
         "platform": "darwin",
         "sandbox_exec": true,
@@ -2695,6 +2849,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": true,
+        "euid": 1000,
         "landlock_abi": 6,
         "platform": "linux",
         "sandbox_exec": false,
@@ -2728,6 +2883,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": false,
+        "euid": 1000,
         "landlock_abi": 0,
         "platform": "darwin",
         "sandbox_exec": true,
@@ -2759,6 +2915,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": false,
+        "euid": 1000,
         "landlock_abi": 0,
         "platform": "darwin",
         "sandbox_exec": true,
@@ -2792,6 +2949,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": true,
+        "euid": 1000,
         "landlock_abi": 6,
         "platform": "linux",
         "sandbox_exec": false,
@@ -2826,6 +2984,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": false,
+        "euid": 1000,
         "landlock_abi": 0,
         "platform": "darwin",
         "sandbox_exec": true,
@@ -2860,6 +3019,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": true,
+        "euid": 1000,
         "landlock_abi": 6,
         "platform": "linux",
         "sandbox_exec": false,
@@ -2893,6 +3053,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": false,
+        "euid": 1000,
         "landlock_abi": 0,
         "platform": "darwin",
         "sandbox_exec": true,
@@ -2927,6 +3088,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": true,
+        "euid": 1000,
         "landlock_abi": 6,
         "platform": "linux",
         "sandbox_exec": false,
@@ -2960,6 +3122,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": false,
+        "euid": 1000,
         "landlock_abi": 0,
         "platform": "darwin",
         "sandbox_exec": true,
@@ -2994,6 +3157,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": true,
+        "euid": 1000,
         "landlock_abi": 6,
         "platform": "linux",
         "sandbox_exec": false,
@@ -3027,6 +3191,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": false,
+        "euid": 1000,
         "landlock_abi": 0,
         "platform": "darwin",
         "sandbox_exec": true,
@@ -3059,6 +3224,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": true,
+        "euid": 1000,
         "landlock_abi": 6,
         "platform": "linux",
         "sandbox_exec": false,
@@ -3090,6 +3256,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": false,
+        "euid": 1000,
         "landlock_abi": 0,
         "platform": "darwin",
         "sandbox_exec": true,
@@ -3124,6 +3291,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": true,
+        "euid": 1000,
         "landlock_abi": 6,
         "platform": "linux",
         "sandbox_exec": false,
@@ -3157,6 +3325,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": false,
+        "euid": 1000,
         "landlock_abi": 0,
         "platform": "darwin",
         "sandbox_exec": true,
@@ -3189,6 +3358,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": true,
+        "euid": 1000,
         "landlock_abi": 6,
         "mode": "shadow",
         "platform": "linux",
@@ -3224,6 +3394,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": false,
+        "euid": 1000,
         "landlock_abi": 0,
         "platform": "win32",
         "sandbox_exec": false,
@@ -3258,6 +3429,7 @@
       "facts": {
         "app_sandboxed": false,
         "bwrap": true,
+        "euid": 1000,
         "landlock_abi": 0,
         "mode": "shadow",
         "platform": "linux",

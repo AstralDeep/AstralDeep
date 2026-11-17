@@ -60,9 +60,11 @@ def good_facts(**overrides: Any) -> Facts:
         landlock_abi=6,
         bwrap=True,
         userns=True,
+        euid=1000,
         sandbox_exec=False,
         app_sandboxed=False,
     )
     facts.update(overrides)
     facts.bwrap_path = "/usr/bin/bwrap"
+    facts.proc_children = True
     return facts

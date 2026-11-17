@@ -1,4 +1,4 @@
-"""Watches the processes of one confined call on macOS through libproc and KERN_PROCARGS2: it counts them, sums their memory footprint and kills them all at the end.
+"""Watches the processes of one confined call and kills them at the end: on macOS through libproc and KERN_PROCARGS2, and on Linux by walking the sandbox process tree in /proc.
 launch.py samples it between waits and ends it at exit, and tests drive the same logic through an injected process table.
 """
 
@@ -130,6 +130,133 @@ class Darwin:
         except OSError:
             return None
         return procargs_strings(ctypes.string_at(self._args, size))
+
+
+@dataclass(frozen=True)
+class LProc:
+    ppid: int
+    start: int
+    exited: bool
+
+
+class LinuxSystem:
+    def __init__(self, root: str = "/proc") -> None:
+        self._root = root
+
+    def stat(self, pid: int) -> LProc | None:
+        try:
+            with open(f"{self._root}/{pid}/stat", "rb") as handle:
+                after = handle.read().rpartition(b")")[2].split()
+            return LProc(int(after[1]), int(after[19]), after[0] in (b"Z", b"X", b"x"))
+        except (OSError, IndexError, ValueError):
+            return None
+
+    def children(self, pid: int) -> list[int]:
+        found: list[int] = []
+        try:
+            tasks = os.listdir(f"{self._root}/{pid}/task")
+        except OSError:
+            return found
+        for task in tasks:
+            path = f"{self._root}/{pid}/task/{task}"
+            try:
+                with open(f"{path}/children", "rb") as handle:
+                    found += [int(part) for part in handle.read().split()]
+            except FileNotFoundError:
+                if os.path.isdir(path):
+                    raise OSError("the kernel has no /proc children files") from None
+            except (OSError, ValueError):
+                pass
+        return found
+
+
+class LinuxWatch:
+    def __init__(
+        self,
+        root: int,
+        marker: bytes | None = None,
+        system: LinuxSystem | None = None,
+        kill: Callable[[int, int], None] = os.kill,
+        killpg: Callable[[int, int], None] = os.killpg,
+        hosted: bool = False,
+    ) -> None:
+        self._system = system or LinuxSystem()
+        self._root = root
+        self._kill = kill
+        self._killpg = killpg
+        self._hosted = hosted
+        first = self._system.stat(root)
+        self.started = first is not None
+        self._root_start = first.start if first is not None else None
+
+    def _owns_root(self) -> bool:
+        current = self._system.stat(self._root)
+        return current is not None and current.start == self._root_start
+
+    def _tool_tree(self) -> dict[int, LProc]:
+        if not self._owns_root():
+            return {}
+        system = self._system
+        tool_layer = [
+            tool
+            for reaper in system.children(self._root)
+            for tool in system.children(reaper)
+        ]
+        tree: dict[int, LProc] = {}
+        kids: dict[int, list[int]] = {}
+        stack = list(tool_layer)
+        while stack:
+            pid = stack.pop()
+            if pid in tree:
+                continue
+            proc = system.stat(pid)
+            if proc is None:
+                continue
+            tree[pid] = proc
+            kids[pid] = system.children(pid)
+            stack += kids[pid]
+        if self._hosted:
+            direct = [
+                child
+                for tool in tool_layer
+                for child in kids.get(tool, [])
+                if child in tree
+            ]
+            if direct:
+                del tree[min(direct, key=lambda pid: (tree[pid].start, pid))]
+        return tree
+
+    def sample(self) -> tuple[int, int]:
+        # RLIMIT_AS bounds a Linux tool's memory, so the watchdog reports 0 for it.
+        count = sum(1 for proc in self._tool_tree().values() if not proc.exited)
+        return count, 0
+
+    def _live(self) -> set[int]:
+        return {pid for pid, proc in self._tool_tree().items() if not proc.exited}
+
+    def _signal_root(self) -> None:
+        if not self._owns_root():
+            return
+        try:
+            self._killpg(self._root, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+    def end(self) -> set[int]:
+        self._signal_root()
+        live = self._live()
+        for _ in range(SWEEP_ROUNDS):
+            if not live:
+                break
+            for pid in live:
+                try:
+                    self._kill(pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+            time.sleep(SWEEP_PAUSE_SECONDS)
+            self._signal_root()
+            live = self._live()
+        return live
 
 
 class Watch:

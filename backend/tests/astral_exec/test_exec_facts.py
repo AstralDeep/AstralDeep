@@ -5,13 +5,14 @@ Each probe result is fed to select, so a fact that probes wrongly changes the re
 from __future__ import annotations
 
 import os
+import sys
 import types
 
 import pytest
 from astral_exec import Backend, Refusal, select
 from astral_exec.constants import FACT_KEYS
 from astral_exec.facts import Hooks, probe, resolve_bwrap
-from exec_vectors import DATA_DIR, loaded, minimal_policy
+from exec_vectors import DATA_DIR, good_facts, loaded, minimal_policy
 
 
 def _stat(mode=0o100755, uid=0):
@@ -26,12 +27,15 @@ def _hooks(**overrides):
     base = {
         "platform": "linux",
         "syscall": lambda number, a, b, c: 6,
-        "executable": lambda path: path == "/usr/bin/true",
+        "executable": lambda path: path == sys.executable,
         "stat": lambda path: _stat() if path == "/usr/bin/bwrap" else _missing(path),
         "sandbox_check": lambda pid: 0,
         "read_text": lambda path: "1",
         "run": lambda argv: 0,
         "env": {},
+        "euid": lambda: 1000,
+        "exists": lambda path: True,
+        "tid": lambda: 4242,
     }
     base.update(overrides)
     return Hooks(**base)
@@ -50,9 +54,51 @@ def test_probe_returns_exactly_the_documented_keys_without_mode():
         "landlock_abi": 6,
         "bwrap": True,
         "userns": True,
+        "euid": 1000,
         "sandbox_exec": False,
         "app_sandboxed": False,
     }
+
+
+@pytest.mark.parametrize("euid", [lambda: 0, lambda: 1 / 0, lambda: -1, lambda: True])
+def test_a_root_or_unreadable_effective_uid_refuses_the_linux_backend(euid):
+    outcome = _select(_hooks(euid=euid))
+    assert isinstance(outcome, Refusal)
+    assert outcome.code == "exec.backend_unavailable" and outcome.reason == "root_node"
+    assert "unprivileged" in outcome.message
+
+
+def test_the_probe_checks_the_children_file_of_its_own_thread():
+    seen = []
+
+    def exists(path):
+        seen.append(path)
+        return path == "/proc/self/task/4242/children"
+
+    assert probe(_hooks(exists=exists)).proc_children is True
+    assert seen == ["/proc/self/task/4242/children"]
+    assert probe(_hooks(exists=lambda path: False)).proc_children is False
+    assert probe(_hooks(exists=lambda path: 1 / 0)).proc_children is False
+
+
+def test_a_kernel_without_proc_children_refuses_the_linux_backend():
+    outcome = _select(_hooks(exists=lambda path: False))
+    assert isinstance(outcome, Refusal)
+    assert outcome.code == "exec.backend_unavailable"
+    assert outcome.reason == "proc_children_missing"
+    assert "CONFIG_PROC_CHILDREN" in outcome.message
+
+
+def test_facts_that_never_probed_proc_children_fail_closed():
+    facts = good_facts()
+    facts.proc_children = False
+    outcome = select(loaded(minimal_policy()), facts, DATA_DIR)
+    assert isinstance(outcome, Refusal) and outcome.reason == "proc_children_missing"
+
+
+def test_the_userns_refusal_outranks_the_root_refusal():
+    outcome = _select(_hooks(euid=lambda: 0, read_text=lambda path: "0"))
+    assert isinstance(outcome, Refusal) and outcome.reason == "userns_denied"
 
 
 def test_a_capable_linux_host_selects_the_linux_backend():
@@ -232,7 +278,17 @@ def test_the_bwrap_trial_decides_userns_and_runs_the_confinement_flags():
     assert argv[0] == "/usr/bin/bwrap"
     for flag in ("--unshare-user", "--unshare-pid", "--unshare-net", "--proc", "--dev"):
         assert flag in argv
-    assert argv[-1] in ("/usr/bin/true", "/bin/true")
+    probe_at = argv.index("--probe")
+    assert argv[probe_at - 4 : probe_at - 1] == ["-I", "-S", "-B"]
+    assert argv[probe_at - 5] == sys.executable
+    assert argv[probe_at - 1].endswith("/astral_exec/inner.py")
+    work = argv[probe_at + 1]
+    assert argv[argv.index("--bind") + 1 : argv.index("--bind") + 3] == [work, work]
+    assert argv[argv.index("--ro-bind") : argv.index("--ro-bind") + 3] == [
+        "--ro-bind",
+        "/",
+        "/",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -298,27 +354,25 @@ def test_without_a_trial_userns_is_false_whatever_the_sysctls_say():
     assert probe(_hooks(run=run, read_text=unreadable, **no_bwrap))["userns"] is False
 
 
-def test_no_true_binary_means_no_trial_and_no_userns():
+def test_no_runnable_interpreter_means_no_trial_and_no_userns():
     def run(argv):
-        raise AssertionError("no trial without a true binary")
+        raise AssertionError("no trial without an interpreter")
 
     facts = probe(_hooks(run=run, executable=lambda path: False))
     assert facts["bwrap"] is True
     assert facts["userns"] is False
 
 
-def test_bin_true_is_used_when_usr_bin_true_is_absent():
+def test_the_trial_cleans_up_its_directory():
     seen = []
 
     def run(argv):
-        seen.append(argv[-1])
+        seen.append(argv[argv.index("--probe") + 1])
+        assert os.path.isdir(seen[0])
         return 0
 
-    assert (
-        probe(_hooks(run=run, executable=lambda path: path == "/bin/true"))["userns"]
-        is True
-    )
-    assert seen == ["/bin/true"]
+    assert probe(_hooks(run=run))["userns"] is True
+    assert not os.path.exists(seen[0])
 
 
 def test_darwin_finds_sandbox_exec_and_ignores_linux_probes():
@@ -335,6 +389,7 @@ def test_darwin_finds_sandbox_exec_and_ignores_linux_probes():
         "landlock_abi": 0,
         "bwrap": False,
         "userns": False,
+        "euid": 1000,
         "sandbox_exec": True,
         "app_sandboxed": False,
     }

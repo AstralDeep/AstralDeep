@@ -84,6 +84,7 @@ __pycache__/
 .Python
 env/
 build/
+!vessel/docs/build/
 develop-eggs/
 dist/
 downloads/

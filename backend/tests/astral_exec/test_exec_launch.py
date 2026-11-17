@@ -51,6 +51,7 @@ def darwin_facts(**overrides):
         landlock_abi=0,
         bwrap=False,
         userns=False,
+        euid=501,
         sandbox_exec=True,
         app_sandboxed=False,
     )
@@ -1314,3 +1315,58 @@ def test_a_write_failure_removes_the_profile_file(monkeypatch, tmp_path):
     assert not os.path.exists(path)
     with pytest.raises(OSError):
         os.fstat(fd)
+
+
+def test_the_fallback_group_kill_skips_a_child_already_reaped(monkeypatch):
+    proc = spawn("pass")
+    proc.wait()
+    groups = []
+    monkeypatch.setattr(launch.os, "killpg", lambda pgid, signum: groups.append(pgid))
+    assert launch._end(proc, None, launch._log("sha256:x")) is False
+    assert groups == []
+
+
+def test_a_failed_write_after_fdopen_closes_the_descriptor_only_once(
+    monkeypatch, tmp_path
+):
+    data = str((tmp_path / "data").resolve())
+    os.makedirs(data)
+    seen = []
+    closed = []
+    real_mkstemp = tempfile.mkstemp
+    real_fdopen = os.fdopen
+    real_close = os.close
+
+    class FailingWrite:
+        def __init__(self, handle):
+            self.handle = handle
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.handle.close()
+            return False
+
+        def write(self, text):
+            raise OSError("disk full")
+
+    def recording(*args, **kwargs):
+        fd, path = real_mkstemp(*args, **kwargs)
+        seen.append((fd, path))
+        return fd, path
+
+    def recording_close(fd):
+        closed.append(fd)
+        real_close(fd)
+
+    monkeypatch.setattr(launch.tempfile, "mkstemp", recording)
+    monkeypatch.setattr(
+        launch.os, "fdopen", lambda *a, **k: FailingWrite(real_fdopen(*a, **k))
+    )
+    monkeypatch.setattr(launch.os, "close", recording_close)
+    with pytest.raises(OSError, match="disk full"):
+        launch._write_profile("(version 1)\n", data)
+    ((fd, path),) = seen
+    assert not os.path.exists(path)
+    assert fd not in closed

@@ -1,0 +1,39 @@
+name: Bug report
+description: Something does not work as documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: "Found a security problem? Do not file it here. Use **Security > Report a vulnerability** instead."
+  - type: textarea
+    id: happened
+    attributes:
+      label: What happened
+      description: Include the exact error text or log lines, with secrets removed.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The smallest deployment.toml, agent folder or request that shows the problem.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `pip show astralvessel`, or the commit.
+    validations:
+      required: true
+  - type: input
+    id: host
+    attributes:
+      label: Host
+      description: OS, kernel version (`uname -r`) and Docker version.

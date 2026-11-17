@@ -7,7 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from .constants import MESSAGES
+from .constants import HOST_MESSAGES, MESSAGES
 
 
 class PolicyError(Exception):
@@ -57,7 +57,7 @@ class ExecRefused(Exception):
 
 
 def refuse(code: str, reason: str | None = None, **extra: Any) -> Refusal:
-    template = MESSAGES[reason or code]
+    template = {**MESSAGES, **HOST_MESSAGES}[reason or code]
     return Refusal(
         code=code,
         message=template.format(**extra) if extra else template,
