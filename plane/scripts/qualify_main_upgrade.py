@@ -258,7 +258,7 @@ def qualify(
                     "contract": "astralplane.main-upgrade/v1",
                     "status": "passed",
                     "candidate_sha": git(root, "rev-parse", "HEAD").decode().strip(),
-                    "candidate_source_tree": git(root, "rev-parse", "HEAD:src").decode().strip(),
+                    "candidate_source_tree": git(root, "rev-parse", "HEAD:./src").decode().strip(),
                     "baseline_sha": baseline_sha,
                     "baseline_source_tree": source_tree,
                     "baseline_revision": baseline["revision"],

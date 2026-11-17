@@ -71,7 +71,8 @@ def test_plane_lane_is_smoke_when_the_plane_tree_is_unchanged(repo, tmp_path):
 
 def test_a_base_from_before_the_move_compares_its_gitlink_tree(repo, tmp_path):
     same = commit(repo, "a", "candidate with the same Plane tree")
-    pinned = git(repo, "commit-tree", f"{same}:plane", "-m", "pinned Plane commit")
+    pinned = git(repo, "-c", "user.name=CI", "-c", "user.email=ci@invalid", "commit-tree", f"{same}:plane",
+                 "-m", "pinned Plane commit")
     git(repo, "rm", "-rq", "plane")
     base = commit_gitlink(repo, pinned, "base with a gitlink")
     git(repo, "update-index", "--force-remove", LEGACY_PLANE)
