@@ -43,6 +43,7 @@ DISABLED_POPPLER_BACKENDS = (
 )
 DISABLED_FREETYPE_LIBRARIES = ("ZLIB", "BZIP2", "PNG", "HARFBUZZ", "BROTLI", "HVF")
 DISABLED_LIBMAGIC_LIBRARIES = ("zlib", "bzlib", "xzlib", "zstdlib", "lzlib", "libseccomp")
+# The macOS 27 SDK declares pipe2, which a macOS 14 machine does not have.
 LIBMAGIC_FUNCTION_OVERRIDES = ["ac_cv_func_pipe2=no"]
 POPPLER_TOOLS = ("pdfinfo", "pdftoppm")
 
