@@ -493,8 +493,11 @@ def test_the_build_receipt_names_the_pinned_images():
 
 @needs_pack
 def test_patchelf_reports_only_pack_relative_search_paths_for_the_built_pack(pack):
-    tag = json.loads((PACK_DIR / bl.RECEIPT_NAME).read_text())["builder_image_id"]
-    if not docker_image_present(tag):
+    receipt = json.loads((PACK_DIR / bl.RECEIPT_NAME).read_text())
+    prefix = os.environ.get(bl.NAME_PREFIX_ENV, "node-pack-")
+    candidates = [receipt["builder_image_id"], f"{prefix}builder:{receipt['platform'].removeprefix('linux-')}"]
+    tag = next((candidate for candidate in candidates if docker_image_present(candidate)), None)
+    if tag is None:
         pytest.skip("the builder image that has patchelf is not present locally")
     script = (
         "cd /pack && find . -type f -print0 | while IFS= read -r -d '' f; do "
