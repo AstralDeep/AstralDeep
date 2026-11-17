@@ -239,6 +239,8 @@ Progress, 2026-11-17. Each row keeps five states apart. Specified means the row 
 
 Left for later, not done here. The dormant release workflows still read the v1 composition path (TO.R1). The 50 repository links in `site/AstralVessel/` still name the archived repository and need a docs re-export at the next Vessel release. The site keeps AstralPlane in its bounty list on purpose.
 
+Decision T6.11, 2026-11-17. Mesh sharing and snapshot links stay separate features. On the personal profile snapshot links are off: `FF_ARTIFACT_SHARING` reads false whatever the environment says, `/share/{token}` answers 404, the `/api/share` routes refuse through their web-session dependency, and chrome reports `share_enabled` false. The launcher forces the variable off at boot and logs one warning when it was set, which also covers the Projection web shell that reads the environment. Server and institution profiles are unchanged until phase 7. Stored `share_grant` rows keep their bytes and node status reports the rows of retired owner bindings as `share.legacy_links` (counted per owner up to 1000). Implemented on branch `feat/106-phase-6`, local spot checks only.
+
 ## Phase 8: product pass and final verification
 
 | ID | Repo | Work | Lands | Closes with |

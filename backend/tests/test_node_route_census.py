@@ -11,6 +11,7 @@ from fastapi.routing import APIRoute, APIWebSocketRoute, iter_route_contexts
 from starlette.routing import Mount, Route, WebSocketRoute
 
 from orchestrator import auth, mesh_api, node_api, node_connection_api
+from shared import node_identity
 from orchestrator.voice_worker_endpoint import WORKER_CONTROL_PATH
 from tests.helpers import orchestrator_app
 from tests.helpers.voice_plane_runtime import isolated_plane_runtime
@@ -40,9 +41,12 @@ PUBLIC = {
     ("GET", "/api/node/agent-servers"): "a loopback-only answer that reads no bearer",
     ("GET", "/api/node/descriptor"): "the node descriptor",
     ("GET", "/.well-known/astral-node/jwks.json"): "the node's public keys",
-    ("GET", "/share/{token}"): "a capability link that reads no Authorization header",
     ("GET", "/.well-known/oauth-protected-resource/mcp"): "MCP resource metadata",
     ("GET,HEAD", "/a2a/.well-known/agent-card.json"): "the anonymous A2A agent card",
+}
+
+PERSONAL_REFUSED = {
+    ("GET", "/share/{token}"): "a capability link that reads no Authorization header and answers 404 on a personal node",
 }
 
 IN_BAND = {
@@ -91,7 +95,7 @@ def census(app) -> tuple[list, set]:
     for context in iter_route_contexts(app.routes):
         key = _key(context)
         seen.add(key)
-        if not (_gated(context) or key in PUBLIC or key in IN_BAND):
+        if not (_gated(context) or key in PUBLIC or key in IN_BAND or key in PERSONAL_REFUSED):
             findings.append(key)
     return findings, seen
 
@@ -111,7 +115,7 @@ def test_every_served_route_refuses_a_bearer_or_is_named(app):
     findings, seen = census(app)
     assert findings == []
     assert {path for _, path in seen} >= FLAG_GATED | {"/api/node/mesh/offer", "/ws", *OPERATOR_PATHS}
-    assert set(PUBLIC) | set(IN_BAND) <= seen
+    assert set(PUBLIC) | set(IN_BAND) | set(PERSONAL_REFUSED) <= seen
     assert len(seen) > 250
 
 
@@ -157,3 +161,12 @@ def test_a_nested_gate_counts_but_a_lookalike_does_not(app):
     app.add_api_route("/census/lookalike", probe, methods=["GET"], dependencies=[Depends(lookalike)])
     app.add_api_route("/census/nested", probe, methods=["GET"], dependencies=[Depends(nested)])
     assert census(app)[0] == [("GET", "/census/lookalike")]
+
+
+def test_the_personal_refused_routes_answer_404_on_a_personal_node(app, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv(node_identity.PROFILE_ENV, node_identity.PERSONAL)
+    client = TestClient(app)
+    for method, path in PERSONAL_REFUSED:
+        assert client.request(method, path.replace("{token}", "anything")).status_code == 404

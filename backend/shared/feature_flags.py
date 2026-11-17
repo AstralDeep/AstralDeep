@@ -1,9 +1,14 @@
 """Env-driven feature-flag registry (FeatureFlags.is_enabled) read across orchestrator,
 agents, and shared modules to gate scheduler execution, recursive delegation, remote
-compute, and the MCP/A2A servers.
+compute, and the MCP/A2A servers. A personal node reports snapshot links off whatever the
+environment says, using the profile switch in node_identity.py.
 """
 
 import os
+
+from shared import node_identity
+
+PERSONAL_OFF = frozenset({"artifact_sharing"})
 
 
 class FeatureFlags:
@@ -84,6 +89,8 @@ class FeatureFlags:
         return os.getenv(env_var, str(default)).lower() in ("true", "1", "yes")
 
     def is_enabled(self, flag: str) -> bool:
+        if flag in PERSONAL_OFF and node_identity.is_personal():
+            return False
         return self._flags.get(flag, False)
 
 
