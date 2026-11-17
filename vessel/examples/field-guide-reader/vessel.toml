@@ -1,0 +1,13 @@
+[agent]
+name = "field-guide-reader"
+description = "Quotes pages from the sample field guide, with read-only file tools and no shell."
+version = "0.1.0"
+
+[tools]
+builtin = ["read", "grep", "glob", "list"]
+
+[sandbox]
+workdir = "/data"
+mounts = [{ source = "guide", target = "/data", read_only = true }]
+deadline_seconds = 120
+tool_timeout_seconds = 20

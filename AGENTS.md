@@ -47,6 +47,7 @@ The evidence control adapter depends on the orchestrator's private ephemeral arc
 - `backend/agents/`: bundled first-party agents. Generated draft directories can appear here during development; treat unexpected untracked directories as user/generated data, never as files to stage blindly.
 - `backend/tests/` plus module-local `*/tests/`: backend verification. Root pytest discovery does not include every module suite.
 - `components/AstralProjection/windows-client/`, `components/AstralProjection/android-client/`, `components/AstralProjection/apple-clients/`: authoritative native clients and their parity/drift guards.
+- `vessel/`: the `astralvessel` package and command, moved from AstralVessel with its history. It keeps its own manifest, tests, lint and kernel binding (`vessel/config/kernel-binding.json`). It stays outside Deep's root lint, test discovery, coverage gate, image and Docker build context, as `scripts/tests/test_moved_packages.py` checks. Deep's ignore rules do apply to it, with `!vessel/docs/build/` keeping its docs pages tracked. It releases later with `vessel-v` tags. An imported file keeps its own text until someone edits it for a reason. That edit brings only that file's header in line with the three-sentence rule, nothing more.
 - `specs/`: numbered feature specifications, plans, tasks, and contracts; the spec number is more reliable than historical branch naming.
 - `docs/`: operator documentation. Most of this tree is ignored; check `.gitignore` before assuming a new doc will be committed.
 
@@ -59,7 +60,7 @@ The pinned `components/AstralPrimitives` repository owns primitive definitions a
 - Node backend code is Python and must remain compatible with the production Python 3.11 image; the shared kernel is Rust. Ruff's target is `py311`, even if a host virtualenv is newer.
 - Any dependency may be added; declare it in the owning repository's manifest and name it in the PR description.
 - Keep changes production-ready: no silent stubs, debug-only paths, fake success, untracked TODOs, or happy-path-only handling.
-- The code documents itself. Each source file opens with a header of at most three sentences: what it does and how it connects to other files. Add no other comments or docstrings except a one-line *why* where absolutely necessary. Never put spec/task IDs, feature numbers, history, TODOs, or narration in source. Tool directives (`# noqa`, `# type: ignore`, `# pragma: no cover`, eslint/ktlint/swift-format directives, shebangs) are not comments and stay.
+- The code documents itself. Each source file opens with a header of at most three sentences: what it does and how it connects to other files. Add no other comments or docstrings except a one-line *why* where absolutely necessary. Never put spec/task IDs, feature numbers, history, TODOs, or narration in source. Tool directives (`# noqa`, `# type: ignore`, `# pragma: no cover`, eslint/ktlint/swift-format directives, shebangs) are not comments and stay. Files imported with a moved package follow the imported-file rule on the `vessel/` routing line.
 - Write or update tests for golden paths, edge cases, denials, and failures. Changed Python lines must retain at least 90% coverage.
 - CI jobs and test suites finish within 30 minutes on hosted runners; over-budget suites get cheaper fixtures or lose their slowest tests (never sharded, raised, or waived); no soak tests; required gates stay deterministic — no live third-party network services, no exact bounds on clock-derived values, no wall-clock performance bounds on shared hosted runners, per-test retries only.
 - Preserve the user's working tree. Never discard unrelated changes. Local commits for work within the task's scope are allowed without additional user authorization. Review the diff and stage only task-related files; keep unrelated changes and sensitive/generated user data out of commits.
@@ -128,6 +129,14 @@ Client gates:
 - Android (from `components/AstralProjection/android-client/`): run the committed wrapper for `ktlintCheck`, `:app:lintDebug`, `:core:test`, `:app:testDebugUnitTest`, `:core:koverVerify`, and `:app:assembleDebug`.
 - Apple (macOS only): run `swift test --package-path components/AstralProjection/apple-clients/AstralCore` and the affected unsigned `xcodebuild` schemes from `components/AstralProjection/apple-clients/README.md`.
 - AstralPrimitives changes (only when explicitly in scope): run its pytest suite before any version bump/publish. Publication checks do not replace PR qualification.
+
+Vessel gate, from the repository root. Its sandbox tests need Linux (Landlock and `/proc`).
+
+```text
+python3.11 -m venv vessel/.venv
+vessel/.venv/bin/pip install -e vessel pytest==9.2.0 pytest-asyncio==1.4.1.post1 ruff==0.17.4 build twine -r vessel/egress/requirements.txt
+cd vessel && .venv/bin/python -m pytest -q -rs && .venv/bin/ruff check .
+```
 
 When driving a running iOS Simulator app, prefer available simulator MCP tools, inspect screenshots or accessibility trees, and use semantic labels for interaction. Keep `xcodebuild` for builds/tests; drive the macOS app directly because it is not a simulator. Apple sign-in uses real PKCE and must be completed by the user, without a development-token bypass.
 
