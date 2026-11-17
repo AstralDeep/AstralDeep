@@ -1,4 +1,5 @@
 import pytest
+import httpx
 from backend.agents.connectors.claude_native import ClaudeNativeAdapter
 
 def test_claude_adapter_isolation():
@@ -8,3 +9,12 @@ def test_claude_adapter_isolation():
         # Ensure no custom headers from environment are leaked
         assert client.headers["x-api-key"] == "sk-test-123"
         assert "ANTHROPIC_CUSTOM_HEADERS" not in client.headers
+        # Verify trust_env is disabled
+        assert client.trust_env is False
+
+def test_claude_adapter_egress_compliance():
+    """Verify adapter configuration meets security gate requirements."""
+    adapter = ClaudeNativeAdapter(api_key="sk-test-123")
+    client = adapter._get_client()
+    assert client.verify is True
+    client.close()
