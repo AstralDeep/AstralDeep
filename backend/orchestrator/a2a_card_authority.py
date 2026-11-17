@@ -20,7 +20,7 @@ async def registration_caller(orchestrator, websocket, payload):
     caller.require_write()
     if node_identity.is_personal():
         try:
-            owner = node_identity.bound_owner()
+            owner = node_identity.bound_mesh_owner()
         except node_identity.NodeIdentityError:
             raise AssignmentError("node_owner_binding_unavailable", 503) from None
         if not owner or caller.owner_id != owner:

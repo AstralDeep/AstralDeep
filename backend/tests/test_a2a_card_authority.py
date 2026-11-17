@@ -167,9 +167,9 @@ async def test_owner_binding_loss_during_authentication_cannot_change_trust(regi
         if change == "unreadable":
             def unavailable():
                 raise node_identity.NodeIdentityError("owner binding unreadable")
-            monkeypatch.setattr(node_identity, "bound_owner", unavailable)
+            monkeypatch.setattr(node_identity, "bound_mesh_owner", unavailable)
         else:
-            monkeypatch.setattr(node_identity, "bound_owner", lambda: None if change == "unbound" else "oidc.other.owner")
+            monkeypatch.setattr(node_identity, "bound_mesh_owner", lambda: None if change == "unbound" else "mesh." + "f" * 64)
         return caller
 
     monkeypatch.setattr(pending, "authenticate", changed_binding)

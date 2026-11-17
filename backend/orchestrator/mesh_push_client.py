@@ -61,7 +61,8 @@ class MeshWakeSender:
         try:
             current = roster()
             node_mesh.refuse_development_mesh(current)
-            if current.mesh_id != mesh_id or owner != node_identity.owner_id_for_mesh(mesh_id):
+            if (current.mesh_id != mesh_id or owner != node_identity.owner_id_for_mesh(mesh_id)
+                    or owner != node_identity.bound_mesh_owner()):
                 return None
         except (node_mesh.NodeMeshError, node_identity.NodeIdentityError):
             return None
