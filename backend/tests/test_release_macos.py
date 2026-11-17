@@ -38,6 +38,27 @@ IDENTITY = {
     "version": "2.0.0", "build": 71, "minimumMacOS": "14.0", "architecture": "arm64",
     "bundleID": "com.personalailabs.astraldeep", "executableSHA256": "e" * 64, "teamID": "593LGH35GS",
 }
+PROFILE_BYTES = (Path(__file__).resolve().parents[2] / release.PROFILE_PATH).read_bytes()
+DIRECT_ENTITLEMENTS = {
+    "com.apple.security.device.audio-input": True,
+    "com.apple.developer.associated-domains": list(release.ASSOCIATED_DOMAINS),
+}
+
+
+def decoded_profile(**changes) -> dict:
+    profile = {
+        "UUID": release.PROFILE_UUID, "TeamIdentifier": ["593LGH35GS"], "Platform": ["OSX"], "ProvisionsAllDevices": True,
+        "ExpirationDate": dt.datetime(2044, 11, 12, 1, 0, 0),
+        "Entitlements": {
+            "com.apple.developer.associated-domains": "*", "keychain-access-groups": ["593LGH35GS.*"],
+            "com.apple.developer.team-identifier": "593LGH35GS",
+            "com.apple.application-identifier": "593LGH35GS.com.personalailabs.astraldeep",
+        },
+    }
+    profile.update(changes)
+    return profile
+
+
 SITE_FILES = ["downloads.json", "appcast.xml", "mac-update-policy.json", "mac-update-policy.json.sig"]
 
 
@@ -105,6 +126,12 @@ class FakeRunner(release.Runner):
         self.listing: str | None = None
         self.latest_tag: str | None = "v0.6.0"
         self.mounted: list[Path] = []
+        self.profile = decoded_profile()
+        self.embedded: bytes | None = PROFILE_BYTES
+        self.signed_entitlements = dict(DIRECT_ENTITLEMENTS)
+
+    def _security(self, command, cwd):
+        return release.Result(0, plistlib.dumps(self.profile).decode())
 
     def _execute(self, command, cwd):
         for matcher in self.fail:
@@ -154,7 +181,10 @@ class FakeRunner(release.Runner):
         else:
             self.env.info["ASTRALNodePackURL"] = ASSETS + "node-pack.json"
             self.env.info["ASTRALNodePackSHA256"] = hashlib.sha256((self.env.node_pack / "node-pack.json").read_bytes()).hexdigest()
-            write_app(Path(command[command.index("-exportPath") + 1]) / "AstralDeep.app", self.env.info)
+            app = Path(command[command.index("-exportPath") + 1]) / "AstralDeep.app"
+            write_app(app, self.env.info)
+            if self.embedded is not None:
+                (app / "Contents/embedded.provisionprofile").write_bytes(self.embedded)
 
     def _ditto(self, command, cwd):
         if command[1] == "-c":
@@ -179,6 +209,8 @@ class FakeRunner(release.Runner):
             return release.Result(0, self.stapler_output)
 
     def _codesign(self, command, cwd):
+        if "--entitlements" in command:
+            return release.Result(0, plistlib.dumps(self.signed_entitlements).decode())
         return release.Result(0, "", self.codesign_output)
 
     def _spctl(self, command, cwd):
@@ -298,8 +330,16 @@ class Env:
         pins.parent.mkdir(parents=True)
         pins.write_text(json.dumps({"deep": {"commit": DEEP}, "kernel": {"commit": "c" * 40}}))
         self.prior_pins = {"deep": {"commit": "e" * 40}, "kernel": {"commit": "c" * 40}}
+        entitlements = self.projection / release.DIRECT_ENTITLEMENTS
+        entitlements.parent.mkdir(parents=True, exist_ok=True)
+        entitlements.write_bytes(plistlib.dumps(DIRECT_ENTITLEMENTS))
+        self.profile_path = self.deep / release.PROFILE_PATH
+        self.profile_path.parent.mkdir(parents=True)
+        self.profile_path.write_bytes(PROFILE_BYTES)
+        self.home = tmp_path / "home"
+        monkeypatch.setenv("HOME", str(self.home))
         info_path = self.projection / "apple-clients/AstralApp/Info.plist"
-        info_path.parent.mkdir(parents=True)
+        info_path.parent.mkdir(parents=True, exist_ok=True)
         info_path.write_bytes(plistlib.dumps({"CFBundleName": "AstralDeep"}))
         monkeypatch.setattr(release.platform, "system", lambda: "Darwin")
         monkeypatch.setattr(release.shutil, "which", lambda name: f"/usr/bin/{name}")
@@ -421,7 +461,7 @@ def test_steps_run_in_the_documented_order(env):
     assert tools(runner) == [
         "git status", "git status", "git rev-parse", "git rev-parse", "git ls-tree", "git merge-base",
         "git diff", "git show", *("git ls-tree" for _ in range(8)), "git diff", "git show", "gh api",
-        "xcodebuild", "xcodebuild", "codesign", "codesign",
+        "security", "xcodebuild", "xcodebuild", "codesign", "codesign", "codesign",
         "ditto", "xcrun notarytool", "xcrun stapler", "xcrun stapler", "spctl",
         "ditto", "hdiutil create", "codesign", "xcrun notarytool", "xcrun stapler", "xcrun stapler", "spctl",
         "hdiutil attach", "spctl", "xcrun stapler", "hdiutil detach",
@@ -722,6 +762,7 @@ def test_command_lines_use_the_documented_flags(env):
     assert plistlib.loads((env.work / "export-options.plist").read_bytes()) == {
         "method": "developer-id", "teamID": "593LGH35GS", "signingStyle": "manual",
         "signingCertificate": "Developer ID Application", "destination": "export",
+        "provisioningProfiles": {"com.personalailabs.astraldeep": release.PROFILE_UUID},
     }
     assert by["ditto"][0][:6] == ["ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", str(env.work / "export/AstralDeep.app")]
     assert by["xcrun notarytool"][0][3:] == [
@@ -744,6 +785,108 @@ def test_command_lines_use_the_documented_flags(env):
     state = json.loads((env.stage / "release-state.json").read_text())
     assert state["channel"] == "preview"
     assert release.parse_appcast(env.stage / "appcast.xml")[0]["channel"] == "preview"
+
+
+def test_profile_is_decoded_installed_and_named_for_archive_and_export(env):
+    subject, runner = env.release()
+    subject.execute()
+    archive = next(c for c in runner.history if c[:2] == ["xcodebuild", "archive"])
+    assert f"ASTRAL_PROFILE_DIRECT={release.PROFILE_UUID}" in archive
+    assert not any("PROVISIONING_PROFILE_SPECIFIER" in part for part in archive)
+    assert next(c for c in runner.history if c[0] == "security")[:4] == ["security", "cms", "-D", "-i"]
+    for folder in release.PROFILE_INSTALL_DIRS:
+        assert (env.home / folder / f"{release.PROFILE_UUID}.provisionprofile").read_bytes() == PROFILE_BYTES
+    assert next(c for c in runner.history if "--entitlements" in c)[-1].endswith("AstralDeep.app")
+
+
+def test_dry_run_checks_the_digest_but_touches_nothing(env):
+    subject, runner = env.release(dry=True)
+    subject.prepare_profile()
+    subject.verify_profile(env.work / "export/AstralDeep.app")
+    assert not env.home.exists() and not any(c[0] in {"security", "codesign"} for c in runner.history)
+
+
+def test_profile_digest_must_match_the_pin(env):
+    env.profile_path.write_bytes(PROFILE_BYTES + b"x")
+    subject, runner = env.release()
+    with pytest.raises(release.ReleaseError, match="differs from the pinned"):
+        subject.execute()
+    assert not any(c[0] == "xcodebuild" for c in runner.history)
+
+
+def test_missing_profile_file_is_refused(env):
+    env.profile_path.unlink()
+    subject, _ = env.release()
+    with pytest.raises(release.ReleaseError, match="missing or differs"):
+        subject.prepare_profile()
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"UUID": "other"}, "UUID other differs"),
+        ({"TeamIdentifier": ["OTHERTEAM01"]}, "does not belong to team"),
+        ({"Entitlements": {**decoded_profile()["Entitlements"], "com.apple.application-identifier": "593LGH35GS.other"}},
+         "is not for"),
+        ({"Platform": ["iOS"]}, "not a macOS Developer ID"),
+        ({"ProvisionsAllDevices": False}, "not a macOS Developer ID"),
+        ({"ExpirationDate": dt.datetime(2026, 10, 1)}, "expired on 2026-10-01"),
+        ({"Entitlements": {k: v for k, v in decoded_profile()["Entitlements"].items()
+                           if k != "com.apple.developer.associated-domains"}}, "does not allow the com.apple.developer.associated-domains"),
+        ({"Entitlements": {**decoded_profile()["Entitlements"], "com.apple.developer.associated-domains": ["applinks:other.example"]}},
+         "does not allow the com.apple.developer.associated-domains"),
+    ],
+)
+def test_profile_mismatches_are_refused_before_archiving(env, changes, message):
+    subject, runner = env.release()
+    runner.profile = decoded_profile(**changes)
+    with pytest.raises(release.ReleaseError, match=message):
+        subject.execute()
+    assert not any(c[0] == "xcodebuild" for c in runner.history)
+    assert not env.home.exists()
+
+
+def test_undecodable_profile_is_refused(env):
+    subject, runner = env.release()
+    runner.profile = {"UUID": release.PROFILE_UUID}
+    with pytest.raises(release.ReleaseError, match="could not be decoded"):
+        subject.prepare_profile()
+
+
+def test_listed_associated_domains_in_the_profile_are_matched_by_pattern(env):
+    subject, runner = env.release()
+    entitlements = {**decoded_profile()["Entitlements"], "com.apple.developer.associated-domains": ["applinks:*", "webcredentials:*"]}
+    runner.profile = decoded_profile(Entitlements=entitlements)
+    subject.prepare_profile()
+    assert subject.profile_allows("same", "same") and not subject.profile_allows("same", "different")
+
+
+@pytest.mark.parametrize("embedded", [None, PROFILE_BYTES + b"x"])
+def test_export_without_the_pinned_profile_embedded_is_refused(env, embedded):
+    subject, runner = env.release()
+    runner.embedded = embedded
+    with pytest.raises(release.ReleaseError, match="does not embed the pinned"):
+        subject.execute()
+
+
+@pytest.mark.parametrize(
+    "signed", [{"com.apple.security.device.audio-input": True},
+               {"com.apple.developer.associated-domains": ["applinks:astraldeep.github.io"]},
+               {"com.apple.developer.associated-domains": "*"}],
+)
+def test_signed_app_without_the_associated_domains_is_refused(env, signed):
+    subject, runner = env.release()
+    runner.signed_entitlements = signed
+    with pytest.raises(release.ReleaseError, match="lacks the associated domains"):
+        subject.execute()
+
+
+def test_unreadable_signed_entitlements_are_refused(env):
+    subject, runner = env.release()
+    runner.signed_entitlements = {}
+    runner._codesign = lambda command, cwd: release.Result(0, "not a plist") if "--entitlements" in command else release.Result(0, "", "")
+    with pytest.raises(release.ReleaseError, match="unreadable"):
+        subject.execute()
 
 
 def test_account_signing_is_the_default(env):
