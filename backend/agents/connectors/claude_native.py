@@ -12,6 +12,7 @@ class ClaudeNativeAdapter:
         # Enforce strict egress control via Fence firewall requirements
         # Disable environment trust to prevent credential leakage
         # Explicitly set proxy to None to ensure block-mode compliance
+        # Ensure no default headers are inherited from environment
         return httpx.Client(
             timeout=self.timeout,
             headers={
@@ -21,7 +22,7 @@ class ClaudeNativeAdapter:
             },
             trust_env=False,
             verify=True,
-            proxies=None
+            proxies={"http://": None, "https://": None}
         )
 
     def send_message(self, payload: Dict[str, Any]) -> Dict[str, Any]:
