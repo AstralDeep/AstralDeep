@@ -28,9 +28,8 @@ class McpSeen:
 
 
 class McpEndpoint:
-    def __init__(self, tools: list[ToolDefinition] | None = None, require_protocol_meta: bool = True) -> None:
+    def __init__(self, tools: list[ToolDefinition] | None = None) -> None:
         self.tools = tools or [ToolDefinition()]
-        self.require_protocol_meta = require_protocol_meta
         self.seen: list[McpSeen] = []
 
     def redefine(self, name: str, **changes: object) -> None:
@@ -48,12 +47,15 @@ class McpEndpoint:
         self.seen.append(McpSeen(method, tool, bearer))
         return method, tool
 
-    def handle(self, request: dict, bearer: str | None) -> tuple[int, dict]:
+    def handle(
+        self, request: dict, bearer: str | None, version_header: str | None = None, enforce_version: bool = False
+    ) -> tuple[int, dict]:
         method, tool = self.record(request, bearer)
         params = request.get("params") or {}
         ident = request.get("id")
         meta = params.get("_meta") or {}
-        if self.require_protocol_meta and method != "server/discover" and meta.get(VERSION_KEY) != PROTOCOL_VERSION:
+        stated = (meta.get(VERSION_KEY), version_header)
+        if enforce_version and method != "server/discover" and stated != (PROTOCOL_VERSION, PROTOCOL_VERSION):
             return 400, {"error": "UnsupportedProtocolVersionError", "supportedVersions": [PROTOCOL_VERSION]}
         if method == "server/discover":
             result: dict = {

@@ -7,6 +7,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import http.client
+import ipaddress
 import json
 import re
 import ssl
@@ -54,8 +55,8 @@ def call(url, method="GET", body=None, headers=None, context=None):
     return response.status if hasattr(response, "status") else response.code, parsed, lines
 
 
-def post_json(url, payload, token=None):
-    headers = {"content-type": "application/json"}
+def post_json(url, payload, token=None, extra=None):
+    headers = {"content-type": "application/json", **(extra or {})}
     if token:
         headers["authorization"] = f"Bearer {token}"
     return call(url, "POST", json.dumps(payload).encode(), headers)
@@ -65,9 +66,9 @@ def post_form(url, form, headers=None):
     return call(url, "POST", urlencode(form).encode(), {"content-type": "application/x-www-form-urlencoded", **(headers or {})})
 
 
-def rpc(auth, method, token=None, params=None, meta=True):
+def rpc(auth, method, token=None, params=None, meta=True, header=True):
     body = {"jsonrpc": "2.0", "id": 1, "method": method, "params": {**(params or {}), **(META if meta else {})}}
-    return post_json(auth.rs_url, body, token)
+    return post_json(auth.rs_url, body, token, {"mcp-protocol-version": PROTOCOL_VERSION} if header else None)
 
 
 def challenge_of(verifier=VERIFIER):
@@ -408,6 +409,8 @@ def test_tools_need_the_token_and_the_protocol_version(make):
     assert rpc(auth, "tools/list", "wrong")[0] == 401
     status, body, _ = rpc(auth, "tools/list", token, meta=False)
     assert status == 400 and body["error"] == "UnsupportedProtocolVersionError"
+    assert rpc(auth, "tools/list", token, header=False)[0] == 400
+    assert rpc(auth, "tools/list", token)[0] == 200
     status, body, _ = rpc(auth, "server/discover", token, meta=False)
     assert body["result"]["supportedVersions"] == [PROTOCOL_VERSION]
     assert rpc(auth, "tools/call", token, {"name": "missing"})[1]["error"]["code"] == -32602
@@ -415,7 +418,7 @@ def test_tools_need_the_token_and_the_protocol_version(make):
     assert call(f"{auth.rs_url}?access_token={token}", "POST", b"{}", {"content-type": "application/json", "authorization": f"Bearer {token}"})[0] == 400
     assert call(auth.urls.rs_origin + "/elsewhere", "POST", b"{}")[0] == 404
     auth.configure(lambda config: setattr(config, "require_protocol_meta", False))
-    assert rpc(auth, "tools/list", token, meta=False)[0] == 200
+    assert rpc(auth, "tools/list", token, meta=False, header=False)[0] == 200
 
 
 def test_a_token_for_another_resource_is_refused(make):
@@ -559,6 +562,81 @@ def test_standalone_runner_serves_every_endpoint():
         assert stop_runner(process) == 0
 
 
+def test_get_authorize_redirects_with_code_state_and_iss(make):
+    auth = make(preregistered_client_ids=("astral-uk",))
+    status, _, _ = call(authorization_url(auth, "astral-uk", state="abc"))
+    assert status == 302
+    conn = http.client.HTTPConnection("127.0.0.1", urlsplit(auth.urls.as_origin).port)
+    conn.request("GET", urlsplit(authorization_url(auth, "astral-uk", state="abc")).path + "?" + urlsplit(authorization_url(auth, "astral-uk", state="abc")).query)
+    reply = conn.getresponse()
+    location = urlsplit(reply.getheader("location"))
+    conn.close()
+    query = parse_qs(location.query)
+    assert f"{location.scheme}://{location.netloc}{location.path}" == REDIRECT
+    assert query["state"] == ["abc"] and query["iss"] == [auth.issuer] and query["code"][0] in auth.secrets
+    refused = call(authorization_url(auth, "astral-uk", code_challenge_method="plain"))
+    assert refused[0] == 400
+
+
+def run_flow(urls, client_id):
+    as_origin = urls["authorization_server"]
+    conn = http.client.HTTPConnection(urlsplit(as_origin).hostname, urlsplit(as_origin).port)
+    params = {"response_type": "code", "client_id": client_id, "redirect_uri": REDIRECT, "code_challenge": challenge_of(), "code_challenge_method": "S256", "resource": urls["mcp"], "state": "xyz"}
+    conn.request("GET", "/authorize?" + urlencode(params))
+    reply = conn.getresponse()
+    reply.read()
+    assert reply.status == 302
+    query = parse_qs(urlsplit(reply.getheader("location")).query)
+    conn.close()
+    assert query["state"] == ["xyz"] and query["iss"] == [urls["issuer"]]
+    form = {"grant_type": "authorization_code", "code": query["code"][0], "client_id": client_id, "redirect_uri": REDIRECT, "code_verifier": VERIFIER, "resource": urls["mcp"]}
+    status, tokens, _ = post_form(f"{as_origin}/token", form)
+    assert status == 200
+    body = {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": META}
+    return post_json(urls["mcp"], body, tokens["access_token"], {"mcp-protocol-version": PROTOCOL_VERSION})
+
+
+def test_standalone_runner_completes_a_sign_in_with_a_plain_get_as_the_browser():
+    config = json.dumps({"preregistered_client_ids": ["astral-uk"], "challenge_scope": "mcp.read"})
+    process = start_runner("--config", config)
+    try:
+        urls = json.loads(process.stdout.readline())
+        assert rpc_unauthenticated_scope(urls) == 'scope="mcp.read"'
+        status, listing, _ = run_flow(urls, "astral-uk")
+        assert status == 200 and listing["result"]["tools"][0]["name"] == "search"
+    finally:
+        assert stop_runner(process) == 0
+
+
+def rpc_unauthenticated_scope(urls):
+    status, _, lines = post_json(urls["mcp"], {"method": "tools/list"})
+    assert status == 401
+    return lines[0].split(", ")[1]
+
+
+@pytest.mark.parametrize("config", ["{", "[]", '{"nonsense": 1}', '{"challenge": "other"}'])
+def test_standalone_runner_rejects_a_bad_config(config):
+    process = start_runner("--config", config)
+    assert process.wait(timeout=30) == 2
+    assert "--config" in process.stderr.read()
+
+
+def test_config_json_round_trips_every_coerced_field():
+    config = FixtureConfig.from_json(
+        {
+            "challenge": "two_lines",
+            "device_steps": ["slow_down", "approve"],
+            "preregistered_client_ids": ["a"],
+            "iss_override": ["x"],
+            "register_script": [None, [201, {"client_id": "dyn-1"}]],
+            "canned": {"/p": [200, {"k": 1}]},
+        }
+    )
+    assert config.challenge is Challenge.TWO_LINES and config.device_steps == [DeviceStep.SLOW_DOWN, DeviceStep.APPROVE]
+    assert config.preregistered_client_ids == ("a",) and config.iss_override == ("x",)
+    assert config.register_script == [None, (201, {"client_id": "dyn-1"})] and config.canned == {"/p": (200, {"k": 1})}
+
+
 def test_standalone_runner_needs_both_tls_files():
     process = start_runner("--tls-cert", "only-cert.pem")
     assert process.wait(timeout=30) == 2
@@ -570,8 +648,6 @@ def self_signed(tmp_path):
     from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.asymmetric import ec
     from cryptography.x509.oid import NameOID
-    import ipaddress
-
     key = ec.generate_private_key(ec.SECP256R1())
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "127.0.0.1")])
     start = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -624,7 +700,6 @@ def test_vector_copy_matches_the_contract_when_present():
 
 
 def served(responses):
-    """Serves each URL of a vector's response map from a loopback authorization server per host and returns the live URL for each."""
     by_host: dict[str, dict[str, tuple[int, object]]] = {}
     for url, answer in responses.items():
         parts = urlsplit(url)
@@ -651,7 +726,7 @@ def fetch(url, origin):
 
 
 @pytest.mark.parametrize("kind", ["oauth_resource_metadata", "oauth_select_server"])
-def test_vector_response_maps_are_served_as_written(kind):
+def test_seam_canned_response_maps_round_trip(kind):
     cases = of_kind(kind)
     served_urls = 0
     for case in cases:
@@ -673,7 +748,7 @@ def test_vector_response_maps_are_served_as_written(kind):
     assert len(cases) > 0 and served_urls > 0
 
 
-def test_vector_challenge_headers_are_served_verbatim():
+def test_seam_challenge_lines_are_served_verbatim():
     cases = of_kind("oauth_challenge")
     assert len(cases) == 19
     for case in cases:
@@ -683,21 +758,24 @@ def test_vector_challenge_headers_are_served_verbatim():
             assert rpc(auth, "tools/list")[2] == list(lines), case["name"]
 
 
-def test_vector_dynamic_registration_scripts_replay():
+def test_seam_dynamic_registration_scripts_replay():
     replayed = 0
     for case in of_kind("oauth_dynamic_registration"):
         responses = case["input"]["responses"]
-        if any(item is None for item in responses):
-            continue
-        script = [(item["status"], item.get("json", {})) for item in responses]
+        script = [None if item is None else (item["status"], item.get("json", {})) for item in responses]
         outcome = case["expect"].get("ok", case["expect"])
         with FixtureAuth(FixtureConfig(register_script=list(script))) as auth:
-            for sent, (status, reply) in zip(outcome["requests"], script, strict=True):
-                got = post_json(f"{auth.urls.as_origin}/register", sent)
-                assert (got[0], got[1]) == (status, reply), case["name"]
+            for sent, step in zip(outcome["requests"], script, strict=True):
+                url = f"{auth.urls.as_origin}/register"
+                if step is None:
+                    with pytest.raises(OSError):
+                        post_json(url, sent)
+                    continue
+                got = post_json(url, sent)
+                assert (got[0], got[1]) == step, case["name"]
             assert auth.registrations == outcome["requests"], case["name"]
         replayed += 1
-    assert replayed == 5
+    assert replayed == 7
 
 
 def test_vector_native_rejection_matches_the_two_step_registration():
@@ -798,7 +876,7 @@ def test_vector_step_up_challenges_are_the_ones_the_fixture_emits():
     assert emitted >= 8
 
 
-def test_vector_registration_metadata_is_served_as_the_authorization_server_document():
+def test_seam_canned_registration_metadata_round_trips():
     for case in of_kind("oauth_registration"):
         metadata = case["input"]["metadata"]
         with FixtureAuth(FixtureConfig(canned={"/.well-known/oauth-authorization-server": (200, metadata)})) as auth:

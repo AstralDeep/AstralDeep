@@ -32,6 +32,7 @@ class Response:
     status: int = 200
     headers: list[tuple[str, str]] = field(default_factory=list)
     body: bytes = b""
+    drop: bool = False
 
     @staticmethod
     def of_json(body: object, status: int = 200, headers: list[tuple[str, str]] | None = None) -> Response:
@@ -78,6 +79,9 @@ def _bind(handler: Handler) -> type[BaseHTTPRequestHandler]:
                 self.rfile.read(length) if length else b"",
             )
             response = handler(request)
+            if response.drop:
+                self.close_connection = True
+                return
             self.send_response(response.status)
             for name, value in response.headers:
                 self.send_header(name, value)

@@ -11,18 +11,23 @@ import sys
 import threading
 
 from .model_server import ModelServer
-from .oauth_server import FixtureAuth
+from .oauth_server import FixtureAuth, FixtureConfig
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="tests.fixtures.connections.serve")
     parser.add_argument("--tls-cert")
     parser.add_argument("--tls-key")
+    parser.add_argument("--config", help="JSON object of FixtureConfig switches")
     args = parser.parse_args(argv)
     if bool(args.tls_cert) != bool(args.tls_key):
         parser.error("--tls-cert and --tls-key go together")
     tls = (args.tls_cert, args.tls_key) if args.tls_cert else None
-    auth = FixtureAuth(tls=tls)
+    try:
+        config = FixtureConfig.from_json(json.loads(args.config)) if args.config else FixtureConfig()
+    except (ValueError, TypeError) as error:
+        parser.error(f"--config: {error}")
+    auth = FixtureAuth(config, tls=tls)
     urls = auth.start()
     model = ModelServer(tls=tls)
     done = threading.Event()

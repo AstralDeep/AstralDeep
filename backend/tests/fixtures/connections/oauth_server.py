@@ -1,5 +1,6 @@
-"""Loopback authorization server and MCP resource server for connection tests, ported from specs/106-sign-in-free-clients/phase-0/mcp-oauth/fixture.py at commit 933f14c3 and kept in step with the Kernel's Rust OAuth fixture.
-Each `FixtureConfig` switch turns one server behavior on or off, `FixtureAuth.approve` plays the browser, and the fixture records every request and every secret it issues so tests can prove none leaks.
+"""Loopback authorization server and MCP resource server for connection tests, ported from phase-0/mcp-oauth/fixture.py at commit 933f14c3 and kept in step with the Kernel's Rust OAuth fixture.
+Each `FixtureConfig` switch turns one server behavior on or off, `GET /authorize` and `FixtureAuth.approve` play the browser, and every request and issued secret is recorded so tests can prove none leaks.
+It differs from the Rust twin in one way: by default MCP calls must carry the 2026-07-28 `_meta` key and `MCP-Protocol-Version` header, which every correct client sends, and `require_protocol_meta` turns that off.
 """
 
 from __future__ import annotations
@@ -9,7 +10,7 @@ import hashlib
 import secrets as stdlib_secrets
 import threading
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from enum import Enum
 from urllib.parse import parse_qs, urlencode, urlsplit
 
@@ -68,7 +69,7 @@ class FixtureConfig:
     iss_override: tuple[str, ...] | None = None
     extra_authorization_servers: tuple[str, ...] = ()
     reject_native_https_registration: bool = False
-    register_script: list[tuple[int, dict]] = field(default_factory=list)
+    register_script: list[tuple[int, dict] | None] = field(default_factory=list)
     registration_auth: str | None = None
     device_endpoint: bool = False
     device_steps: list[DeviceStep] = field(default_factory=lambda: [DeviceStep.APPROVE])
@@ -81,6 +82,28 @@ class FixtureConfig:
     reject_bearers: bool = False
     require_protocol_meta: bool = True
     canned: dict[str, tuple[int, object]] = field(default_factory=dict)
+
+    @classmethod
+    def from_json(cls, document: dict) -> FixtureConfig:
+        if not isinstance(document, dict):
+            raise ValueError("the config must be a JSON object")
+        known = {item.name for item in fields(cls)}
+        unknown = sorted(set(document) - known)
+        if unknown:
+            raise ValueError(f"unknown fixture switches: {', '.join(unknown)}")
+        values = dict(document)
+        if "challenge" in values:
+            values["challenge"] = Challenge(values["challenge"])
+        if "device_steps" in values:
+            values["device_steps"] = [DeviceStep(item) for item in values["device_steps"]]
+        for name in ("preregistered_client_ids", "extra_authorization_servers", "iss_override", "challenge_lines"):
+            if values.get(name) is not None:
+                values[name] = tuple(values[name])
+        if "register_script" in values:
+            values["register_script"] = [None if item is None else (item[0], item[1]) for item in values["register_script"]]
+        if "canned" in values:
+            values["canned"] = {path: (item[0], item[1]) for path, item in values["canned"].items()}
+        return cls(**values)
 
 
 @dataclass(frozen=True)
@@ -118,7 +141,7 @@ class FixtureAuth:
         tls: tuple[str, str] | None = None,
     ) -> None:
         self.config = config or FixtureConfig()
-        self.mcp = McpEndpoint(tools, self.config.require_protocol_meta)
+        self.mcp = McpEndpoint(tools)
         self.requests: list[tuple[str, str]] = []
         self.authorize_requests: list[dict[str, str]] = []
         self.registrations: list[dict] = []
@@ -175,7 +198,6 @@ class FixtureAuth:
     def configure(self, change: Callable[[FixtureConfig], None]) -> None:
         with self._lock:
             change(self.config)
-            self.mcp.require_protocol_meta = self.config.require_protocol_meta
 
     def redefine_tool(self, name: str, **changes: object) -> None:
         with self._lock:
@@ -203,39 +225,40 @@ class FixtureAuth:
 
     def approve(self, authorization_url: str) -> str:
         with self._lock:
-            assert self.urls is not None
             prefix = f"{self.urls.as_origin}/authorize?"
             if not authorization_url.startswith(prefix):
                 raise FixtureRefusal("not the authorization endpoint")
-            params = _form(authorization_url[len(prefix):])
             self.requests.append(("as", "GET /authorize"))
-            self.authorize_requests.append(params)
-            if params.get("response_type") != "code" or params.get("code_challenge_method") != "S256":
-                raise FixtureRefusal("unsupported request")
-            if not params.get("code_challenge") or not params.get("resource"):
-                raise FixtureRefusal("missing code_challenge or resource")
-            client_id, redirect_uri = params.get("client_id", ""), params.get("redirect_uri", "")
-            if client_id.startswith("https://"):
-                allowed = self.config.cimd_documents.get(client_id) if self.config.cimd_supported else None
-                if allowed is None:
-                    raise FixtureRefusal("invalid client metadata document")
-            elif client_id in self.config.preregistered_client_ids:
-                allowed = [redirect_uri]
-            else:
-                allowed = self._clients.get(client_id, [])
-            if redirect_uri not in allowed:
-                raise FixtureRefusal("redirect_uri not registered")
-            code = _mint()
-            self.secrets.append(code)
-            self._codes[code] = {
-                "challenge": params["code_challenge"],
-                "client_id": client_id,
-                "redirect_uri": redirect_uri,
-                "resource": params["resource"],
-            }
-            pairs = [("code", code), ("state", params.get("state", ""))]
-            pairs.extend(("iss", value) for value in self._iss_values())
-            return f"{redirect_uri}?{urlencode(pairs)}"
+            return self._authorize(_form(authorization_url[len(prefix):]))
+
+    def _authorize(self, params: dict[str, str]) -> str:
+        self.authorize_requests.append(params)
+        if params.get("response_type") != "code" or params.get("code_challenge_method") != "S256":
+            raise FixtureRefusal("unsupported request")
+        if not params.get("code_challenge") or not params.get("resource"):
+            raise FixtureRefusal("missing code_challenge or resource")
+        client_id, redirect_uri = params.get("client_id", ""), params.get("redirect_uri", "")
+        if client_id.startswith("https://"):
+            allowed = self.config.cimd_documents.get(client_id) if self.config.cimd_supported else None
+            if allowed is None:
+                raise FixtureRefusal("invalid client metadata document")
+        elif client_id in self.config.preregistered_client_ids:
+            allowed = [redirect_uri]
+        else:
+            allowed = self._clients.get(client_id, [])
+        if redirect_uri not in allowed:
+            raise FixtureRefusal("redirect_uri not registered")
+        code = _mint()
+        self.secrets.append(code)
+        self._codes[code] = {
+            "challenge": params["code_challenge"],
+            "client_id": client_id,
+            "redirect_uri": redirect_uri,
+            "resource": params["resource"],
+        }
+        pairs = [("code", code), ("state", params.get("state", ""))]
+        pairs.extend(("iss", value) for value in self._iss_values())
+        return f"{redirect_uri}?{urlencode(pairs)}"
 
     def _iss_values(self) -> list[str]:
         if self.config.iss_override is not None:
@@ -352,8 +375,10 @@ class FixtureAuth:
     def _register(self, body: dict) -> Response:
         self.registrations.append(body)
         if self.config.register_script:
-            status, reply = self.config.register_script.pop(0)
-            return Response.of_json(reply, status)
+            step = self.config.register_script.pop(0)
+            if step is None:
+                return Response(drop=True)
+            return Response.of_json(step[1], step[0])
         redirects = [uri for uri in body.get("redirect_uris", []) if isinstance(uri, str)]
         native_https = body.get("application_type") == "native" and any(u.startswith("https://") for u in redirects)
         if self.config.reject_native_https_registration and native_https:
@@ -400,6 +425,12 @@ class FixtureAuth:
             return canned
         if req.method == "GET" and path == self._metadata_path():
             return Response.of_json(self._metadata())
+        if req.method == "GET" and path == "/authorize":
+            try:
+                target = self._authorize(_form(urlsplit(req.target).query))
+            except FixtureRefusal as refusal:
+                return Response(400, [("content-type", "text/plain")], str(refusal).encode())
+            return Response(302, [("location", target)])
         if req.method == "POST" and path == "/token":
             return self._token(_form(req.body.decode()), req.headers.get("authorization"))
         if req.method == "POST" and path == "/register" and self.config.registration_endpoint:
@@ -430,7 +461,9 @@ class FixtureAuth:
         if scope and request.get("method") == "tools/call":
             self.mcp.record(request, bearer)
             return Response(403, [("www-authenticate", f'Bearer error="insufficient_scope", scope="{scope}"')])
-        status, body = self.mcp.handle(request, bearer)
+        status, body = self.mcp.handle(
+            request, bearer, req.headers.get("mcp-protocol-version"), self.config.require_protocol_meta
+        )
         return Response.of_json(body, status)
 
     def _resource_server(self, req: Request) -> Response:
