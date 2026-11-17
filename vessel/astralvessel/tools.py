@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import errno
+import fnmatch
 import json
 import os
 import re
@@ -41,6 +42,7 @@ class Confinement:
     scratch_root: str
     workspace: str | None = None
     max_file_bytes: int = 0  # 0: no limit beyond the scratch filesystem
+    process: Any = None  # an execmode.ProcessExec: confine calls with astral_exec instead of confine.py
 
     def for_turn(self, key: str) -> Confinement:
         # A turn's calls share one workspace; the key is random per turn, so concurrent turns never meet.
@@ -121,6 +123,8 @@ async def _proc(argv: list[str], *, cwd: str, timeout: int, shell: bool = False,
                 stdin: bytes | None = None, confinement: Confinement | None = None) -> tuple[int, str]:
     if shell:
         argv = ["/bin/sh", "-c", argv[0]]
+    if confinement is not None and confinement.process is not None:
+        return await _proc_process(argv, cwd=cwd, timeout=timeout, stdin=stdin, confinement=confinement)
     env, scratch = SAFE_ENV, None
     if confinement is not None:
         env = {**SAFE_ENV}
@@ -143,8 +147,46 @@ async def _proc(argv: list[str], *, cwd: str, timeout: int, shell: bool = False,
             remove_tree(scratch)
 
 
+async def _proc_process(argv: list[str], *, cwd: str, timeout: int, stdin: bytes | None,
+                        confinement: Confinement) -> tuple[int, str]:
+    # The launcher selects the backend and enforces the limits; a refusal comes back as text, and nothing spawns first.
+    from .execmode import ProcessRefused, refusal_text
+    px = confinement.process
+    if confinement.workspace:
+        scratch = confinement.workspace
+        os.makedirs(scratch, mode=0o700, exist_ok=True)
+        _fresh_outbox(outbox_of(scratch))
+    else:
+        scratch = tempfile.mkdtemp(prefix="call-", dir=confinement.scratch_root)
+    env = {"PATH": px.child_path(), "LANG": "C.UTF-8", "HOME": scratch, "TMPDIR": scratch, "VESSEL_WORKDIR": cwd}
+    if confinement.workspace:
+        env["VESSEL_OUTBOX"] = outbox_of(scratch)
+    cleanup = None
+    try:
+        try:
+            launch, cleanup = await asyncio.to_thread(
+                px.command, [px.resolve(argv[0]), *argv[1:]], env, tuple(confinement.readable), scratch, timeout,
+                confinement.max_file_bytes)
+        except ProcessRefused as exc:
+            return 126, exc.text
+        code, out = await _supervise(launch, cwd=scratch, env={"PATH": px.child_path(),
+                                                                "PYTHONDONTWRITEBYTECODE": "1"},
+                                     timeout=timeout + 10, stdin=stdin, graceful=True)
+        refused = refusal_text(code, out)
+        if refused is not None:
+            if refused.startswith("exec.time_limit"):
+                return 124, f"[timed out after {timeout} s]"
+            return code, refused
+        return code, out
+    finally:
+        if cleanup is not None:
+            cleanup()
+        if not confinement.workspace:
+            remove_tree(scratch)
+
+
 async def _supervise(argv: list[str], *, cwd: str, env: dict[str, str], timeout: int,
-                     stdin: bytes | None) -> tuple[int, str]:
+                     stdin: bytes | None, graceful: bool = False) -> tuple[int, str]:
     SPAWNING[0] += 1
     try:
         proc = await _spawn(argv, cwd=cwd, env=env)
@@ -154,6 +196,11 @@ async def _supervise(argv: list[str], *, cwd: str, env: dict[str, str], timeout:
     try:
         out = await asyncio.wait_for(_collect(proc, stdin), timeout=timeout)
     except (TimeoutError, asyncio.CancelledError) as exc:
+        if graceful:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(proc.pid, 15)
+            with contextlib.suppress(TimeoutError, asyncio.CancelledError):
+                await asyncio.wait_for(asyncio.shield(proc.wait()), 3)
         try:
             os.killpg(proc.pid, 9)
         except ProcessLookupError:
@@ -171,6 +218,8 @@ async def _supervise(argv: list[str], *, cwd: str, env: dict[str, str], timeout:
 def kill_session(sid: int) -> None:
     # Confined calls cannot leave their session (seccomp blocks setsid and setpgid), so this ends everything a
     # call started, background processes included, before anything walks or removes its files.
+    if not os.path.isdir("/proc"):
+        return  # the launcher's own process group handling ends a call's processes where there is no /proc
     for _ in range(10):
         alive = False
         for entry in filter(str.isdigit, os.listdir("/proc")):
@@ -202,12 +251,20 @@ async def _collect(proc: asyncio.subprocess.Process, stdin: bytes | None) -> byt
     return b"".join(chunks)
 
 
+def fd_path(fd: int) -> str:
+    # Where an open descriptor really points: /proc on Linux, F_GETPATH on macOS.
+    if sys.platform == "darwin":
+        import fcntl
+        return fcntl.fcntl(fd, fcntl.F_GETPATH, bytes(1024)).split(b"\0", 1)[0].decode()
+    return os.readlink(f"/proc/self/fd/{fd}")
+
+
 def _open_checked(path: Path, confinement: Confinement | None, *, directory: bool = False) -> int:
     # Open first, then check where the descriptor really points: a call can swap links in its workspace
     # between a path check and the open, and these tools run in the unconfined server.
     fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | (os.O_DIRECTORY if directory else 0))
     try:
-        real = os.readlink(f"/proc/self/fd/{fd}")
+        real = fd_path(fd)
         if confinement is not None and not confinement.allows(Path(real)):
             raise PermissionError(errno.EACCES, "outside the agent's data")
         if not directory and not stat.S_ISREG(os.fstat(fd).st_mode):
@@ -252,8 +309,14 @@ async def _grep(args: dict[str, Any], workdir: str, timeout: int,
                 confinement: Confinement | None) -> tuple[str, bool]:
     target = str(_resolve(args.get("path"), workdir))
     cap = min(max(int(args.get("max_results") or 100), 1), 1000)
-    if shutil.which("rg"):
-        argv = ["rg", "--line-number", "--no-heading", "--color=never", "--max-columns=400"]
+    process = confinement.process if confinement is not None else None
+    if process is not None:
+        _, refusal = await asyncio.to_thread(process.backend)
+        if refusal is not None or process.rg is None:
+            return await _python_grep(args, target, cap, confinement)
+    ripgrep = process.rg if process is not None else shutil.which("rg")
+    if ripgrep:
+        argv = [ripgrep, "--line-number", "--no-heading", "--color=never", "--max-columns=400"]
         if args.get("ignore_case"):
             argv.append("-i")
         if args.get("glob"):
@@ -274,6 +337,42 @@ async def _grep(args: dict[str, Any], workdir: str, timeout: int,
     return "\n".join(lines[:cap]) + tail, False
 
 
+async def _python_grep(args: dict[str, Any], target: str, cap: int,
+                       confinement: Confinement | None) -> tuple[str, bool]:
+    # The search used when no confined ripgrep can run: the same path limits, a bounded walk and bounded lines.
+    try:
+        pattern = re.compile(str(args["pattern"]), re.IGNORECASE if args.get("ignore_case") else 0)
+    except re.error as exc:
+        return f"invalid pattern: {exc}", True
+    wanted = args.get("glob")
+
+    def search() -> list[str]:
+        found: list[str] = []
+        root = Path(target)
+        files = [root] if root.is_file() else sorted(p for p in root.rglob("*") if p.is_file())
+        for path in files:
+            if confinement is not None and not confinement.allows(path):
+                continue
+            if wanted and not (fnmatch.fnmatch(path.name, str(wanted)) or fnmatch.fnmatch(str(path), str(wanted))):
+                continue
+            try:
+                with open(path, encoding="utf-8", errors="replace") as handle:
+                    for number, line in enumerate(handle, 1):
+                        if pattern.search(line[:MAX_LINE_CHARS]):
+                            found.append(f"{path}:{number}:{line.rstrip()[:400]}")
+                            if len(found) > cap:
+                                return found
+            except OSError:
+                continue
+        return found
+
+    lines = await asyncio.to_thread(search)
+    if not lines:
+        return "no matches", False
+    tail = "\n[more matches not shown]" if len(lines) > cap else ""
+    return "\n".join(lines[:cap]) + tail, False
+
+
 async def _glob(args: dict[str, Any], workdir: str, timeout: int,
                 confinement: Confinement | None = None) -> tuple[str, bool]:
     base = _resolve(args.get("path"), workdir)
@@ -291,7 +390,7 @@ async def _glob(args: dict[str, Any], workdir: str, timeout: int,
         fd = _open_checked(base, confinement, directory=True)
         try:
             # Walk through the opened descriptor, so swapping a folder for a link mid-walk changes nothing.
-            root = Path(f"/proc/self/fd/{fd}")
+            root = Path(f"/proc/self/fd/{fd}") if sys.platform.startswith("linux") else Path(fd_path(fd))
             # A bare name pattern such as "*.md" searches the whole tree.
             for match in root.rglob(pattern) if "/" not in pattern else root.glob(pattern):
                 if time.monotonic() > deadline:
@@ -411,6 +510,12 @@ FLAT_DEPTH = 8
 
 
 def _open_up(path: str) -> None:
+    if not sys.platform.startswith("linux"):
+        with contextlib.suppress(OSError):
+            mode = os.lstat(path).st_mode
+            if stat.S_ISDIR(mode) and mode & 0o700 != 0o700:
+                os.chmod(path, stat.S_IMODE(mode) | 0o700, follow_symlinks=False)
+        return
     with contextlib.suppress(OSError):
         fd = os.open(path, os.O_PATH | os.O_NOFOLLOW)
         try:
@@ -487,6 +592,8 @@ def open_deleted_usage(prefix: str) -> dict[str, int]:
     # Files a call deleted but still holds open or mapped keep their space; charge them to the workspace they were
     # in. Calls cannot leave their sessions and hold at most MAX_OPEN_FILES each, so this scan stays bounded.
     found: dict[tuple[int, int], tuple[str, int]] = {}
+    if not os.path.isdir("/proc"):
+        return {}
     for pid in filter(str.isdigit, os.listdir("/proc")):
         with contextlib.suppress(OSError):
             if os.getsid(int(pid)) not in ACTIVE_SESSIONS:

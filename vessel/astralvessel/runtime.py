@@ -255,10 +255,26 @@ class Runtime:
                   "VESSEL_NODE_DATA_DIR": str(self.layout.node_data),
                   "VESSEL_MEMORY_BYTES": str(size_bytes(agent.profile.memory)),
                   "VESSEL_PIDS": str(agent.profile.pids)}
+        sources = {m.target: self.mount_source(m.source) for m in agent.profile.mounts}
+        if sources:
+            values["VESSEL_READS"] = os.pathsep.join(sources.values())
+        workdir = sources.get(agent.package.manifest.sandbox.workdir)
+        if workdir:
+            values["VESSEL_WORKDIR"] = workdir
         rg = self.bundle.ripgrep
         if rg is not None:
             values["VESSEL_RG_BIN"] = str(rg)
         return values
+
+    def mount_source(self, source: str) -> str:
+        if source.startswith("volume:"):
+            raise RuntimeProblem(f"{source} is a Docker volume; process mode reads a folder on this machine")
+        if source.startswith("env:"):
+            value = os.environ.get(source[4:])
+            if not value:
+                raise RuntimeProblem(f"{source[4:]} is not set in the environment")
+            source = value
+        return str((self.deployment.path.parent / source).resolve())
 
     def prepare(self, master_token: str) -> None:
         if len(master_token) < 16:
