@@ -1,5 +1,5 @@
 """Opens the seeded development mesh devices on the real kernel binding with the published keys of shared/dev_mesh_keys.py, so a developer or a test can create a mesh, pair a node with full history, adopt the PHI group, approve destinations, exclude devices, send it requests and call it with caller tickets and holder proofs.
-It refuses to build a device, and a device refuses to create, start, offer, approve, send, mint or sign, unless ASTRAL_ENV is exactly development. tests/helpers/dev_mesh.py builds on it and no orchestrator or shared module imports it."""
+It refuses to build a device, and a device refuses to create, start, offer, approve, send, invite, accept, verify, grant, revoke, read, mint or sign, unless ASTRAL_ENV is exactly development. tests/helpers/dev_mesh.py builds on it and no orchestrator or shared module imports it."""
 
 from __future__ import annotations
 
@@ -30,6 +30,7 @@ KINDS = {
 }
 SYNC_INTERVAL_MS = 500
 DEFAULT_LIFETIME_S = 604_800
+CONTACT_TTL_S = 600
 REQUEST_CHAT_TITLE = "Development requests"
 HOLDER_TEXT = "astral-caller-holder:v1:"
 KEY_TEXT = "astral-caller-key:v1:"
@@ -169,6 +170,11 @@ class DevDevice:
     async def enrolled(self) -> bool:
         return (await self.kernel.mesh_status()).state == ak.EnrollmentState.ENROLLED
 
+    async def read_shared(self, contact_mesh: str, grant: str) -> ak.ChatView:
+        require_development()
+        await self.kernel.refresh_contact_shares(contact_mesh)
+        return self.kernel.shared_chat(grant)
+
 
 class DevOwner(DevDevice):
     def __init__(self, name: str, data_dir: Path):
@@ -258,6 +264,26 @@ class DevOwner(DevDevice):
     def remove_connection(self, connection_id: str) -> None:
         require_development()
         self.kernel.remove_connection(connection_id)
+
+    async def invite_contact(self, label: str, ttl_s: int = CONTACT_TTL_S) -> ak.ContactInvitation:
+        require_development()
+        return await self.kernel.create_contact_invitation(label, ttl_s)
+
+    async def accept_contact(self, invitation_text: str, label: str) -> ak.ContactExchange:
+        require_development()
+        return await self.kernel.accept_contact_invitation(invitation_text, label)
+
+    def verify_contact(self, exchange_id: str) -> ak.ContactInfo:
+        require_development()
+        return self.kernel.verify_contact(exchange_id)
+
+    def grant_view(self, chat_id: str, contact_mesh: str) -> ak.ShareInfo:
+        require_development()
+        return self.kernel.approve_share(self.kernel.propose_share(chat_id, contact_mesh))
+
+    def revoke(self, grant: str) -> None:
+        require_development()
+        self.kernel.revoke_share(grant)
 
     def phi_markers_synced(self) -> bool:
         return all(member.upgraded for member in self.kernel.phi_group().members)

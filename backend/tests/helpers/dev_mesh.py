@@ -117,3 +117,38 @@ async def connection_reached(mesh: DevMesh, connection_id: str) -> None:
         lambda: connection_id in [info.id for info in mesh.node.kernel.connections()],
         "the connection to reach the node",
     )
+
+
+@dataclass
+class ContactMesh:
+    owner: dev_mesh.DevOwner
+    phone: dev_mesh.DevDevice
+
+
+@asynccontextmanager
+async def contact_mesh(tmp_path: Path, monkeypatch: Any) -> AsyncIterator[ContactMesh]:
+    monkeypatch.setenv(dev_mesh.ENV, dev_mesh.DEVELOPMENT)
+    owner = dev_mesh.DevOwner("second-owner", tmp_path / "second-owner")
+    phone = dev_mesh.DevDevice("second-phone", tmp_path / "second-phone")
+    try:
+        owner.create_mesh()
+        owner.confirm_recovery()
+        await owner.start()
+        await phone.start()
+        await owner.approve_offer(await phone.pairing_offer())
+        await until(phone.enrolled, "the second phone to join the second mesh")
+        yield ContactMesh(owner, phone)
+    finally:
+        await phone.stop()
+        await owner.stop()
+
+
+async def verified_contacts(mine: dev_mesh.DevOwner, theirs: dev_mesh.DevOwner) -> None:
+    invitation = await mine.invite_contact("Mesh A")
+    at_theirs = await theirs.accept_contact(invitation.text, "Mesh B")
+    await until(lambda: mine.kernel.pending_contact_exchanges(), "the invitation to reach its owner")
+    at_mine = mine.kernel.pending_contact_exchanges()[0]
+    if at_mine.code != at_theirs.code:
+        raise AssertionError("the two meshes disagree on the contact code")
+    mine.verify_contact(at_mine.id)
+    theirs.verify_contact(at_theirs.id)
