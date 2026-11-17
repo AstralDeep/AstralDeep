@@ -4,12 +4,12 @@ from .claude_native import ClaudeNativeAdapter
 def get_provider(provider_type: str, credentials: Dict[str, Any]) -> Optional[Any]:
     """
     Factory method to resolve provider. 
-    Added 'claude_native' support.
+    Added 'claude_native' support with mandatory credential validation.
     """
     if provider_type == "claude_native":
-        if "api_key" not in credentials:
+        if not credentials or "api_key" not in credentials:
             raise ValueError("Missing credentials for native Claude provider")
         return ClaudeNativeAdapter(api_key=credentials["api_key"])
     
-    # ... existing logic for openai/other providers ...
+    # Placeholder for existing logic
     return None
