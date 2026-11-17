@@ -72,7 +72,7 @@ recall writes serialize with the locked row through PostgreSQL.
 The stable repository catalog includes four explicit stores for the first identity/agent
 cutover slice:
 
-- `identity`: detached Keycloak/OIDC subject observations; authentication and role policy remain
+- `identity`: detached identity subject observations; authentication and role policy remain
   in Deep.
 - `agents`: first-party ownership/trust plus user-agent revisions, host sessions, runtime
   generations, and request fences.
@@ -167,7 +167,7 @@ the `066.001` baseline:
 
 Use `create_credential_repository()`, `create_offline_grant_repository()`, and
 `create_share_grant_repository()` for individual composition. Encryption, raw token handling,
-Keycloak exchange, PHI policy, rendering, and audit decisions remain in AstralDeep. See
+token exchange, PHI policy, rendering, and audit decisions remain in AstralDeep. See
 `docs/credentials-and-grants.md` for the owner, replay, and transaction contracts.
 
 Conversation-adjacent durable state has three additional stable factories:

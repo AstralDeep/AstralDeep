@@ -15,7 +15,7 @@ Vessel pins the Kernel with mesh identity, pairs the node with no token and carr
 - The pinned Kernel commit and the Linux wheel and mailbox digests in `config/kernel-binding.json` are the mesh-identity build, version 0.2.0.
 - `astralvessel pair` needs no sign-in. It reads the node's pairing secret inside the node container and asks the node's loopback offer route. `--token-file` and `--label` are gone.
 - `ask`, `chat` and `conformance` use an owner-minted caller ticket and its holder key (`--ticket-file` or the file named by `ASTRAL_CALLER_TICKET_FILE`). The holder key lives only in a 0600 `caller-key` file beside `deployment.toml`, made by `astralvessel caller key`, and a file open to group or others is refused. `ASTRAL_OWNER_TOKEN`, `ASTRAL_CALLER_KEY`, `ASTRAL_CALLER_TICKET`, `--token-file` and `--key-file` are refused with a reason. A bearer token is never sent.
-- `up` takes no `--issuer`, `--client-id` or `--subject`, and the generated deployment has no `[owner]` section. The generated Compose file sets no `KEYCLOAK_*`, `ASTRAL_ACCEPTED_ISSUERS` or `ASTRAL_NODE_OWNER`.
+- `up` takes no `--issuer`, `--client-id` or `--subject`, and the generated deployment has no `[owner]` section. The generated Compose file sets no sign-in or owner settings.
 - An older `deployment.toml` with an `[owner]` section still loads, with a notice, and is never rewritten.
 - The descriptor must be v2. A v1 descriptor gets a clear error.
 - `check` reports a node in `node.legacy_owner` and deletes nothing.

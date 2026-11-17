@@ -10,7 +10,9 @@
     "**/provenance/**",
     ".gitleaksignore",
     "scripts/check_no_keycloak.py",
-    "scripts/no_keycloak.json"
+    "scripts/no_keycloak.json",
+    "plane/no-keycloak.json",
+    "vessel/no-keycloak.json"
   ],
   "pending": [
     {
@@ -272,18 +274,6 @@
       "until": "T10"
     },
     {
-      "path": "plane/README.md",
-      "until": "T18"
-    },
-    {
-      "path": "plane/docs/credentials-and-grants.md",
-      "until": "T18"
-    },
-    {
-      "path": "plane/src/astralplane/repositories/identity.py",
-      "until": "T18"
-    },
-    {
       "path": "scripts/backend_web_image_gate.sh",
       "until": "T8"
     },
@@ -363,14 +353,6 @@
     {
       "path": "tooling/sandbox-qualification/README.md",
       "until": "T9"
-    },
-    {
-      "path": "vessel/astralvessel/deployment.py",
-      "until": "T17"
-    },
-    {
-      "path": "vessel/docs/changelog.md",
-      "until": "T17"
     }
   ]
 }
