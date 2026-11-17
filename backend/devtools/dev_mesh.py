@@ -32,6 +32,7 @@ SYNC_INTERVAL_MS = 500
 DEFAULT_LIFETIME_S = 604_800
 REQUEST_CHAT_TITLE = "Development requests"
 HOLDER_TEXT = "astral-caller-holder:v1:"
+KEY_TEXT = "astral-caller-key:v1:"
 TICKET_TEXT = "astral-caller-ticket:v1:"
 SCHEME = "AstralCaller "
 PROOF_CONTEXT = b"astral.caller-proof/v1\n"
@@ -89,6 +90,19 @@ class CallerHolder:
     def generate(cls) -> "CallerHolder":
         require_development()
         return cls(ed25519.Ed25519PrivateKey.generate())
+
+    @property
+    def key_text(self) -> str:
+        seed = self.key.private_bytes(serialization.Encoding.Raw, serialization.PrivateFormat.Raw, serialization.NoEncryption())
+        return KEY_TEXT + _b64(seed)
+
+    @classmethod
+    def from_key_text(cls, text: str) -> "CallerHolder":
+        require_development()
+        if not text.startswith(KEY_TEXT):
+            raise ValueError("not a caller key text form")
+        seed = base64.urlsafe_b64decode(text[len(KEY_TEXT):] + "=" * (-len(text[len(KEY_TEXT):]) % 4))
+        return cls(ed25519.Ed25519PrivateKey.from_private_bytes(seed))
 
     @property
     def holder_text(self) -> str:

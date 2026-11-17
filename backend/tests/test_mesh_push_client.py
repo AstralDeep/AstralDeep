@@ -8,7 +8,7 @@ from types import SimpleNamespace as NS
 import pytest
 
 from orchestrator import mesh_push_client as client, push_wake as pw
-from shared import dev_mesh_keys, external_http
+from shared import dev_mesh_keys, external_http, node_identity
 from shared.node_identity import owner_id_for_mesh
 
 MESH = "sha256:" + "aa" * 32
@@ -23,6 +23,7 @@ URL = "https://publisher.example"
 @pytest.fixture(autouse=True)
 def production(monkeypatch):
     monkeypatch.delenv("ASTRAL_ENV", raising=False)
+    monkeypatch.setenv(node_identity.OWNER_ENV, OWNER)
 
 
 class Native:
@@ -275,3 +276,14 @@ async def test_unstarted_context_missing_route_and_local_limiter_send_nothing():
     assert (await gateway.wake(OWNER, DEVICE)).status == pw.SENT
     assert (await gateway.wake(OWNER, DEVICE)).status == pw.RATE_LIMITED
     assert len(http.calls) == 1
+
+
+@pytest.mark.parametrize("bound", [None, owner_id_for_mesh(OTHER_MESH), "oidc.0123456789abcdef.owner"])
+async def test_a_wake_waits_for_the_node_to_hold_exactly_this_mesh_as_its_owner(monkeypatch, bound):
+    mesh, _, http, gateway = setup()
+    monkeypatch.delenv(node_identity.OWNER_ENV)
+    monkeypatch.setenv(node_identity.DATA_DIR_ENV, "/nonexistent-node-data")
+    if bound is not None:
+        monkeypatch.setenv(node_identity.OWNER_ENV, bound)
+    assert (await gateway.wake(OWNER, DEVICE)).status == pw.NO_DESTINATION
+    assert http.calls == []

@@ -1,6 +1,6 @@
 """MCP-only OAuth resource-server boundary, kept separate from the web/native bearer
 dependency since MCP tokens carry a distinct audience and scope set; the inbound
-bearer is discarded after validation, and a personal node refuses it unread and names no identity server. Used by mcp_server_endpoint.py.
+bearer is discarded after validation, and a personal node refuses it unread and names no identity server, taking an owner-minted caller ticket instead through caller_tickets.py. Used by mcp_server_endpoint.py.
 """
 
 from __future__ import annotations
@@ -12,7 +12,9 @@ from typing import Any, Callable, Iterable, Mapping, Optional
 from urllib.parse import urlsplit, urlunsplit
 
 from jose import jwt as jose_jwt
+from starlette.requests import Request
 
+from orchestrator import caller_tickets
 from orchestrator.auth import NODE_BEARER_REFUSED, node_caller_challenge
 from shared import node_identity
 from shared.jwks_cache import get_jwks
@@ -215,6 +217,21 @@ def require_mcp_entry_role(
         )
 
 
+async def authorize_mcp_caller(
+    request: Request, body: bytes, *, method: str, tool: Optional[str], required_scopes: Iterable[str],
+) -> dict[str, Any]:
+    required = tuple(required_scopes)
+    try:
+        claims = await caller_tickets.verify(
+            request, body, tool=tool if method == "tools/call" else None, audience=MCP_AUDIENCE,
+        )
+        if method.startswith("resources/"):
+            raise caller_tickets.refusal(caller_tickets.TOOL_NOT_COVERED)
+    except caller_tickets.CallerRefused as exc:
+        raise MCPAuthError(exc.status, exc.code, "this node refuses the caller", required) from None
+    return claims
+
+
 async def authorize_mcp_request(
     *,
     headers: Mapping[str, str],
@@ -266,6 +283,7 @@ __all__ = [
     "MCP_ENTRY_ROLES",
     "MCP_SCOPES",
     "MCPAuthError",
+    "authorize_mcp_caller",
     "authorize_mcp_request",
     "canonical_public_base_url",
     "challenge_header",

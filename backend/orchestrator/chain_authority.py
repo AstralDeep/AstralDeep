@@ -1,7 +1,7 @@
 """The shared derivation seam (MachineTurnAuthority.derive) that scheduled jobs, parser
 replays, draft self-tests and mesh requests use for consent-derived root authority, plus
 ChainBudget's per-turn hop/depth/wall-clock ceiling over nested delegation.
-A mesh whole-turn binding also carries the exact tools its mesh grants cover, and orchestrator.py admits only those.
+A mesh whole-turn binding also carries the exact tools its mesh grants cover, and a caller-ticket call binds the one tool it names, and orchestrator.py admits only those.
 """
 
 from __future__ import annotations
@@ -29,9 +29,30 @@ _MACHINE_SCOPE_KEY = "_machine_authority_scopes"
 _MACHINE_TOOLS_KEY = "_machine_authority_tools"
 _STANDING_CONSENT_CLASSES = ("parser_replay", "draft_self_test")
 _TOOL_LISTED_CLASSES = ("mesh_request",)
+_CALLER_BOUND_KEY = "_caller_bound_tool"
+
+
+def bind_caller_tool(session: Dict[str, Any], agent_id: str, tool: str, definition: Optional[str], scope: Optional[str]) -> None:
+    session[_CALLER_BOUND_KEY] = (agent_id, tool, definition, scope)
+
+
+def caller_bound(session: Dict[str, Any]) -> bool:
+    return _CALLER_BOUND_KEY in session
+
+
+def _caller_binding(session: Dict[str, Any]) -> Optional[Tuple[str, str, str, str]]:
+    bound = session.get(_CALLER_BOUND_KEY)
+    if isinstance(bound, tuple) and len(bound) == 4 and all(isinstance(part, str) and part for part in bound):
+        return bound
+    return None
 
 
 def machine_scope_ceiling(session: Dict[str, Any]) -> Optional[frozenset[str]]:
+    if caller_bound(session):
+        from orchestrator.tool_permissions import VALID_SCOPES
+
+        bound = _caller_binding(session)
+        return frozenset({bound[3]}) if bound and bound[3] in VALID_SCOPES else frozenset()
     if "machine_class" not in session and _MACHINE_SCOPE_KEY not in session:
         return None
     from orchestrator.tool_permissions import VALID_SCOPES
@@ -53,6 +74,8 @@ def machine_scope_ceiling(session: Dict[str, Any]) -> Optional[frozenset[str]]:
 
 
 def machine_tool_listed(session: Dict[str, Any]) -> bool:
+    if caller_bound(session):
+        return True
     return session.get("machine_class") in _TOOL_LISTED_CLASSES and session.get("_machine_authority_agent") is None
 
 
@@ -67,6 +90,13 @@ def _valid_tools(tools: Any) -> bool:
 def machine_tool_admitted(orch: Any, session: Dict[str, Any], agent_id: str, tool: str) -> bool:
     if not machine_tool_listed(session):
         return True
+    if caller_bound(session):
+        bound = _caller_binding(session)
+        if bound is None or (agent_id, tool) != bound[:2]:
+            return False
+        from orchestrator.node_mesh_calls import current_definition
+
+        return current_definition(orch, agent_id, tool) == bound[2]
     tools = session.get(_MACHINE_TOOLS_KEY)
     if not _valid_tools(tools):
         return False

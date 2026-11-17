@@ -45,8 +45,8 @@ PUBLIC = {
 
 IN_BAND = {
     ("WS", "/ws"): "register_ui answers auth_required with node.bearer_refused",
-    ("POST", "/a2a"): "the gated JSON-RPC endpoint refuses before reading the bearer",
-    ("POST", "/mcp"): "authorize_mcp_request refuses before reading the bearer",
+    ("POST", "/a2a"): "the gated JSON-RPC endpoint takes only a caller ticket and refuses every bearer unread",
+    ("POST", "/mcp"): "authorize_mcp_caller takes only a caller ticket and refuses every bearer unread",
     ("WS", WORKER_CONTROL_PATH): "the worker control socket refuses any Authorization or cookie header",
 }
 

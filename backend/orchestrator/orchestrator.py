@@ -20623,6 +20623,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 "chat_id": args.get("session_id") if isinstance(args, dict) else None,
                 "ui_websocket": ui_websocket,
                 "parent_token": parent_payload,
+                "caller_id": (self.ui_sessions.get(ui_websocket, {}) or {}).get("_caller_id"),
             }
             self._dispatch_context[request_id].update(evidence_context.requester_binding(self))
             from persistent_agents.dispatch_context import current_dispatch
@@ -20821,6 +20822,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     f"Hop refused: '{callee}' is not a dispatchable agent.",
                     ctx=ctx, detail="reserved_callee",
                     parent=ctx.get("parent_token"))
+            if ctx.get("caller_id"):
+                return await _refuse(
+                    "Hop refused: a caller ticket never authorizes chained calls.",
+                    ctx=ctx, detail="caller.chain_refused", parent=ctx.get("parent_token"))
             if ctx.get("persistent_assignment"):
                 return await _refuse(
                     "Persistent assignment children require a durable task reservation.",
@@ -21085,6 +21090,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             if delegation_subject_token:
                 safe_claims["_raw_token"] = delegation_subject_token
             safe_claims["_invocation_channel"] = channel
+            safe_claims.pop("_caller_bound_tool", None)
+            if safe_claims.get("_caller_id"):
+                await self._bind_caller_call(safe_claims, agent_id, tool_name)
             self.ui_sessions[invocation] = safe_claims
         auth = None
         result: Optional[MCPResponse] = None
@@ -21125,6 +21133,16 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 await self._release_hop_cap_slot(cap_job_id)
             if owns_invocation:
                 self.ui_sessions.pop(invocation, None)
+
+    async def _bind_caller_call(self, claims: Dict[str, Any], agent_id: str, tool_name: str) -> None:
+        from orchestrator.chain_authority import bind_caller_tool
+        from orchestrator.node_mesh_calls import current_definition
+
+        try:
+            scope = await asyncio.to_thread(self.tool_permissions.get_tool_scope, agent_id, tool_name)
+        except Exception:
+            scope = None
+        bind_caller_tool(claims, agent_id, tool_name, current_definition(self, agent_id, tool_name), scope)
 
     async def execute_mcp_tool(
         self,
@@ -22935,7 +22953,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         if node_session and stop is not None and not stop.admission_allowed(user_id):
             return None
         machine_scopes = None
-        if node_session:
+        from orchestrator.chain_authority import caller_bound
+
+        if node_session or caller_bound(claims):
             from orchestrator.chain_authority import machine_scope_ceiling
 
             machine_scopes = machine_scope_ceiling(claims)
@@ -22962,7 +22982,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     in machine_scopes
                 )
             ]
-            if node_session:
+            if node_session or machine_scopes is not None:
                 from orchestrator.tool_permissions import VALID_SCOPES
 
                 granted = {

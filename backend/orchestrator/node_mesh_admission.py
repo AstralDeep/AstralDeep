@@ -129,6 +129,15 @@ def current_admission() -> Optional[Admission]:
     return _CURRENT.get()
 
 
+def _bound_mesh_owner() -> Optional[str]:
+    from shared import node_identity
+
+    try:
+        return node_identity.bound_mesh_owner()
+    except node_identity.NodeIdentityError:
+        return None
+
+
 async def personal_authority(orch, owner: str, *, agent_id: Optional[str] = None):
     from orchestrator.chain_authority import MachineAuthority
     from shared import node_identity
@@ -138,7 +147,7 @@ async def personal_authority(orch, owner: str, *, agent_id: Optional[str] = None
     bound = _CURRENT.get() if agent_id is not None else _TURN.get()
 
     def current():
-        if node_identity.bound_owner() != owner:
+        if _bound_mesh_owner() != owner:
             return "node.owner_mismatch"
         if agent_id is None:
             return _turn_binding_code(bound, owner, bound.chat if bound is not None else None)
@@ -275,7 +284,7 @@ async def source_bound_capability(orch, owner, chat, agent, tool, args):
             await admission.check_current()
         action = json.loads(ticket.action_json)
         if (mesh.kernel is not admission.kernel
-                or (node_identity.is_personal() and node_identity.bound_owner() != owner)
+                or (node_identity.is_personal() and _bound_mesh_owner() != owner)
                 or RequestReference.capture(context.request) != request
                 or verified.mesh != context.mesh_id or verified.turn != action.get("turn")
                 or action.get("tool") != resolved.tool or action.get("tool_def") != resolved.definition

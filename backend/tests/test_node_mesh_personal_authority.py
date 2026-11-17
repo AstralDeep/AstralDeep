@@ -27,7 +27,7 @@ OWNER = node_identity.owner_id_for_mesh(MESH)
 def personal(monkeypatch):
     identity = node_identity.NodeIdentity.from_private(Ed25519PrivateKey.generate())
     monkeypatch.setattr(node_identity, "is_personal", lambda: True)
-    monkeypatch.setattr(node_identity, "bound_owner", lambda: OWNER)
+    monkeypatch.setattr(node_identity, "bound_mesh_owner", lambda: OWNER)
     monkeypatch.setattr(node_identity, "load_node_identity", lambda **_kwargs: identity)
     orch = _mesh_orchestrator()
     orch.derive_machine_authority = AsyncMock(side_effect=AssertionError("IAM must not be consulted"))
@@ -278,7 +278,7 @@ async def test_missing_or_malformed_mesh_principals_fail_closed(personal, mesh_i
 
 
 async def test_changed_global_owner_refuses_a_previously_matching_live_context(personal, monkeypatch):
-    monkeypatch.setattr(node_identity, "bound_owner", lambda: "wrong")
+    monkeypatch.setattr(node_identity, "bound_mesh_owner", lambda: "wrong")
     with personal.bound():
         with pytest.raises(NodeMeshError, match="owner_mismatch"):
             await admission.personal_authority(personal.orch, OWNER)
@@ -369,6 +369,11 @@ async def test_personal_peer_authorization_occurs_after_claim_inside_the_ticket_
 async def test_preserved_oidc_owner_is_never_reassigned_from_mesh_membership(personal, monkeypatch):
     legacy = node_identity.canonical_owner_id("https://auth.example.test", "user-1")
     monkeypatch.setattr(node_identity, "bound_owner", lambda: legacy)
+
+    def refuse_legacy():
+        raise node_identity.LegacyOwner("legacy")
+
+    monkeypatch.setattr(node_identity, "bound_mesh_owner", refuse_legacy)
     personal.state.owner = legacy
     with admission.turn(personal.mesh, lambda: legacy, legacy, "local-chat", {}, personal.catalog,
                         personal.mint, request=personal.request):
