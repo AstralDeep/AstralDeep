@@ -3,7 +3,7 @@ from backend.agents.search_controller import SourceState
 
 def render_search_controls(sources: List[Dict[str, Any]]) -> str:
     """Generates server-owned UI components for search navigation."""
-    controls = []
+    controls: List[str] = []
     for source in sources:
         state = source.get("state")
         # Handle both Enum and string representations for robustness
