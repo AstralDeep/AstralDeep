@@ -562,8 +562,6 @@ class IngressRig:
         orch.tool_permissions.register_tool_scopes(
             self.agent_id, {TOOL_NAME: "tools:read"}
         )
-        # Delegation mints locally in the development posture; ingress auth stays real
-        orch.delegation.mock_auth = True
 
 
 async def _build_rig(
