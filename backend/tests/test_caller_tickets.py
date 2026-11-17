@@ -471,12 +471,11 @@ async def test_a_mesh_that_cannot_verify_refuses_as_unavailable(tmp_path, monkey
             door.mesh.node._binding = binding
 
 
-async def test_a_legacy_owner_binding_refuses(tmp_path, monkeypatch):
+async def test_a_legacy_owner_in_the_environment_is_ignored_and_the_mesh_owner_still_serves(tmp_path, monkeypatch):
     async with served(tmp_path, monkeypatch) as door:
         ticket = door.mint(["read_value"])
         monkeypatch.setenv(node_identity.OWNER_ENV, "oidc." + "a" * 64)
-        response = await door.call_tool(ticket, "read_value")
-        assert (response.status_code, code_of(response)) == (503, "node.owner_unbound")
+        assert (await door.call_tool(ticket, "read_value")).status_code == 200
 
 
 async def test_a_production_node_holding_a_dev_mesh_serves_no_ticket(tmp_path, monkeypatch):
@@ -601,7 +600,7 @@ def test_an_unreadable_owner_binding_is_no_owner_for_the_admission_check(monkeyp
     from orchestrator import node_mesh_admission
 
     def unreadable():
-        raise node_identity.LegacyOwner("legacy")
+        raise node_identity.NodeIdentityError("unreadable")
 
     monkeypatch.setattr(node_identity, "bound_mesh_owner", unreadable)
     assert node_mesh_admission._bound_mesh_owner() is None

@@ -105,7 +105,7 @@ async def test_unproven_pairing_never_binds_or_routes_an_owner(receiver, change,
 
 
 @pytest.mark.parametrize("owner,bound,code", [
-    (LEGACY, LEGACY, "node.legacy_owner"), (OTHER, OTHER_STORED, "node.owner_mismatch"),
+    (OTHER, OTHER_STORED, "node.owner_mismatch"),
     (OTHER_STORED, OTHER_STORED, "node.owner_mismatch"),
 ])
 @pytest.mark.parametrize("source", ["file", "env"])
@@ -127,20 +127,36 @@ async def test_existing_owner_is_preserved_and_reports_explicit_refusal(receiver
 
 
 @pytest.mark.parametrize("source", ["file", "env"])
-async def test_a_legacy_owner_is_reported_before_the_node_joins_a_mesh(receiver, monkeypatch, source):
+async def test_a_legacy_owner_is_retired_before_the_node_joins_a_mesh(receiver, monkeypatch, source):
     host = receiver
     if source == "file":
         stored = seed_owner(LEGACY)
     else:
         monkeypatch.setenv(node_identity.OWNER_ENV, LEGACY)
     await host.bridge.scan()
-    assert (await host.mesh.status())["owner_binding"] == {"state": "refused", "code": "node.legacy_owner"}
+    assert (await host.mesh.status())["owner_binding"] == {"state": "setup_required", "code": "mesh.not_enrolled"}
     assert host.bridge._owner is None
     if source == "file":
-        assert (host.home / node_identity.OWNER_FILE).read_bytes() == stored
+        assert not (host.home / node_identity.OWNER_FILE).exists()
+        (kept,) = host.home.glob(node_identity.OWNER_FILE + ".legacy-*")
+        assert kept.read_bytes() == stored
 
 
-@pytest.mark.parametrize("stored,code", [(LEGACY, "node.legacy_owner"), (OTHER_STORED, "node.owner_mismatch")])
+@pytest.mark.parametrize("source", ["file", "env"])
+async def test_pairing_binds_the_mesh_owner_after_a_legacy_owner_is_retired(receiver, monkeypatch, source):
+    host = receiver
+    if source == "file":
+        seed_owner(LEGACY)
+    else:
+        monkeypatch.setenv(node_identity.OWNER_ENV, LEGACY)
+    host.kernel.join(MESH)
+    await host.bridge.scan()
+    assert (await host.mesh.status())["owner_binding"] == {"state": "ready", "code": None}
+    assert (host.home / node_identity.OWNER_FILE).read_text() == node_identity.owner_id_for_mesh(MESH)
+    assert host.mesh.personal_owner_id() == node_identity.owner_id_for_mesh(MESH)
+
+
+@pytest.mark.parametrize("stored,code", [(OTHER_STORED, "node.owner_mismatch")])
 async def test_a_configured_mesh_owner_cannot_hide_a_different_owner_file_before_the_node_joins(receiver, monkeypatch, stored, code):
     host = receiver
     before = seed_owner(stored)
@@ -231,7 +247,7 @@ async def test_binding_storage_failure_is_an_explicit_refusal(receiver, monkeypa
     assert (await host.mesh.status())["owner_binding"] == {"state": "refused", "code": "node.owner_binding_unavailable"}
 
 
-async def test_refused_legacy_binding_never_reassigns_existing_owner_data(receiver):
+async def test_retiring_a_legacy_binding_never_rewrites_existing_owner_data(receiver):
     import sqlite3
 
     host = receiver
@@ -243,11 +259,11 @@ async def test_refused_legacy_binding_never_reassigns_existing_owner_data(receiv
     before = database.read_bytes()
     host.kernel.join(MESH)
     await host.bridge.scan()
-    assert (await host.mesh.status())["owner_binding"] == {"state": "refused", "code": "node.legacy_owner"}
     assert database.read_bytes() == before
     with sqlite3.connect(database) as connection:
         assert connection.execute("SELECT owner, value FROM existing_data").fetchall() == [(LEGACY, "preserved")]
-    assert (host.home / node_identity.OWNER_FILE).read_bytes() == stored
+    (kept,) = host.home.glob(node_identity.OWNER_FILE + ".legacy-*")
+    assert kept.read_bytes() == stored
     assert host.bridge._history.created == []
 
 
@@ -336,7 +352,7 @@ def use_mesh(host, mesh_id):
     host.kernel.join(mesh_id)
 
 
-async def test_a_legacy_owner_and_its_plane_rows_are_reported_and_left_untouched(personal_home, plane):
+async def test_a_legacy_owner_is_retired_and_its_plane_rows_are_left_untouched(personal_home, plane):
     history = plane_history(plane)
     stored = seed_owner(LEGACY)
     chat = seed_rows(history, LEGACY, "a question from before the cut")
@@ -344,14 +360,14 @@ async def test_a_legacy_owner_and_its_plane_rows_are_reported_and_left_untouched
     host = await start_receiver(personal_home, history)
     try:
         await host.bridge.scan()
-        assert (await host.mesh.status())["owner_binding"] == {"state": "refused", "code": "node.legacy_owner"}
+        assert not (personal_home / node_identity.OWNER_FILE).exists()
         use_mesh(host, MESH)
         await host.bridge.scan()
-        assert (await host.mesh.status())["owner_binding"] == {"state": "refused", "code": "node.legacy_owner"}
-        assert host.bridge._owner is None and host.mesh.personal_owner_id() is None
+        assert host.mesh.personal_owner_id() == STORED
     finally:
         await node_mesh_chat.stop_all()
-    assert (personal_home / node_identity.OWNER_FILE).read_bytes() == stored
+    (kept,) = personal_home.glob(node_identity.OWNER_FILE + ".legacy-*")
+    assert kept.read_bytes() == stored
     assert snapshot(history, LEGACY) == before and before[0][0] == chat
     assert snapshot(history, STORED) == []
 
