@@ -33,6 +33,7 @@ tasks in part. Nothing below is checked off until its own closing condition is s
 | T1.16 | Done in code | Create a Mesh on macOS and iOS makes no identity-provider request. The network-blocked pairing check is live and waits for the final phase |
 | T1.17 | Partly done | The `AGENTS.md` security row is reworded (Deep `73debd1b`). The other five section 13 rows are not applied |
 | T1.7, T1.11 to T1.15, T1.19 | Open | Mock auth (about 100 backend files), the bearer path, Vessel's `KEYCLOAK_*` pairing and the watch device grant remain |
+| T4.6 | Done in code | A pack-launched personal node boots on SQLite with no PostgreSQL setting, answers `/readyz`, creates `plane.sqlite3` at 0600, serves a development-mesh ticketed `/mcp` request and reads the same file unchanged on a second boot (`backend/tests/test_personal_sqlite_boot.py`). Spec sections 10.1 and 10.2 "today" lines are stale and are left to the owner |
 
 **Phase 0** is done in code. Every result is in [phase-0/README.md](phase-0/README.md). T0.6 and T0.9
 keep their live parts for T8.7. T0.13 is live on the site.
