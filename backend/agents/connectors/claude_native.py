@@ -1,6 +1,5 @@
 import httpx
 from typing import Any, Dict
-import os
 
 class ClaudeNativeAdapter:
     """Native adapter for Anthropic Messages API with Fence egress compliance."""
