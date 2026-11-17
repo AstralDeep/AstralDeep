@@ -269,17 +269,21 @@ def _execution_identity() -> dict[str, object]:
     components = composition.get("components")
     if not isinstance(components, Mapping):
         raise DriverError("execution_identity_unavailable")
-    plane_component = components.get("astral-plane")
+    in_tree = composition.get("in_tree")
     lets_component = components.get("lets")
-    if not isinstance(plane_component, Mapping) or not isinstance(
-        lets_component, Mapping
+    if (
+        not isinstance(in_tree, Mapping)
+        or not isinstance(in_tree.get("astral-plane"), Mapping)
+        or not isinstance(lets_component, Mapping)
     ):
         raise DriverError("execution_identity_unavailable")
+    astraldeep_commit = _git_head()
+    plane_component = {"commit": astraldeep_commit}
     executable = Path(sys.executable).resolve(strict=True)
     return {
         "format": EXECUTION_IDENTITY_FORMAT,
         "astraldeep": {
-            "commit": _git_head(),
+            "commit": astraldeep_commit,
             "driver_relative_path": DRIVER_RELATIVE_PATH,
             "driver_sha256": _sha256_file(expected_driver),
         },
