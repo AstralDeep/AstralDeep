@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 import httpx
 
+from . import caller as callers
 from . import node
 from .deployment import Deployment
 
@@ -18,9 +19,12 @@ from .deployment import Deployment
 @dataclass
 class Context:
     deployment: Deployment
-    caller: node.Caller
+    caller: callers.Caller
     offer: Callable[[], dict]
 
+
+MESSAGE = {"messageId": "c1", "role": "ROLE_USER", "parts": [{"text": "conformance check"}]}
+JWT_SHAPED = "eyJhbGciOiJub25lIn0.eyJzdWIiOiJjb25mb3JtYW5jZSJ9.c2ln"
 
 Check = tuple[str, Callable[[Context], str | None]]
 
@@ -55,31 +59,31 @@ def agent_card(ctx: Context) -> str | None:
 
 
 def a2a_needs_a_ticket(ctx: Context) -> str | None:
-    status = node.a2a_call(ctx.deployment.node, None, "SendMessage").status_code
+    status = node.a2a_call(ctx.deployment.node, None, "SendMessage", MESSAGE).status_code
     return None if status == 401 else f"an anonymous call answered HTTP {status}"
 
 
 def a2a_refuses_a_bearer_token(ctx: Context) -> str | None:
-    status = node.a2a_call(ctx.deployment.node, None, "SendMessage",
-                           headers={"Authorization": "Bearer conformance"}).status_code
-    return None if status == 401 else f"a bearer token answered HTTP {status}"
+    status = node.a2a_call(ctx.deployment.node, None, "SendMessage", MESSAGE,
+                           headers={"Authorization": f"Bearer {JWT_SHAPED}"}).status_code
+    return None if status == 401 else f"a JWT bearer token answered HTTP {status}"
 
 
 def a2a_refuses_a_forged_proof(ctx: Context) -> str | None:
-    forger = node.Caller(ctx.caller.ticket_text, node.KEY_TEXT + node.b64(os.urandom(32)))
-    status = node.a2a_call(ctx.deployment.node, forger, "SendMessage").status_code
+    forger = callers.Caller(ctx.caller.ticket_text, callers.KEY_TEXT + callers.b64(os.urandom(32)))
+    status = node.a2a_call(ctx.deployment.node, forger, "SendMessage", MESSAGE).status_code
     return None if status == 401 else f"a proof from another key answered HTTP {status}"
 
 
 def a2a_answers_the_caller(ctx: Context) -> str | None:
-    response = node.a2a_call(ctx.deployment.node, ctx.caller, "SendMessage")
+    response = node.a2a_call(ctx.deployment.node, ctx.caller, "SendMessage", MESSAGE)
     task = (response.json().get("result") or {}).get("task") if response.status_code == 200 else None
     state = (task or {}).get("status", {}).get("state", "")
     return None if state.endswith("COMPLETED") else f"the caller's message ended as {state or response.status_code}"
 
 
 def a2a_refuses_unknown_methods(ctx: Context) -> str | None:
-    response = node.a2a_call(ctx.deployment.node, ctx.caller, "NoSuchMethod")
+    response = node.a2a_call(ctx.deployment.node, ctx.caller, "NoSuchMethod", MESSAGE)
     return None if response.status_code == 200 and "error" in response.json() else "an unknown method was accepted"
 
 
@@ -116,7 +120,7 @@ CHECKS: tuple[Check, ...] = (
     ("the node publishes its Ed25519 key", node_key_published),
     ("the A2A card advertises JSON-RPC 1.0 with streaming", agent_card),
     ("A2A refuses a call with no ticket", a2a_needs_a_ticket),
-    ("A2A refuses a bearer token", a2a_refuses_a_bearer_token),
+    ("A2A refuses a JWT bearer token", a2a_refuses_a_bearer_token),
     ("A2A refuses a proof signed by another key", a2a_refuses_a_forged_proof),
     ("A2A answers the caller", a2a_answers_the_caller),
     ("A2A rejects an unknown method", a2a_refuses_unknown_methods),
@@ -126,7 +130,7 @@ CHECKS: tuple[Check, ...] = (
 )
 
 
-def run(deployment: Deployment, caller: node.Caller, offer: Callable[[], dict]) -> list[str]:
+def run(deployment: Deployment, caller: callers.Caller, offer: Callable[[], dict]) -> list[str]:
     ctx = Context(deployment, caller, offer)
     failed: list[str] = []
     for name, check in CHECKS:

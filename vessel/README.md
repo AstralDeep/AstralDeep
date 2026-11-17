@@ -22,9 +22,8 @@ pip install astralvessel
 astralvessel up --example
 astralvessel check
 astralvessel pair
-export ASTRAL_CALLER_TICKET=<a caller ticket the owner minted>
-export ASTRAL_CALLER_KEY=<its holder key>
-astralvessel ask "hello"
+astralvessel caller key
+astralvessel ask "hello" --ticket-file ticket.txt
 ```
 
 `up` needs an AstralDeep node image on the machine. The [quickstart](https://astraldeep.github.io/AstralVessel/get-started/quickstart/) says how to build one.

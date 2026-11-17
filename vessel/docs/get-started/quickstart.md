@@ -72,14 +72,13 @@ Pair the node into your mesh with no sign-in, then approve it on a device you al
 astralvessel pair
 ```
 
-To ask the node a question from a script, mint a caller ticket for this node in the AstralDeep app. The CLI reads the ticket and its holder key from the environment or files and never prints the key or accepts it as a command-line value:
+To ask the node a question from a script, create a holder key, give its public form to the owner, and save the caller ticket they mint for this node to a file. The private key stays in a 0600 `caller-key` file and is never printed:
 
 ```bash
-export ASTRAL_CALLER_TICKET="<the ticket text>"
-export ASTRAL_CALLER_KEY="<the holder key>"
+astralvessel caller key
 astralvessel check
-astralvessel ask "hello"
-astralvessel conformance
+astralvessel ask "hello" --ticket-file ticket.txt
+astralvessel conformance --ticket-file ticket.txt
 ```
 
 See [the caller ticket](../reference/cli.md#the-caller-ticket) and [pairing](../run/pairing.md).

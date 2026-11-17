@@ -314,8 +314,8 @@ async def _executor_stopped(world):
 async def test_the_kernel_accepts_the_proofs_a_vessel_caller_signs_and_refuses_a_forged_one(world):
     from cryptography.hazmat.primitives.asymmetric import ed25519
 
-    from astralvessel.node import KEY_TEXT, TICKET_TEXT, Caller
-    from astralvessel.node import b64 as encode
+    from astralvessel.caller import KEY_TEXT, TICKET_TEXT, Caller
+    from astralvessel.caller import b64 as encode
 
     seed = bytes(range(1, 33))
     public = ed25519.Ed25519PrivateKey.from_private_bytes(seed).public_key().public_bytes(

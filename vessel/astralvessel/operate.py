@@ -1,6 +1,6 @@
 # The operator's commands: up writes a deployment when there is none, starts the personal node and its executor, waits
 # and probes; check re-runs the probes and the node checks, down stops it, pair reads the node's offer from inside its
-# container, and ask and chat talk to the node with a caller ticket.
+# container, ask and chat talk to the node with a caller ticket, and caller key makes the holder key.
 
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from . import caller as callers
 from . import conformance, node
 from .deployment import AGENT_ID, Deployment, load_deployment
 from .manifest import load_package
@@ -514,15 +515,19 @@ def pair(args: argparse.Namespace) -> None:
 def ask(args: argparse.Namespace) -> None:
     deployment = _node_of(args)
     try:
-        answer = node.ask(deployment.node, node.load_caller(args.ticket_file, args.key_file), args.question)
-    except node.NodeError as exc:
+        caller = callers.load_caller(deployment.path.parent, args.ticket_file)
+        answer = node.ask(deployment.node, caller, args.question)
+    except (node.NodeError, callers.CallerError) as exc:
         raise SystemExit(str(exc)) from None
     print(answer)
 
 
 def chat(args: argparse.Namespace) -> None:
     deployment = _node_of(args)
-    caller = node.load_caller(args.ticket_file, args.key_file)
+    try:
+        caller = callers.load_caller(deployment.path.parent, args.ticket_file)
+    except callers.CallerError as exc:
+        raise SystemExit(str(exc)) from None
     context = None
     print("Chatting with your node. Press Ctrl-D to stop.")
     while True:
@@ -546,8 +551,23 @@ def conformance_suite(args: argparse.Namespace) -> None:
     stack.require_compose()
     stack.load_env()
     deployment = load(stack.deployment)
-    caller = node.load_caller(args.ticket_file, args.key_file)
+    try:
+        caller = callers.load_caller(deployment.path.parent, args.ticket_file)
+    except callers.CallerError as exc:
+        raise SystemExit(str(exc)) from None
     failed = conformance.run(deployment, caller, lambda: node_offer(stack))
     print(f"{len(conformance.CHECKS) - len(failed)} passed, {len(failed)} failed")
     if failed:
         raise SystemExit(1)
+
+
+def caller_key(args: argparse.Namespace) -> None:
+    folder = Path(args.deployment or "deployment.toml").resolve().parent
+    try:
+        holder = callers.create_key(folder)
+    except callers.CallerError as exc:
+        raise SystemExit(str(exc)) from None
+    print("\n".join([f"wrote {callers.key_path(folder)} (private, mode 0600)", "",
+                      "Ask the owner to mint a caller ticket for this node in the AstralDeep app with this holder key.",
+                      "It is public. Save the ticket they give you to a file and pass --ticket-file.", "",
+                      f"  holder  {holder}"]))

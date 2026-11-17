@@ -1,32 +1,22 @@
 # A small client for the personal node a deployment runs: its health and v2 descriptor, the pairing offer's wording,
-# and A2A questions asked with a caller ticket and holder proof. operate.py calls it for up, check, pair, ask and chat;
-# it never prints the holder key and sends no bearer token.
+# and A2A questions asked with the headers a caller.py Caller signs. operate.py calls it for up, check, pair, ask and
+# chat; it sends no bearer token.
 
 from __future__ import annotations
 
-import base64
-import hashlib
 import json
-import os
-import time
 import uuid
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
-from cryptography.hazmat.primitives.asymmetric import ed25519
 
 from .deployment import NodeSection
 
+if TYPE_CHECKING:
+    from .caller import Caller
+
 DESCRIPTOR_FORMAT = "astral.node.descriptor/v2"
 LEGACY_DESCRIPTOR_FORMAT = "astral.node.descriptor/v1"
-TICKET_VARIABLE = "ASTRAL_CALLER_TICKET"
-KEY_VARIABLE = "ASTRAL_CALLER_KEY"
-TICKET_TEXT = "astral-caller-ticket:v1:"
-KEY_TEXT = "astral-caller-key:v1:"
-SCHEME = "AstralCaller "
-PROOF_HEADER = "Astral-Caller-Proof"
-PROOF_CONTEXT = b"astral.caller-proof/v1\n"
 REQUIRED_CAPABILITIES = ("chat", "tool-dispatch")
 
 
@@ -100,55 +90,6 @@ def owner_binding(document: dict[str, Any] | None) -> dict[str, Any]:
     return binding if isinstance(binding, dict) else {}
 
 
-def b64(raw: bytes) -> str:
-    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
-
-
-def _unb64(text: str) -> bytes:
-    return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
-
-
-def _canonical(fields: dict[str, Any]) -> bytes:
-    return json.dumps(fields, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode()
-
-
-class Caller:
-    # The ticket is public; the holder key is the secret and is only ever used to sign.
-    def __init__(self, ticket_text: str, key_text: str):
-        try:
-            if not ticket_text.startswith(TICKET_TEXT) or not key_text.startswith(KEY_TEXT):
-                raise ValueError
-            self.ticket_text = ticket_text
-            self.ticket_id = json.loads(_unb64(ticket_text[len(TICKET_TEXT):]))["id"]
-            self._key = ed25519.Ed25519PrivateKey.from_private_bytes(_unb64(key_text[len(KEY_TEXT):]))
-        except (ValueError, KeyError, TypeError):
-            raise NodeError("the caller ticket must be astral-caller-ticket:v1:..., and the key "
-                            "astral-caller-key:v1:...") from None
-
-    def headers(self, method: str, target: str, body: bytes = b"") -> dict[str, str]:
-        fields: dict[str, Any] = {"v": 1, "ticket": self.ticket_id, "method": method, "target": target,
-                                  "body": "sha256:" + hashlib.sha256(body).hexdigest(),
-                                  "ms": time.time_ns() // 1_000_000, "nonce": b64(os.urandom(16))}
-        fields["sig"] = b64(self._key.sign(PROOF_CONTEXT + _canonical(fields)))
-        return {"Authorization": SCHEME + self.ticket_text[len(TICKET_TEXT):], PROOF_HEADER: b64(_canonical(fields))}
-
-
-def load_caller(ticket_file: str | None, key_file: str | None) -> Caller:
-    # The ticket and key come from the environment or files, never from the command line.
-    def read(path: str | None, variable: str) -> str:
-        raw = Path(path).expanduser().read_text() if path else os.environ.get(variable, "")
-        return raw.strip()
-
-    ticket, key = read(ticket_file, TICKET_VARIABLE), read(key_file, KEY_VARIABLE)
-    if not ticket or not key:
-        raise SystemExit(f"set {TICKET_VARIABLE} and {KEY_VARIABLE}, or pass --ticket-file and --key-file; the owner "
-                         "mints a caller ticket in the AstralDeep app for this node's A2A messages")
-    try:
-        return Caller(ticket, key)
-    except NodeError as exc:
-        raise SystemExit(str(exc)) from None
-
-
 PAIRING_REFUSALS = {
     "node.loopback_required": "the node only answers pairing requests from its own machine",
     "node.pairing_secret_required": "the node did not accept its pairing secret; run the command again",
@@ -215,11 +156,10 @@ def converse(node: NodeSection, caller: Caller, text: str, context: str | None =
     return answer, task.get("contextId")
 
 
-def a2a_call(node: NodeSection, caller: Caller | None, method: str, message: dict[str, Any] | None = None,
-             timeout: float = 15, headers: dict[str, str] | None = None) -> httpx.Response:
+def a2a_call(node: NodeSection, caller: Caller | None, method: str, message: dict[str, Any], timeout: float = 15,
+             headers: dict[str, str] | None = None) -> httpx.Response:
     raw = json.dumps({"jsonrpc": "2.0", "id": uuid.uuid4().hex, "method": method,
-                      "params": {"message": message or {"messageId": "c1", "role": "ROLE_USER",
-                                                        "parts": [{"text": "conformance check"}]}}}).encode()
+                      "params": {"message": message}}).encode()
     sent = {"A2A-Version": "1.0", "Content-Type": "application/json", **(headers or {})}
     if caller is not None:
         sent.update(caller.headers("POST", "/a2a", raw))

@@ -30,7 +30,7 @@ The node's data belongs to an owner who signed in through an identity provider. 
 
 ## `ask` says the node refused the caller ticket
 
-The ticket must be current, minted for this node, and cover A2A messages. The holder key must be the one the ticket was minted for. A bearer token is always refused.
+The ticket must be current, minted for this node, and cover A2A messages. The holder key must be the one the ticket was minted for, the `caller-key` file made by `astralvessel caller key`. If Vessel says the key file is readable by group or others, run `chmod 600 caller-key`. A bearer token is always refused.
 
 ## `pair --executor` says the node has not joined
 

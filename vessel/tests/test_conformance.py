@@ -12,14 +12,15 @@ import pytest
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric import ed25519
 
+from astralvessel import caller as callers
 from astralvessel import conformance, node
 from astralvessel.deployment import NodeSection
 
 SEED = bytes(range(32))
 HOLDER = ed25519.Ed25519PrivateKey.from_private_bytes(SEED).public_key()
 DEPLOYMENT = SimpleNamespace(node=NodeSection())
-TICKET = node.TICKET_TEXT + node.b64(json.dumps({"id": "ticket-1"}).encode())
-CALLER = node.Caller(TICKET, node.KEY_TEXT + node.b64(SEED))
+TICKET = callers.TICKET_TEXT + callers.b64(json.dumps({"id": "ticket-1"}).encode())
+CALLER = callers.Caller(TICKET, callers.KEY_TEXT + callers.b64(SEED))
 PAYLOAD = base64.urlsafe_b64encode(json.dumps({"v": 1}).encode()).decode().rstrip("=")
 DESCRIPTOR = {"format": node.DESCRIPTOR_FORMAT, "node_id": "n", "node_key": {"crv": "Ed25519"},
               "capabilities": ["chat", "tool-dispatch"], "owner_hash": None}
@@ -37,10 +38,10 @@ def run(offer=None):
 def a2a(request: httpx.Request) -> httpx.Response:
     if not request.headers.get("authorization", "").startswith("AstralCaller "):
         return httpx.Response(401)
-    proof = json.loads(node._unb64(request.headers["astral-caller-proof"]))
+    proof = json.loads(callers.unb64(request.headers["astral-caller-proof"]))
     unsigned = {k: v for k, v in proof.items() if k != "sig"}
     try:
-        HOLDER.verify(node._unb64(proof["sig"]), node.PROOF_CONTEXT + node._canonical(unsigned))
+        HOLDER.verify(callers.unb64(proof["sig"]), callers.PROOF_CONTEXT + callers.canonical(unsigned))
     except InvalidSignature:
         return httpx.Response(401)
     if proof["body"] != "sha256:" + hashlib.sha256(request.content).hexdigest():
@@ -108,20 +109,24 @@ def test_open_a2a_and_open_pairing_fail(serve):
 
     serve(open_node)
     failed = run()
-    for name in ("A2A refuses a call with no ticket", "A2A refuses a bearer token",
+    for name in ("A2A refuses a call with no ticket", "A2A refuses a JWT bearer token",
                  "A2A refuses a proof signed by another key", "A2A rejects an unknown method",
                  "pairing refuses a caller without the node's secret", "the owner-token pairing route is gone"):
         assert name in failed
 
 
-def test_a_node_that_still_takes_bearer_tokens_fails(serve):
+def test_a_node_that_still_takes_a_jwt_bearer_fails(serve):
+    seen = []
+
     def bearer(request):
         if request.url.path == "/a2a" and request.headers.get("authorization", "").startswith("Bearer "):
+            seen.append(request.headers["authorization"])
             return httpx.Response(200, json={})
         return good_node(request)
 
     serve(bearer)
-    assert run() == ["A2A refuses a bearer token"]
+    assert run() == ["A2A refuses a JWT bearer token"]
+    assert seen[0].count(".") == 2 and conformance.MESSAGE["parts"][0]["text"] == "conformance check"
 
 
 def test_an_unanswered_message_fails(serve):

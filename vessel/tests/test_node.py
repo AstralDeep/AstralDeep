@@ -5,12 +5,11 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 
 import httpx
 import pytest
-from cryptography.hazmat.primitives.asymmetric import ed25519
 
+from astralvessel import caller as callers
 from astralvessel import node
 from astralvessel.deployment import NodeSection
 
@@ -18,9 +17,10 @@ SECTION = NodeSection()
 GOOD = {"format": node.DESCRIPTOR_FORMAT, "node_id": "n", "node_key": {"crv": "Ed25519"},
         "capabilities": ["chat", "tool-dispatch", "mesh-peer"], "owner_hash": "sha256:" + "0" * 64}
 SEED = bytes(range(32))
-TICKET = node.TICKET_TEXT + node.b64(json.dumps({"id": "ticket-1", "v": 1}).encode())
-KEY = node.KEY_TEXT + node.b64(SEED)
-CALLER = node.Caller(TICKET, KEY)
+TICKET = callers.TICKET_TEXT + callers.b64(json.dumps({"id": "ticket-1", "v": 1}).encode())
+KEY = callers.KEY_TEXT + callers.b64(SEED)
+CALLER = callers.Caller(TICKET, KEY)
+MESSAGE = {"messageId": "m", "role": "ROLE_USER", "parts": [{"text": "hi"}]}
 
 
 @pytest.fixture
@@ -82,58 +82,6 @@ def test_the_owner_binding_is_read_from_the_descriptor():
     assert node.owner_binding({"mesh": {"owner_binding": "x"}}) == {}
 
 
-def test_the_caller_comes_from_the_environment_or_files(tmp_path, monkeypatch):
-    monkeypatch.delenv(node.TICKET_VARIABLE, raising=False)
-    monkeypatch.delenv(node.KEY_VARIABLE, raising=False)
-    with pytest.raises(SystemExit, match="ASTRAL_CALLER_TICKET"):
-        node.load_caller(None, None)
-    monkeypatch.setenv(node.TICKET_VARIABLE, f" {TICKET} \n")
-    monkeypatch.setenv(node.KEY_VARIABLE, KEY)
-    assert node.load_caller(None, None).ticket_id == "ticket-1"
-    ticket, key = tmp_path / "ticket", tmp_path / "key"
-    ticket.write_text(TICKET + "\n")
-    key.write_text("  \n")
-    with pytest.raises(SystemExit, match="ASTRAL_CALLER_KEY"):
-        node.load_caller(str(ticket), str(key))
-    key.write_text(KEY)
-    assert node.load_caller(str(ticket), str(key)).ticket_id == "ticket-1"
-
-
-@pytest.mark.parametrize("ticket,key", [("nope", KEY), (TICKET, "nope"), (node.TICKET_TEXT + "!!", KEY),
-                                        (node.TICKET_TEXT + node.b64(b"[]"), KEY),
-                                        (TICKET, node.KEY_TEXT + node.b64(b"short"))])
-def test_a_malformed_ticket_or_key_is_refused(ticket, key, monkeypatch):
-    with pytest.raises(node.NodeError, match="caller ticket must be"):
-        node.Caller(ticket, key)
-    monkeypatch.setenv(node.TICKET_VARIABLE, ticket)
-    monkeypatch.setenv(node.KEY_VARIABLE, key)
-    with pytest.raises(SystemExit, match="caller ticket must be"):
-        node.load_caller(None, None)
-
-
-def test_a_request_proof_is_canonical_signed_by_the_holder_and_bound_to_the_body():
-    headers = CALLER.headers("POST", "/a2a", b'{"x":1}')
-    assert headers["Authorization"] == "AstralCaller " + TICKET[len(node.TICKET_TEXT):]
-    raw = node._unb64(headers[node.PROOF_HEADER])
-    proof = json.loads(raw)
-    assert set(proof) == {"v", "ticket", "method", "target", "body", "ms", "nonce", "sig"}
-    assert (proof["ticket"], proof["method"], proof["target"]) == ("ticket-1", "POST", "/a2a")
-    assert proof["body"] == "sha256:" + hashlib.sha256(b'{"x":1}').hexdigest()
-    unsigned = {k: v for k, v in proof.items() if k != "sig"}
-    assert raw == node._canonical({**unsigned, "sig": proof["sig"]})
-    public = ed25519.Ed25519PrivateKey.from_private_bytes(SEED).public_key()
-    public.verify(node._unb64(proof["sig"]), node.PROOF_CONTEXT + node._canonical(unsigned))
-    other = json.loads(node._unb64(CALLER.headers("POST", "/a2a", b"")[node.PROOF_HEADER]))
-    assert other["nonce"] != proof["nonce"] and other["body"] == "sha256:" + hashlib.sha256(b"").hexdigest()
-
-
-def test_the_proof_bytes_match_the_kernels_canonical_json():
-    kernel = pytest.importorskip("astral_kernel")
-    fields = {"v": 1, "ticket": "t", "method": "POST", "target": "/a2a?x=\u00e9", "body": "sha256:" + "a" * 64,
-              "ms": 1_700_000_000_000, "nonce": node.b64(os.urandom(16))}
-    assert node._canonical(fields) == bytes(kernel.canonical_json(json.dumps(fields).encode()))
-
-
 def test_pairing_refusals_are_explained():
     for code, words in (("node.loopback_required", "own machine"), ("node.legacy_owner", "untouched"),
                         ("node.pairing_rate_limited", "wait a minute"), ("mesh_unavailable", "no mesh peer"),
@@ -166,7 +114,7 @@ def test_a_question_goes_to_the_a2a_endpoint_and_continues_a_context(served):
     request = seen[0]
     assert request.url.path == "/a2a" and request.headers["a2a-version"] == "1.0"
     assert request.headers["authorization"].startswith("AstralCaller ")
-    proof = json.loads(node._unb64(request.headers["astral-caller-proof"]))
+    proof = json.loads(callers.unb64(request.headers["astral-caller-proof"]))
     assert proof["body"] == "sha256:" + hashlib.sha256(request.content).hexdigest()
     body = json.loads(request.content)
     assert body["method"] == "SendMessage" and body["params"]["message"]["parts"] == [{"text": "hello"}]
@@ -193,3 +141,12 @@ def test_answers_include_artifact_text_and_failures_raise(served):
         node.ask(SECTION, CALLER, "q")
     with pytest.raises(node.NodeError, match="could not answer"):
         node.ask(SECTION, CALLER, "q")
+
+
+def test_the_message_comes_from_the_caller_and_no_bearer_is_ever_sent(served):
+    seen, replies = served
+    replies.append(task())
+    node.a2a_call(SECTION, CALLER, "SendMessage", MESSAGE)
+    sent = json.loads(seen[0].content)
+    assert sent["params"]["message"] == MESSAGE
+    assert not seen[0].headers["authorization"].lower().startswith("bearer")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from astralvessel import caller as callers
 from astralvessel import cli, node, operate
 
 
@@ -20,7 +21,7 @@ def test_commands_reach_their_operator_functions(monkeypatch):
     run(monkeypatch, "check", "--isolation-only")
     run(monkeypatch, "down", "--volumes")
     run(monkeypatch, "pair", "--executor")
-    run(monkeypatch, "ask", "hello?", "--ticket-file", "t", "--key-file", "k")
+    run(monkeypatch, "ask", "hello?", "--ticket-file", "t")
     run(monkeypatch, "chat")
     names = [n for n, _ in called]
     assert names == ["up", "check", "down", "pair", "ask", "chat"]
@@ -28,12 +29,11 @@ def test_commands_reach_their_operator_functions(monkeypatch):
     assert check.isolation_only
     assert (up.port, up.example) == (9000, True) and not hasattr(up, "issuer")
     assert down.volumes and pair.executor and ask.question == "hello?"
-    assert (ask.ticket_file, ask.key_file) == ("t", "k") and not hasattr(ask, "token_file")
+    assert ask.ticket_file == "t" and ask.key_file is None and ask.token_file is None
 
 
 @pytest.mark.parametrize("argv", [("up", "--issuer", "x"), ("up", "--client-id", "x"), ("up", "--subject", "x"),
-                                  ("pair", "--token-file", "x"), ("pair", "--label", "x"),
-                                  ("ask", "q", "--token-file", "x"), ("conformance", "--token-file", "x")])
+                                  ("pair", "--label", "x")])
 def test_the_removed_owner_options_are_refused(monkeypatch, argv):
     with pytest.raises(SystemExit):
         run(monkeypatch, *argv)
@@ -79,9 +79,9 @@ def test_the_sandbox_needs_a_package(monkeypatch):
 def test_ask_prints_the_answer_and_chat_keeps_its_context(monkeypatch, tmp_path, capsys):
     (tmp_path / "deployment.toml").write_text("")
     (tmp_path / "compose.generated.yml").write_text("services: {}\n")
-    ticket, key = tmp_path / "ticket", tmp_path / "key"
-    ticket.write_text(node.TICKET_TEXT + node.b64(b'{"id": "t1"}') + "\n")
-    key.write_text(node.KEY_TEXT + node.b64(bytes(32)) + "\n")
+    ticket = tmp_path / "ticket"
+    ticket.write_text(callers.TICKET_TEXT + callers.b64(b'{"id": "t1"}') + "\n")
+    callers.create_key(tmp_path)
     seen = []
 
     def converse(section, caller, text, context=None):
@@ -91,7 +91,7 @@ def test_ask_prints_the_answer_and_chat_keeps_its_context(monkeypatch, tmp_path,
         return f"echo {text}", "ctx-9"
 
     monkeypatch.setattr(node, "converse", converse)
-    base = ["--deployment", str(tmp_path / "deployment.toml"), "--ticket-file", str(ticket), "--key-file", str(key)]
+    base = ["--deployment", str(tmp_path / "deployment.toml"), "--ticket-file", str(ticket)]
     run(monkeypatch, "ask", "hi", *base)
     assert capsys.readouterr().out == "echo hi\n"
     lines = iter(["one", "", "boom", "two"])
@@ -115,8 +115,9 @@ def test_ask_prints_the_answer_and_chat_keeps_its_context(monkeypatch, tmp_path,
 def test_conformance_passes_the_caller_and_an_offer_reader_to_the_suite(monkeypatch, tmp_path, capsys):
     (tmp_path / "deployment.toml").write_text("")
     (tmp_path / "compose.generated.yml").write_text("services: {}\n")
-    monkeypatch.setenv(node.TICKET_VARIABLE, node.TICKET_TEXT + node.b64(b'{"id": "t1"}'))
-    monkeypatch.setenv(node.KEY_VARIABLE, node.KEY_TEXT + node.b64(bytes(32)))
+    (tmp_path / "ticket").write_text(callers.TICKET_TEXT + callers.b64(b'{"id": "t1"}'))
+    monkeypatch.setenv(callers.TICKET_FILE_VARIABLE, str(tmp_path / "ticket"))
+    callers.create_key(tmp_path)
     got = {}
 
     def suite(deployment, caller, offer):
@@ -142,3 +143,27 @@ def test_pair_prints_the_offer_and_explains_a_refusal(monkeypatch, tmp_path, cap
     assert "9999 0000" in capsys.readouterr().out
     with pytest.raises(SystemExit, match="own machine"):
         run(monkeypatch, "pair", "--deployment", str(tmp_path / "deployment.toml"))
+
+
+def test_ask_without_a_key_or_ticket_says_what_to_run(monkeypatch, tmp_path):
+    (tmp_path / "deployment.toml").write_text("")
+    (tmp_path / "compose.generated.yml").write_text("services: {}\n")
+    monkeypatch.delenv(callers.TICKET_FILE_VARIABLE, raising=False)
+    base = ["--deployment", str(tmp_path / "deployment.toml")]
+    with pytest.raises(SystemExit, match="run astralvessel caller key"):
+        run(monkeypatch, "ask", "hi", "--ticket-file", str(tmp_path / "t"), *base)
+    callers.create_key(tmp_path)
+    with pytest.raises(SystemExit, match="--ticket-file or set ASTRAL_CALLER_TICKET_FILE"):
+        run(monkeypatch, "ask", "hi", *base)
+    (tmp_path / "caller-key").chmod(0o644)
+    with pytest.raises(SystemExit, match="chmod 600"):
+        run(monkeypatch, "chat", "--ticket-file", str(tmp_path / "t"), *base)
+    with pytest.raises(SystemExit, match="chmod 600"):
+        run(monkeypatch, "conformance", "--ticket-file", str(tmp_path / "t"), *base)
+
+
+def test_caller_key_writes_the_key_beside_the_deployment(monkeypatch, tmp_path, capsys):
+    run(monkeypatch, "caller", "key", "--deployment", str(tmp_path / "deployment.toml"))
+    assert (tmp_path / "caller-key").exists() and "astral-caller-holder:v1:" in capsys.readouterr().out
+    with pytest.raises(SystemExit, match="already exists"):
+        run(monkeypatch, "caller", "key", "--deployment", str(tmp_path / "deployment.toml"))
