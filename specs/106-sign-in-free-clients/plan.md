@@ -397,15 +397,14 @@ and AstralVessel for the agent side. **Contracts.** None, unless a finding chang
 
 A change lands in this order so no repository pins something that does not exist yet.
 1. **AstralKernel.** Code, its Python binding and its Apple library.
-2. **AstralPlane.** Schema work only if a task needs it, with a `SCHEMA_REVISION` bump, repeat-safe
-   migration and recovery procedure. Deep's pin moves only after that exact revision is qualified.
-3. **AstralDeep.** Moves the pins in `config/astral-composition.json` (Plane, and the kernel package if
-   Deep consumes one). Contracts, vectors and reference code land here.
-4. **AstralVessel.** Pins the new Deep and kernel, since it bundles both.
-5. **AstralProjection.** Last. Its kernel library pin moves here, and the clients render Deep's chrome.
+2. **AstralDeep.** Holds Plane (`plane/`) and Vessel (`vessel/`) in its own tree, so they pin nothing.
+   Plane schema work lands here with a `SCHEMA_REVISION` bump, repeat-safe migration and recovery
+   procedure, and the `compatibility.data_plane*` fields move in the same commit. The composition
+   manifest moves the kernel pin. Contracts, vectors and reference code land here. Vessel pins the
+   new kernel through `vessel/config/kernel-binding.json`.
+3. **AstralProjection.** Last. Its kernel library pin moves here, and the clients render Deep's chrome.
 
-AstralPrimitives does not change. LETS changes only if phase 5 needs it. After phase R, steps 2 and 4 fold
-into step 3: Plane and Vessel land inside AstralDeep and pin nothing there. **Open item.** The spec
+AstralPrimitives does not change. LETS changes only if phase 5 needs it. **Open item.** The spec
 does not say how each repository pins the kernel. T1.8 records the mechanism and every later bump
 uses it.
 

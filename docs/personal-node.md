@@ -86,7 +86,7 @@ The node labels what it records. The labels are at least the join of the request
 
 ## Sandboxed tools
 
-Tools that live in an AstralVessel sandbox run only through the Vessel executor. The node never runs them itself. Set these on the node:
+Tools that live in a Vessel sandbox (the `vessel/` folder of this repository) run only through the Vessel executor. The node never runs them itself. Set these on the node:
 
 | Variable | Meaning |
 |---|---|

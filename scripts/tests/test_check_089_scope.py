@@ -1,5 +1,5 @@
 """Tests for the repository migration scope guard: rejects native-client directory and
-workflow changes across the five component repositories, using throwaway git
+workflow changes across the four component repositories, using throwaway git
 fixtures.
 """
 
@@ -193,7 +193,6 @@ def test_rejects_malformed_and_unknown_assignments(
 def test_recorded_baselines_cover_the_five_repositories() -> None:
     assert REPO_NAMES == [
         "AstralDeep",
-        "AstralPlane",
         "AstralPrimitives",
         "AstralProjection",
         "LETS",

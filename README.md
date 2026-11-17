@@ -75,19 +75,21 @@ at the server boundary.
 
 ## Components
 
-AstralDeep composes five independently released component repositories, pinned as Git
-submodules under `components/`. Each pin records an exact commit plus its contract version and
-compatibility digests in [`config/astral-composition.json`](config/astral-composition.json).
+AstralDeep composes four independently released component repositories, pinned as Git
+submodules under `components/`, and carries AstralPlane in its own `plane/` folder. Each
+submodule pin records an exact commit plus its contract version and compatibility digests in
+[`config/astral-composition.json`](config/astral-composition.json). Plane's schema revision and
+migration digest are recorded there too and checked against `plane/`.
 
 | Component | Role | Availability |
 |---|---|---|
 | [AstralPrimitives](https://github.com/AstralDeep/AstralPrimitives) | Defines the UI primitives and their JSON serialization (published to PyPI as `astralprims`). | Required, embedded |
 | [AstralProjection](https://github.com/AstralDeep/AstralProjection) | Renders and sanitizes primitives, owns the UI protocol manifest and the web, Windows, Android, and Apple clients. | Required, embedded |
 | [AstralKernel](https://github.com/AstralDeep/AstralKernel) | The base library. Deep installs its `python/rote/` package as `astral-rote`, which adapts primitives per device (ROTE). | Required, embedded |
-| [AstralPlane](https://github.com/AstralDeep/AstralPlane) | Durable-state library: PostgreSQL pool, guarded migration registry, repositories, blob stores, and recovery. | Required, embedded |
+| AstralPlane, in [`plane/`](plane/) | Durable-state library: PostgreSQL pool, guarded migration registry, repositories, blob stores, and recovery. | Required, in this repository |
 | [LETS](https://github.com/AstralDeep/LETS) | Lineage Escrow Transition Systems: an external warden that conserves and attenuates agent authority and issues verifiable receipts. | External, feature-gated |
 
-A component change always lands in its own repository first. AstralDeep adopts it by moving the
+A submodule component change lands in its own repository first. AstralDeep adopts it by moving the
 submodule pin and the matching manifest entries together, and `scripts/verify_composition.py`
 fails closed when an installed component does not match its pin. See
 [docs/component-composition.md](docs/component-composition.md).
@@ -99,12 +101,15 @@ fails closed when an installed component does not match its pin. See
 | `backend/orchestrator/` | The orchestrator: dispatch, authentication, permissions, delegation, agent lifecycle, workspace, streaming, scheduling, UI design, and chrome events. `orchestrator.py` is the central runtime hub. |
 | `backend/orchestrator/projection_surfaces/` | Host-authorized adapters that feed AstralProjection's reusable chrome surfaces. |
 | `backend/orchestrator/plane_composition.py` | The fail-closed binding to the AstralPlane runtime. |
+| `plane/` | The `astralplane` package: durable state, the guarded migration registry, and recovery. It has its own manifest, tests, and lint. |
+| `vessel/` | The `astralvessel` package and command: the sandbox executor for agent tools. It has its own manifest, tests, lint, and release tags. |
+| `examples/` | Small runnable examples, such as an MCP server that streams progress. |
 | `backend/agents/` | Bundled first-party agents. |
 | `backend/persistent_agents/` | Durable, lease-based assignment runtime for long-running work. |
 | `backend/shared/` | Shared protocol structures (`protocol.py`), the approved outbound HTTP path (`external_http.py`), and other cross-cutting helpers. |
 | `backend/llm_config/`, `backend/personalization/`, `backend/scheduler/`, `backend/voice_agent/`, `backend/audit/` | Per-user LLM configuration, memory and personalization, scheduled jobs, conversational voice, and the audit trail. |
 | `backend/tests/` and `*/tests/` | Backend test suites. |
-| `components/` | The five pinned component submodules. |
+| `components/` | The four pinned component submodules. |
 | `config/` | The composition manifest and related configuration. |
 | `contracts/` | JSON Schemas for cross-repository contracts. |
 | `deploy/` | Deployment assets (for example the LiveKit and LETS configurations). |
@@ -261,7 +266,7 @@ docker exec astraldeep bash -c "cd /app/backend && python -m pytest -q"
 Every pull request and every push to `main` runs the required gates:
 
 1. **Lint:** ruff for Python and ESLint for the maintained JavaScript.
-2. **Tests:** the complete backend suite against an isolated PostgreSQL, run as whole-suite groups (`tests`, `persistent_agents`, `modules`), plus the AstralPlane and AstralProjection suites at their pinned revisions.
+2. **Tests:** the complete backend suite against an isolated PostgreSQL, run as whole-suite groups (`tests`, `persistent_agents`, `modules`), plus the Plane suite in `plane/` and the AstralProjection suite at its pinned revision.
 3. **Changed-code coverage:** at least 90% of changed executable lines. A change with no measurable lines is recorded as not applicable.
 4. **Image build:** the production image builds from a clean checkout.
 5. **Boot smoke:** the image answers its probes in development posture, and a production boot with missing secrets exits with the configuration-error code.
@@ -333,7 +338,7 @@ Each feature has a numbered directory under `specs/` holding its specification, 
 contracts, and verification records.
 
 - **Agent guide:** [AGENTS.md](AGENTS.md) is the shared guide for coding agents (Claude, Codex, and others). It covers repository routing, rules, and build and verification commands.
-- **Database schema changes:** these land only in AstralPlane's guarded migration registry. AstralDeep then moves its exact schema pin; it never runs ad-hoc SQL.
+- **Database schema changes:** these land only in the guarded migration registry under `plane/`. The same commit moves the exact schema pin in the composition manifest; it never runs ad-hoc SQL.
 
 ## Documentation
 
