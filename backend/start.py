@@ -105,6 +105,9 @@ def _wait_for_orchestrator(port: int, process, timeout_s: float = 60.0,
     return False
 
 
+POLICY_TICKS = 5
+
+
 def _agent_servers_refused(port: int) -> bool:
     try:
         with urllib.request.urlopen(f"http://localhost:{port}/api/node/agent-servers", timeout=5) as resp:
@@ -113,6 +116,44 @@ def _agent_servers_refused(port: int) -> bool:
         return exc.code != 404
     except Exception:
         return False
+
+
+class GeneratedAgents:
+    def __init__(self, supervisor, python_exe):
+        self._supervisor = supervisor
+        self._python = python_exe
+        self._specs = {}
+        self._procs = {}
+        self._held = set()
+
+    def register(self, item, script, path, port):
+        self._specs[item] = (script, path, port)
+
+    def hold(self, item):
+        self._held.add(item)
+
+    def launch(self, item):
+        self._held.discard(item)
+        script, path, port = self._specs[item]
+        print(f"Starting {item} agent on port {port}...")
+        self._procs[item] = self._supervisor.spawn(
+            process_id=uuid.uuid4(),
+            owner=ProcessOwner(owner_kind="server_agent", owner_id=item),
+            argv=(self._python, script, "--port", str(port)),
+            cwd=path,
+        )
+
+    def reconcile(self, refused):
+        for item in self._specs:
+            proc = self._procs.get(item)
+            running = proc is not None and proc.poll() is None
+            if refused and running:
+                print(f"Stopping {item}: exec.agent_server_unsupported (phi_node)")
+                proc.terminate(reason=TerminationReason.STOP)
+                self._procs.pop(item, None)
+                self._held.add(item)
+            elif not refused and item in self._held:
+                self.launch(item)
 
 
 def main(process_supervisor=None):
@@ -180,6 +221,7 @@ def main(process_supervisor=None):
         remote_compute_enabled = _remote_compute_enabled()
 
         phi_node = _agent_servers_refused(orch_port)
+        generated = GeneratedAgents(process_supervisor, python_exe)
         next_port = int(os.environ.get("AGENT_PORT", 8003))
         for item in os.listdir(agents_dir):
             custom_agent_script = _agent_entrypoint(agents_dir, item)
@@ -192,8 +234,14 @@ def main(process_supervisor=None):
             if inprocess_enabled and item in BUILT_IN_AGENT_DIRS:
                 print(f"Running {item} in-process (no port)")
                 continue
-            if phi_node and item not in FIRST_PARTY_AGENT_DIRS:
-                print(f"Skipping {item}: exec.agent_server_unsupported (phi_node)")
+            if item not in FIRST_PARTY_AGENT_DIRS:
+                generated.register(item, custom_agent_script, item_path, next_port)
+                next_port += 1
+                if phi_node:
+                    generated.hold(item)
+                    print(f"Skipping {item}: exec.agent_server_unsupported (phi_node)")
+                else:
+                    generated.launch(item)
                 continue
             if item in _REMOTE_COMPUTE_AGENT_DIRS:
                 # Off must fully disable the agent — no in-process, no subprocess
@@ -253,8 +301,12 @@ def main(process_supervisor=None):
         print("Press Ctrl+C to stop.")
         print()
 
+        ticks = 0
         while True:
             time.sleep(1)
+            ticks += 1
+            if ticks % POLICY_TICKS == 0:
+                generated.reconcile(_agent_servers_refused(orch_port))
             if p_orch.poll() is not None:
                 print(" Orchestrator died!")
                 _rc = p_orch.returncode
