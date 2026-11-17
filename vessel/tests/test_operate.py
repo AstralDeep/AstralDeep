@@ -248,7 +248,8 @@ def test_agent_ids_stay_unique_and_the_gitignore_is_extended(package_dir, tmp_pa
     (folder / ".gitignore").write_text("node_modules/")
     operate.write_deployment(folder, answers, example=False)
     assert list(load_deployment(folder / "deployment.toml").agents) == ["x-2", "x", "x-3"]
-    assert (folder / ".gitignore").read_text() == "node_modules/\n.env\n.generated/\ncompose.generated.yml\n"
+    wanted = "node_modules/\n.env\n.generated/\ncompose.generated.yml\ncaller-key\n"
+    assert (folder / ".gitignore").read_text() == wanted
 
 
 def test_a_key_with_shell_characters_survives_the_env_file(tmp_path, monkeypatch):
@@ -416,3 +417,23 @@ def test_the_offer_script_sends_the_secret_and_no_authorization_header(tmp_path)
     assert json.loads(done.stdout)["status"] == 401
     assert {k.lower(): v for k, v in Offered.seen[-1][1].items()}["astral-pairing-secret"] == "absent"
     server.shutdown()
+
+
+def test_up_and_caller_key_keep_the_private_key_out_of_git(tmp_path, monkeypatch, capsys):
+    operate.write_deployment(tmp_path, operate.Answers(), example=False)
+    lines = (tmp_path / ".gitignore").read_text().splitlines()
+    assert "caller-key" in lines and ".env" in lines
+    (tmp_path / ".gitignore").write_text("node_modules/")
+    operate.ignore_private(tmp_path)
+    operate.ignore_private(tmp_path)
+    text = (tmp_path / ".gitignore").read_text()
+    assert text.startswith("node_modules/\n") and text.splitlines().count("caller-key") == 1
+    other = tmp_path / "fresh"
+    other.mkdir()
+    operate.caller_key(argparse.Namespace(deployment=str(other / "deployment.toml")))
+    assert "caller-key" in (other / ".gitignore").read_text().splitlines()
+    capsys.readouterr()
+    with pytest.raises(SystemExit, match="already exists"):
+        operate.caller_key(argparse.Namespace(deployment=str(other / "deployment.toml")))
+    with pytest.raises(SystemExit, match="cannot create the holder key"):
+        operate.caller_key(argparse.Namespace(deployment=str(tmp_path / "nope" / "deployment.toml")))

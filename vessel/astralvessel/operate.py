@@ -268,15 +268,20 @@ def write_deployment(folder: Path, answers: Answers, *, example: bool) -> Path:
         deployment.unlink(missing_ok=True)
         env.unlink(missing_ok=True)
         raise
+    ignore_private(folder)
+    print(f"wrote {deployment} and {env} (private)")
+    return deployment
+
+
+def ignore_private(folder: Path) -> None:
     gitignore = folder / ".gitignore"
     existing = gitignore.read_text() if gitignore.exists() else ""
-    needed = [line for line in (".env", ".generated/", "compose.generated.yml") if line not in existing.splitlines()]
+    wanted = (".env", ".generated/", "compose.generated.yml", callers.KEY_FILE)
+    needed = [line for line in wanted if line not in existing.splitlines()]
     if needed:
         lead = "\n" if existing and not existing.endswith("\n") else ""
         with gitignore.open("a") as handle:
             handle.write(lead + "\n".join(needed) + "\n")
-    print(f"wrote {deployment} and {env} (private)")
-    return deployment
 
 
 def write_compose(stack: Stack, out: Path | None = None) -> tuple[Deployment, Path]:
@@ -392,6 +397,7 @@ def up(args: argparse.Namespace) -> None:
         write_deployment(stack.deployment.parent, answers, example=args.example)
     elif any((args.example, args.agent, args.image, args.port, args.upstream_url, args.api_key, args.mount)):
         raise SystemExit(f"{stack.deployment} exists; edit it instead of passing setup options")
+    ignore_private(stack.deployment.parent)
     deployment, _ = write_compose(stack)
     _require_env(stack, deployment)
     require_image(deployment)
@@ -565,7 +571,8 @@ def caller_key(args: argparse.Namespace) -> None:
     folder = Path(args.deployment or "deployment.toml").resolve().parent
     try:
         holder = callers.create_key(folder)
-    except callers.CallerError as exc:
+        ignore_private(folder)
+    except (callers.CallerError, OSError) as exc:
         raise SystemExit(str(exc)) from None
     print("\n".join([f"wrote {callers.key_path(folder)} (private, mode 0600)", "",
                       "Ask the owner to mint a caller ticket for this node in the AstralDeep app with this holder key.",

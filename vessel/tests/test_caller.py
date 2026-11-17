@@ -166,3 +166,74 @@ def test_the_proof_bytes_match_the_kernels_canonical_json():
     fields = {"v": 1, "ticket": "t", "method": "POST", "target": "/a2a?x=\u00e9", "body": "sha256:" + "a" * 64,
               "ms": 1_700_000_000_000, "nonce": callers.b64(os.urandom(16))}
     assert callers.canonical(fields) == bytes(kernel.canonical_json(json.dumps(fields).encode()))
+
+
+def test_a_failed_key_write_leaves_no_file_and_a_pointed_error(tmp_path, monkeypatch):
+    real = os.fdopen
+
+    def failing(descriptor, mode="r", *a, **k):
+        handle = real(descriptor, mode, *a, **k)
+        handle.write = lambda text: (_ for _ in ()).throw(OSError(28, "No space left on device"))
+        return handle
+
+    monkeypatch.setattr(callers.os, "fdopen", failing)
+    with pytest.raises(callers.CallerError, match="cannot write the holder key.*No space left"):
+        callers.create_key(tmp_path)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_creating_the_key_in_a_missing_or_closed_folder_or_a_lost_race_is_pointed(tmp_path, monkeypatch):
+    with pytest.raises(callers.CallerError, match="cannot create the holder key.*No such file"):
+        callers.create_key(tmp_path / "missing")
+    closed = tmp_path / "closed"
+    closed.mkdir()
+    closed.chmod(0o500)
+    try:
+        if os.access(closed, os.W_OK):
+            pytest.skip("the directory is writable for this user")
+        with pytest.raises(callers.CallerError, match="cannot create the holder key.*Permission denied"):
+            callers.create_key(closed)
+    finally:
+        closed.chmod(0o700)
+    original = callers.os.open
+
+    def raced(path, flags, mode=0o777):
+        if str(path).endswith(callers.KEY_FILE) and flags & os.O_EXCL:
+            (tmp_path / callers.KEY_FILE).write_text("other")
+        return original(path, flags, mode)
+
+    monkeypatch.setattr(callers.os, "open", raced)
+    with pytest.raises(callers.CallerError, match="already exists"):
+        callers.create_key(tmp_path)
+    assert (tmp_path / callers.KEY_FILE).read_text() == "other"
+
+
+def test_a_ticket_file_with_a_key_line_appended_or_too_large_is_refused(tmp_path):
+    seed_line = callers.KEY_TEXT + callers.b64(SEED)
+    for body in (TICKET + "\n" + seed_line + "\n", TICKET + " " + seed_line, TICKET + "\nmore\n"):
+        path = tmp_path / "ticket"
+        path.write_text(body)
+        with pytest.raises(callers.CallerError, match="only the ticket on one line"):
+            callers.read_ticket(str(path))
+    path.write_text("x" * 100_000)
+    with pytest.raises(callers.CallerError, match="too large"):
+        callers.read_ticket(str(path))
+    path.write_text(TICKET + "\n")
+    assert callers.read_ticket(str(path)) == TICKET
+
+
+def test_a_ticket_over_the_contracts_header_limit_is_refused_before_sending():
+    long_ticket = callers.TICKET_TEXT + callers.b64(json.dumps({"id": "t", "pad": "x" * 9000}).encode())
+    with pytest.raises(callers.CallerError, match="8192 characters"):
+        callers.Caller(long_ticket, KEY)
+    edge = callers.TICKET_TEXT + callers.b64(json.dumps({"id": "t", "pad": "x" * 5000}).encode())
+    assert len(edge) < callers.MAX_HEADER and callers.Caller(edge, KEY).ticket_id == "t"
+
+
+def test_a_key_file_swapped_for_a_link_after_creation_is_refused_without_following_it(tmp_path):
+    secret = tmp_path / "elsewhere"
+    secret.write_text(KEY)
+    secret.chmod(0o600)
+    (tmp_path / callers.KEY_FILE).symlink_to(secret)
+    with pytest.raises(callers.CallerError, match="regular file"):
+        callers.read_key(tmp_path)
