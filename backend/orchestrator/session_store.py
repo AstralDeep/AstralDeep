@@ -72,6 +72,25 @@ def warn_on_typesafe_environment() -> tuple[str, ...]:
     return present
 
 
+SNAPSHOT_LINKS_ENV = "FF_ARTIFACT_SHARING"
+
+
+def refuse_snapshot_links_on_personal_node() -> bool:
+    from shared import node_identity
+
+    if not node_identity.is_personal():
+        return False
+    requested = os.getenv(SNAPSHOT_LINKS_ENV, "").strip().lower() in ("true", "1", "yes")
+    if requested:
+        logger.warning(
+            "%s is ignored on a personal node: snapshot links are off there and "
+            "sharing runs through mesh contacts.",
+            SNAPSHOT_LINKS_ENV,
+        )
+    os.environ[SNAPSHOT_LINKS_ENV] = "false"
+    return requested
+
+
 _DEV_PLACEHOLDER_SECRETS = (
     "dev-audit-hmac-secret-change-me-in-prod",
     "change-me",
@@ -81,6 +100,7 @@ _DEV_PLACEHOLDER_SECRETS = (
 def assert_production_posture() -> None:
     from shared import node_identity
 
+    refuse_snapshot_links_on_personal_node()
     if node_identity.is_institution():
         from shared import institution_profile
 

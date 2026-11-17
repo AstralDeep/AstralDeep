@@ -423,6 +423,22 @@ def retire_legacy_owner() -> bool:
     return retired
 
 
+def legacy_owners() -> List[str]:
+    found: List[str] = []
+    try:
+        candidates = sorted(data_dir().glob(OWNER_FILE + ".legacy-*"))
+    except OSError:
+        return found
+    for path in candidates:
+        try:
+            value = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if value and _is_legacy(value) and value not in found:
+            found.append(value)
+    return found
+
+
 def _configured_owner() -> str:
     configured = os.getenv(OWNER_ENV, "").strip()
     if is_personal():

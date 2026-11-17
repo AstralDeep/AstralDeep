@@ -258,6 +258,15 @@ class ShareGrantStore:
             "expires_at": record.expires_at,
         }
 
+    async def count_for_owners(self, owner_ids: List[str]) -> int:
+        total = 0
+        for owner_id in owner_ids:
+            records = await self._grants.call_async(
+                self._grants.repository.list_grants, owner_id=owner_id, limit=1000,
+            )
+            total += len(records)
+        return total
+
     async def list_grants(self, user_id: str) -> List[Dict[str, Any]]:
         records = await self._grants.call_async(
             self._grants.repository.list_grants,

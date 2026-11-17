@@ -54,6 +54,18 @@ OFFERS_PER_WINDOW = 5
 OFFER_WINDOW_SECONDS = 60.0
 
 
+async def _legacy_link_count() -> int:
+    owners = node_identity.legacy_owners()
+    if not owners:
+        return 0
+    from orchestrator import artifact_share
+
+    try:
+        return await artifact_share.get_share_store().count_for_owners(owners)
+    except RuntimeError:
+        return 0
+
+
 class NodeMeshError(Exception):
     def __init__(self, code: str, status: int = 409):
         super().__init__(code)
@@ -748,6 +760,7 @@ class NodeMesh:
             address = None
         mailbox = self._mailbox_snapshot()
         return {
+            "share": {"legacy_links": await _legacy_link_count()},
             "available": True,
             "state": enrollment.lower(),
             "enrolled": enrolled,
