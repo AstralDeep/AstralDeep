@@ -5,7 +5,6 @@ node_api.py serves it, node_mailbox.py supervises the node's mailbox beside it, 
 from __future__ import annotations
 
 import asyncio
-import gc
 import hmac
 import inspect
 import importlib
@@ -18,12 +17,12 @@ import stat
 import tempfile
 import threading
 import time
-import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
-from orchestrator import node_mesh_calls, node_mesh_keys
+from orchestrator import node_connection_keystore, node_mesh_calls, node_mesh_keys
 from orchestrator.node_mailbox import MailboxError, MailboxProcess, MailboxSettings
 from shared import dev_mesh_keys, node_identity
 
@@ -139,6 +138,24 @@ def refuse_development_mesh(roster: Any) -> None:
         raise NodeMeshError(DEVELOPMENT_MESH) from None
     if any(type(value) is not str for value in (mesh_id, *listed)) or not set(listed).isdisjoint(dev_mesh_keys.device_ids().values()):
         raise NodeMeshError(DEVELOPMENT_MESH)
+
+
+def _mesh_gate(binding: Any) -> Any:
+    class DevelopmentMeshGate(binding.MeshGate):  # type: ignore[name-defined, misc]
+        def accept(self, candidate):
+            roster = SimpleNamespace(
+                mesh_id=candidate.mesh_id,
+                members=[SimpleNamespace(device_id=device) for device in candidate.device_ids],
+                removed=[],
+            )
+            try:
+                refuse_development_mesh(roster)
+            except NodeMeshError:
+                logger.warning("node_mesh_development_mesh_refused")
+                return False
+            return True
+
+    return DevelopmentMeshGate()
 
 
 class _Listener:
@@ -434,7 +451,17 @@ class NodeMesh:
                 mailbox=mailbox,
             ),
         )
-        return await asyncio.to_thread(binding.Kernel.open, config, _signer(binding, keys), None, None, self._listener.bridge)
+        kernel = await asyncio.to_thread(
+            binding.Kernel.open, config, _signer(binding, keys), None, None, self._listener.bridge, None, _mesh_gate(binding),
+        )
+        try:
+            kernel.set_keystore(node_connection_keystore.host_keystore(
+                binding, node_connection_keystore.NodeKeystore(self._data_dir / KERNEL_DIR, keys.wrap_secret),
+            ))
+        except BaseException:
+            await kernel.close()
+            raise
+        return kernel
 
     def _supervises_mailbox(self) -> bool:
         return self._mailbox is not None or self._settings.mailbox.enabled
@@ -451,12 +478,7 @@ class NodeMesh:
             return None
         if not self._supervises_mailbox():
             return kernel
-        released = weakref.ref(kernel)
-        del kernel
-        if released() is not None:
-            gc.collect()
-        if released() is not None:
-            raise MeshUnavailable("kernel_store_busy")
+        await kernel.close()
         return None
 
     async def _start_mailbox(self) -> None:
@@ -570,10 +592,13 @@ class NodeMesh:
             try:
                 await self._kernel.stop_network()
             finally:
-                await self._stop_mailbox()
+                try:
+                    await self._kernel.close()
+                finally:
+                    await self._stop_mailbox()
 
     async def _state(self) -> Any:
-        return await self.kernel.mesh_status()
+        return await self._request_call(self.kernel.mesh_status)
 
     @staticmethod
     def _enrollment(status: Any) -> str:
@@ -773,7 +798,11 @@ class NodeMesh:
         if self.kernel is not kernel:
             raise NodeMeshError("node.mesh_admission_unavailable")
         capability = getattr(kernel, "supports_node_request_tools", None)
-        if (not callable(capability) or capability() is not True
+        try:
+            supported = callable(capability) and capability() is True
+        except self._binding.KernelError:
+            supported = False
+        if (not supported
                 or not callable(getattr(kernel, "answer_request", None))
                 or not callable(getattr(kernel, "interrupt_request", None))):
             raise MeshUnavailable("node.request_runtime_unsupported")
@@ -1007,6 +1036,9 @@ class NodeMesh:
             for tool in tools
         }
         return event
+
+    async def request_call(self, function: Callable[..., Any], *arguments: Any) -> Any:
+        return await self._request_call(function, *arguments)
 
     async def _request_call(self, function: Callable[..., Any], *arguments: Any) -> Any:
         try:

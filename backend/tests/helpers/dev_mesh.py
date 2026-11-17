@@ -106,3 +106,10 @@ async def publish_catalog(mesh: DevMesh, tools: Sequence[Dict[str, Any]]) -> Non
 
 async def wait_for_caller_pause(mesh: DevMesh) -> None:
     await until(lambda: now_ms() > mesh.opened_ms + CALLER_PAUSE_MS, "the node's caller replay pause to pass")
+
+
+async def connection_reached(mesh: DevMesh, connection_id: str) -> None:
+    await until(
+        lambda: connection_id in [info.id for info in mesh.node.kernel.connections()],
+        "the connection to reach the node",
+    )

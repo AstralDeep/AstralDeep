@@ -18,6 +18,22 @@ class KernelListener:
     pass
 
 
+class MeshGate:
+    pass
+
+
+class HostKeystore:
+    pass
+
+
+class HostKeystoreError(Exception):
+    class Failed(Exception):
+        pass
+
+    class Unavailable(Exception):
+        pass
+
+
 class ConsentKind(enum.Enum):
     ROSTER_ADD = 0
     ROSTER_REMOVE = 1
@@ -244,6 +260,10 @@ class Kernel:
         self.signer = signer
         self.listener = listener
         self.enrolled = False
+        self.mesh_gate = None
+        self.keystore = None
+        self.closed = False
+        self.connection_list: List[Any] = []
         self.mesh_id: Optional[str] = None
         self.device_id = "dev-node"
         self.network = False
@@ -274,8 +294,19 @@ class Kernel:
         Kernel.instances.append(self)
 
     @classmethod
-    def open(cls, config, signer, model=None, tools=None, listener=None):
-        return cls(config, signer, listener)
+    def open(cls, config, signer, model=None, tools=None, listener=None, peer_tools=None, mesh_gate=None):
+        kernel = cls(config, signer, listener)
+        kernel.mesh_gate = mesh_gate
+        return kernel
+
+    def set_keystore(self, keystore):
+        self.keystore = keystore
+
+    async def close(self):
+        self.closed = True
+
+    def connections(self):
+        return list(self.connection_list)
 
     def join(self, mesh_id: str = "mesh-1") -> None:
         self.enrolled = True

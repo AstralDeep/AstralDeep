@@ -314,7 +314,7 @@ async def test_a_production_node_cancels_a_pairing_a_dev_device_approves_before_
         offer = await node.pairing_offer()
         with pytest.raises(ak.KernelError) as refused:
             await owner.kernel.approve_pairing(offer["payload"], ak.HistoryGrant.ALL)
-        assert refused.value.code == "pairing.cancelled"
+        assert refused.value.code == "pairing.mesh_refused"
         status = await node.status()
         assert status["state"] == "not_enrolled" and status["mesh_id"] is None and not status["pairing_open"]
         node_device = (await node.kernel.mesh_status()).device_id
@@ -331,7 +331,7 @@ async def test_a_production_node_cancels_a_pairing_a_dev_device_approves_before_
 
 
 @pytest.mark.parametrize("value", [None, "production"])
-async def test_a_production_node_joined_to_a_dev_mesh_by_another_member_stops_sync_at_the_join(tmp_path, monkeypatch, value):
+async def test_a_production_node_refuses_to_join_a_dev_mesh_another_member_approves(tmp_path, monkeypatch, value):
     monkeypatch.setenv("ASTRAL_ENV", "development")
     owner = dev_mesh.DevOwner("owner", tmp_path / "owner")
     owner.create_mesh()
@@ -346,13 +346,13 @@ async def test_a_production_node_joined_to_a_dev_mesh_by_another_member_stops_sy
         node = production_node(tmp_path, monkeypatch, value)
         await node.start()
         offer = await node.pairing_offer()
-        approved = await laptop.approve_pairing(offer["payload"], ak.HistoryGrant.ALL)
-        await until(lambda: node.kernel.endpoint_state().is_stopped(), "the node to stop sync at the join")
-        assert approved.device_id == (await node.kernel.mesh_status()).device_id
-        await assert_no_sync(node)
+        with pytest.raises(ak.KernelError) as refused:
+            await laptop.approve_pairing(offer["payload"], ak.HistoryGrant.ALL)
+        assert refused.value.code == "pairing.mesh_refused"
+        status = await node.status()
+        assert status["state"] == "not_enrolled" and status["mesh_id"] is None
+        assert (await node.kernel.mesh_status()).mesh_id is None
         assert node.personal_owner_id() is None and not owner_file().exists()
-        assert (await node.status())["owner_binding"] == {"state": "refused", "code": "node.development_mesh"}
-        assert node.kernel.roster().mesh_id == owner.mesh_id
     finally:
         if node is not None:
             await node.stop()
@@ -382,7 +382,7 @@ async def test_a_production_node_with_a_real_store_binds_its_owner_and_holds_one
 
         def counting(config, *args, **kwargs):
             if config.data_dir == store:
-                record.live_at_open.append(sum(ref() is not None for ref in record.opened))
+                record.live_at_open.append(sum(ref() is not None and not ref().closed for ref in record.opened))
             kernel = original(config, *args, **kwargs)
             if config.data_dir == store:
                 record.opened.append(weakref.ref(kernel))
@@ -559,7 +559,7 @@ async def test_a_roster_without_dev_devices_binds_in_every_environment(fake_node
 CLEAN = "sha256:" + "1" * 64
 
 
-def stored_node(tmp_path, monkeypatch, value, member, *, supervised, retained=False):
+def stored_node(tmp_path, monkeypatch, value, member, *, supervised):
     set_env(monkeypatch, value)
     monkeypatch.setenv(node_identity.PROFILE_ENV, node_identity.PERSONAL)
     monkeypatch.setenv(node_identity.DATA_DIR_ENV, str(tmp_path))
@@ -570,11 +570,10 @@ def stored_node(tmp_path, monkeypatch, value, member, *, supervised, retained=Fa
 
     class Stored(fake.Kernel):
         @classmethod
-        def open(cls, config, signer, model=None, tools=None, listener=None):
-            record.live_at_open.append(sum(ref() is not None for ref in record.opened))
+        def open(cls, config, signer, model=None, tools=None, listener=None, peer_tools=None, mesh_gate=None):
+            record.live_at_open.append(sum(ref() is not None and not ref().closed for ref in record.opened))
             kernel = cls(config, signer, listener)
-            if not retained:
-                cls.instances.remove(kernel)
+            cls.instances.remove(kernel)
             kernel.join(MESH)
             kernel.roster = lambda: NS(mesh_id=MESH, stopped=False, removed=[], members=[
                 NS(device_id=kernel.device_id, is_local=True), NS(device_id=member, is_local=False)])
@@ -626,16 +625,6 @@ async def test_a_node_checks_its_stored_roster_before_it_starts_its_mailbox_or_s
     finally:
         await mesh.stop()
         node_identity.reset_cache()
-
-
-async def test_a_checked_store_handle_that_cannot_be_released_never_opens_a_second_handle(tmp_path, monkeypatch):
-    record = stored_node(tmp_path, monkeypatch, "production", CLEAN, supervised=True, retained=True)
-    with pytest.raises(node_mesh.MeshUnavailable) as busy:
-        await record.mesh.start()
-    assert busy.value.code == "kernel_store_busy"
-    assert len(record.opened) == 1 and record.started == [] and record.mailbox.starts == 0
-    assert not record.mesh.started
-    node_identity.reset_cache()
 
 
 def change(name, progress=None):

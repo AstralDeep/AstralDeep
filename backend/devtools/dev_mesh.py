@@ -82,6 +82,20 @@ class _Signer(ak.HostSigner):
         return False
 
 
+class _MemoryKeystore(ak.HostKeystore):
+    def __init__(self) -> None:
+        self.items: Dict[str, bytes] = {}
+
+    def get(self, account):
+        return self.items.get(account)
+
+    def put(self, account, secret):
+        self.items[account] = bytes(secret)
+
+    def remove(self, account):
+        self.items.pop(account, None)
+
+
 @dataclass(frozen=True)
 class CallerHolder:
     key: ed25519.Ed25519PrivateKey
@@ -161,6 +175,8 @@ class DevOwner(DevDevice):
         if name not in OWNERS:
             raise ValueError(f"{name!r} is not a development mesh owner")
         super().__init__(name, data_dir)
+        self.keystore = _MemoryKeystore()
+        self.kernel.set_keystore(self.keystore)
 
     @property
     def mesh_id(self) -> str:
@@ -219,3 +235,26 @@ class DevOwner(DevDevice):
             "Authorization": SCHEME + ticket.text[len(TICKET_TEXT):],
             PROOF_HEADER: self.sign_holder_proof(holder, ticket.id, method, target, body),
         }
+
+    async def propose_connection(self, endpoint: str, name: str, *, local: bool = True) -> ak.ConnectionProposal:
+        require_development()
+        return await self.kernel.propose_connection(endpoint, name, local)
+
+    def approve_connection(
+        self, proposal: ak.ConnectionProposal, tool_names: Sequence[str] = (), *, flow: Optional[str] = None,
+        client_id: Optional[str] = None,
+    ) -> ak.ConnectionInfo:
+        require_development()
+        return self.kernel.approve_connection(proposal.proposal, flow or proposal.flow_hint, list(tool_names), client_id)
+
+    async def add_connection(
+        self, endpoint: str, name: str, tool_names: Sequence[str], *, local: bool = True,
+    ) -> ak.ConnectionInfo:
+        return self.approve_connection(await self.propose_connection(endpoint, name, local=local), tool_names)
+
+    def connections(self) -> list:
+        return self.kernel.connections()
+
+    def remove_connection(self, connection_id: str) -> None:
+        require_development()
+        self.kernel.remove_connection(connection_id)
