@@ -548,3 +548,37 @@ def test_extraction_without_the_data_filter_refuses_device_nodes(tmp_path, monke
         bundle.addfile(info)
     with pytest.raises(ap.PackError):
         ap.extract_members(tarfile.open(path), tmp_path)
+
+
+def test_audit_resolves_a_needed_entry_written_as_an_origin_relative_path(tmp_path):
+    put(tmp_path, "python/lib/libpython3.11.so.1.0", make_elf())
+    put(tmp_path, "python/lib/libpython3.so", make_elf(["$ORIGIN/../lib/libpython3.11.so.1.0"]))
+    assert elfaudit.audit_tree(tmp_path, (2, 36))[0] == []
+    (tmp_path / "python/lib/libpython3.11.so.1.0").unlink()
+    assert elfaudit.audit_tree(tmp_path, (2, 36))[0]
+
+
+def test_system_libraries_that_pack_files_need_are_bundled_and_reachable_from_each_needing_file(monkeypatch, tmp_path):
+    library_dir, calls = fake_image(monkeypatch, tmp_path)
+    put(library_dir, "libgcc_s.so.1", make_elf(["libc.so.6"]))
+    stage = tmp_path / "stage"
+    put(stage, "python/lib/python3.11/site-packages/pkg/ext.so", make_elf(["libgcc_s.so.1", "libc.so.6"], "$ORIGIN/pkg.libs"))
+    put(stage, "python/lib/python3.11/site-packages/pkg/pkg.libs/other.so", make_elf())
+    put(stage, "bin/astral-mailbox", make_elf(["libgcc_s.so.1"]))
+    put(stage, "bin/already", make_elf(["libz.so.1"], "$ORIGIN/../native/lib"))
+    put(stage, "native/lib/libz.so.1", make_elf())
+    natives.link_system_needs(stage, stage / "native", [library_dir])
+    assert (stage / "native" / "lib" / "libgcc_s.so.1").is_file()
+    assert ("ext.so", "$ORIGIN/pkg.libs:$ORIGIN/../../../../../native/lib") in calls
+    assert ("astral-mailbox", "$ORIGIN/../native/lib") in calls
+    assert ("libgcc_s.so.1", "$ORIGIN") in calls
+    assert not any(name == "already" for name, _ in calls)
+
+
+def test_a_library_missing_from_the_image_is_left_for_the_audit_to_refuse(monkeypatch, tmp_path):
+    library_dir, calls = fake_image(monkeypatch, tmp_path)
+    stage = tmp_path / "stage"
+    put(stage, "bin/tool", make_elf(["libnowhere.so.9"]))
+    natives.link_system_needs(stage, stage / "native", [library_dir])
+    assert calls == []
+    assert elfaudit.audit_tree(stage, (2, 36))[0]

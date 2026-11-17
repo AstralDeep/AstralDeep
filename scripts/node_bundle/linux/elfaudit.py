@@ -130,22 +130,40 @@ def resolve_runpath(entry: str, origin: Path) -> Path | None:
     return None
 
 
-def audit_file(path: Path, root: Path) -> tuple[list[str], tuple[int, ...]]:
+def search_directories(path: Path, root: Path, dynamic: Dynamic) -> tuple[list[Path], list[str]]:
     relative = path.relative_to(root).as_posix()
-    dynamic = read_dynamic(path)
-    problems: list[str] = []
-    directories = []
+    problems, directories = [], []
     for entry in (*dynamic.runpath, *dynamic.rpath):
         resolved = resolve_runpath(entry, path.parent)
         if resolved is None or not (resolved == root or root in resolved.parents):
             problems.append(f"{relative}: search path {entry} leaves the pack")
         else:
             directories.append(resolved)
-    for library in dynamic.needed:
-        if library in SYSTEM_LIBRARIES:
-            continue
-        if not any((directory / library).is_file() for directory in directories):
-            problems.append(f"{relative}: needs {library}, which is neither in the pack nor glibc")
+    return directories, problems
+
+
+def resolves(library: str, path: Path, directories: list[Path]) -> bool:
+    if library in SYSTEM_LIBRARIES:
+        return True
+    if library.startswith("$ORIGIN/"):
+        return Path(os.path.normpath(path.parent / library[len("$ORIGIN/"):])).is_file()
+    return any((directory / library).is_file() for directory in directories)
+
+
+def unresolved_needs(path: Path, root: Path) -> list[str]:
+    dynamic = read_dynamic(path)
+    directories, _ = search_directories(path, root, dynamic)
+    return [library for library in dynamic.needed if not resolves(library, path, directories)]
+
+
+def audit_file(path: Path, root: Path) -> tuple[list[str], tuple[int, ...]]:
+    relative = path.relative_to(root).as_posix()
+    dynamic = read_dynamic(path)
+    directories, problems = search_directories(path, root, dynamic)
+    problems += [
+        f"{relative}: needs {library}, which is neither in the pack nor glibc"
+        for library in dynamic.needed if not resolves(library, path, directories)
+    ]
     return problems, dynamic.glibc
 
 

@@ -50,7 +50,11 @@
           "packages": [
             "poppler-utils",
             "libmagic1",
-            "libmagic-mgc"
+            "libmagic-mgc",
+            "libgcc-s1",
+            "libstdc++6",
+            "libcrypt1",
+            "zlib1g"
           ],
           "binaries": [
             "pdftoppm",
@@ -91,7 +95,11 @@
           "packages": [
             "poppler-utils",
             "libmagic1",
-            "libmagic-mgc"
+            "libmagic-mgc",
+            "libgcc-s1",
+            "libstdc++6",
+            "libcrypt1",
+            "zlib1g"
           ],
           "binaries": [
             "pdftoppm",

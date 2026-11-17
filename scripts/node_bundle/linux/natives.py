@@ -2,6 +2,7 @@
 assemble.py calls it before sealing, and elfaudit.py then proves nothing resolves outside the pack except glibc.
 """
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -53,6 +54,37 @@ def set_search_path(path: Path, value: str) -> None:
     subprocess.run(["patchelf", "--set-rpath", value, str(path)], check=True)
 
 
+def copy_library(name: str, root: Path, directories: list[Path], pending: list[Path]) -> None:
+    target = root / "lib" / name
+    if name in elfaudit.SYSTEM_LIBRARIES or target.exists():
+        return
+    shutil.copy2(locate(name, directories), target)
+    set_search_path(target, "$ORIGIN")
+    pending.append(target)
+
+
+def close_over_needs(root: Path, directories: list[Path], pending: list[Path]) -> None:
+    while pending:
+        for needed in elfaudit.read_dynamic(pending.pop()).needed:
+            if not needed.startswith("$ORIGIN"):
+                copy_library(needed, root, directories, pending)
+
+
+def link_system_needs(stage: Path, root: Path, directories: list[Path]) -> None:
+    for path in elfaudit.elf_files(stage):
+        missing = [name for name in elfaudit.unresolved_needs(path, stage.resolve()) if not name.startswith("$ORIGIN")]
+        found = [name for name in missing if any((directory / name).is_file() for directory in directories)]
+        if not found:
+            continue
+        pending: list[Path] = []
+        for name in found:
+            copy_library(name, root, directories, pending)
+        close_over_needs(root, directories, pending)
+        existing = elfaudit.read_dynamic(path)
+        relative = os.path.relpath(root.resolve() / "lib", path.resolve().parent)
+        set_search_path(path, ":".join([*existing.runpath, *existing.rpath, f"$ORIGIN/{relative}"]))
+
+
 def bundle(stage: Path, spec: dict, architecture: str) -> dict:
     root = stage / NATIVE_DIR
     shutil.rmtree(root, ignore_errors=True)
@@ -71,15 +103,8 @@ def bundle(stage: Path, spec: dict, architecture: str) -> dict:
         shutil.copy2(locate(name, directories), target)
         set_search_path(target, "$ORIGIN")
         pending.append(target)
-    while pending:
-        current = pending.pop()
-        for needed in elfaudit.read_dynamic(current).needed:
-            target = root / "lib" / needed
-            if needed in elfaudit.SYSTEM_LIBRARIES or target.exists():
-                continue
-            shutil.copy2(locate(needed, directories), target)
-            set_search_path(target, "$ORIGIN")
-            pending.append(target)
+    close_over_needs(root, directories, pending)
+    link_system_needs(stage, root, directories)
     for name, source in spec["data"].items():
         destination = root / "share" / name
         destination.parent.mkdir(exist_ok=True)
