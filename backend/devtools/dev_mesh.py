@@ -126,7 +126,7 @@ class CallerHolder:
 
 
 class DevDevice:
-    def __init__(self, name: str, data_dir: Path):
+    def __init__(self, name: str, data_dir: Path, tools: Optional[ak.LocalTools] = None):
         require_development()
         if name not in KINDS:
             raise ValueError(f"{name!r} is not a development mesh device")
@@ -150,7 +150,7 @@ class DevDevice:
                 mailbox=None,
             ),
         )
-        self.kernel = ak.Kernel.open(config, _Signer(self.keys))
+        self.kernel = ak.Kernel.open(config, _Signer(self.keys), **({} if tools is None else {"tools": tools}))
 
     @property
     def device_id(self) -> str:
@@ -177,10 +177,10 @@ class DevDevice:
 
 
 class DevOwner(DevDevice):
-    def __init__(self, name: str, data_dir: Path):
+    def __init__(self, name: str, data_dir: Path, tools: Optional[ak.LocalTools] = None):
         if name not in OWNERS:
             raise ValueError(f"{name!r} is not a development mesh owner")
-        super().__init__(name, data_dir)
+        super().__init__(name, data_dir, tools)
         self.keystore = _MemoryKeystore()
         self.kernel.set_keystore(self.keystore)
 
