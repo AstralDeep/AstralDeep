@@ -1,87 +1,19 @@
-"""Tests for DelegationService (orchestrator/delegation.py): RFC 8693 token exchange,
-mock token creation, scope filtering and extraction, and the guard against sending
-Keycloak an empty scope.
+"""Tests for DelegationService (orchestrator/delegation.py): RFC 8693 token exchange
+against a signing token endpoint, scope filtering and extraction, and the guard against
+sending Keycloak an empty scope.
 """
 
 import os
 import sys
-import json
-import base64
 import pytest
+from jose import jwt as jose_jwt
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
-os.environ["USE_MOCK_AUTH"] = "true"
 
 from orchestrator.delegation import DelegationService
 
 
-@pytest.fixture
-def service():
-    return DelegationService()
-
-
 TOOLS = ["get_system_status", "modify_data", "search_wikipedia"]
-
-
-class TestMockDelegationToken:
-    def test_creates_token(self, service):
-        result = service._create_mock_delegation_token(
-            agent_id="general-1",
-            allowed_tools=TOOLS,
-            user_id="test-user"
-        )
-        assert "access_token" in result
-        assert result["token_type"] == "Bearer"
-        assert result["expires_in"] == 300
-        assert result["agent_id"] == "general-1"
-
-    def test_token_has_act_claim(self, service):
-        result = service._create_mock_delegation_token(
-            agent_id="general-1",
-            allowed_tools=TOOLS,
-            user_id="test-user"
-        )
-        token = result["access_token"]
-        parts = token.split(".")
-        assert len(parts) == 3
-        payload_b64 = parts[1] + "=" * ((4 - len(parts[1]) % 4) % 4)
-        payload = json.loads(base64.urlsafe_b64decode(payload_b64))
-
-        assert payload["sub"] == "test-user"
-        assert "act" in payload
-        assert payload["act"]["sub"] == "agent:general-1"
-
-    def test_token_scope_contains_tools(self, service):
-        result = service._create_mock_delegation_token(
-            agent_id="general-1",
-            allowed_tools=TOOLS,
-            user_id="test-user"
-        )
-        scope = result["scope"]
-        for tool in TOOLS:
-            assert f"tool:{tool}" in scope
-
-    def test_token_scope_limited(self, service):
-        result = service._create_mock_delegation_token(
-            agent_id="general-1",
-            allowed_tools=["get_system_status"],
-            user_id="test-user"
-        )
-        assert "tool:get_system_status" in result["scope"]
-        assert "tool:modify_data" not in result["scope"]
-
-    def test_delegation_flag(self, service):
-        result = service._create_mock_delegation_token(
-            agent_id="general-1",
-            allowed_tools=TOOLS,
-            user_id="test-user"
-        )
-        token = result["access_token"]
-        parts = token.split(".")
-        payload_b64 = parts[1] + "=" * ((4 - len(parts[1]) % 4) % 4)
-        payload = json.loads(base64.urlsafe_b64decode(payload_b64))
-        assert payload.get("delegation") is True
 
 
 class TestDelegationInfoExtraction:
@@ -142,12 +74,91 @@ class _FakeSession:
         })
 
 
+def _echoing_session(identity, agent_id):
+    class _EchoingSession(_FakeSession):
+        def post(self, url, data=None):
+            _FakeSession.captured = (url, data)
+            subject = jose_jwt.get_unverified_claims(data["subject_token"])
+            token = identity.issuer.token(
+                subject["sub"], aud=data["audience"], scope=data["scope"],
+                act={"sub": "agent:" + agent_id}, delegation=True,
+            )
+            return _FakeResp(200, {"access_token": token, "token_type": "Bearer",
+                                   "expires_in": 300, "scope": data["scope"]})
+
+    return _EchoingSession
+
+
+class TestSignedExchange:
+    async def _exchange(self, identity, monkeypatch, scopes, tools=TOOLS):
+        monkeypatch.setenv("KEYCLOAK_CLIENT_SECRET", "secret")
+        monkeypatch.setattr(
+            "orchestrator.delegation.aiohttp.ClientSession",
+            _echoing_session(identity, "general-1"),
+        )
+        user_token = identity.token("user-1")
+        result = await DelegationService().exchange_token_for_agent(
+            user_token, "general-1", allowed_tools=tools, enabled_scopes=scopes,
+        )
+        return user_token, result
+
+    @pytest.mark.asyncio
+    async def test_exchange_sends_the_callers_token_and_requested_audience(
+        self, server_identity, monkeypatch
+    ):
+        user_token, result = await self._exchange(
+            server_identity, monkeypatch, ["tools:read", "tools:write"]
+        )
+        url, form = _FakeSession.captured
+        assert url == f"{server_identity.issuer.authority}/protocol/openid-connect/token"
+        assert form["grant_type"] == "urn:ietf:params:oauth:grant-type:token-exchange"
+        assert form["subject_token"] == user_token
+        assert form["subject_token_type"] == "urn:ietf:params:oauth:token-type:access_token"
+        assert form["requested_token_type"] == "urn:ietf:params:oauth:token-type:access_token"
+        assert form["audience"] == "astral-agent-service"
+        assert form["scope"] == "tools:read tools:write"
+        assert result["agent_id"] == "general-1"
+        assert result["scope"] == "tools:read tools:write"
+
+    @pytest.mark.asyncio
+    async def test_narrowed_scopes_are_all_the_exchange_requests(
+        self, server_identity, monkeypatch
+    ):
+        _, result = await self._exchange(
+            server_identity, monkeypatch, ["tools:read"], tools=["get_system_status"]
+        )
+        _, form = _FakeSession.captured
+        assert form["scope"] == "tools:read"
+        assert "tools:write" not in form["scope"]
+        claims = jose_jwt.decode(
+            result["access_token"], server_identity.issuer.jwks,
+            algorithms=["RS256"], audience="astral-agent-service",
+            issuer=server_identity.issuer.authority,
+        )
+        assert claims["sub"] == "user-1"
+        assert claims["scope"] == "tools:read"
+
+    @pytest.mark.asyncio
+    async def test_unconfigured_exchange_is_refused_without_a_fallback_token(
+        self, server_identity, monkeypatch
+    ):
+        monkeypatch.delenv("KEYCLOAK_CLIENT_SECRET", raising=False)
+        result = await DelegationService().exchange_token_for_agent(
+            server_identity.token("user-1"), "general-1",
+            allowed_tools=TOOLS, enabled_scopes=["tools:read"],
+        )
+        assert result["error"] == "server_error"
+        assert "access_token" not in result
+
+
 # Empty scope param 400s at Keycloak like a realm misconfig
 class TestExchangeGuards:
+    @pytest.fixture(autouse=True)
+    def _identity(self, server_identity):
+        self.identity = server_identity
+
     def _real_service(self, monkeypatch):
-        monkeypatch.setenv("USE_MOCK_AUTH", "false")
         monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://kc.example/realms/T")
-        monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-frontend")
         monkeypatch.setenv("KEYCLOAK_CLIENT_SECRET", "secret")
         return DelegationService()
 
@@ -162,19 +173,9 @@ class TestExchangeGuards:
         monkeypatch.setattr(
             "orchestrator.delegation.aiohttp.ClientSession", _no_http)
         result = await service.exchange_token_for_agent(
-            "user-token", "web-research-1",
+            self.identity.token("user-1"), "web-research-1",
             allowed_tools=["web_search"], enabled_scopes=[])
         assert result["error"] == "no_enabled_scopes"
-
-    @pytest.mark.asyncio
-    async def test_empty_scope_refused_in_mock_mode_too(self, monkeypatch):
-        monkeypatch.setenv("USE_MOCK_AUTH", "true")
-        service = DelegationService()
-        result = await service.exchange_token_for_agent(
-            "user-token", "web-research-1", allowed_tools=["web_search"],
-            user_id="u1", enabled_scopes=[])
-        assert result["error"] == "no_enabled_scopes"
-        assert "access_token" not in result
 
     @pytest.mark.asyncio
     async def test_nonempty_scope_reaches_keycloak(self, monkeypatch):
@@ -183,7 +184,7 @@ class TestExchangeGuards:
         monkeypatch.setattr(
             "orchestrator.delegation.aiohttp.ClientSession", _FakeSession)
         result = await service.exchange_token_for_agent(
-            "user-token", "web-research-1",
+            self.identity.token("user-1"), "web-research-1",
             allowed_tools=["web_search", "fetch_page"],
             enabled_scopes=["tools:read", "tools:search"])
         assert result["access_token"] == "exchanged-token"

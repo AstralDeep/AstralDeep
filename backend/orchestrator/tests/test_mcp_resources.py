@@ -211,7 +211,6 @@ def resource_request(method, token):
 def test_verified_mcp_jwt_does_not_manufacture_framework_authority(monkeypatch, signing_key, method):
     from orchestrator import mcp_authz
 
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
     authority = "https://synthetic-iam.invalid/realm"
     monkeypatch.setenv("KEYCLOAK_AUTHORITY", authority)
     claims = {"sub": OWNER_ID, "iss": authority, "aud": "astral-mcp", "exp": int(time.time()) + 300,

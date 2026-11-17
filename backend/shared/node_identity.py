@@ -1,5 +1,5 @@
-"""Personal-node identity: the profile switch, node signing key, and single-owner custody for verified mesh principals or separately authenticated external identities.
-shared/token_verify.py, orchestrator/delegation.py, mesh_admission.py and node_api.py build on it; it never imports orchestrator code.
+"""Personal-node identity: the profile switch, the node signing key, issuer owner ids for server profiles, and single-owner custody of the verified mesh id, stored as mesh.<hex> because storage paths refuse the kernel's sha256: form.
+shared/token_verify.py, orchestrator/delegation.py, node_mesh.py and node_api.py build on it; it never imports orchestrator code.
 """
 
 from __future__ import annotations
@@ -45,6 +45,11 @@ NODE_ID_PREFIX = "astral-node:"
 MAX_TOKEN_SECONDS = 300
 CLOCK_SKEW_SECONDS = 30
 _MAX_TOKEN_CHARS = 16384
+MESH_ID_PREFIX = "sha256:"
+MESH_OWNER_PREFIX = "mesh."
+MESH_ID = re.compile(r"sha256:[0-9a-f]{64}")
+MESH_OWNER_ID = re.compile(r"mesh\.[0-9a-f]{64}")
+MESH_OWNER = re.compile(r"(?:sha256:|mesh\.)[0-9a-f]{64}")
 _SAFE_OWNER_CHARS = frozenset(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._@-"
 )
@@ -63,6 +68,10 @@ class NodeTokenError(NodeIdentityError):
 
 
 class OwnerMismatch(NodeIdentityError):
+    pass
+
+
+class LegacyOwner(OwnerMismatch):
     pass
 
 
@@ -120,6 +129,26 @@ def canonical_owner_id(issuer: Any, subject: Any) -> str:
     if len(owner) > 255 or not set(owner) <= _SAFE_OWNER_CHARS:
         raise NodeIdentityError("subject cannot form a storable owner id")
     return owner
+
+
+def is_mesh_owner(value: Any) -> bool:
+    return type(value) is str and MESH_OWNER.fullmatch(value) is not None
+
+
+def owner_id_for_mesh(mesh_id: Any) -> str:
+    if type(mesh_id) is not str or MESH_ID.fullmatch(mesh_id) is None:
+        raise NodeIdentityError("a kernel mesh id is required")
+    return MESH_OWNER_PREFIX + mesh_id[len(MESH_ID_PREFIX):]
+
+
+def mesh_id_for_owner(owner_id: Any) -> str:
+    if type(owner_id) is not str or MESH_OWNER_ID.fullmatch(owner_id) is None:
+        raise NodeIdentityError("a mesh owner id is required")
+    return MESH_ID_PREFIX + owner_id[len(MESH_OWNER_PREFIX):]
+
+
+def _stored_owner(value: str) -> str:
+    return owner_id_for_mesh(value) if MESH_ID.fullmatch(value) else value
 
 
 def owner_principal_hash(owner_id: str) -> str:
@@ -322,13 +351,9 @@ def reset_cache() -> None:
         _cached.clear()
 
 
-def bound_owner() -> Optional[str]:
-    configured = os.getenv(OWNER_ENV, "").strip()
-    if configured:
-        return configured
-    path = data_dir() / OWNER_FILE
+def _owner_file() -> Optional[str]:
     try:
-        value = path.read_text(encoding="utf-8").strip()
+        value = (data_dir() / OWNER_FILE).read_text(encoding="utf-8").strip()
     except FileNotFoundError:
         return None
     except OSError as exc:
@@ -338,24 +363,25 @@ def bound_owner() -> Optional[str]:
     return value
 
 
-def bind_owner(owner_id: str) -> str:
-    current = bound_owner()
-    if current is not None:
-        return current
-    return _bind_owner_file(owner_id)
+def bound_owner() -> Optional[str]:
+    value = os.getenv(OWNER_ENV, "").strip() or _owner_file()
+    return None if value is None else _stored_owner(value)
+
+
+def bound_mesh_owner() -> Optional[str]:
+    configured = os.getenv(OWNER_ENV, "").strip()
+    owners = {_stored_owner(value) for value in (configured, _owner_file()) if value}
+    if any(MESH_OWNER_ID.fullmatch(owner) is None for owner in owners):
+        raise LegacyOwner("this node holds a legacy owner binding")
+    if len(owners) > 1:
+        raise OwnerMismatch("the configured owner and the owner binding differ")
+    return next(iter(owners), None)
 
 
 def _bind_owner_file(owner_id: str) -> str:
     directory = data_dir()
-    try:
-        current = (directory / OWNER_FILE).read_text(encoding="utf-8").strip()
-    except FileNotFoundError:
-        current = None
-    except OSError as exc:
-        raise NodeIdentityError("owner binding is unreadable") from exc
+    current = _owner_file()
     if current is not None:
-        if not current:
-            raise NodeIdentityError("owner binding is empty")
         return current
     temporary = None
     try:
@@ -386,19 +412,29 @@ def _bind_owner_file(owner_id: str) -> str:
     return owner_id
 
 
+def _require_owner(owner_id: str, current: str) -> None:
+    current = _stored_owner(current)
+    if current == owner_id:
+        return
+    if MESH_OWNER_ID.fullmatch(current) is None:
+        raise LegacyOwner("this node holds a legacy owner binding")
+    raise OwnerMismatch("existing owner binding belongs to another principal")
+
+
 def bind_mesh_owner(mesh_id: str) -> str:
-    if not is_personal() or type(mesh_id) is not str or re.fullmatch(r"sha256:[0-9a-f]{64}", mesh_id) is None:
+    if not is_personal():
         raise NodeIdentityError("verified personal mesh principal required")
+    owner_id = owner_id_for_mesh(mesh_id)
     configured = os.getenv(OWNER_ENV, "").strip()
-    if configured and configured != mesh_id:
-        raise OwnerMismatch("configured owner belongs to another principal")
-    if _bind_owner_file(mesh_id) != mesh_id:
-        raise OwnerMismatch("existing owner binding belongs to another principal")
-    return mesh_id
+    if configured:
+        _require_owner(owner_id, configured)
+    _require_owner(owner_id, _bind_owner_file(owner_id))
+    return owner_id
 
 
 def enforce_owner(owner_id: str) -> None:
     if not is_personal():
         return
-    if bind_owner(owner_id) != owner_id:
+    bound = bound_mesh_owner()
+    if bound is None or bound != owner_id:
         raise OwnerMismatch("this node serves a different owner")

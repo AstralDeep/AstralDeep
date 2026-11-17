@@ -76,7 +76,7 @@ def _socket_method(message):
 def _socket_policy():
     return tuple(os.getenv(key) for key in (
         "KEYCLOAK_AUTHORITY", "KEYCLOAK_CLIENT_ID", "KEYCLOAK_ALLOWED_AZP",
-        "USE_MOCK_AUTH", "PUBLIC_BASE_URL", "BACKEND_PUBLIC_URL",
+        "PUBLIC_BASE_URL", "BACKEND_PUBLIC_URL",
     ))
 
 
@@ -483,8 +483,7 @@ class _HumanSocketRequest:
                 def current():
                     binding.assert_host_current(expected_orchestrator)
                     self._assert_socket_snapshot()
-                    if (self.session_id is None or datetime.now(timezone.utc) < self.expiry
-                            or os.getenv("USE_MOCK_AUTH", "").strip().lower() in {"true", "1", "yes"}):
+                    if (self.session_id is None or datetime.now(timezone.utc) < self.expiry):
                         _unauthenticated()
 
                 def capture(tx):

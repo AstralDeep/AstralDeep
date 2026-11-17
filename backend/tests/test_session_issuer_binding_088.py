@@ -44,8 +44,6 @@ def fixture(runtime, monkeypatch, signing_key):
     monkeypatch.setenv("WEB_SESSION_ENC_KEY", key)
     monkeypatch.setenv("WEB_SESSION_SECRET", "synthetic-binding-cookie-key")
     monkeypatch.setattr(og, "OFFLINE_GRANT_ENC_KEY", key)
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
-    monkeypatch.setenv("MOCK_AUTH", "false")
     monkeypatch.setenv("PUBLIC_BASE_URL", "https://app.invalid")
     monkeypatch.setenv("BACKEND_PUBLIC_URL", "https://app.invalid")
     monkeypatch.setenv("KEYCLOAK_AUTHORITY", ISSUER)
@@ -164,7 +162,7 @@ def test_invalid_pair_never_inserts_or_queues(fixture, runtime, issuer, client):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("setting,value", [("KEYCLOAK_AUTHORITY", "https://other.invalid/realm"),
-    ("KEYCLOAK_ALLOWED_AZP", ""), ("USE_MOCK_AUTH", "true")])
+    ("KEYCLOAK_ALLOWED_AZP", "")])
 async def test_changed_destination_sends_no_refresh_and_does_not_persist_new_token(fixture, runtime, monkeypatch, setting, value):
     before = get_session_record(runtime, fixture[2])
     monkeypatch.setenv(setting, value)

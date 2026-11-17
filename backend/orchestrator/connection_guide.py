@@ -148,15 +148,8 @@ async def _keycloak_reachable(authority: str) -> bool:
 
 
 async def _auth_check(orch) -> dict[str, str | bool]:
-    from orchestrator.web_auth import _is_mock, _keycloak_config
+    from orchestrator.web_auth import _keycloak_config
 
-    if _is_mock():
-        return _check(
-            "auth", "Authentication", STATUS_READY,
-            "Development mock authentication is active; it is refused outside "
-            "development and never used in production.", "",
-            required=True,
-        )
     authority, _client_id, _secret = _keycloak_config()
     if not authority:
         return _check(

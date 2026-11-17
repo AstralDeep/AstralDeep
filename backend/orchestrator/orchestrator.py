@@ -10671,6 +10671,16 @@ class Orchestrator:
                 return
 
             if isinstance(msg, RegisterUI):
+                from shared import node_identity
+                if node_identity.is_personal():
+                    from orchestrator.auth import NODE_BEARER_REFUSED
+                    from shared.protocol import AuthRequired
+                    logger.warning("UI registration refused: %s", NODE_BEARER_REFUSED)
+                    evt = self._registered_events.get(id(websocket))
+                    if evt:
+                        evt.set()
+                    await self._safe_send(websocket, AuthRequired(reason=NODE_BEARER_REFUSED).to_json())
+                    return
                 token = msg.token
                 user_data = None
 
@@ -10686,7 +10696,6 @@ class Orchestrator:
                         token=token,
                         capabilities=getattr(msg, "capabilities", None),
                         connection_generation=msg.connection_generation,
-                        mock_auth=os.getenv("USE_MOCK_AUTH", "").lower() == "true",
                     )
                     previous_owner = (self.ui_sessions.get(websocket) or {}).get("sub")
                     if previous_owner != user_data.get("sub"):
@@ -20613,6 +20622,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 "chat_id": args.get("session_id") if isinstance(args, dict) else None,
                 "ui_websocket": ui_websocket,
                 "parent_token": parent_payload,
+                "caller_id": (self.ui_sessions.get(ui_websocket, {}) or {}).get("_caller_id"),
             }
             self._dispatch_context[request_id].update(evidence_context.requester_binding(self))
             from persistent_agents.dispatch_context import current_dispatch
@@ -20700,7 +20710,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 render_components=[alert.to_dict()],
                 hop_audited=True)
 
-        # Never sign with the committed dev key in production
+        # Refuse to mint when no signing key can be resolved
         try:
             _dg._child_signing_key()
         except _dg.DelegationConfigError:
@@ -20811,6 +20821,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     f"Hop refused: '{callee}' is not a dispatchable agent.",
                     ctx=ctx, detail="reserved_callee",
                     parent=ctx.get("parent_token"))
+            if ctx.get("caller_id"):
+                return await _refuse(
+                    "Hop refused: a caller ticket never authorizes chained calls.",
+                    ctx=ctx, detail="caller.chain_refused", parent=ctx.get("parent_token"))
             if ctx.get("persistent_assignment"):
                 return await _refuse(
                     "Persistent assignment children require a durable task reservation.",
@@ -21075,6 +21089,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             if delegation_subject_token:
                 safe_claims["_raw_token"] = delegation_subject_token
             safe_claims["_invocation_channel"] = channel
+            safe_claims.pop("_caller_bound_tool", None)
+            if safe_claims.get("_caller_id"):
+                await self._bind_caller_call(safe_claims, agent_id, tool_name)
             self.ui_sessions[invocation] = safe_claims
         auth = None
         result: Optional[MCPResponse] = None
@@ -21115,6 +21132,16 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 await self._release_hop_cap_slot(cap_job_id)
             if owns_invocation:
                 self.ui_sessions.pop(invocation, None)
+
+    async def _bind_caller_call(self, claims: Dict[str, Any], agent_id: str, tool_name: str) -> None:
+        from orchestrator.chain_authority import bind_caller_tool
+        from orchestrator.node_mesh_calls import current_definition
+
+        try:
+            scope = await asyncio.to_thread(self.tool_permissions.get_tool_scope, agent_id, tool_name)
+        except Exception:
+            scope = None
+        bind_caller_tool(claims, agent_id, tool_name, current_definition(self, agent_id, tool_name), scope)
 
     async def execute_mcp_tool(
         self,
@@ -22617,16 +22644,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
         renewal = getattr(self, "_ui_auth_renewal", None)
         if renewal is None:
-            async def _verify(token: str):
-                if os.getenv("USE_MOCK_AUTH", "").lower() == "true":
-                    return None
-                return await self.validate_token(token)
-
             renewal = UIAuthRenewal(
                 self.ui_sessions,
                 getattr(self, "_connection_contexts", {}),
-                _verify,
-                mock_auth=os.getenv("USE_MOCK_AUTH", "").lower() == "true",
+                self.validate_token,
             )
             self._ui_auth_renewal = renewal
         return renewal
@@ -22925,7 +22946,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         if node_session and stop is not None and not stop.admission_allowed(user_id):
             return None
         machine_scopes = None
-        if node_session:
+        from orchestrator.chain_authority import caller_bound
+
+        if node_session or caller_bound(claims):
             from orchestrator.chain_authority import machine_scope_ceiling
 
             machine_scopes = machine_scope_ceiling(claims)
@@ -22952,7 +22975,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     in machine_scopes
                 )
             ]
-            if node_session:
+            if node_session or machine_scopes is not None:
                 from orchestrator.tool_permissions import VALID_SCOPES
 
                 granted = {
@@ -26234,6 +26257,325 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         finally:
             await self._close_started_services()
 
+    def build_http_app(self) -> FastAPI:
+        from fastapi import Depends
+        from orchestrator.auth import refuse_node_bearer, refuse_node_sign_in
+        from orchestrator.mesh_api import refuse_legacy_enrollment
+        from orchestrator.models import WS_PROTOCOL_DOCS
+
+        bearer_closed = [Depends(refuse_node_bearer)]
+
+        tags_metadata = [
+            {"name": "Chat", "description": "Chat session management — create, list, load, delete chats and send messages."},
+            {"name": "Components", "description": "Saved UI component management — save, list, delete, combine, and condense components."},
+            {"name": "Agents", "description": "Connected agent discovery and information."},
+            {"name": "System", "description": "System dashboard and configuration."},
+            {"name": "Auth", "description": "Authentication token proxy (Keycloak BFF)."},
+            {"name": "Files", "description": "File upload and download."},
+            {"name": "Audit", "description": "Per-user audit log (HIPAA + NIST AU). Read-only; admin-blind."},
+        ]
+
+        app = FastAPI(
+            title="AstralDeep Orchestrator API",
+            description=(
+                "REST API and WebSocket gateway for the AstralDeep multi-agent system.\n\n"
+                "## Overview\n\n"
+                "The orchestrator provides two communication channels:\n\n"
+                "1. **REST API** (documented below) — Request/response endpoints for CRUD operations\n"
+                "2. **WebSocket** (`ws://<host>:<port>/ws`) — Real-time streaming for chat responses and live updates\n\n"
+                "Both channels share the same authentication (Keycloak JWT Bearer tokens).\n\n"
+                "---\n"
+                + WS_PROTOCOL_DOCS
+            ),
+            version="1.0.0",
+            openapi_tags=tags_metadata,
+            docs_url="/api/docs",
+            redoc_url="/api/redoc",
+            openapi_url="/api/openapi.json",
+        )
+
+        from fastapi.responses import RedirectResponse as _DocsRedirect
+
+        @app.get("/docs", include_in_schema=False)
+        async def _docs_alias():
+            return _DocsRedirect("/api/docs")
+
+        @app.get("/redoc", include_in_schema=False)
+        async def _redoc_alias():
+            return _DocsRedirect("/api/redoc")
+
+        @app.get("/openapi.json", include_in_schema=False)
+        async def _openapi_alias():
+            return _DocsRedirect("/api/openapi.json")
+
+        if os.getenv("CORS_ORIGINS"):
+            cors_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
+        else:
+            cors_origins = sorted({
+                o.rstrip("/") for o in (
+                    os.getenv("PUBLIC_BASE_URL", ""),
+                    os.getenv("BACKEND_PUBLIC_URL", ""),
+                    f"http://localhost:{os.getenv('ORCHESTRATOR_PORT', '8001')}",
+                ) if o
+            })
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=cors_origins,
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+
+        app.state.orchestrator = self
+
+        try:
+            from orchestrator.voice_bootstrap import install_voice_worker_control
+
+            self.voice_worker_endpoint = install_voice_worker_control(
+                app,
+                self.voice_services,
+            )
+        except Exception as exc:
+            self.voice_worker_endpoint = None
+            logger.warning(
+                "voice_worker_control_unavailable",
+                extra={"reason": getattr(exc, "code", type(exc).__name__)},
+            )
+
+        @app.get("/healthz", include_in_schema=False)
+        async def healthz():
+            return {"status": "ok"}
+
+        @app.get("/readyz", include_in_schema=False)
+        async def readyz():
+            from fastapi.responses import JSONResponse as _JSON
+            try:
+                await self._probe_application_readiness()
+            except Exception as exc:
+                logger.warning("readyz: persistence probe failed: %s", exc)
+                return _JSON(
+                    {"status": "degraded", "persistence": "unready"},
+                    status_code=503,
+                )
+            from orchestrator.lets_health_api import (
+                readyz_body,
+                refresh_lets_reachability,
+            )
+
+            await asyncio.to_thread(refresh_lets_reachability, self)
+            body, code = readyz_body(self)
+            if code != 200:
+                return _JSON(body, status_code=code)
+            return body
+
+        @app.websocket("/ws")
+        async def websocket_endpoint(websocket: WebSocket):
+            await self.handle_ui_connection_fastapi(websocket)
+
+        import secrets as _secrets
+        from astralprojection import template_path as _projection_template_path
+        from fastapi.responses import HTMLResponse as _HTMLResponse
+        _projection_static_dir = _projection_static_filesystem_root()
+        _shell_resource = _projection_template_path("shell.html")
+
+        @app.get("/", response_class=_HTMLResponse, dependencies=[Depends(refuse_node_sign_in)])
+        async def serve_shell(request: Request):
+            try:
+                from orchestrator.web_auth import shell_gate
+                from fastapi.responses import RedirectResponse as _Redirect
+                gate = await asyncio.to_thread(shell_gate, request)
+                if gate:
+                    return _Redirect(gate, status_code=302)
+            except Exception:
+                logger.exception("web_auth: shell gate check failed — failing closed")
+                return _HTMLResponse("<h1>AstralDeep</h1><p>Sign-in unavailable.</p>", status_code=503)
+            try:
+                shell = _shell_resource.read_text(encoding="utf-8")
+                from webrender.chrome.console_model import render_console_labels
+                shell = render_console_labels(shell)
+            except Exception:
+                logger.exception("astralprojection: shell template missing")
+                return _HTMLResponse("<h1>AstralDeep</h1><p>UI shell unavailable.</p>", status_code=500)
+            token = ""
+            try:
+                token = await self._shell_token_for_request(request)
+            except Exception:
+                token = ""
+            topbar = ""
+            try:
+                from orchestrator.chrome_availability import projection_chrome_availability
+                from orchestrator.web_auth import session_roles
+                from webrender.chrome import render_topbar
+                topbar = render_topbar(
+                    roles=await asyncio.to_thread(session_roles, request),
+                    **projection_chrome_availability(self),
+                )
+            except Exception:
+                logger.exception("chrome: topbar render failed — serving bare shell")
+            shell = shell.replace("%%ASTRAL_TOKEN%%", token or "")
+            from html import escape as _html_escape
+            identity = {"name": "Signed in", "role": "Member", "initials": "A"}
+            try:
+                from orchestrator.web_auth import session_identity
+                identity = await asyncio.to_thread(session_identity, request)
+            except Exception:
+                logger.debug("shell: session identity unavailable", exc_info=True)
+            for placeholder, key in (
+                ("%%ASTRAL_USER_NAME%%", "name"),
+                ("%%ASTRAL_USER_ROLE%%", "role"),
+                ("%%ASTRAL_USER_INITIALS%%", "initials"),
+            ):
+                shell = shell.replace(placeholder, _html_escape(str(identity.get(key, ""))))
+
+            resumed_flag = "true"
+            try:
+                from orchestrator.web_auth import session_resumed_flag
+                resumed_flag = "true" if await asyncio.to_thread(session_resumed_flag, request) else "false"
+            except Exception:
+                logger.debug("session_resumed_flag failed", exc_info=True)
+            shell = shell.replace("%%ASTRAL_RESUMED%%", resumed_flag)
+            accept_attr = ""
+            try:
+                from orchestrator.attachments.content_type import ACCEPTED_EXTENSIONS
+                accept_attr = ",".join("." + e for e in sorted(ACCEPTED_EXTENSIONS))
+            except Exception:
+                logger.debug("attachment accept-list injection failed", exc_info=True)
+            shell = shell.replace("%%ASTRAL_ACCEPT%%", accept_attr)
+            landing_json = '{"scenarios":[],"categories":[],"agents":[]}'
+            try:
+                from orchestrator import web_landing
+                from orchestrator.web_auth import session_subject
+                _subject = await asyncio.to_thread(session_subject, request)
+                landing_json = web_landing.as_script_json(
+                    await web_landing.payload(self, _subject)
+                )
+            except Exception:
+                logger.debug("shell: landing payload unavailable", exc_info=True)
+            shell = shell.replace("%%ASTRAL_LANDING%%", landing_json)
+
+            shell = _apply_asset_versions(shell, _projection_static_dir)
+            nonce = _secrets.token_urlsafe(16)
+            shell = shell.replace("%%ASTRAL_NONCE%%", nonce)
+            connect_src = csp_connect_src()
+            resp = _HTMLResponse(shell.replace("%%ASTRAL_TOPBAR%%", topbar))
+            resp.headers["Cache-Control"] = "no-store"
+            resp.headers["Content-Security-Policy"] = (
+                "default-src 'self'; "
+                f"script-src 'self' 'nonce-{nonce}'; "
+                "style-src 'self' 'unsafe-inline'; "
+                "img-src 'self' data: blob: https:; "
+                "media-src 'self' data: blob: https:; "
+                f"connect-src {connect_src}; "
+                "font-src 'self'; "
+                "object-src 'none'; "
+                "base-uri 'none'; "
+                "frame-ancestors 'none'; "
+                "form-action 'self'"
+            )
+            resp.headers["X-Content-Type-Options"] = "nosniff"
+            resp.headers["Referrer-Policy"] = "no-referrer"
+            resp.headers["Permissions-Policy"] = "camera=(), geolocation=()"
+            return resp
+
+        app.mount(
+            "/static",
+            _NoCacheStaticFiles(directory=_projection_static_dir),
+            name="static",
+        )
+
+        from orchestrator.api import chat_router, component_router, agent_router, dashboard_router, draft_router, voice_router, task_router, async_task_router, user_router, chrome_router, export_router, share_router, operation_router
+        from orchestrator.auth import auth_router
+        from orchestrator.mesh_api import mesh_router
+        from orchestrator.push_api import push_router
+        from orchestrator.mesh_push_api import mesh_push_router
+        from orchestrator.notification_api import notification_router
+        from orchestrator.web_auth import web_auth_router
+        from orchestrator.attachments.router import attachments_router
+        from audit.api import audit_router
+        from audit.middleware import AuditHTTPMiddleware
+        from feedback.api import feedback_user_router, feedback_admin_router
+        from onboarding.api import onboarding_user_router, onboarding_admin_router
+        from llm_config.api import llm_router
+        from personalization.api import (
+            personalization_router,
+            skills_router,
+            memory_router,
+        )
+        from personalization.atlas_api import atlas_router
+        from personalization.search_api import search_router
+        from scheduler.api import schedule_router
+        from persistent_agents.api import assignment_router
+        from orchestrator.emergency_stop_api import emergency_stop_router
+        from dreaming.api import dreaming_router
+        from orchestrator.api import project_router
+
+        from orchestrator.lets_health_api import lets_router
+        from orchestrator.computer_policy_api import computer_policy_router
+        from orchestrator.connection_guide import connection_router
+        from orchestrator.a2a_publication_api import publication_router
+        from orchestrator.mesh_web import mesh_web_router
+        from orchestrator.node_api import node_router
+        from orchestrator.harness.selection_api import harness_router
+        from orchestrator.terminal_api import terminal_router
+
+        bearer_routers = [
+            project_router, chat_router, component_router, agent_router, user_router,
+            draft_router, dashboard_router, chrome_router, lets_router,
+            computer_policy_router, connection_router,
+        ]
+        if flags.is_enabled("remote_mcp"):
+            from orchestrator.remote_mcp_api import remote_mcp_router
+            bearer_routers.append(remote_mcp_router)
+        bearer_routers += [notification_router, publication_router, export_router]
+        for router in bearer_routers:
+            app.include_router(router, dependencies=bearer_closed)
+        app.include_router(share_router)
+        app.include_router(auth_router)
+        app.include_router(mesh_router)
+        app.include_router(mesh_web_router, dependencies=[Depends(refuse_legacy_enrollment)])
+        app.include_router(node_router)
+        for router in (push_router, mesh_push_router, harness_router):
+            app.include_router(router, dependencies=bearer_closed)
+        app.include_router(web_auth_router)
+        if flags.is_enabled("kiosk_login"):
+            from orchestrator.web_auth import kiosk_router
+            app.include_router(kiosk_router)
+            logger.info("Kiosk sign-in surface mounted at /kiosk")
+        for router in (
+            attachments_router, voice_router, task_router, async_task_router,
+            operation_router, terminal_router, audit_router, feedback_user_router,
+            feedback_admin_router, onboarding_user_router, onboarding_admin_router,
+            llm_router, personalization_router, skills_router, memory_router,
+            atlas_router, search_router, schedule_router, assignment_router,
+            emergency_stop_router, dreaming_router,
+        ):
+            app.include_router(router, dependencies=bearer_closed)
+
+        app.add_middleware(AuditHTTPMiddleware)
+
+        if flags.is_enabled("mcp_server"):
+            from orchestrator.mcp_server_endpoint import install_mcp_server
+
+            install_mcp_server(app, self)
+            logger.info("MCP 2026-07-28 endpoint mounted at /mcp")
+
+        if flags.is_enabled("a2a_server"):
+            try:
+                from orchestrator.a2a_orchestrator_executor import setup_orchestrator_a2a
+                setup_orchestrator_a2a(app, self)
+                logger.warning(
+                    "A2A JSON-RPC endpoint mounted at /a2a/ (FF_A2A_SERVER=true). "
+                    "POST /a2a requires a first-party Keycloak bearer and "
+                    "dispatches through the tool authorization gate; the "
+                    "anonymous agent card lists only capabilities the owner "
+                    "explicitly published for A2A. "
+                    "Keep the reverse proxy rule for /a2a closed until the "
+                    "owner opens it."
+                )
+            except Exception as e:
+                logger.warning(f"A2A server setup skipped: {e}")
+        return app
+
     async def _run_started_server(self):
         logger.info(f"Orchestrator starting on port {PORT}")
 
@@ -26449,335 +26791,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             name="generated-agent-relaunch",
         )
 
-        from orchestrator.models import WS_PROTOCOL_DOCS
-
-        tags_metadata = [
-            {"name": "Chat", "description": "Chat session management — create, list, load, delete chats and send messages."},
-            {"name": "Components", "description": "Saved UI component management — save, list, delete, combine, and condense components."},
-            {"name": "Agents", "description": "Connected agent discovery and information."},
-            {"name": "System", "description": "System dashboard and configuration."},
-            {"name": "Auth", "description": "Authentication token proxy (Keycloak BFF)."},
-            {"name": "Files", "description": "File upload and download."},
-            {"name": "Audit", "description": "Per-user audit log (HIPAA + NIST AU). Read-only; admin-blind."},
-        ]
-
-        app = FastAPI(
-            title="AstralDeep Orchestrator API",
-            description=(
-                "REST API and WebSocket gateway for the AstralDeep multi-agent system.\n\n"
-                "## Overview\n\n"
-                "The orchestrator provides two communication channels:\n\n"
-                "1. **REST API** (documented below) — Request/response endpoints for CRUD operations\n"
-                "2. **WebSocket** (`ws://<host>:<port>/ws`) — Real-time streaming for chat responses and live updates\n\n"
-                "Both channels share the same authentication (Keycloak JWT Bearer tokens).\n\n"
-                "---\n"
-                + WS_PROTOCOL_DOCS
-            ),
-            version="1.0.0",
-            openapi_tags=tags_metadata,
-            docs_url="/api/docs",
-            redoc_url="/api/redoc",
-            openapi_url="/api/openapi.json",
-        )
-
-        from fastapi.responses import RedirectResponse as _DocsRedirect
-
-        @app.get("/docs", include_in_schema=False)
-        async def _docs_alias():
-            return _DocsRedirect("/api/docs")
-
-        @app.get("/redoc", include_in_schema=False)
-        async def _redoc_alias():
-            return _DocsRedirect("/api/redoc")
-
-        @app.get("/openapi.json", include_in_schema=False)
-        async def _openapi_alias():
-            return _DocsRedirect("/api/openapi.json")
-
-        if os.getenv("CORS_ORIGINS"):
-            cors_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
-        else:
-            cors_origins = sorted({
-                o.rstrip("/") for o in (
-                    os.getenv("PUBLIC_BASE_URL", ""),
-                    os.getenv("BACKEND_PUBLIC_URL", ""),
-                    f"http://localhost:{os.getenv('ORCHESTRATOR_PORT', '8001')}",
-                ) if o
-            })
-        app.add_middleware(
-            CORSMiddleware,
-            allow_origins=cors_origins,
-            allow_credentials=True,
-            allow_methods=["*"],
-            allow_headers=["*"],
-        )
-
-        app.state.orchestrator = self
-
-        try:
-            from orchestrator.voice_bootstrap import install_voice_worker_control
-
-            self.voice_worker_endpoint = install_voice_worker_control(
-                app,
-                self.voice_services,
-            )
-        except Exception as exc:
-            self.voice_worker_endpoint = None
-            logger.warning(
-                "voice_worker_control_unavailable",
-                extra={"reason": getattr(exc, "code", type(exc).__name__)},
-            )
-
-        @app.get("/healthz", include_in_schema=False)
-        async def healthz():
-            return {"status": "ok"}
-
-        @app.get("/readyz", include_in_schema=False)
-        async def readyz():
-            from fastapi.responses import JSONResponse as _JSON
-            try:
-                await self._probe_application_readiness()
-            except Exception as exc:
-                logger.warning("readyz: persistence probe failed: %s", exc)
-                return _JSON(
-                    {"status": "degraded", "persistence": "unready"},
-                    status_code=503,
-                )
-            from orchestrator.lets_health_api import (
-                readyz_body,
-                refresh_lets_reachability,
-            )
-
-            await asyncio.to_thread(refresh_lets_reachability, self)
-            body, code = readyz_body(self)
-            if code != 200:
-                return _JSON(body, status_code=code)
-            return body
-
-        @app.websocket("/ws")
-        async def websocket_endpoint(websocket: WebSocket):
-            await self.handle_ui_connection_fastapi(websocket)
-
-        import secrets as _secrets
-        from astralprojection import template_path as _projection_template_path
-        from fastapi.responses import HTMLResponse as _HTMLResponse
-        _projection_static_dir = _projection_static_filesystem_root()
-        _shell_resource = _projection_template_path("shell.html")
-
-        @app.get("/", response_class=_HTMLResponse)
-        async def serve_shell(request: Request):
-            try:
-                from orchestrator.web_auth import shell_gate
-                from fastapi.responses import RedirectResponse as _Redirect
-                gate = await asyncio.to_thread(shell_gate, request)
-                if gate:
-                    return _Redirect(gate, status_code=302)
-            except Exception:
-                logger.exception("web_auth: shell gate check failed — failing closed")
-                return _HTMLResponse("<h1>AstralDeep</h1><p>Sign-in unavailable.</p>", status_code=503)
-            try:
-                shell = _shell_resource.read_text(encoding="utf-8")
-                from webrender.chrome.console_model import render_console_labels
-                shell = render_console_labels(shell)
-            except Exception:
-                logger.exception("astralprojection: shell template missing")
-                return _HTMLResponse("<h1>AstralDeep</h1><p>UI shell unavailable.</p>", status_code=500)
-            token = ""
-            try:
-                token = await self._shell_token_for_request(request)
-            except Exception:
-                token = ""
-            topbar = ""
-            try:
-                from orchestrator.chrome_availability import projection_chrome_availability
-                from orchestrator.web_auth import session_roles
-                from webrender.chrome import render_topbar
-                topbar = render_topbar(
-                    roles=await asyncio.to_thread(session_roles, request),
-                    **projection_chrome_availability(self),
-                )
-            except Exception:
-                logger.exception("chrome: topbar render failed — serving bare shell")
-            shell = shell.replace("%%ASTRAL_TOKEN%%", token or "")
-            from html import escape as _html_escape
-            identity = {"name": "Signed in", "role": "Member", "initials": "A"}
-            try:
-                from orchestrator.web_auth import session_identity
-                identity = await asyncio.to_thread(session_identity, request)
-            except Exception:
-                logger.debug("shell: session identity unavailable", exc_info=True)
-            for placeholder, key in (
-                ("%%ASTRAL_USER_NAME%%", "name"),
-                ("%%ASTRAL_USER_ROLE%%", "role"),
-                ("%%ASTRAL_USER_INITIALS%%", "initials"),
-            ):
-                shell = shell.replace(placeholder, _html_escape(str(identity.get(key, ""))))
-
-            resumed_flag = "true"
-            try:
-                from orchestrator.web_auth import session_resumed_flag
-                resumed_flag = "true" if await asyncio.to_thread(session_resumed_flag, request) else "false"
-            except Exception:
-                logger.debug("session_resumed_flag failed", exc_info=True)
-            shell = shell.replace("%%ASTRAL_RESUMED%%", resumed_flag)
-            accept_attr = ""
-            try:
-                from orchestrator.attachments.content_type import ACCEPTED_EXTENSIONS
-                accept_attr = ",".join("." + e for e in sorted(ACCEPTED_EXTENSIONS))
-            except Exception:
-                logger.debug("attachment accept-list injection failed", exc_info=True)
-            shell = shell.replace("%%ASTRAL_ACCEPT%%", accept_attr)
-            landing_json = '{"scenarios":[],"categories":[],"agents":[]}'
-            try:
-                from orchestrator import web_landing
-                from orchestrator.web_auth import session_subject
-                _subject = await asyncio.to_thread(session_subject, request)
-                landing_json = web_landing.as_script_json(
-                    await web_landing.payload(self, _subject)
-                )
-            except Exception:
-                logger.debug("shell: landing payload unavailable", exc_info=True)
-            shell = shell.replace("%%ASTRAL_LANDING%%", landing_json)
-
-            shell = _apply_asset_versions(shell, _projection_static_dir)
-            nonce = _secrets.token_urlsafe(16)
-            shell = shell.replace("%%ASTRAL_NONCE%%", nonce)
-            connect_src = csp_connect_src()
-            resp = _HTMLResponse(shell.replace("%%ASTRAL_TOPBAR%%", topbar))
-            resp.headers["Cache-Control"] = "no-store"
-            resp.headers["Content-Security-Policy"] = (
-                "default-src 'self'; "
-                f"script-src 'self' 'nonce-{nonce}'; "
-                "style-src 'self' 'unsafe-inline'; "
-                "img-src 'self' data: blob: https:; "
-                "media-src 'self' data: blob: https:; "
-                f"connect-src {connect_src}; "
-                "font-src 'self'; "
-                "object-src 'none'; "
-                "base-uri 'none'; "
-                "frame-ancestors 'none'; "
-                "form-action 'self'"
-            )
-            resp.headers["X-Content-Type-Options"] = "nosniff"
-            resp.headers["Referrer-Policy"] = "no-referrer"
-            resp.headers["Permissions-Policy"] = "camera=(), geolocation=()"
-            return resp
-
-        app.mount(
-            "/static",
-            _NoCacheStaticFiles(directory=_projection_static_dir),
-            name="static",
-        )
-
-        from orchestrator.api import chat_router, component_router, agent_router, dashboard_router, draft_router, voice_router, task_router, async_task_router, user_router, chrome_router, export_router, share_router, operation_router
-        from orchestrator.auth import auth_router
-        from orchestrator.mesh_api import mesh_router
-        from orchestrator.push_api import push_router
-        from orchestrator.mesh_push_api import mesh_push_router
-        from orchestrator.notification_api import notification_router
-        from orchestrator.web_auth import web_auth_router
-        from orchestrator.attachments.router import attachments_router
-        from audit.api import audit_router
-        from audit.middleware import AuditHTTPMiddleware
-        from feedback.api import feedback_user_router, feedback_admin_router
-        from onboarding.api import onboarding_user_router, onboarding_admin_router
-        from llm_config.api import llm_router
-        from personalization.api import (
-            personalization_router,
-            skills_router,
-            memory_router,
-        )
-        from personalization.atlas_api import atlas_router
-        from personalization.search_api import search_router
-        from scheduler.api import schedule_router
-        from persistent_agents.api import assignment_router
-        from orchestrator.emergency_stop_api import emergency_stop_router
-        from dreaming.api import dreaming_router
-        from orchestrator.api import project_router
-
-        app.include_router(project_router)
-        app.include_router(chat_router)
-        app.include_router(component_router)
-        app.include_router(agent_router)
-        app.include_router(user_router)
-        app.include_router(draft_router)
-        app.include_router(dashboard_router)
-        app.include_router(chrome_router)
-        from orchestrator.lets_health_api import lets_router
-        app.include_router(lets_router)
-        from orchestrator.computer_policy_api import computer_policy_router
-        app.include_router(computer_policy_router)
-        from orchestrator.connection_guide import connection_router
-        app.include_router(connection_router)
-        if flags.is_enabled("remote_mcp"):
-            from orchestrator.remote_mcp_api import remote_mcp_router
-            app.include_router(remote_mcp_router)
-        app.include_router(notification_router)
-        from orchestrator.a2a_publication_api import publication_router
-        app.include_router(publication_router)
-        app.include_router(export_router)
-        app.include_router(share_router)
-        app.include_router(auth_router)
-        from orchestrator.mesh_web import mesh_web_router
-        from orchestrator.node_api import node_router
-        app.include_router(mesh_router)
-        app.include_router(mesh_web_router)
-        app.include_router(node_router)
-        app.include_router(push_router)
-        app.include_router(mesh_push_router)
-        from orchestrator.harness.selection_api import harness_router
-        app.include_router(harness_router)
-        app.include_router(web_auth_router)
-        if flags.is_enabled("kiosk_login"):
-            from orchestrator.web_auth import kiosk_router
-            app.include_router(kiosk_router)
-            logger.info("Kiosk sign-in surface mounted at /kiosk")
-        app.include_router(attachments_router)
-        app.include_router(voice_router)
-        app.include_router(task_router)
-        app.include_router(async_task_router)
-        app.include_router(operation_router)
-        from orchestrator.terminal_api import terminal_router
-        app.include_router(terminal_router)
-        app.include_router(audit_router)
-        app.include_router(feedback_user_router)
-        app.include_router(feedback_admin_router)
-        app.include_router(onboarding_user_router)
-        app.include_router(onboarding_admin_router)
-        app.include_router(llm_router)
-        app.include_router(personalization_router)
-        app.include_router(skills_router)
-        app.include_router(memory_router)
-        app.include_router(atlas_router)
-        app.include_router(search_router)
-        app.include_router(schedule_router)
-        app.include_router(assignment_router)
-        app.include_router(emergency_stop_router)
-        app.include_router(dreaming_router)
-
-        app.add_middleware(AuditHTTPMiddleware)
-
-        if flags.is_enabled("mcp_server"):
-            from orchestrator.mcp_server_endpoint import install_mcp_server
-
-            install_mcp_server(app, self)
-            logger.info("MCP 2026-07-28 endpoint mounted at /mcp")
-
-        if flags.is_enabled("a2a_server"):
-            try:
-                from orchestrator.a2a_orchestrator_executor import setup_orchestrator_a2a
-                setup_orchestrator_a2a(app, self)
-                logger.warning(
-                    "A2A JSON-RPC endpoint mounted at /a2a/ (FF_A2A_SERVER=true). "
-                    "POST /a2a requires a first-party Keycloak bearer and "
-                    "dispatches through the tool authorization gate; the "
-                    "anonymous agent card lists only capabilities the owner "
-                    "explicitly published for A2A. "
-                    "Keep the reverse proxy rule for /a2a closed until the "
-                    "owner opens it."
-                )
-            except Exception as e:
-                logger.warning(f"A2A server setup skipped: {e}")
+        app = self.build_http_app()
 
         external_agents = os.getenv("A2A_EXTERNAL_AGENTS", "")
         if external_agents:
@@ -27030,10 +27044,13 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         )
 
     async def _jwks_warm_loop(self):
-        from shared import jwks_cache
+        from shared import jwks_cache, node_identity
+        if node_identity.is_personal():
+            logger.info("jwks warm: skipped (a personal node trusts no identity server)")
+            return
         authority = (os.getenv("KEYCLOAK_AUTHORITY") or "").strip()
-        if not authority or os.getenv("USE_MOCK_AUTH", "").lower() == "true":
-            logger.info("jwks warm: skipped (mock auth or no authority configured)")
+        if not authority:
+            logger.info("jwks warm: skipped (no authority configured)")
             return
         jwks_url = f"{authority.rstrip('/')}/protocol/openid-connect/certs"
         interval = float(os.getenv("JWKS_REFRESH_SECONDS", "500"))
@@ -27219,44 +27236,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 )
 
     async def validate_token(self, token: str) -> Optional[Dict]:
-        if os.getenv("USE_MOCK_AUTH", "").lower() == "true":
-            if token == "dev-token":
-                logger.info("Mock Auth: Validated dev-token as test_user")
-                return {
-                    "sub": "test_user",
-                    "preferred_username": "test_user",
-                    "email": "test_user@local",
-                    "realm_access": {"roles": ["admin", "user"]},
-                    "resource_access": {"astral-frontend": {"roles": ["admin", "user"]}},
-                }
-            try:
-                import base64
-                parts = token.split('.')
-                if len(parts) == 3:
-                    payload_b64 = parts[1]
-                    payload_b64 += '=' * ((4 - len(payload_b64) % 4) % 4)
-                    payload_json = base64.b64decode(payload_b64).decode('utf-8')
-                    decoded = json.loads(payload_json)
-                    from shared.auth_clients import is_first_party_user_claims
-                    ok, reason = is_first_party_user_claims(decoded)
-                    if not ok:
-                        logger.warning(
-                            "Refusing non-first-party token for a UI session: %s",
-                            reason,
-                        )
-                        return None
-                    return decoded
-            except Exception as e:
-                logger.debug(f"Mock JWT decode failed, falling back to default test_user: {e}")
-            logger.info("Mock Auth: Accepting token as test_user")
-            return {
-                "sub": "test_user",
-                "preferred_username": "test_user",
-                "email": "test_user@local",
-                "realm_access": {"roles": ["admin", "user"]},
-                "resource_access": {"astral-frontend": {"roles": ["admin", "user"]}},
-            }
-
+        from shared import node_identity
+        if node_identity.is_personal():
+            logger.warning("Token refused for a UI session: node_bearer_refused")
+            return None
         try:
             authority = os.getenv("KEYCLOAK_AUTHORITY")
             expected_client = os.getenv("KEYCLOAK_CLIENT_ID")

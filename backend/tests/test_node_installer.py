@@ -1,4 +1,4 @@
-"""Runs scripts/node/install-personal-node.sh against a temporary home: files and modes, no secrets printed, safe to rerun, and a key and owner binding the node accepts."""
+"""Runs scripts/node/install-personal-node.sh against a temporary home: files and modes, no secrets printed, safe to rerun, removed sign-in flags refused, a legacy env file left alone, and an env file the production posture accepts."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import pytest
 from shared import node_identity as ni
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "node" / "install-personal-node.sh"
-ISSUER = "https://idp.example/realms/astral"
+LEGACY_OWNER = "ASTRAL_NODE_OWNER=oidc.0123456789abcdef.owner-sub-1\n"
 
 pytestmark = pytest.mark.skipif(
     not (shutil.which("bash") and shutil.which("openssl") and SCRIPT.exists()),
@@ -20,12 +20,8 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def run(home, *extra, issuer=ISSUER, client="astral-app"):
+def run(home, *extra):
     args = ["bash", str(SCRIPT), "--home", str(home)]
-    if issuer is not None:
-        args += ["--issuer", issuer]
-    if client is not None:
-        args += ["--client-id", client]
     return subprocess.run(args + list(extra), capture_output=True, text=True, check=False)
 
 
@@ -39,7 +35,8 @@ def test_install_creates_private_files_and_a_loadable_key(tmp_path, monkeypatch)
     assert result.returncode == 0, result.stderr
     values = env_values(home / "node.env")
     assert values["ASTRAL_NODE_PROFILE"] == "personal"
-    assert values["KEYCLOAK_AUTHORITY"] == ISSUER
+    assert not any(name.startswith("KEYCLOAK_") for name in values)
+    assert "ASTRAL_NODE_OWNER" not in values
     assert values["PUBLIC_BASE_URL"] == "https://node.example"
     assert "KEYCLOAK_CLIENT_SECRET" not in values
     for name in ("WEB_SESSION_ENC_KEY", "CREDENTIAL_ENCRYPTION_KEY", "AUDIT_HMAC_SECRET", "AGENT_API_KEY"):
@@ -75,7 +72,7 @@ def test_rerun_keeps_every_existing_value_and_adds_only_what_is_missing(tmp_path
     before = (home / "node.env").read_text()
     key = (home / "data" / ni.KEY_FILE)
     key_before = key.read_bytes() if key.exists() else None
-    again = run(home, issuer="https://another.example/realms/x", client="other-client")
+    again = run(home)
     assert again.returncode == 0
     assert (home / "node.env").read_text() == before
     assert "none, everything was already present" in again.stdout
@@ -86,27 +83,90 @@ def test_rerun_keeps_every_existing_value_and_adds_only_what_is_missing(tmp_path
     assert env_values(home / "node.env")["DATABASE_URL"] == "postgresql://db/n"
 
 
-def test_owner_binding_matches_the_node_owner_id(tmp_path):
+def test_the_written_env_passes_the_production_posture_without_keycloak(tmp_path, monkeypatch):
+    from orchestrator.session_store import assert_production_posture
+
     home = tmp_path / "home"
-    run(home, "--owner-subject", "owner-sub-1")
-    assert env_values(home / "node.env")["ASTRAL_NODE_OWNER"] == ni.canonical_owner_id(ISSUER, "owner-sub-1")
+    assert run(home).returncode == 0
+    for name in ("KEYCLOAK_AUTHORITY", "KEYCLOAK_CLIENT_ID", "KEYCLOAK_CLIENT_SECRET", ni.OWNER_ENV, ni.ISSUERS_ENV):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env_values(home / "node.env").items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("ASTRAL_ENV", "production")
+    ni.reset_cache()
+    try:
+        assert_production_posture()
+    finally:
+        ni.reset_cache()
 
 
-def test_a_trailing_slash_on_the_issuer_is_dropped(tmp_path):
-    home = tmp_path / "home"
-    run(home, issuer=ISSUER + "/")
-    assert env_values(home / "node.env")["KEYCLOAK_AUTHORITY"] == ISSUER
-
-
-@pytest.mark.parametrize("missing", ["issuer", "client"])
-def test_required_options_are_enforced(tmp_path, missing):
-    result = run(tmp_path / "home", issuer=None if missing == "issuer" else ISSUER, client=None if missing == "client" else "c")
+@pytest.mark.parametrize(
+    "flag, replacement",
+    [
+        (["--issuer", "https://idp.example/realms/astral"], "Keycloak"),
+        (["--issuer=https://idp.example/realms/astral"], "Keycloak"),
+        (["--client-id", "astral-app"], "Keycloak"),
+        (["--client-id=astral-app"], "Keycloak"),
+        (["--owner-subject", "owner-sub-1"], "mesh you pair"),
+        (["--owner-subject=owner-sub-1"], "mesh you pair"),
+    ],
+)
+def test_removed_sign_in_flags_are_refused_and_name_their_replacement(tmp_path, flag, replacement):
+    result = run(tmp_path / "home", *flag)
     assert result.returncode == 2
+    assert flag[0].split("=")[0] + " was removed" in result.stderr
+    assert replacement in result.stderr
     assert not (tmp_path / "home").exists()
+
+
+def test_an_existing_legacy_owner_env_file_is_left_byte_identical(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    env = home / "node.env"
+    legacy = "KEYCLOAK_AUTHORITY=https://idp.example/realms/astral\nKEYCLOAK_CLIENT_ID=astral-app\n" + LEGACY_OWNER
+    complete = legacy + "".join(
+        f"{name}=v\n"
+        for name in (
+            "ASTRAL_NODE_PROFILE", "ASTRAL_NODE_DATA_DIR", "WEB_SESSION_ENC_KEY",
+            "CREDENTIAL_ENCRYPTION_KEY", "AUDIT_HMAC_SECRET", "AGENT_API_KEY",
+        )
+    )
+    env.write_text(complete)
+    result = run(home)
+    assert result.returncode == 0, result.stderr
+    assert env.read_bytes() == complete.encode()
+    assert "legacy owner" in result.stdout
+    assert "oidc.0123456789abcdef" not in result.stdout
+
+
+def test_a_legacy_owner_file_gets_the_missing_settings_added_and_the_owner_line_kept(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "node.env").write_text(LEGACY_OWNER)
+    result = run(home)
+    assert result.returncode == 0
+    assert (home / "node.env").read_text().startswith(LEGACY_OWNER)
+    assert env_values(home / "node.env")["ASTRAL_NODE_PROFILE"] == "personal"
+    assert "legacy owner" in result.stdout
+
+
+def test_a_mesh_owner_line_is_not_reported_as_legacy(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "node.env").write_text("ASTRAL_NODE_OWNER=sha256:" + "a" * 64 + "\n")
+    assert "legacy" not in run(home).stdout
+
+
+def test_next_steps_describe_pairing_without_a_sign_in(tmp_path):
+    out = run(tmp_path / "home").stdout
+    assert "POST /api/node/mesh/offer" in out
+    assert "Astral-Pairing-Secret" in out
+    assert "pairing-secret" in out
+    assert "Sign in" not in out and "issuer" not in out
 
 
 def test_unknown_options_and_help(tmp_path):
     bad = subprocess.run(["bash", str(SCRIPT), "--nope"], capture_output=True, text=True, check=False)
     assert bad.returncode == 2
     helped = subprocess.run(["bash", str(SCRIPT), "--help"], capture_output=True, text=True, check=False)
-    assert helped.returncode == 0 and "--issuer" in helped.stdout
+    assert helped.returncode == 0 and "--issuer" not in helped.stdout and "--home" in helped.stdout

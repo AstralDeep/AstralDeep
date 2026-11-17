@@ -32,7 +32,6 @@ def _creds(token: str = "a.b.c") -> HTTPAuthorizationCredentials:
 
 @pytest.fixture
 def jwks_env(monkeypatch):
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
     monkeypatch.setenv("KEYCLOAK_AUTHORITY", AUTHORITY)
     monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-frontend")
     monkeypatch.delenv("KEYCLOAK_ALLOWED_AZP", raising=False)

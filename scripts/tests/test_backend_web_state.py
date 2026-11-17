@@ -24,7 +24,7 @@ OWNER = f"__verif__{QUALIFICATION}_recovery"
 
 def environment():
     return {"DATABASE_URL": f"postgresql://qualification:synthetic@ad-bwq-{QUALIFICATION}-pg/astralplane_qualification_{QUALIFICATION}?options=-csearch_path%3Dastralplane_fixture_{QUALIFICATION}%2Cpg_catalog",
-            "ASTRAL_ENV": "production", "USE_MOCK_AUTH": "false",
+            "ASTRAL_ENV": "production",
             "CREDENTIAL_ENCRYPTION_KEY": "synthetic-key", "AUDIT_HMAC_SECRET": "synthetic-audit"}
 
 
@@ -335,7 +335,7 @@ def test_uninitialized_plane_cannot_seed_recovery_state():
 
 @pytest.mark.parametrize("change", [
     {"DATABASE_URL": "postgresql://live/astral"}, {"ASTRAL_ENV": "development"},
-    {"USE_MOCK_AUTH": "true"}, {"CREDENTIAL_ENCRYPTION_KEY": ""}, {"AUDIT_HMAC_SECRET": ""},
+    {"CREDENTIAL_ENCRYPTION_KEY": ""}, {"AUDIT_HMAC_SECRET": ""},
 ])
 def test_target_refuses_live_or_mock_or_unkeyed_state(change):
     with pytest.raises(ValueError, match="isolated"):

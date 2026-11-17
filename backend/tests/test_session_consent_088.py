@@ -19,7 +19,6 @@ from tests.helpers.session_consent_088 import synthetic_consent
 
 @pytest.fixture
 def fixture(monkeypatch):
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
     monkeypatch.setenv("WEB_SESSION_SECRET", "synthetic-consent-cookie-key")
     selected = synthetic_consent()
     state = SimpleNamespace(credential=selected.observation.credential,
@@ -93,11 +92,9 @@ def test_selection_failure_and_cancellation(fixture, monkeypatch):
     store.capture_execution_reference.side_effect = asyncio.CancelledError
     with pytest.raises(asyncio.CancelledError):
         run(store)
-    monkeypatch.setenv("USE_MOCK_AUTH", "true")
     store.capture_execution_reference.reset_mock()
-    assert run(store) is None
-    store.capture_execution_reference.assert_not_called()
     assert asyncio.run(sc.select_consent_session(object(), principal={}, store=store)) is None
+    store.capture_execution_reference.assert_not_called()
 
 
 def test_original_clock_and_principal_expiry_cap(fixture):

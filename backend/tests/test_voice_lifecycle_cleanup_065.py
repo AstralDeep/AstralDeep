@@ -75,7 +75,20 @@ def test_web_logout_ends_voice_once_after_local_session_fence(monkeypatch) -> No
     monkeypatch.setattr(web_auth, "_unsign", lambda _raw: "session-a")
     monkeypatch.setattr(web_auth, "_asession_by_sid", session_by_sid)
     monkeypatch.setattr(web_auth, "_kill_session", kill_session)
-    monkeypatch.setattr(web_auth, "_is_mock", lambda: True)
+    async def retire(_session):
+        return "revoked"
+
+    async def no_op(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(web_auth, "_revoke_session_or_queue", retire)
+    monkeypatch.setattr(web_auth, "_destroy_machine_credentials", no_op)
+    monkeypatch.setattr(web_auth, "_audit", no_op)
+    monkeypatch.setattr(web_auth, "_keycloak_config", lambda: ("", "", ""))
+    monkeypatch.setattr(
+        "orchestrator.offline_grant.get_offline_grant_store",
+        lambda: SimpleNamespace(revoke_for_user=lambda _user: 0),
+    )
     request = SimpleNamespace(
         cookies={web_auth.COOKIE_NAME: "signed-session"},
         app=SimpleNamespace(
@@ -110,7 +123,6 @@ def test_web_auth_expiry_ends_identity_voice_session(monkeypatch) -> None:
         await on_retired()
         return None
 
-    monkeypatch.setattr(web_auth, "_is_mock", lambda: False)
     monkeypatch.setattr(web_auth, "aget_session", session)
     monkeypatch.setattr(web_auth, "_token_expires_at", lambda _token: 0.0)
     monkeypatch.setattr(web_auth, "_refresh_session", refresh)

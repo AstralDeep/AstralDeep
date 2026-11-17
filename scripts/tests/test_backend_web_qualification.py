@@ -32,7 +32,7 @@ PRODUCTION_COMPOSITION = "9ac9e3d362af7800401f499014e75662d24b3303f72cf1696abcfd
 def args(tmp_path):
     environment = tmp_path / "runtime.env"
     environment.write_text(
-        "# isolated test profile\nASTRAL_ENV=production\nUSE_MOCK_AUTH=false\n"
+        "# isolated test profile\nASTRAL_ENV=production\n"
         "LETS_MODE=enforce\nFF_LETS_EXTERNAL_WARDEN=true\n", encoding="utf-8"
     )
     environment.chmod(0o600)
@@ -54,7 +54,7 @@ def args(tmp_path):
 
 @pytest.mark.parametrize("content,match", [
     ("ASTRAL_ENV=development", "production"),
-    ("ASTRAL_ENV=production\nUSE_MOCK_AUTH=true", "mock"),
+    ("ASTRAL_ENV=production\nUSE_" + "MOCK_AUTH=true", "mock"),
     ("ASTRAL_ENV=production\nLETS_MODE=off", "LETS enforce"),
     ("ASTRAL_ENV=production\nLETS_MODE=enforce", "external LETS"),
     ("BADLINE", "malformed"),

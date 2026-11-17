@@ -1,16 +1,15 @@
-"""Validates Bearer tokens on incoming A2A requests via Keycloak JWKS (or mock decode in
-dev) and enforces RFC 8693 delegation scopes; A2ASecurityValidator serves an
-agent-inbound posture and a stricter orchestrator-inbound one.
+"""Validates Bearer tokens on incoming A2A requests via Keycloak JWKS
+and enforces RFC 8693 delegation scopes; A2ASecurityValidator serves an
+agent-inbound posture and a stricter orchestrator-inbound one, and on a personal node
+accepts only node-minted delegation agent-inbound and refuses every orchestrator-inbound bearer.
 """
 
 import os
-import base64
-import json
 import logging
 from typing import Optional, Dict, List, Any
 
 from shared import node_identity
-from shared.token_verify import TokenRefused, check_idp_audience, verify_idp_token
+from shared.token_verify import NODE_BEARER_REFUSED, TokenRefused, check_idp_audience, verify_idp_token
 from shared.auth_clients import (
     agent_service_client_id,
     allowed_azps,
@@ -20,16 +19,6 @@ from shared.auth_clients import (
 logger = logging.getLogger("A2ASecurity")
 
 ENTRY_ROLES = frozenset({"user", "admin"})
-
-_DEFAULT_MOCK_CLAIMS = {
-    "sub": "test_user",
-    "aud": "account",
-    "preferred_username": "test_user",
-    "email": "test_user@local",
-    "realm_access": {"roles": ["admin", "user"]},
-    "resource_access": {"astral-frontend": {"roles": ["admin", "user"]}},
-}
-
 
 def token_roles(payload: Dict[str, Any]) -> List[str]:
     if not isinstance(payload, dict):
@@ -46,7 +35,6 @@ def token_roles(payload: Dict[str, Any]) -> List[str]:
 
 class A2ASecurityValidator:
     def __init__(self, *, require_first_party_user: bool = False):
-        self.mock_auth = os.getenv("USE_MOCK_AUTH", "false").lower() == "true"
         self.authority = os.getenv("KEYCLOAK_AUTHORITY", "")
         self.client_id = os.getenv("KEYCLOAK_CLIENT_ID", "")
         self.require_first_party_user = require_first_party_user
@@ -54,11 +42,13 @@ class A2ASecurityValidator:
     async def validate_token(self, token: str) -> Optional[Dict[str, Any]]:
         if not token:
             return None
+        if node_identity.is_personal():
+            if self.require_first_party_user:
+                logger.warning("A2A token rejected (orchestrator inbound): %s", NODE_BEARER_REFUSED)
+                return None
+            return self._validate_node_token(token)
 
-        if self.mock_auth:
-            payload = self._validate_mock_token(token)
-        else:
-            payload = await self._validate_keycloak_token(token)
+        payload = await self._validate_keycloak_token(token)
 
         if payload is None:
             return None
@@ -68,24 +58,6 @@ class A2ASecurityValidator:
                 logger.warning(f"A2A token rejected (orchestrator inbound): {reason}")
                 return None
         return payload
-
-    def _validate_mock_token(self, token: str) -> Optional[Dict[str, Any]]:
-        if token == "dev-token":
-            return dict(_DEFAULT_MOCK_CLAIMS)
-        try:
-            parts = token.split(".")
-            if len(parts) == 3:
-                payload_b64 = parts[1]
-                payload_b64 += "=" * ((4 - len(payload_b64) % 4) % 4)
-                payload_json = base64.b64decode(payload_b64).decode("utf-8")
-                decoded = json.loads(payload_json)
-                if isinstance(decoded, dict):
-                    return decoded
-        except Exception as e:
-            logger.debug(f"A2A mock JWT decode failed, falling back to default test_user: {e}")
-        if self.require_first_party_user:
-            return None
-        return dict(_DEFAULT_MOCK_CLAIMS)
 
     def _accepted_azps(self) -> set:
         accepted = set(allowed_azps())
@@ -98,8 +70,6 @@ class A2ASecurityValidator:
         if not self.authority or not self.client_id:
             logger.error("Keycloak not configured for A2A token validation")
             return None
-        if node_identity.is_personal() and node_identity.peek_algorithm(token) == "EdDSA":
-            return self._validate_node_token(token)
         try:
             return await verify_idp_token(
                 token,

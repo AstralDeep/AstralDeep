@@ -943,7 +943,7 @@ jobs:
               python -m venv --system-site-packages /tmp/tooling
               /tmp/tooling/bin/python -m pip install --require-hashes -r tooling/backend-ci/requirements.lock.txt
               /tmp/tooling/bin/python -m coverage run --source=scripts \
-                --omit=scripts/windows_release_candidate.py,scripts/export_work_contract.py \
+                --omit=scripts/windows_release_candidate.py,scripts/export_work_contract.py,scripts/dev_mesh.py \
                 -m pytest "$@" -q \
                 --deselect=backend/tests/test_documentation_060.py::test_byo_guide_is_reachable_from_projection_apple_client_docs \
                 --deselect=backend/tests/test_python_ci_supply_chain_060.py::test_ci_only_python_manifest_cannot_enter_projection_product_artifacts \

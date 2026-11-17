@@ -74,7 +74,7 @@ async def test_verified_expired_registration_refuses_then_requests_normal_recove
 @pytest.mark.parametrize("failure", [
     "malformed", "signature", "future_token", "issuer", "issuer_type", "client",
     "client_type", "owner", "roles", "mcp_audience", "actor", "claims", "generic_verifier",
-    "mock", "missing_cookie", "forged_cookie", "query_token", "origin", "revoked", "foreign_session",
+    "missing_cookie", "forged_cookie", "query_token", "origin", "revoked", "foreign_session",
 ])
 async def test_expiry_recovery_does_not_reclassify_invalid_or_revoked_authority(
     metadata, fixture, runtime, monkeypatch, failure,
@@ -112,8 +112,6 @@ async def test_expiry_recovery_does_not_reclassify_invalid_or_revoked_authority(
         async def invalid(_):
             raise HTTPException(status_code=401, detail="Invalid token")
         monkeypatch.setattr(auth, "verify_production_token", invalid)
-    elif failure == "mock":
-        monkeypatch.setenv("USE_MOCK_AUTH", "true")
     elif failure in {"missing_cookie", "forged_cookie", "origin"}:
         kind = b"origin" if failure == "origin" else b"cookie"
         state.socket.scope["headers"] = [header for header in state.socket.scope["headers"]

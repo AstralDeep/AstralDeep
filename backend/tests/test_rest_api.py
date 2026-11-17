@@ -18,9 +18,6 @@ _BACKEND_PATH_ADDED = _BACKEND_PATH not in sys.path
 if _BACKEND_PATH_ADDED:
     sys.path.insert(0, _BACKEND_PATH)
 
-_ORIGINAL_USE_MOCK_AUTH = os.environ.get("USE_MOCK_AUTH")
-os.environ["USE_MOCK_AUTH"] = "true"
-
 from orchestrator.api import (  # noqa: E402
     chat_router,
     component_router,
@@ -33,20 +30,18 @@ from orchestrator.auth import auth_router  # noqa: E402
 from tests.helpers.voice_plane_runtime import isolated_plane_runtime  # noqa: E402
 
 
-MOCK_JWT_TOKEN = (
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
-    "eyJyZWFsbV9hY2Nlc3MiOnsicm9sZXMiOlsiYWRtaW4iLCJ1c2VyIl19LCJyZXNvdXJjZV9hY2Nlc3MiOnsiYXN0cmFsLWZyb250ZW5kIjp7InJvbGVzIjpbImFkbWluIiwidXNlciJdfX0sInN1YiI6ImRldi11c2VyLWlkIiwicHJlZmVycmVkX3VzZXJuYW1lIjoiRGV2VXNlciJ9."
-    "fake-signature-ignore"
-)
-
-AUTH_HEADER = {"Authorization": f"Bearer {MOCK_JWT_TOKEN}"}
+SUBJECT = "dev-user-id"
+OWNER = ""
+AUTH_HEADER: dict = {}
 
 
-def _make_mock_token(payload: dict) -> str:
-    import base64
-    import json as _json
-    body = base64.b64encode(_json.dumps(payload).encode()).decode().rstrip("=")
-    return f"header.{body}.signature"
+@pytest.fixture(autouse=True)
+def _identity(server_identity, monkeypatch):
+    monkeypatch.setitem(globals(), "OWNER", server_identity.owner(SUBJECT))
+    monkeypatch.setitem(
+        globals(), "AUTH_HEADER",
+        server_identity.headers(SUBJECT, roles=("admin", "user")))
+    return server_identity
 
 
 class _FakeSkill:
@@ -225,10 +220,6 @@ def plane_runtime():
 @pytest.fixture(scope="module", autouse=True)
 def _restore_process_globals():
     yield
-    if _ORIGINAL_USE_MOCK_AUTH is None:
-        os.environ.pop("USE_MOCK_AUTH", None)
-    else:
-        os.environ["USE_MOCK_AUTH"] = _ORIGINAL_USE_MOCK_AUTH
     if _BACKEND_PATH_ADDED:
         try:
             sys.path.remove(_BACKEND_PATH)
@@ -272,6 +263,15 @@ class TestChatEndpoints:
         resp = client.get("/api/chats")
         assert resp.status_code == 401
 
+    def test_unsigned_and_foreign_signed_tokens_are_refused(self, client):
+        from tests.helpers.idp_tokens import FakeIssuer
+
+        unsigned = "e30.e30.sig"
+        foreign = FakeIssuer().token(SUBJECT)
+        for bad in (unsigned, foreign):
+            resp = client.get("/api/chats", headers={"Authorization": f"Bearer {bad}"})
+            assert resp.status_code == 401
+
     def test_create_and_list_chats(self, client, orch):
         resp = client.post("/api/chats", headers=AUTH_HEADER)
         assert resp.status_code == 201
@@ -279,7 +279,7 @@ class TestChatEndpoints:
         assert "chat_id" in data
         chat_id = data["chat_id"]
 
-        orch.history.add_message(chat_id, "user", "hello", user_id="dev-user-id")
+        orch.history.add_message(chat_id, "user", "hello", user_id=OWNER)
 
         resp = client.get("/api/chats", headers=AUTH_HEADER)
         assert resp.status_code == 200
@@ -288,8 +288,8 @@ class TestChatEndpoints:
 
     def test_archived_chats_are_listed_only_on_request(self, client, orch):
         chat_id = client.post("/api/chats", headers=AUTH_HEADER).json()["chat_id"]
-        orch.history.add_message(chat_id, "user", "hello", user_id="dev-user-id")
-        assert orch.history.set_chat_flag(chat_id, "archived", True, user_id="dev-user-id")
+        orch.history.add_message(chat_id, "user", "hello", user_id=OWNER)
+        assert orch.history.set_chat_flag(chat_id, "archived", True, user_id=OWNER)
         hidden = client.get("/api/chats", headers=AUTH_HEADER).json()["chats"]
         assert all(c["id"] != chat_id for c in hidden)
         shown = client.get("/api/chats?include_archived=true", headers=AUTH_HEADER).json()["chats"]
@@ -410,8 +410,8 @@ class TestSendMessageCreatesChat:
         )
         assert resp.status_code == 200
         assert resp.json()["status"] == "accepted"
-        assert orch.history.get_chat(chat_id, user_id="dev-user-id") is not None
-        orch.history.delete_chat(chat_id, user_id="dev-user-id")
+        assert orch.history.get_chat(chat_id, user_id=OWNER) is not None
+        orch.history.delete_chat(chat_id, user_id=OWNER)
 
 
 class TestAgentPermissionEndpoints:
@@ -462,7 +462,7 @@ class TestAgentPermissionEndpoints:
         )
         assert resp.status_code == 200
         orch.tool_permissions.set_tool_permission.assert_any_call(
-            "dev-user-id", "agent-x", "tool_a", "tools:read", True)
+            OWNER, "agent-x", "tool_a", "tools:read", True)
         assert orch.tool_permissions.set_agent_scopes.called
 
     def test_put_permissions_rejects_unknown_tool(self, client, orch):
@@ -586,16 +586,15 @@ class TestToolSelectionEndpoints:
             "/api/users/me/agent-enabled", headers=AUTH_HEADER,
             json={"agent_id": "ghost", "enabled": True})
         assert resp.status_code == 404
-        orch.tool_permissions.set_agent_disabled("dev-user-id", "agent-x", False)
+        orch.tool_permissions.set_agent_disabled(OWNER, "agent-x", False)
 
 
 class TestAgentVisibilityAndCredentials:
-    def test_visibility_owner_only(self, client, orch):
+    def test_visibility_owner_only(self, client, orch, _identity):
         import uuid
         agent_id = f"vis-test-{uuid.uuid4().hex[:8]}"
         orch.user_agent_registry.set_agent_ownership(agent_id, "owner@example.com")
-        owner_token = _make_mock_token(
-            {"sub": "dev-user-id", "email": "owner@example.com"})
+        owner_token = _identity.token(SUBJECT, email="owner@example.com")
         try:
             resp = client.put(
                 f"/api/agents/{agent_id}/visibility",
@@ -631,7 +630,7 @@ class TestAgentVisibilityAndCredentials:
             "/api/agents/agent-x/credentials/API_KEY", headers=AUTH_HEADER)
         assert resp.status_code == 200
         orch.credential_manager.delete_credential.assert_called_with(
-            "dev-user-id", "agent-x", "API_KEY")
+            OWNER, "agent-x", "API_KEY")
 
 
 class TestDraftEndpoints:
@@ -639,7 +638,7 @@ class TestDraftEndpoints:
         import uuid
         draft_id = str(uuid.uuid4())
         orch.lifecycle_manager.draft_store.create_draft_agent(
-            draft_id, "dev-user-id", "Coverage Draft",
+            draft_id, OWNER, "Coverage Draft",
             f"cov_{uuid.uuid4().hex[:8]}", "coverage test draft")
         return draft_id
 
@@ -651,12 +650,11 @@ class TestDraftEndpoints:
         assert resp.status_code == 200
         assert "drafts" in resp.json()
 
-    def test_pending_review_requires_admin(self, client):
+    def test_pending_review_requires_admin(self, client, _identity):
         resp = client.get(
             "/api/agents/drafts/pending-review", headers=AUTH_HEADER)
         assert resp.status_code == 403
-        admin_token = _make_mock_token(
-            {"sub": "dev-user-id", "roles": ["admin"]})
+        admin_token = _identity.issuer.token(SUBJECT, roles=["admin"])
         resp = client.get(
             "/api/agents/drafts/pending-review",
             headers={"Authorization": f"Bearer {admin_token}"})

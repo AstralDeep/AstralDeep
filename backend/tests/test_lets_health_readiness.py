@@ -405,7 +405,6 @@ def _app(runtime: object | None, roles: list[str] | None) -> TestClient:
 
 
 def test_lets_health_requires_authentication(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("USE_MOCK_AUTH", raising=False)
     response = _app(None, None).get("/lets/health")
     assert response.status_code == 401
 

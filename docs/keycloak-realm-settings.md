@@ -59,7 +59,6 @@ KEYCLOAK_CLIENT_SECRET=<from the client credentials tab>
 AGENT_SERVICE_CLIENT_ID=astral-agent-service
 AGENT_SERVICE_CLIENT_SECRET=<from the client credentials tab>
 ASTRAL_ENV=production            # unset == production (fail closed)
-USE_MOCK_AUTH=false              # mock auth refuses to boot in production
 WEB_SESSION_ENC_KEY=<fernet key> # encrypts durable web sessions at rest (REQUIRED in production)
 AGENT_API_KEY=<random secret>    # agent connections are refused without it in production
 OFFLINE_GRANT_ENC_KEY=<fernet>   # feature 025 offline grants (logout revokes them)

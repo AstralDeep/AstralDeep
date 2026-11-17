@@ -5,9 +5,6 @@ publish/update tools with version retention, the agent binding and the download 
 
 from __future__ import annotations
 
-import base64
-import json
-import os
 import sys
 import types
 from contextlib import contextmanager
@@ -19,8 +16,6 @@ import pytest
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
-
-os.environ["USE_MOCK_AUTH"] = "true"
 
 from fastapi import FastAPI  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
@@ -495,20 +490,16 @@ def test_agent_card_registration_and_security_review(monkeypatch, tmp_path):
     assert [analyzer.analyze_tool(s.id, s.description, s.input_schema) for s in agent.card.skills] == [None, None]
 
 
-USER_ID = "pytest-artifact-user"
+SUBJECT = "pytest-artifact-user"
+USER_ID = ""
+AUTH: dict = {}
 CHAT_ID = "chat-artifact-1"
 
 
-def _token(payload):
-    body = base64.b64encode(json.dumps(payload).encode()).decode().rstrip("=")
-    return f"header.{body}.signature"
-
-
-AUTH = {"Authorization": f"Bearer {_token({'sub': USER_ID})}"}
-
-
 @pytest.fixture()
-def export_client(monkeypatch):
+def export_client(monkeypatch, server_identity):
+    monkeypatch.setitem(globals(), "USER_ID", server_identity.owner(SUBJECT))
+    monkeypatch.setitem(globals(), "AUTH", server_identity.headers(SUBJECT))
     monkeypatch.setitem(flags._flags, "artifact_export", True)
     orch = MagicMock()
     orch.workspace.aget_by_component_id = AsyncMock(return_value=None)
@@ -584,7 +575,8 @@ def test_export_html_audit_failure_still_downloads(export_client, monkeypatch):
     assert response.status_code == 200 and "<p>x</p>" in response.text
 
 
-def test_share_snapshot_flattens_artifacts(monkeypatch):
+def test_share_snapshot_flattens_artifacts(monkeypatch, server_identity):
+    auth = server_identity.headers(SUBJECT)
     from orchestrator import artifact_share
     from orchestrator.api import share_router
     monkeypatch.setitem(flags._flags, "artifact_sharing", True)
@@ -603,7 +595,7 @@ def test_share_snapshot_flattens_artifacts(monkeypatch):
     app.include_router(share_router)
     app.state.orchestrator = orch
     response = TestClient(app).post("/api/share", json={"chat_id": CHAT_ID, "scope": "component",
-                                                         "component_id": page["id"]}, headers=AUTH)
+                                                         "component_id": page["id"]}, headers=auth)
     assert response.status_code == 201
     assert minted["snapshot_json"][0]["type"] == "text"
     assert "secret-page" not in minted["snapshot_html"]

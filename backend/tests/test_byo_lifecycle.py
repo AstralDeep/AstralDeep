@@ -97,8 +97,6 @@ async def _cleanup(orch, ids):
 @pytest.fixture()
 async def orch(monkeypatch, lifecycle_ids, tmp_path):
     monkeypatch.setitem(flags._flags, "byo_agents", True)
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
-    monkeypatch.setenv("MOCK_AUTH", "false")
     o = await asyncio.to_thread(Orchestrator)
     identity = FixtureIdentity(fixture_subject(lifecycle_ids.owner).rsplit("_", 1)[0], authority=AUTHORITY)
     o._lifecycle_fixture_identity = identity

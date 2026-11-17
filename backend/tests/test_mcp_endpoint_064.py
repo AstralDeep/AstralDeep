@@ -177,12 +177,11 @@ class _Orchestrator:
 
 
 @pytest.fixture
-def endpoint(monkeypatch):
+def endpoint(monkeypatch, server_identity):
     from shared.feature_flags import flags
 
     monkeypatch.setenv("ASTRAL_ENV", "development")
-    monkeypatch.setenv("USE_MOCK_AUTH", "true")
-    monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://idp.test/realms/astral")
+    monkeypatch.setitem(globals(), "_identity", server_identity)
     monkeypatch.setitem(flags._flags, "mcp_server", False)
     orchestrator = _Orchestrator()
     app = FastAPI()
@@ -190,7 +189,11 @@ def endpoint(monkeypatch):
     return TestClient(app), orchestrator
 
 
-def _request(method, params=None, *, token="dev-mcp-token", headers=None, request_id=1):
+_identity = None
+
+
+def _request(method, params=None, *, token=None, headers=None, request_id=1):
+    token = _identity.mcp_token("test_user") if token is None else token
     body = {
         "jsonrpc": "2.0",
         "id": request_id,
@@ -216,7 +219,7 @@ def test_discover_and_protected_resource_metadata(endpoint, monkeypatch):
     assert metadata.status_code == 200
     assert metadata.json() == {
         "resource": f"{BASE}/mcp",
-        "authorization_servers": ["https://idp.test/realms/astral"],
+        "authorization_servers": [_identity.issuer.authority],
         "scopes_supported": [
             "mcp:discover",
             "mcp:tools:read",
@@ -437,7 +440,7 @@ def test_unsupported_version_and_missing_capability(endpoint):
 
 def test_auth_challenges_reject_web_cookie_and_query_credentials(endpoint):
     client, _ = endpoint
-    body, headers = _request("server/discover", token="dev-token")
+    body, headers = _request("server/discover", token=_identity.token("test_user"))
     responses = [client.post("/mcp", json=body, headers=headers) for _ in range(20)]
     assert all(response.status_code == 401 for response in responses)
     response = responses[-1]
@@ -494,12 +497,11 @@ def test_flag_off_app_has_no_surface(monkeypatch):
 def test_metrics_are_low_cardinality_and_payload_free(endpoint):
     client, orchestrator = endpoint
     body, headers = _request("tools/call", {"name": "read_value", "arguments": {"value": "patient-secret"}}, headers={"Mcp-Name": "read_value"})
-    headers["Authorization"] = "Bearer dev-mcp-token"
     assert client.post("/mcp", json=body, headers=headers).status_code == 200
     snapshot = orchestrator.runtime_observability.snapshot()
     serialized = repr(snapshot)
     assert "patient-secret" not in serialized
-    assert "dev-mcp-token" not in serialized
+    assert headers["Authorization"].split()[1] not in serialized
     assert all(
         set(sample.labels).issubset(
             {"deployment_instance", "operation_kind", "phase", "result_code"}

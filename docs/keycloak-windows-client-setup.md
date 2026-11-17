@@ -128,8 +128,7 @@ Open the repo-root **`.env`** and set the values below. Replace every
 `<…>` placeholder; leave the rest of the file as-is.
 
 ```bash
-# ── Real Keycloak auth (turn OFF mock auth) ───────────────────────────────
-USE_MOCK_AUTH=false
+# ── Keycloak auth for a server-profile node ───────────────────────────────
 ASTRAL_ENV=development          # local verification: real auth, but keeps the
                                 # keyless local-agent + relaxed-secret dev path.
                                 # For a real deployment use production posture —

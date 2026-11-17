@@ -17,6 +17,7 @@ from orchestrator.push_providers import ApnsPushAdapter, PushProviderError
 from shared import institution_profile as ip
 from shared import node_identity as ni
 from tests import fake_astral_kernel as fake
+from tests.helpers.owner_file import seed_owner
 from tests.test_node_mesh_chat import History, StubMailbox, answering, settle
 
 PHONE = "sha256:" + "ab" * 32
@@ -404,7 +405,7 @@ async def test_a_legacy_personal_owner_never_wakes_from_an_unavailable_mesh_bind
     monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://idp.example/realms/a")
     monkeypatch.setenv("ASTRAL_NODE_MAILBOX", "off")
     ni.reset_cache()
-    ni.bind_owner("oidc.abc.owner")
+    stored = seed_owner("oidc.abc.owner")
     monkeypatch.setattr(node_mesh, "load_binding", lambda: fake)
     transport = FakeTransport()
     wake = pw.WakeGateway(targets=Targets(APNS), adapters={"apns": adapter(transport)}, limiter=pw.WakeLimiter(min_interval_seconds=0))
@@ -414,13 +415,13 @@ async def test_a_legacy_personal_owner_never_wakes_from_an_unavailable_mesh_bind
     mesh_id = "sha256:" + "e" * 64
     kernel.join(mesh_id)
     kernel.mesh_principal = lambda: SimpleNamespace(mesh_id=mesh_id)
-    kernel.roster = lambda: SimpleNamespace(mesh_id=mesh_id, stopped=False, members=[
+    kernel.roster = lambda: SimpleNamespace(mesh_id=mesh_id, stopped=False, removed=[], members=[
         SimpleNamespace(device_id=kernel.device_id, is_local=True)])
     await nmc.active().scan()
     kernel.peers = [peer(PHONE, connected=False, pending_out=1)]
     kernel.notify()
-    assert ni.bound_owner() == "oidc.abc.owner"
-    assert (await node_mesh.current().status())["owner_binding"] == {"state": "refused", "code": "node.owner_mismatch"}
+    assert ni.bound_owner() == "oidc.abc.owner" and (tmp_path / ni.OWNER_FILE).read_bytes() == stored
+    assert (await node_mesh.current().status())["owner_binding"] == {"state": "refused", "code": "node.legacy_owner"}
     assert not transport.calls
     async with asyncio.timeout(5):
         await nmc.stop_all()

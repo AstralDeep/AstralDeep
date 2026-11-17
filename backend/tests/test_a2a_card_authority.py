@@ -104,11 +104,14 @@ async def test_an_admin_role_from_an_unrelated_client_cannot_register(registrati
     assert registration.registry.trust_for(BASE) is registration.original
 
 
-async def test_the_bound_personal_node_owner_can_register_without_admin(registration, monkeypatch):
+async def test_a_personal_node_refuses_a_bearer_registration_even_from_its_bound_owner(registration, monkeypatch):
     monkeypatch.setenv(node_identity.PROFILE_ENV, node_identity.PERSONAL)
     monkeypatch.setenv(node_identity.OWNER_ENV, registration.owner)
-    await invoke(registration, registration.capture())
-    assert registration.registry.trust_for(BASE).public_key == registration.signer.public_jwk
+    with pytest.raises(AssignmentError) as refused:
+        await invoke(registration, registration.capture())
+    assert refused.value.status_code == 401
+    assert registration.registry.trust_for(BASE) is registration.original
+    registration.orch.discover_a2a_agent.assert_not_awaited()
 
 
 async def test_a_different_personal_node_owner_is_refused_even_if_admin(registration, monkeypatch):
@@ -154,19 +157,19 @@ async def test_mutated_request_and_delivery_loss_preserve_the_existing_pin(regis
 @pytest.mark.parametrize("change", ["different_owner", "unbound", "unreadable"])
 async def test_owner_binding_loss_during_authentication_cannot_change_trust(registration, monkeypatch, change):
     await registration.claims(realm_access={"roles": ["user", "admin"]})
-    monkeypatch.setenv(node_identity.PROFILE_ENV, node_identity.PERSONAL)
     monkeypatch.setenv(node_identity.OWNER_ENV, registration.owner)
     pending = registration.capture()
     authenticate = pending.authenticate
 
     async def changed_binding():
         caller = await authenticate()
+        monkeypatch.setenv(node_identity.PROFILE_ENV, node_identity.PERSONAL)
         if change == "unreadable":
             def unavailable():
                 raise node_identity.NodeIdentityError("owner binding unreadable")
-            monkeypatch.setattr(node_identity, "bound_owner", unavailable)
+            monkeypatch.setattr(node_identity, "bound_mesh_owner", unavailable)
         else:
-            monkeypatch.setattr(node_identity, "bound_owner", lambda: None if change == "unbound" else "oidc.other.owner")
+            monkeypatch.setattr(node_identity, "bound_mesh_owner", lambda: None if change == "unbound" else "mesh." + "f" * 64)
         return caller
 
     monkeypatch.setattr(pending, "authenticate", changed_binding)

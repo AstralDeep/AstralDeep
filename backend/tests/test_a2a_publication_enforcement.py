@@ -7,8 +7,11 @@ from types import SimpleNamespace
 import pytest
 
 from tests.test_a2a_publication import _Store, _orchestrator, _publish, _registry
+from tests import test_a2a_publication
 from shared.a2a_publication import A2APublicationError, PublicationStoreUnavailable
 from orchestrator.a2a_publication_policy import A2APublicationPolicy
+
+a2a_env = test_a2a_publication.a2a_env
 
 
 def test_selected_scope_filters_each_skill():
@@ -93,13 +96,10 @@ def test_current_skill_scope_never_expands_publication(scope):
     assert policy.filter_projected_tools([SimpleNamespace(agent_id='weather-1', skill_id='get_weather')]) == ()
 
 
-def test_read_only_publication_denies_direct_write_and_preserves_normal_dispatch(monkeypatch):
+def test_read_only_publication_denies_direct_write_and_preserves_normal_dispatch(a2a_env):
     from tests.test_a2a_publication import (
         _auth, _client, _publish_for_client, _send, _skill, _task, _tool_names,
     )
-    monkeypatch.setenv('USE_MOCK_AUTH', 'true')
-    monkeypatch.setenv('KEYCLOAK_AUTHORITY', 'https://iam.example/realms/astral')
-    monkeypatch.setenv('KEYCLOAK_CLIENT_ID', 'astral-frontend')
     orch = _orchestrator()
     orch.agent_cards['weather-1'].skills.append(_skill('set_weather', 'tools:write'))
     client = _client(orch)
@@ -147,11 +147,8 @@ def test_memory_authority_failure_rolls_back():
     assert registry.pending_intents() == ()
 
 
-def test_owner_can_withdraw_after_capability_loses_safe_catalog_membership(monkeypatch):
+def test_owner_can_withdraw_after_capability_loses_safe_catalog_membership(a2a_env):
     from tests.test_a2a_publication import ALICE_EMAIL, _api_client, _auth
-    monkeypatch.setenv('USE_MOCK_AUTH', 'true')
-    monkeypatch.setenv('KEYCLOAK_AUTHORITY', 'https://iam.example/realms/astral')
-    monkeypatch.setenv('KEYCLOAK_CLIENT_ID', 'astral-frontend')
     orch = _orchestrator(owners={'weather-1': ALICE_EMAIL})
     client = _api_client(orch)
     intent = client.post('/api/a2a/publications/intents', headers=_auth(),

@@ -10,6 +10,7 @@ import hashlib
 import json
 import logging
 import os
+import time
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -522,18 +523,12 @@ class InProcessDriver:
         from verification.isolation import make_principal
 
         d = self._execution_principal(make_principal(run_id, "delegD"))
-        claims: Dict[str, Any]
-        try:
-            from jose import jwt
+        from orchestrator.delegation import mint_child_delegation
 
-            tok = self.orch.delegation._create_mock_delegation_token(
-                self.agent_id, ["read_spreadsheet"], d.user_id, ["tools:read"]
-            )
-            claims = jwt.get_unverified_claims(tok["access_token"])
-        except Exception:
-            logger.debug("mock delegation minting unavailable; using claim shape", exc_info=True)
-            claims = {"sub": d.user_id, "act": {"sub": f"agent:{self.agent_id}"},
-                      "scope": "tools:read"}
+        claims: Dict[str, Any] = mint_child_delegation(
+            {"sub": d.user_id, "scope": "tools:read", "exp": int(time.time()) + 300},
+            self.agent_id, ["tools:read"],
+        )
         actor, principal = actor_principal_from_claims(claims)
         return CapturedEvidence(
             evidence_id=f"deleg:{d.user_id}", scenario_id="authz:delegation",
