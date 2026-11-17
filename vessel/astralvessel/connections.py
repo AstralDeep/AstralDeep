@@ -232,9 +232,9 @@ def complete(stack: Stack, flow: str, redirect_url: str) -> dict[str, Any]:
     return call(stack, "POST", f"/api/node/connections/sign-in/{flow}/complete", {"redirect_url": redirect_url})
 
 
-def cancel(stack: Stack, row: dict[str, Any], flow: str) -> None:
+def cancel(stack: Stack, flow: str) -> None:
     try:
-        call(stack, "DELETE", f"/api/node/connections/{row['id']}/sign-in/{flow}")
+        call(stack, "DELETE", f"/api/node/connections/sign-in/{flow}")
     except ConnectionsError:
         pass
 
@@ -245,7 +245,7 @@ def device_code(stack: Stack, row: dict[str, Any], out: Callable[[str], None], s
     code, uri = answer.get("user_code"), answer.get("verification_uri")
     if not isinstance(code, str) or not CODE.fullmatch(code) or not isinstance(uri, str) \
             or not uri.startswith("https://") or not uri.isprintable() or " " in uri:
-        cancel(stack, row, answer["flow"])
+        cancel(stack, answer["flow"])
         raise ConnectionsError("the node sent no usable device code")
     out(f"open {uri} on any device and enter the code {code}")
     given = answer.get("interval")
@@ -272,7 +272,7 @@ def device_code(stack: Stack, row: dict[str, Any], out: Callable[[str], None], s
                 interval = min(interval + DEFAULT_INTERVAL, MAX_INTERVAL)
         raise ConnectionsError("the code expired before it was used; run the command again")
     finally:
-        cancel(stack, row, answer["flow"])
+        cancel(stack, answer["flow"])
 
 
 def sign_in(stack: Stack, key: str, *, paste: bool = False, use_device_code: bool = False, port: int = 0,
@@ -294,7 +294,7 @@ def sign_in(stack: Stack, key: str, *, paste: bool = False, use_device_code: boo
                 raise ConnectionsError("paste the full https:// address your browser ended on")
             finish(complete(stack, answer["flow"], pasted), row, out)
         finally:
-            cancel(stack, row, answer["flow"])
+            cancel(stack, answer["flow"])
         return
     try:
         waiting = listener(port)
@@ -312,4 +312,4 @@ def sign_in(stack: Stack, key: str, *, paste: bool = False, use_device_code: boo
     finally:
         waiting.server_close()
         if answer is not None:
-            cancel(stack, row, answer["flow"])
+            cancel(stack, answer["flow"])

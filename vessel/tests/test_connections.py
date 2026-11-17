@@ -215,7 +215,7 @@ def test_the_device_code_is_the_only_thing_printed_and_polling_never_beats_seven
     assert posts()[0] == (start_path()[1], {"redirect": "device_code"})
     assert [body for _, body in posts()[1:]] == [{}, {}, {}, {}]
     assert waits == [7, 7, 30, 37] and "WDJB-MJHT" in out and "https://auth.test/device" in out and SECRET not in out
-    assert deletes() == [f"/api/node/connections/{ID_A}/sign-in/f3"]
+    assert deletes() == ["/api/node/connections/sign-in/f3"]
 
 
 @pytest.mark.parametrize("status,text", [("access_denied", "access_denied"), ("expired_token", "expired_token")])
@@ -224,7 +224,7 @@ def test_a_denied_or_expired_device_code_stops_and_cancels_the_flow(node, status
     Node.answers[("POST", "/api/node/connections/sign-in/f4/poll")] = [(200, {"status": status})]
     with pytest.raises(connections.ConnectionsError, match=text):
         connections.sign_in(node, "Notes", use_device_code=True, sleep=lambda s: None)
-    assert deletes() == [f"/api/node/connections/{ID_A}/sign-in/f4"]
+    assert deletes() == ["/api/node/connections/sign-in/f4"]
 
 
 def test_a_device_code_that_runs_out_of_time_or_polls_into_a_refusal_stops(node):
@@ -383,13 +383,13 @@ def test_a_bad_paste_a_failed_complete_and_a_listener_timeout_all_cancel_their_f
 
     with pytest.raises(connections.ConnectionsError, match="no sign-in came back"):
         connections.sign_in(node, "Notes", listener=Quiet)
-    assert deletes() == [f"/api/node/connections/{ID_A}/sign-in/f6"] * 3
+    assert deletes() == ["/api/node/connections/sign-in/f6"] * 3
 
 
 def test_a_cancel_the_node_refuses_does_not_hide_the_real_result(node, capsys):
     Node.answers[start_path()] = [(200, {"flow": "f7", "authorization_url": "https://auth.test/a"})]
     Node.answers[("POST", "/api/node/connections/sign-in/f7/complete")] = [(200, {"state": "signed_in"})]
-    Node.answers[("DELETE", f"/api/node/connections/{ID_A}/sign-in/f7")] = [(404, {"detail": "node.flow_unknown"})]
+    Node.answers[("DELETE", "/api/node/connections/sign-in/f7")] = [(404, {"detail": "node.flow_unknown"})]
     connections.sign_in(node, "Notes", paste=True, read=lambda: "https://x.test/cb?code=1")
     assert "signed in: Notes" in capsys.readouterr().out
 
