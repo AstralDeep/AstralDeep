@@ -294,8 +294,15 @@ def _short(device: Any) -> str:
     return device.name.split("/")[-1].replace("-", "_")
 
 
-def include(device: Any, targets: list[Any]) -> dict[str, Any]:
-    return {"op": "include", "device": device.id, "targets": [t.id for t in targets]}
+def include(device: Any, targets: list[Any], key: Any = "own") -> dict[str, Any]:
+    if key == "own":
+        key = b64(approver_public(device))
+    return {
+        "op": "include",
+        "device": device.id,
+        "targets": [t.id for t in targets],
+        "approver_public": key,
+    }
 
 
 def exclude(device: Any, target: Any) -> dict[str, Any]:
@@ -500,6 +507,7 @@ def seq_destinations() -> dict[str, Any]:
         ("grant_model", M),
         ("grant_service", S),
         ("grant_local_service", local(ALICE)),
+        ("grant_local_service_bob", local(BOB)),
         ("grant_contact", "contact:" + CONTACT),
         ("ffi_loopback_unbound", "http://127.0.0.1:9000/v1"),
         ("ffi_wildcard", "https://*.model.example/v1"),
@@ -523,6 +531,8 @@ def seq_destinations() -> dict[str, Any]:
             (ALICE, "service", LOOP),
             (ALICE, "service", local(ALICE)),
             (ALICE, "service", local(BOB)),
+            (BOB, "service", local(BOB)),
+            (BOB, "service", local(ALICE)),
             (ALICE, "model", local(ALICE)),
             (ALICE, "contact", CONTACT),
             (ALICE, "model", "https://*.model.example/v1"),
@@ -539,6 +549,54 @@ def seq_destinations() -> dict[str, Any]:
     m.grant(ALICE, S, name="grant_service_again")
     m.step("grant_again", contacts=[CONTACT], queries=[(ALICE, "service", S)])
     return m.case("seq_destinations")
+
+
+def seq_approver_registration() -> dict[str, Any]:
+    m, _ = ready("registration", [BOB, CAROL, NODE], [ALICE, CAROL], [ALICE, BOB, CAROL])
+    m.authority(CAROL)
+    m.step(
+        "registered",
+        plans=[
+            include(ALICE, [BOB]),
+            include(ALICE, [BOB, BOB]),
+            include(ALICE, [BOB], key=None),
+            include(CAROL, [BOB]),
+            include(ALICE, [BOB], key=b64(approver_public(BOB))),
+        ],
+    )
+    m.write(
+        "carol_authority_removed",
+        "phi_authority",
+        CAROL,
+        {"action": "remove", "key": b64(approver_public(CAROL))},
+    )
+    m.step(
+        "authority_removed",
+        plans=[
+            include(CAROL, [BOB]),
+            include(ALICE, [BOB]),
+            include(ALICE, []),
+            include(NODE, []),
+        ],
+    )
+    m.authority(BOB)
+    foreign = other_scalar("foreign")
+    body = {
+        "action": "add",
+        "institution": {
+            "key": b64(crypto.p256_public(foreign)),
+            "name": phi.APPROVER_PREFIX + BOB.id,
+        },
+    }
+    m.write("foreign_authority_named_for_bob", "phi_authority", ALICE, body)
+    m.step(
+        "foreign_authority",
+        plans=[
+            include(BOB, [BOB]),
+            include(BOB, [BOB], key=b64(crypto.p256_public(foreign))),
+        ],
+    )
+    return m.case("seq_approver_registration")
 
 
 def seq_approver_removed() -> dict[str, Any]:
@@ -757,6 +815,29 @@ def fold_cases() -> list[dict[str, Any]]:
         m.write(name, "phi_approval", ALICE, {"action": "grant", "attestation": statement})
     single("fold_expired_approval", m)
 
+    m = base("duplicate-verifying", [BOB], [ALICE])
+    good = m.grant_device(ALICE, BOB)
+    twin = copy.deepcopy(m.entries[-1])
+    twin["presence_sig"] = "-" * (len(twin["presence_sig"]) - 1) + "A"
+    assert phi.wire_text(twin) < phi.wire_text(m.entries[-1])
+    m.entries.insert(-1, twin)
+    m.names.insert(-1, "dup_garbled_presence_sorts_first")
+    assert phi.entry_id(twin) == good
+    single("fold_duplicate_verifying_copy_beats_smaller_bytes", m)
+
+    m = base("duplicate-failing", [BOB], [ALICE])
+    m.grant(ALICE, BOB.id, "device", name="bad_duplicate_original")
+    first = m.entries.pop()
+    m.names.pop()
+    garbled_presence = copy.deepcopy(first)
+    garbled_presence["presence_sig"] = "-" * (len(first["presence_sig"]) - 1) + "A"
+    garbled_sig = copy.deepcopy(first)
+    garbled_sig["sig"] = "A" * len(first["sig"])
+    assert phi.wire_text(garbled_presence) < phi.wire_text(garbled_sig)
+    m._keep(garbled_sig, "bad_duplicate_signature_garbled")
+    m._keep(garbled_presence, "bad_duplicate_presence_garbled")
+    single("fold_duplicate_all_copies_fail", m)
+
     m = base("endpoint-device", [DAVE], [ALICE])
     m.grant(ALICE, DAVE.id, "endpoint", name="ffi_endpoint_naming_dave")
     single("fold_endpoint_subject_naming_a_device", m)
@@ -887,7 +968,7 @@ def provider(base_url: Any = M, **extra: Any) -> dict[str, Any]:
     return {**source, **extra}
 
 
-def connection(endpoint: Any, use: str = "service", device: Any = None, confined: bool = False) -> dict[str, Any]:
+def connection(endpoint: Any, use: str = "service", device: Any = None, confined: Any = False) -> dict[str, Any]:
     return {
         "source": "connection",
         "name": "Research tools",
@@ -912,7 +993,9 @@ def proposal_cases() -> list[tuple[str, Any]]:
         ("propose_connection_local", connection(LOOP, device=BOB)),
         ("propose_connection_local_scheme_none", connection("http://127.0.0.1:8770/mcp", device=NODE)),
         ("propose_connection_local_without_device", connection(LOOP)),
-        ("propose_connection_confined", connection(None, confined=True)),
+        ("propose_connection_confined_refused", connection(None, confined=True)),
+        ("propose_connection_confined_model_refused", connection(M, use="model", confined=True)),
+        ("propose_connection_confined_not_boolean", connection(S, confined=None)),
         ("propose_connection_without_endpoint", connection(None)),
         ("propose_connection_model", connection(M, use="model")),
         ("propose_connection_model_loopback", connection("http://127.0.0.1:1234/v1", use="model")),
@@ -976,6 +1059,7 @@ def chat_cases() -> list[tuple[str, dict[str, Any]]]:
             "keys": keys_ or [],
             "current": {"personal": p0, "phi": h0},
             "local": None,
+            "epoch_stale": False,
         }
         return {**base, **change}
 
@@ -998,9 +1082,21 @@ def chat_cases() -> list[tuple[str, dict[str, Any]]]:
         ("chat_concurrent_same_clock_by_feed", given(keys_=[key("feed-b", "phi", h0, feed=fb), key("feed-a", "phi", h0, feed=fa)])),
         ("chat_same_feed_by_seq", given(keys_=[key("seq-2", "phi", h0, seq=2), key("seq-1", "phi", h0, seq=1)])),
         (
-            "chat_latest_key_under_old_epoch_rotates",
+            "chat_older_epoch_key_later_in_order_is_ignored",
             given(
                 keys_=[key("current-epoch", "phi", h1, ms=10), key("old-epoch-later", "phi", h0, ms=20, feed=fb)],
+                current={"personal": p0, "phi": h1},
+            ),
+        ),
+        (
+            "chat_only_old_epoch_keys_rotate",
+            given(keys_=[key("old-epoch", "phi", h0)], current={"personal": p0, "phi": h1}),
+        ),
+        (
+            "chat_create_key_under_current_epoch_when_others_are_old",
+            given(
+                keys_=[key("old-epoch", "phi", h0)],
+                chat_create={"key": "ck:create", "group": "phi", "epoch": h1},
                 current={"personal": p0, "phi": h1},
             ),
         ),
@@ -1014,6 +1110,15 @@ def chat_cases() -> list[tuple[str, dict[str, Any]]]:
         ("chat_phi_device_excluded", given(local="phi.device_excluded")),
         ("chat_phi_device_not_ready", given(local="phi.group_not_ready")),
         ("chat_personal_ignores_phi_state", given("personal", local="phi.device_excluded")),
+        ("chat_phi_stale_epoch_first_write", given(epoch_stale=True)),
+        (
+            "chat_phi_stale_epoch_with_a_key_under_it",
+            given(keys_=[key("phi-current", "phi", h0)], epoch_stale=True),
+        ),
+        ("chat_phi_stale_epoch_cannot_rotate", given(epoch_stale=True, local="phi.group_not_ready")),
+        ("chat_phi_stale_epoch_for_an_excluded_device", given(epoch_stale=True, local="phi.device_excluded")),
+        ("chat_phi_stale_without_epoch", given(epoch_stale=True, current={"personal": p0, "phi": None})),
+        ("chat_personal_ignores_a_stale_phi_epoch", given("personal", epoch_stale=True)),
     ]
 
 
@@ -1067,6 +1172,7 @@ def generate_destinations() -> dict[str, Any]:
         seq_markers,
         seq_concurrent_revoke_and_grant,
         seq_destinations,
+        seq_approver_registration,
         seq_approver_removed,
         seq_legacy_authority,
     ):

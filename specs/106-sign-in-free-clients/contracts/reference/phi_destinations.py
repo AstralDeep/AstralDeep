@@ -255,10 +255,8 @@ def destination_of(source: Any, device: str) -> dict[str, Any]:
             "on_device": False,
         }
     use = source.get("use")
-    if use not in ("model", "service") or type(source.get("confined")) is not bool:
+    if use not in ("model", "service") or source.get("confined") is not False:
         raise _bad()
-    if use == "service" and source["confined"]:
-        return {"kind": "service", "target": None, "on_device": True}
     if source.get("endpoint") is None:
         raise PhiError("phi_destination.no_target")
     return _endpoint_destination(
@@ -467,6 +465,7 @@ class _Fold:
         self.mesh = mesh
         self.entries: dict[str, dict[str, Any]] = {}
         self.rejected: dict[str, str] = {}
+        copies: dict[str, list[dict[str, Any]]] = {}
         for entry in entries:
             try:
                 _shape(entry)
@@ -476,7 +475,14 @@ class _Fold:
                 except (MeshError, TypeError):
                     pass
                 continue
-            self.entries.setdefault(entry_id(entry), entry)
+            copies.setdefault(entry_id(entry), []).append(entry)
+        self.copies = {
+            eid: sorted(found, key=lambda e: wire_text(e).encode("utf-8"))
+            for eid, found in copies.items()
+        }
+        for eid, found in self.copies.items():
+            self.entries[eid] = found[0]
+            self.rejected.pop(eid, None)
         if mesh not in self.entries or self.entries[mesh]["type"] != "genesis":
             raise MeshError("roster.no_genesis", mesh)
         for eid in list(self.entries):
@@ -714,7 +720,14 @@ class _Fold:
                     if e["type"] == "genesis"
                     else self._project([a for a in self.anc[eid] if a in active_set])
                 )
-                code = self._check(e, projection)
+                code = None
+                for n, copy in enumerate(self.copies[eid]):
+                    found = self._check(copy, projection)
+                    if n == 0:
+                        code = found
+                    if found is None:
+                        self.entries[eid], code = copy, None
+                        break
                 if code is not None:
                     rejected[eid] = code
                     continue
@@ -940,9 +953,11 @@ def view(
             }
         )
     current = state["current_epoch"]["phi"]
+    stale = epoch_stale(state)
     local = {}
     for device in state["members"]:
-        if device in phi and current and device in state["recipients"].get(current, []):
+        recipient = current and device in state["recipients"].get(current, [])
+        if device in phi and (recipient or stale):
             local[device] = None
         elif device not in phi and device in history:
             local[device] = "phi.device_excluded"
@@ -956,12 +971,20 @@ def view(
         "group": group,
         "destinations": destinations,
         "local": local,
+        "rotate_first": {device: stale and device in phi for device in state["members"]},
         "contacts": list(contacts),
     }
 
 
 def _phi_epochs(state: dict[str, Any]) -> list[str]:
     return [e for e, group in state["epochs"].items() if group == "phi"]
+
+
+def epoch_stale(state: dict[str, Any]) -> bool:
+    current = state["current_epoch"]["phi"]
+    if current is None:
+        return False
+    return bool(set(state["recipients"].get(current, [])) - set(state["phi_members"]))
 
 
 def _needs_epoch(state: dict[str, Any], members: set[str]) -> bool:
@@ -1012,18 +1035,20 @@ def duties(v: dict[str, Any], device: str) -> dict[str, Any]:
     }
 
 
-def registered(state: dict[str, Any], device: str) -> bool:
-    return any(
-        info["author"] == device and info["name"] == APPROVER_PREFIX + device
-        for info in state["authorities"].values()
-    )
+def registered(state: dict[str, Any], device: str, approver_public: str | None) -> bool:
+    return approver_public is not None and _approver_of(state, approver_public) == device
 
 
-def plan_include(v: dict[str, Any], device: str, targets: list[str]) -> dict[str, Any]:
+def plan_include(
+    v: dict[str, Any], device: str, targets: list[str], approver_public: str | None
+) -> dict[str, Any]:
     state = v["state"]
     phi = set(state["phi_members"])
     if state["members"][device]["kind"] == "node":
         raise PhiError("phi_group.node_device")
+    if not targets:
+        raise PhiError("phi_group.no_target")
+    targets = list(dict.fromkeys(targets))
     for target in targets:
         if target not in state["members"]:
             raise PhiError("phi_group.unknown_device")
@@ -1034,7 +1059,7 @@ def plan_include(v: dict[str, Any], device: str, targets: list[str]) -> dict[str
     after = phi | set(targets)
     inside = device in after
     return {
-        "register_approver": not registered(state, device),
+        "register_approver": not registered(state, device, approver_public),
         "grants": sorted(targets),
         "epoch": inside and _needs_epoch(state, after),
         "wraps": _wraps_from(state, device, sorted(targets)) if inside else {},
@@ -1074,7 +1099,8 @@ def phi_destination_allowed(v: dict[str, Any], device: str, kind: Any, target: A
     if kind not in ("model", "service"):
         return False
     if isinstance(target, str) and target.startswith("local:"):
-        if kind != "service" or parse_subject(target)["form"] != "local":
+        parsed = parse_subject(target)
+        if kind != "service" or parsed["form"] != "local" or parsed["device"] != device:
             return False
         return rows.get(target) == "approved"
     try:
@@ -1100,16 +1126,17 @@ def chat_write_key(given: dict[str, Any]) -> dict[str, Any]:
     found = [
         k for k in given["keys"] if k["scope"] == given["chat"] and k["group"] == group
     ]
-    if found:
-        latest = max(found, key=_order)
-        key, epoch = latest["key"], latest["epoch"]
-    elif given["chat_create"]["group"] == group:
-        key, epoch = given["chat_create"]["key"], given["chat_create"]["epoch"]
-    else:
-        return {"rotate": "first_write", "epoch": current}
-    if epoch != current:
-        return {"rotate": "epoch_changed", "epoch": current}
-    return {"use": key}
+    create = given["chat_create"]
+    held = bool(found) or create["group"] == group
+    reason = "epoch_changed" if held else "first_write"
+    if group == "phi" and given["epoch_stale"]:
+        return {"rotate_epoch": True, "rotate": reason, "epoch": "new"}
+    under = [k for k in found if k["epoch"] == current]
+    if under:
+        return {"use": max(under, key=_order)["key"]}
+    if create["group"] == group and create["epoch"] == current:
+        return {"use": create["key"]}
+    return {"rotate": reason, "epoch": current}
 
 
 def _ok(fn: Any, *args: Any) -> dict[str, Any]:
@@ -1130,7 +1157,9 @@ def run_step(
     out_plans = []
     for plan in given["plans"]:
         if plan["op"] == "include":
-            out_plans.append(_ok(plan_include, v, plan["device"], plan["targets"]))
+            out_plans.append(
+                _ok(plan_include, v, plan["device"], plan["targets"], plan["approver_public"])
+            )
         else:
             out_plans.append(_ok(plan_exclude, v, plan["device"], plan["target"]))
     return {
@@ -1139,6 +1168,7 @@ def run_step(
         "group": v["group"],
         "destinations": v["destinations"],
         "local": v["local"],
+        "rotate_first": v["rotate_first"],
         "duties": {d: duties(v, d) for d in state["members"]},
         "queries": [
             phi_destination_allowed(v, q["device"], q["kind"], q["target"])

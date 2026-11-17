@@ -157,7 +157,9 @@ PROPOSALS = {
     "propose_connection_local": ("service", "local:bob", True),
     "propose_connection_local_scheme_none": ("service", "local:node", True),
     "propose_connection_local_without_device": MAL,
-    "propose_connection_confined": ("service", None, False),
+    "propose_connection_confined_refused": MAL,
+    "propose_connection_confined_model_refused": MAL,
+    "propose_connection_confined_not_boolean": MAL,
     "propose_connection_without_endpoint": "phi_destination.no_target",
     "propose_connection_model": ("model", M, True),
     "propose_connection_model_loopback": ("model", "http://127.0.0.1:1234/v1", False),
@@ -177,7 +179,7 @@ APPROVALS = {
     "approve_local_service": ("endpoint", "local:bob"),
     "approve_legacy_loopback_binds_this_device": ("endpoint", "local:alice"),
     "approve_on_device_model_refused": "phi_destination.on_device",
-    "approve_confined_service_refused": "phi_destination.on_device",
+    "approve_confined_service_refused": MAL,
     "approve_contact_unavailable": "phi_destination.contact_unavailable",
     "approve_on_node_refused": "phi_group.node_device",
     "approve_wildcard_refused": WILD,
@@ -200,7 +202,9 @@ CHAT = {
     "chat_concurrent_same_ms_by_counter": ("use", "ck:later-n", None),
     "chat_concurrent_same_clock_by_feed": ("use", "ck:feed-b", None),
     "chat_same_feed_by_seq": ("use", "ck:seq-2", None),
-    "chat_latest_key_under_old_epoch_rotates": ("rotate", "epoch_changed", "phi"),
+    "chat_older_epoch_key_later_in_order_is_ignored": ("use", "ck:current-epoch", None),
+    "chat_only_old_epoch_keys_rotate": ("rotate", "epoch_changed", "phi"),
+    "chat_create_key_under_current_epoch_when_others_are_old": ("use", "ck:create", None),
     "chat_other_scope_ignored": ("rotate", "first_write", "phi"),
     "chat_other_group_ignored": ("rotate", "first_write", "phi"),
     "chat_create_key_of_other_group_ignored": ("rotate", "first_write", "phi"),
@@ -208,6 +212,12 @@ CHAT = {
     "chat_phi_device_excluded": ("error", "phi.device_excluded", None),
     "chat_phi_device_not_ready": ("error", "phi.group_not_ready", None),
     "chat_personal_ignores_phi_state": ("use", "ck:create", None),
+    "chat_phi_stale_epoch_first_write": ("rotate_epoch", "first_write", "phi"),
+    "chat_phi_stale_epoch_with_a_key_under_it": ("rotate_epoch", "epoch_changed", "phi"),
+    "chat_phi_stale_epoch_cannot_rotate": ("error", "phi.group_not_ready", None),
+    "chat_phi_stale_epoch_for_an_excluded_device": ("error", "phi.device_excluded", None),
+    "chat_phi_stale_without_epoch": ("error", "phi.group_not_ready", None),
+    "chat_personal_ignores_a_stale_phi_epoch": ("use", "ck:create", None),
 }
 
 
@@ -361,7 +371,7 @@ def test_approval(name):
     assert got == {"ok": {"subject_kind": want[0], "subject": subject}}
 
 
-def test_statements_use_the_approver_key_and_a_twenty_year_window():
+def test_statements_use_the_approver_public_and_a_twenty_year_window():
     lifetime = DOC["constants"]["approval_lifetime_s"]
     assert lifetime == 631152000
     for name in ("statement_device", "statement_endpoint", "statement_contact"):
@@ -390,6 +400,8 @@ def test_chat_key(name):
         assert got == {"error": value}
     elif kind == "use":
         assert got == {"ok": {"use": value}}
+    elif kind == "rotate_epoch":
+        assert got == {"ok": {"rotate_epoch": True, "rotate": value, "epoch": "new"}}
     else:
         current = CASES[name]["input"]["current"][group]
         assert got == {"ok": {"rotate": value, "epoch": current}}
@@ -725,6 +737,7 @@ def test_destination_statuses_and_answers():
         M: ("approved", None),
         S: ("approved", None),
         local("alice"): ("approved", None),
+        local("bob"): ("approved", None),
         "contact:" + CONTACT: ("contact_missing", None),
         "http://127.0.0.1:9000/v1": ("invalid", "phi_destination.loopback_unbound"),
         "https://*.model.example/v1": ("invalid", WILD),
@@ -754,6 +767,9 @@ def test_destination_statuses_and_answers():
     assert answers[(a, "service", LOOP)] is False
     assert answers[(a, "service", local("alice"))] is True
     assert answers[(a, "service", local("bob"))] is False
+    b = ID["bob"]
+    assert answers[(b, "service", local("bob"))] is True
+    assert answers[(b, "service", local("alice"))] is False
     assert answers[(a, "model", local("alice"))] is False
     assert answers[(a, "contact", CONTACT)] is False
     assert answers[(a, "model", "https://*.model.example/v1")] is False
@@ -901,3 +917,76 @@ def test_every_case_kind_is_documented():
     }
     for kind in kinds:
         assert f"`{kind}`" in TEXT
+
+
+def test_a_member_seals_only_after_rotating_a_stale_phi_epoch():
+    for case_name, step_name, rotating, quiet in (
+        (ADOPT, "self_exclude", ["carol", "node"], ["alice", "bob"]),
+        ("seq_removal_by_deployed_device", "deployed_removes_bob", ["alice", "node"], ["bob", "dave"]),
+        ("seq_concurrent_revoke_and_grant", "concurrent", ["alice", "carol"], ["bob"]),
+    ):
+        _, got = step_by_name(case_name, step_name)
+        current = got["roster"]["current_epoch"]["phi"]
+        outside = set(got["roster"]["recipients"][current]) - set(got["roster"]["phi_members"])
+        assert outside, (case_name, step_name)
+        flags = {NAME[d]: flag for d, flag in got["rotate_first"].items()}
+        assert sorted(n for n, flag in flags.items() if flag) == sorted(rotating)
+        assert all(not flags.get(n, False) for n in quiet)
+        assert all(got["local"][ID[n]] is None for n in rotating)
+
+
+def test_no_member_rotates_first_while_the_current_epoch_is_clean():
+    for case in DOC["cases"]:
+        if case["kind"] != "phi_sequence":
+            continue
+        for got in case["expect"]["steps"]:
+            current = got["roster"]["current_epoch"]["phi"]
+            phi = set(got["roster"]["phi_members"])
+            stale = bool(current) and bool(set(got["roster"]["recipients"][current]) - phi)
+            for device, flag in got["rotate_first"].items():
+                assert flag == (stale and device in phi), (case["name"], device)
+
+
+def test_a_rotated_epoch_ends_the_stale_window():
+    _, got = step_by_name(ADOPT, "rekey")
+    assert not any(got["rotate_first"].values())
+    _, got = step_by_name("seq_removal_by_deployed_device", "rekey")
+    assert not any(got["rotate_first"].values())
+
+
+def test_registration_follows_the_local_key_and_a_current_device_authority():
+    name = "seq_approver_registration"
+    _, got = step_by_name(name, "registered")
+    assert [p["ok"]["register_approver"] for p in got["plans"]] == [False, False, True, False, True]
+    _, got = step_by_name(name, "authority_removed")
+    assert [p["ok"]["register_approver"] for p in got["plans"][:2]] == [True, False]
+    _, got = step_by_name(name, "foreign_authority")
+    plans = got["plans"]
+    assert [p["ok"]["register_approver"] for p in plans[:2]] == [False, True]
+
+
+def test_an_include_plan_refuses_an_empty_list_and_drops_duplicates():
+    _, got = step_by_name("seq_approver_registration", "registered")
+    assert got["plans"][0]["ok"]["grants"] == [ID["bob"]]
+    assert got["plans"][1]["ok"]["grants"] == [ID["bob"]]
+    _, got = step_by_name("seq_approver_registration", "authority_removed")
+    assert got["plans"][2] == {"error": "phi_group.no_target"}
+    assert got["plans"][3] == {"error": "phi_group.node_device"}
+
+
+def test_duplicate_copies_choose_the_verifying_one_then_the_smallest_bytes():
+    got = step(CASES["fold_duplicate_verifying_copy_beats_smaller_bytes"], 0)
+    assert got["roster"]["rejected"] == {}
+    assert names(got["roster"]["phi_members"]) == ["alice", "bob"]
+    case = CASES["fold_duplicate_all_copies_fail"]
+    got = step(case, 0)
+    given = case["input"]["steps"][0]
+    copies = {
+        name: text
+        for name, text in zip(given["entry_names"], given["entries"], strict=True)
+        if name.startswith("bad_duplicate_")
+    }
+    assert len(copies) == 2
+    smallest = min(copies, key=lambda n: copies[n].encode())
+    assert smallest == "bad_duplicate_presence_garbled"
+    assert list(got["roster"]["rejected"].values()) == ["roster.bad_presence_signature"]
