@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import tempfile
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -85,13 +86,37 @@ def download_python(pin: dict, cache: Path) -> Path:
     return target
 
 
+def member_is_contained(member: tarfile.TarInfo, destination: Path) -> bool:
+    target = Path(os.path.normpath(destination / member.name))
+    if os.path.isabs(member.name) or not (target == destination or destination in target.parents):
+        return False
+    if member.issym() or member.islnk():
+        link = os.path.normpath((target.parent / member.linkname) if member.issym() else (destination / member.linkname))
+        return not os.path.isabs(member.linkname) and (Path(link) == destination or destination in Path(link).parents)
+    return member.isfile() or member.isdir()
+
+
+def extract_members(bundle: tarfile.TarFile, destination: Path) -> None:
+    if hasattr(tarfile, "data_filter"):
+        bundle.extractall(destination, filter="data")
+        return
+    destination = Path(os.path.normpath(destination.resolve()))
+    members = bundle.getmembers()
+    for member in members:
+        if not member_is_contained(member, destination):
+            raise PackError(f"archive member {member.name} is not a contained file, directory or link")
+        member.mode = 0o755 if member.isdir() or member.mode & 0o100 else 0o644
+    bundle.extractall(destination, members=members)
+
+
 def extract_archive(repository: Path, commit: str, destination: Path) -> None:
     destination.mkdir(parents=True, exist_ok=True)
-    archive = subprocess.Popen(["git", "-C", str(repository), "archive", commit], stdout=subprocess.PIPE)
-    with tarfile.open(fileobj=archive.stdout, mode="r|") as bundle:
-        bundle.extractall(destination, filter="data")
-    if archive.wait() != 0:
-        raise PackError(f"git archive failed for {repository}")
+    with tempfile.TemporaryFile() as archive:
+        if subprocess.run(["git", "-C", str(repository), "archive", commit], stdout=archive, check=False).returncode != 0:
+            raise PackError(f"git archive failed for {repository}")
+        archive.seek(0)
+        with tarfile.open(fileobj=archive, mode="r:") as bundle:
+            extract_members(bundle, destination)
 
 
 def export_deep(repo: Path, destination: Path) -> str:
@@ -350,7 +375,7 @@ def assemble(platform: str, output: Path, kernel_dir: Path, work: Path, mailbox:
 
     python_archive = download_python(target["python"], work / "downloads")
     with tarfile.open(python_archive) as bundle:
-        bundle.extractall(stage, filter="data")
+        extract_members(bundle, stage)
     python_root = stage / "python"
     python = python_root / "bin" / "python3.11"
 

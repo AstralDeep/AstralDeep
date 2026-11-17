@@ -494,3 +494,57 @@ def test_the_pack_relocates_in_a_clean_bookworm_slim_image_with_no_python_on_the
     if not docker_image_present(slim):
         pytest.skip(f"the clean image {slim} is not present locally and the test must not pull it")
     bl.check_relocation(json.loads((PACK_DIR / "node-pack-manifest.json").read_text())["platform"], "node-pack-test-", slim, PACK_DIR, 900)
+
+
+def tar_with(path: Path, members: list[tuple[str, bytes | None, str | None]]) -> tarfile.TarFile:
+    import io
+
+    with tarfile.open(path, "w") as bundle:
+        for name, data, link in members:
+            info = tarfile.TarInfo(name)
+            if link is not None:
+                info.type = tarfile.SYMTYPE
+                info.linkname = link
+                bundle.addfile(info)
+            elif data is None:
+                info.type = tarfile.DIRTYPE
+                bundle.addfile(info)
+            else:
+                info.size = len(data)
+                bundle.addfile(info, io.BytesIO(data))
+    return tarfile.open(path)
+
+
+@pytest.mark.parametrize("filtered", [True, False])
+def test_extraction_unpacks_contained_members_with_or_without_the_tar_data_filter(tmp_path, monkeypatch, filtered):
+    if not filtered:
+        monkeypatch.delattr(tarfile, "data_filter", raising=False)
+    bundle = tar_with(tmp_path / "ok.tar", [("dir", None, None), ("dir/file", b"x", None), ("dir/link", None, "file")])
+    destination = tmp_path / "out"
+    destination.mkdir()
+    ap.extract_members(bundle, destination)
+    assert (destination / "dir" / "file").read_bytes() == b"x" and (destination / "dir" / "link").is_symlink()
+
+
+@pytest.mark.parametrize("member", [
+    ("../escape", b"x", None), ("/absolute", b"x", None), ("a/link", None, "/etc/passwd"), ("a/link", None, "../../outside"),
+])
+def test_extraction_without_the_data_filter_refuses_members_that_leave_the_destination(tmp_path, monkeypatch, member):
+    monkeypatch.delattr(tarfile, "data_filter", raising=False)
+    bundle = tar_with(tmp_path / "bad.tar", [member])
+    destination = tmp_path / "out"
+    destination.mkdir()
+    with pytest.raises(ap.PackError, match="not a contained"):
+        ap.extract_members(bundle, destination)
+    assert not (tmp_path / "escape").exists()
+
+
+def test_extraction_without_the_data_filter_refuses_device_nodes(tmp_path, monkeypatch):
+    monkeypatch.delattr(tarfile, "data_filter", raising=False)
+    path = tmp_path / "dev.tar"
+    with tarfile.open(path, "w") as bundle:
+        info = tarfile.TarInfo("node")
+        info.type = tarfile.CHRTYPE
+        bundle.addfile(info)
+    with pytest.raises(ap.PackError):
+        ap.extract_members(tarfile.open(path), tmp_path)
