@@ -167,18 +167,6 @@ def bearer_from_headers(
 
 async def decode_mcp_token(token: str) -> dict[str, Any]:
     refuse_on_personal_node(())
-    if os.getenv("USE_MOCK_AUTH", "").strip().lower() == "true":
-        # Separate from the web dev-token; keep audiences apart
-        if token != "dev-mcp-token":
-            raise ValueError("invalid MCP development token")
-        return {
-            "sub": "test_user",
-            "iss": "mock-astral-mcp",
-            "aud": MCP_AUDIENCE,
-            "scope": " ".join(MCP_SCOPES),
-            "realm_access": {"roles": ["user"]},
-        }
-
     authority = os.getenv("KEYCLOAK_AUTHORITY", "").strip().rstrip("/")
     if not authority:
         raise RuntimeError("KEYCLOAK_AUTHORITY is not configured")

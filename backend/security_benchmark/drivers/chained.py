@@ -222,7 +222,7 @@ def _tok(now: int, scope: str, *, depth: int = 0, act=None) -> dict:
         "sub": "human-1",
         "act": act or {"sub": "agent:initiator-1"},
         "scope": scope,
-        "iss": "mock-astral-delegation",
+        "iss": "astral-delegation",
         "aud": "agent-service",
         "iat": now,
         "exp": now + 300,

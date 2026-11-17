@@ -6,7 +6,6 @@ require_user_id/verify_admin dependencies and the personal-node bearer and sign-
 import asyncio
 import os
 import logging
-import json
 import time
 from typing import Dict, List, Optional
 
@@ -30,11 +29,6 @@ NODE_CALLER_SCHEME = "AstralCaller"
 
 def node_caller_challenge(realm: str, error: str = NODE_BEARER_REFUSED) -> str:
     return f'{NODE_CALLER_SCHEME} realm="{realm}", error="{error}"'
-
-if os.getenv("USE_MOCK_AUTH", "").lower() == "true":
-    logger.info("Mock auth ENABLED — all tokens accepted as test_user with roles [admin, user]")
-else:
-    logger.info("Mock auth disabled — Keycloak JWKS validation active")
 
 class _NativeCustodyRoute(APIRoute):
     def get_route_handler(self):
@@ -257,55 +251,6 @@ async def get_current_user_payload(request: Request, credentials: HTTPAuthorizat
         request.state.delegation_subject_token = token
     except Exception:
         pass
-    if os.getenv("USE_MOCK_AUTH", "").lower() == "true":
-        if token == "dev-token":
-            mock_payload = {
-                "sub": "test_user",
-                "preferred_username": "test_user",
-                "email": "test_user@local",
-                "realm_access": {"roles": ["admin", "user"]},
-                "resource_access": {
-                    "astral-frontend": {"roles": ["admin", "user"]}
-                }
-            }
-            try:
-                request.state.audit_claims = mock_payload
-            except Exception:
-                pass
-            return mock_payload
-        decoded = None
-        try:
-            import base64
-            parts = token.split('.')
-            if len(parts) == 3:
-                payload_b64 = parts[1]
-                payload_b64 += '=' * ((4 - len(payload_b64) % 4) % 4)
-                payload_json = base64.b64decode(payload_b64).decode('utf-8')
-                decoded = json.loads(payload_json)
-        except Exception as e:
-            logger.debug(f"Mock JWT decode failed, falling back to default test_user: {e}")
-        if isinstance(decoded, dict):
-            _reject_non_first_party(decoded)
-            try:
-                request.state.audit_claims = decoded
-            except Exception:
-                pass
-            return decoded
-        fallback = {
-            "sub": "test_user",
-            "preferred_username": "test_user",
-            "email": "test_user@local",
-            "realm_access": {"roles": ["admin", "user"]},
-            "resource_access": {
-                "astral-frontend": {"roles": ["admin", "user"]}
-            }
-        }
-        try:
-            request.state.audit_claims = fallback
-        except Exception:
-            pass
-        return fallback
-    
     payload = await verify_production_token(token)
     try:
         request.state.audit_claims = payload

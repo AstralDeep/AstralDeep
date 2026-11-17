@@ -41,7 +41,6 @@ A2A_BODY = {
 
 REFUSED = {"detail": BEARER}
 VOICE_REFUSED = {"error": "voice_unavailable", "reason": "authentication_required", "retryable": False}
-MOCK_REFUSALS = {"/api/work/v1/operations/op-1/pause": (403, {"error": "work_authority_unavailable"})}
 REST_DOORS = [
     ("GET", "/api/connection/status", 401, REFUSED),
     ("GET", "/api/share", 401, REFUSED),
@@ -117,15 +116,15 @@ def spies(monkeypatch):
     return seen
 
 
-@pytest.fixture(params=["production", "mock"])
+@pytest.fixture(params=["production", "dev-token"])
 def node(request, plane_runtime, server_identity, spies, monkeypatch):
-    if request.param == "mock":
+    if request.param == "dev-token":
         monkeypatch.setenv("ASTRAL_ENV", "development")
-        monkeypatch.setenv("USE_MOCK_AUTH", "true")
+        monkeypatch.setenv("USE_MOCK_AUTH", "true")  # the removed flag must change nothing
         token, mcp_token = "dev-token", "dev-mcp-token"
     else:
         monkeypatch.setenv("ASTRAL_ENV", "production")
-        monkeypatch.setenv("USE_MOCK_AUTH", "false")
+        monkeypatch.delenv("USE_MOCK_AUTH", raising=False)
         token = server_identity.token("owner-1", roles=("user", "admin"))
         mcp_token = server_identity.mcp_token("owner-1")
     monkeypatch.setenv(ni.PROFILE_ENV, ni.PERSONAL)
@@ -160,8 +159,6 @@ def _detail(response) -> str:
 
 @pytest.mark.parametrize("method,path,status,body", REST_DOORS)
 def test_rest_doors_refuse_a_valid_bearer(node, method, path, status, body):
-    if node.mode == "mock":
-        status, body = MOCK_REFUSALS.get(path, (status, body))
     response = node.client.request(method, path, headers={
         "Authorization": f"Bearer {node.token}", "Origin": orchestrator_app.PUBLIC_BASE_URL,
         "Content-Type": "application/json"}, content=b"{}")
@@ -180,8 +177,7 @@ async def test_the_work_route_authentication_refuses_inside_its_wrapper(node, pl
     with pytest.raises(AssignmentError) as refused:
         await _authenticate_work_request(_request(node.token), sessions=sessions, plane_runtime=plane_runtime,
                                          methods=("GET",), read_only=True)
-    expected = ("work_authority_unavailable", 403) if node.mode == "mock" else ("work_authentication_required", 401)
-    assert (refused.value.code, refused.value.status_code) == expected
+    assert (refused.value.code, refused.value.status_code) == ("work_authentication_required", 401)
     _untouched(node)
 
 

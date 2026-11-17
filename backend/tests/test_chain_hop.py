@@ -95,7 +95,7 @@ def _parent(scope="tools:read tool:peer_tool", depth=0, user="u1",
             initiator="initiator-1", exp_in=300, act=None):
     now = int(time.time())
     p = {"sub": user, "act": act or {"sub": f"agent:{initiator}"},
-         "scope": scope, "iss": "mock-astral-delegation", "aud": "agent-svc",
+         "scope": scope, "iss": "astral-delegation", "aud": "agent-svc",
          "iat": now, "exp": now + exp_in, "delegation": True}
     if depth:
         p["delegation_depth"] = depth

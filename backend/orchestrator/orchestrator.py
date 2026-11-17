@@ -10696,7 +10696,6 @@ class Orchestrator:
                         token=token,
                         capabilities=getattr(msg, "capabilities", None),
                         connection_generation=msg.connection_generation,
-                        mock_auth=os.getenv("USE_MOCK_AUTH", "").lower() == "true",
                     )
                     previous_owner = (self.ui_sessions.get(websocket) or {}).get("sub")
                     if previous_owner != user_data.get("sub"):
@@ -20711,7 +20710,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 render_components=[alert.to_dict()],
                 hop_audited=True)
 
-        # Never sign with the committed dev key in production
+        # Refuse to mint when no signing key can be resolved
         try:
             _dg._child_signing_key()
         except _dg.DelegationConfigError:
@@ -22645,16 +22644,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
         renewal = getattr(self, "_ui_auth_renewal", None)
         if renewal is None:
-            async def _verify(token: str):
-                if os.getenv("USE_MOCK_AUTH", "").lower() == "true":
-                    return None
-                return await self.validate_token(token)
-
             renewal = UIAuthRenewal(
                 self.ui_sessions,
                 getattr(self, "_connection_contexts", {}),
-                _verify,
-                mock_auth=os.getenv("USE_MOCK_AUTH", "").lower() == "true",
+                self.validate_token,
             )
             self._ui_auth_renewal = renewal
         return renewal
@@ -27056,8 +27049,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             logger.info("jwks warm: skipped (a personal node trusts no identity server)")
             return
         authority = (os.getenv("KEYCLOAK_AUTHORITY") or "").strip()
-        if not authority or os.getenv("USE_MOCK_AUTH", "").lower() == "true":
-            logger.info("jwks warm: skipped (mock auth or no authority configured)")
+        if not authority:
+            logger.info("jwks warm: skipped (no authority configured)")
             return
         jwks_url = f"{authority.rstrip('/')}/protocol/openid-connect/certs"
         interval = float(os.getenv("JWKS_REFRESH_SECONDS", "500"))
@@ -27247,44 +27240,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         if node_identity.is_personal():
             logger.warning("Token refused for a UI session: node_bearer_refused")
             return None
-        if os.getenv("USE_MOCK_AUTH", "").lower() == "true":
-            if token == "dev-token":
-                logger.info("Mock Auth: Validated dev-token as test_user")
-                return {
-                    "sub": "test_user",
-                    "preferred_username": "test_user",
-                    "email": "test_user@local",
-                    "realm_access": {"roles": ["admin", "user"]},
-                    "resource_access": {"astral-frontend": {"roles": ["admin", "user"]}},
-                }
-            try:
-                import base64
-                parts = token.split('.')
-                if len(parts) == 3:
-                    payload_b64 = parts[1]
-                    payload_b64 += '=' * ((4 - len(payload_b64) % 4) % 4)
-                    payload_json = base64.b64decode(payload_b64).decode('utf-8')
-                    decoded = json.loads(payload_json)
-                    from shared.auth_clients import is_first_party_user_claims
-                    ok, reason = is_first_party_user_claims(decoded)
-                    if not ok:
-                        logger.warning(
-                            "Refusing non-first-party token for a UI session: %s",
-                            reason,
-                        )
-                        return None
-                    return decoded
-            except Exception as e:
-                logger.debug(f"Mock JWT decode failed, falling back to default test_user: {e}")
-            logger.info("Mock Auth: Accepting token as test_user")
-            return {
-                "sub": "test_user",
-                "preferred_username": "test_user",
-                "email": "test_user@local",
-                "realm_access": {"roles": ["admin", "user"]},
-                "resource_access": {"astral-frontend": {"roles": ["admin", "user"]}},
-            }
-
         try:
             authority = os.getenv("KEYCLOAK_AUTHORITY")
             expected_client = os.getenv("KEYCLOAK_CLIENT_ID")

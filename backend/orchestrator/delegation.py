@@ -5,6 +5,7 @@ node signs these tokens locally with its Ed25519 key (shared/node_identity.py).
 """
 
 import os
+import secrets
 import time
 import json
 import hmac
@@ -36,14 +37,9 @@ class DelegationService:
         self.agent_service_client_secret = os.getenv(
             "AGENT_SERVICE_CLIENT_SECRET", ""
         )
-        self.mock_auth = os.getenv("USE_MOCK_AUTH", "false").lower() == "true"
-
-        if self.mock_auth:
-            logger.info("DelegationService running in MOCK mode")
-        else:
-            logger.info(
-                f"DelegationService configured for Keycloak: {self.authority}"
-            )
+        logger.info(
+            f"DelegationService configured for Keycloak: {self.authority}"
+        )
 
     async def exchange_token_for_agent(
         self,
@@ -65,11 +61,6 @@ class DelegationService:
                     "delegation would carry no authority"
                 ),
             }
-
-        if self.mock_auth:
-            return self._create_mock_delegation_token(
-                agent_id, allowed_tools, user_id, enabled_scopes
-            )
 
         return await self._exchange_via_keycloak(
             user_token, agent_id, allowed_tools, enabled_scopes
@@ -146,64 +137,6 @@ class DelegationService:
                 "error_description": str(e),
             }
 
-    def _create_mock_delegation_token(
-        self,
-        agent_id: str,
-        allowed_tools: List[str],
-        user_id: Optional[str] = None,
-        enabled_scopes: Optional[List[str]] = None,
-    ) -> Dict:
-        now = int(time.time())
-        scope_parts = list(enabled_scopes or [])
-        scope_parts.extend(f"tool:{t}" for t in allowed_tools)
-        combined_scopes = " ".join(scope_parts)
-
-        payload = {
-            "sub": user_id or "dev-user-id",
-            "preferred_username": "DevUser",
-            "act": {"sub": f"agent:{agent_id}"},
-            "scope": combined_scopes,
-            "iss": "mock-astral-delegation",
-            "aud": self.agent_service_client_id,
-            "iat": now,
-            "exp": now + 300,
-            "azp": self.client_id or "astral-frontend",
-            "realm_access": {"roles": ["user"]},
-            "delegation": True,
-        }
-
-        header = {"alg": "HS256", "typ": "JWT"}
-        header_b64 = (
-            base64.urlsafe_b64encode(json.dumps(header).encode())
-            .rstrip(b"=")
-            .decode()
-        )
-        payload_b64 = (
-            base64.urlsafe_b64encode(json.dumps(payload).encode())
-            .rstrip(b"=")
-            .decode()
-        )
-        signing_input = f"{header_b64}.{payload_b64}"
-        signature = hmac.new(
-            b"mock-delegation-secret", signing_input.encode(), hashlib.sha256
-        ).digest()
-        sig_b64 = base64.urlsafe_b64encode(signature).rstrip(b"=").decode()
-        mock_token = f"{signing_input}.{sig_b64}"
-
-        logger.info(
-            f"Mock delegation token created for agent '{agent_id}' "
-            f"with {len(allowed_tools)} tools"
-        )
-
-        return {
-            "access_token": mock_token,
-            "token_type": "Bearer",
-            "expires_in": 300,
-            "scope": combined_scopes,
-            "issued_token_type": TOKEN_TYPE_ACCESS,
-            "agent_id": agent_id,
-        }
-
     @staticmethod
     def extract_delegation_info(token_payload: dict) -> Optional[Dict]:
         act_claim = token_payload.get("act")
@@ -262,6 +195,8 @@ def recursive_delegation_enabled() -> bool:
         return False
 
 
+_DELEGATION_ISSUER = "astral-delegation"
+_process_dev_key: Optional[bytes] = None
 _NODE_HS256_INFO = "astral.delegation.hs256/v1"
 
 
@@ -283,8 +218,11 @@ def _child_signing_key() -> bytes:
         raise DelegationConfigError(
             "child delegation minting requires DELEGATION_CHILD_SIGNING_KEY "
             "(or MEMORY_HMAC_KEY) to be set in production posture — refusing "
-            "to sign with the committed development constant.")
-    return b"mock-delegation-secret"
+            "to sign with a derived or committed key.")
+    global _process_dev_key
+    if _process_dev_key is None:
+        _process_dev_key = secrets.token_bytes(32)
+    return _process_dev_key
 
 
 def _audience_list(value) -> List[str]:
@@ -433,7 +371,7 @@ def mint_child_delegation(parent: dict, child_agent_id: str,
         "sub": parent.get("sub"),
         "act": child_act,
         "scope": " ".join(child_scopes),
-        "iss": parent.get("iss", "mock-astral-delegation"),
+        "iss": parent.get("iss", _DELEGATION_ISSUER),
         "aud": parent.get("aud"),
         "iat": now,
         "exp": parent_exp,

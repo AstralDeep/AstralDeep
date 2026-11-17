@@ -85,8 +85,10 @@ def assert_production_posture() -> None:
         from shared import institution_profile
 
         institution_profile.enforce()
-    mock_on = os.getenv("USE_MOCK_AUTH", "").strip().lower() in ("1", "true", "yes")
+    mock_requested = os.getenv("USE_MOCK_AUTH", "").strip().lower() in ("1", "true", "yes")
     if is_dev_mode():
+        if mock_requested:
+            logger.warning("USE_MOCK_AUTH is ignored: mock auth was removed.")
         if node_identity.is_personal():
             problems = _personal_node_problems(node_identity)
             if problems:
@@ -106,11 +108,11 @@ def assert_production_posture() -> None:
             f"{', '.join(typesafe_present)}; users save their own key in LLM "
             f"settings."
         )
-    if mock_on:
+    if mock_requested:
         problems.append(
-            "USE_MOCK_AUTH is enabled. Mock authentication accepts any token as "
-            "an admin user. Set USE_MOCK_AUTH=false and configure KEYCLOAK_*, "
-            "or set ASTRAL_ENV=development (local dev only)."
+            "USE_MOCK_AUTH is set but mock auth was removed. Unset USE_MOCK_AUTH; "
+            "a personal node authenticates with mesh keys and a server node "
+            "needs KEYCLOAK_*."
         )
     if not _enc_key():
         problems.append(
@@ -132,7 +134,7 @@ def assert_production_posture() -> None:
             "the audit hash chain would be forgeable. Set a high-entropy value."
         )
     personal = node_identity.is_personal()
-    if not mock_on and not personal:
+    if not personal:
         for var in ("KEYCLOAK_AUTHORITY", "KEYCLOAK_CLIENT_ID", "KEYCLOAK_CLIENT_SECRET"):
             if not os.getenv(var, "").strip():
                 problems.append(f"{var} is unset — the OIDC flow cannot operate.")

@@ -80,7 +80,6 @@ def test_owner_confirmation_real_custody_device_enrollment_and_session(mesh):
 
 def test_mesh_uses_production_rfc8693_http_form_with_exact_allowed_tools(mesh):
     mesh.enroll()
-    assert mesh.host.delegation.mock_auth is False
     url, form = mesh.exchange_forms[0]
     assert url == mesh.issuer + "/protocol/openid-connect/token"
     assert form["grant_type"] == delegation.GRANT_TYPE_TOKEN_EXCHANGE
