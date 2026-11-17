@@ -163,6 +163,7 @@ def test_the_home_install_failure_and_success(tmp_path, monkeypatch):
     values = check.parse_env_text(env.read_text())
     assert values["ASTRAL_ENV"] == "production" and values["PUBLIC_BASE_URL"] == "http://127.0.0.1:7"
     assert values["ASTRAL_NODE_MESH_RELAY"] == "none"
+    assert f"general-1__{check.TOOL}" in values["ASTRAL_NODE_PUBLISHED_TOOLS"]
 
 
 def test_waiting_for_a_file_and_the_offer(tmp_path, monkeypatch):

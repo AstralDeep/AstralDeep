@@ -48,6 +48,7 @@ NODE_ADDITIONS = {
     "ASTRAL_NODE_MESH_LOOPBACK": "1",
     "ASTRAL_NODE_MAILBOX": "0",
     "ASTRAL_NODE_MESH_RELAY": "none",
+    "ASTRAL_NODE_PUBLISHED_TOOLS": f"general-1__{TOOL},dice-roller-1__roll_dice",
 }
 CATALOG_WAIT_S = 240.0
 PAUSE_RETRY_S = 90.0
