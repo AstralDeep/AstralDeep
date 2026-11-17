@@ -375,3 +375,49 @@ def test_environment_and_paths_come_from_the_variables_the_runtime_writes():
         assert px.memory_bytes == 123456789 and px.pids == 64 and px.rg == "/x/rg"
         assert px.path_dirs[0].endswith("pack/python/bin") and px.run_py.endswith("astral_exec/run.py")
         assert px.resolve("/bin/sh") == "/bin/sh" and workspace_for("m", "t")
+
+
+def grep_world(tmp):
+    world = build_world(Path(tmp))
+    outside = world["root"] / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("outside canary token\n")
+    notes = world["work"] / "notes"
+    (notes / "link.txt").symlink_to(outside / "secret.txt")
+    (notes / "linkdir").symlink_to(outside, target_is_directory=True)
+    (notes / "inside.txt").write_text("inside canary token\n")
+    return world, notes
+
+
+def test_python_search_does_not_read_through_links_that_leave_the_root():
+    with tempfile.TemporaryDirectory() as tmp:
+        world, notes = grep_world(tmp)
+        app, _ = app_for(world, facts=ABI5)
+        found = sandbox_call(app, "grep", {"pattern": "canary"})[1]["output"]
+        assert "inside.txt" in found and "outside" not in found and "secret.txt" not in found
+        for link in ("link.txt", "linkdir"):
+            assert sandbox_call(app, "grep", {"pattern": "canary", "path": str(notes / link)})[1][
+                "output"] == "no matches"
+
+
+def test_a_file_swapped_for_a_link_after_the_walk_is_refused_at_open():
+    with tempfile.TemporaryDirectory() as tmp:
+        world, notes = grep_world(tmp)
+        app, _ = app_for(world, facts=ABI5)
+        target = notes / "swap.txt"
+        target.write_text("harmless\n")
+        original = tools.fnmatch.fnmatch
+
+        def swap_then_match(name, pattern):
+            if name == "swap.txt" and target.exists() and not target.is_symlink():
+                target.unlink()
+                target.symlink_to(world["root"] / "outside" / "secret.txt")
+            return original(name, pattern)
+
+        tools.fnmatch.fnmatch = swap_then_match
+        try:
+            out = sandbox_call(app, "grep", {"pattern": "canary", "glob": "*.txt"})[1]["output"]
+        finally:
+            tools.fnmatch.fnmatch = original
+        assert target.is_symlink()
+        assert "outside canary" not in out and "swap.txt" not in out

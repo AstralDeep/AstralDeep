@@ -346,24 +346,33 @@ async def _python_grep(args: dict[str, Any], target: str, cap: int,
         return f"invalid pattern: {exc}", True
     wanted = args.get("glob")
 
+    def candidates() -> list[Path]:
+        root = Path(target)
+        if root.is_symlink():
+            return []
+        if root.is_file():
+            return [root]
+        found: list[Path] = []
+        for folder, directories, names in os.walk(root, followlinks=False):
+            directories.sort()
+            found += [Path(folder) / name for name in sorted(names) if not (Path(folder) / name).is_symlink()]
+        return found
+
     def search() -> list[str]:
         found: list[str] = []
-        root = Path(target)
-        files = [root] if root.is_file() else sorted(p for p in root.rglob("*") if p.is_file())
-        for path in files:
-            if confinement is not None and not confinement.allows(path):
-                continue
+        for path in candidates():
             if wanted and not (fnmatch.fnmatch(path.name, str(wanted)) or fnmatch.fnmatch(str(path), str(wanted))):
                 continue
             try:
-                with open(path, encoding="utf-8", errors="replace") as handle:
+                fd = _open_checked(path, confinement)  # checks where the opened descriptor really points
+                with os.fdopen(fd, encoding="utf-8", errors="replace") as handle:
                     for number, line in enumerate(handle, 1):
                         if pattern.search(line[:MAX_LINE_CHARS]):
                             found.append(f"{path}:{number}:{line.rstrip()[:400]}")
                             if len(found) > cap:
                                 return found
             except OSError:
-                continue
+                continue  # includes permission errors, links swapped in after the walk and special files
         return found
 
     lines = await asyncio.to_thread(search)
