@@ -159,14 +159,13 @@ def parse_refresh_message(raw: str) -> dict[str, Any] | None:
     return frame
 
 
-def ready_for_renewal(session: Mapping[str, Any], generation: str, *, mock_auth: bool) -> bool:
+def ready_for_renewal(session: Mapping[str, Any], generation: str) -> bool:
     claims = session_identity(session)
     issued = session.get("iat")
     expires = session.get("exp")
     token_id = session.get("jti")
     return bool(
-        not mock_auth
-        and claims is not None
+        claims is not None
         and _client_identity_is_configured(session)
         and _authorization_claims(session) is not None
         and isinstance(issued, (int, float))
@@ -186,7 +185,6 @@ def bind_registered_session(
     token: str,
     capabilities: Any,
     connection_generation: str | None,
-    mock_auth: bool,
 ) -> bool:
     if not isinstance(claims, dict):
         return False
@@ -199,11 +197,7 @@ def bind_registered_session(
     claims["_auth_context_generation"] = connection_generation
     enabled = bool(
         isinstance(connection_generation, str)
-        and ready_for_renewal(
-            claims,
-            connection_generation,
-            mock_auth=mock_auth,
-        )
+        and ready_for_renewal(claims, connection_generation)
     )
     claims["_auth_refresh_enabled"] = enabled
     return enabled
@@ -493,13 +487,10 @@ class UIAuthRenewal:
         sessions: dict[Any, dict[str, Any]],
         contexts: Mapping[int, Any],
         verifier: Callable[[str], Awaitable[Mapping[str, Any] | None]],
-        *,
-        mock_auth: bool = False,
     ) -> None:
         self.sessions = sessions
         self.contexts = contexts
         self.verifier = verifier
-        self.mock_auth = mock_auth
         self._locks: dict[int, asyncio.Lock] = {}
         self._events: dict[int, asyncio.Event] = {}
 
@@ -551,14 +542,13 @@ class UIAuthRenewal:
             session = self.sessions.get(websocket)
             context = self.contexts.get(id(websocket))
             if (
-                self.mock_auth
-                or not isinstance(session, dict)
+                not isinstance(session, dict)
                 or context is None
                 or getattr(context, "websocket", None) is not websocket
                 or not getattr(context, "registered", False)
                 or getattr(context, "closing", True)
                 or str(getattr(context, "connection_generation", "")) != generation
-                or not ready_for_renewal(session, generation, mock_auth=self.mock_auth)
+                or not ready_for_renewal(session, generation)
             ):
                 return _ack(request_id, generation, False, "stale_connection")
             seen = session.get("_auth_refresh_request_ids")

@@ -6,6 +6,7 @@ enforcement, and that a token value is never echoed back or forwarded.
 from __future__ import annotations
 
 import pytest
+from jose.exceptions import JWTError
 
 from orchestrator import mcp_authz
 
@@ -149,17 +150,18 @@ def test_bearer_extraction_rejects_non_header_or_malformed_credentials(
 
 
 @pytest.mark.asyncio
-async def test_mock_token_is_mcp_specific(monkeypatch):
-    monkeypatch.setenv("USE_MOCK_AUTH", "true")
-    with pytest.raises(ValueError, match="development token"):
-        await mcp_authz.decode_mcp_token("dev-token")
-    claims = await mcp_authz.decode_mcp_token("dev-mcp-token")
+async def test_real_mcp_token_is_audience_specific(server_identity):
+    claims = await mcp_authz.decode_mcp_token(server_identity.mcp_token("u1"))
     assert claims["aud"] == mcp_authz.MCP_AUDIENCE
+    assert claims["sub"] == server_identity.owner("u1")
+    with pytest.raises(JWTError, match="audience"):
+        await mcp_authz.decode_mcp_token(server_identity.token("u1"))
+    with pytest.raises(JWTError):
+        await mcp_authz.decode_mcp_token("not-a-jwt")
 
 
 @pytest.mark.asyncio
 async def test_real_token_path_uses_strict_issuer_and_audience(monkeypatch):
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
     monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://idp.test/realm/")
     observed = {}
 

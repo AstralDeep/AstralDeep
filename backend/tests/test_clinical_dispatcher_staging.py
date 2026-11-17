@@ -73,7 +73,6 @@ async def staging(orchestrator_factory, monkeypatch):
     monkeypatch.setenv("KEYCLOAK_AUTHORITY", authority)
     monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-web")
     monkeypatch.setenv("KEYCLOAK_ALLOWED_AZP", "astral-web")
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
     monkeypatch.setitem(flags._flags, "user_skills", False)
 
     def token(owner: str) -> str:

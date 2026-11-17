@@ -229,8 +229,8 @@ async def test_kernel_start_failure_stops_the_network(tmp_path):
 
     original = fake.Kernel.open
 
-    def open_failing(config, signer, model=None, tools=None, listener=None):
-        kernel = original(config, signer, model, tools, listener)
+    def open_failing(config, signer, model=None, tools=None, listener=None, peer_tools=None, mesh_gate=None):
+        kernel = original(config, signer, model, tools, listener, peer_tools, mesh_gate)
         kernel.start_network = failing
         return kernel
 

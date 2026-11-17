@@ -19,7 +19,7 @@ serve (exit code 78, one consolidated operator checklist in the log) unless:
 
 | Requirement | Why |
 |---|---|
-| `USE_MOCK_AUTH=false` | Mock auth accepts any token as an admin user. |
+| No mock-auth setting | Mock auth was removed. A leftover setting refuses to boot. |
 | `WEB_SESSION_ENC_KEY` (or `OFFLINE_GRANT_ENC_KEY`) set | Durable web sessions are Fernet-encrypted at rest; refused unencrypted. |
 | `AUDIT_HMAC_SECRET` set to a real value | The audit hash chain is forgeable under the shipped placeholder. |
 | `KEYCLOAK_AUTHORITY` / `KEYCLOAK_CLIENT_ID` / `KEYCLOAK_CLIENT_SECRET` set | The OIDC flow cannot operate without them. |
@@ -412,8 +412,7 @@ satisfy:
 
 | Key | Value | Why the Apple clients need it |
 |---|---|---|
-| `ASTRAL_ENV` | unset (== production) | Fail-closed; mock auth refuses to boot. |
-| `USE_MOCK_AUTH` | `false` | Real tokens only; mock auth would admit anyone as admin. |
+| `ASTRAL_ENV` | unset (== production) | Fail-closed. Missing or placeholder secrets refuse to boot. |
 | `KEYCLOAK_AUTHORITY` | `https://iam.ai.uky.edu/realms/Astral` | Must match the authority the Release build ships with. |
 | `KEYCLOAK_ALLOWED_AZP` | includes `astral-mobile`, `astral-desktop`, **and** `astral-watch` | iOS→`astral-mobile`, macOS→`astral-desktop`, watch→`astral-watch`; a token whose `azp` is not listed is rejected. |
 | `KEYCLOAK_DEVICE_CLIENTS` | `astral-watch` | Only the watch may use the backend-brokered device grant. |
@@ -814,7 +813,6 @@ FF_DEVICE_LOGIN=true
 
 # Production posture — the exit-78 boot gate checks all of these
 # (leave ASTRAL_ENV unset: unset == production, fail closed)
-USE_MOCK_AUTH=false
 WEB_SESSION_ENC_KEY=<generated Fernet key>
 OFFLINE_GRANT_ENC_KEY=<generated Fernet key>
 AUDIT_HMAC_SECRET=<high-entropy value>
@@ -868,7 +866,7 @@ the pulled image refuses to serve and prints one consolidated checklist in
 [ ] docker-compose.override.yml points services.astraldeep.image at that tag
     (build: dropped or compose started with --no-build)
 [ ] ASTRAL_ENV unset (or =production) on the host — NOT development
-[ ] USE_MOCK_AUTH=false
+[ ] no leftover mock-auth setting in the environment (it refuses to boot)
 [ ] WEB_SESSION_ENC_KEY + OFFLINE_GRANT_ENC_KEY generated (Fernet)
 [ ] AUDIT_HMAC_SECRET high-entropy (placeholder is refused at boot)
 [ ] AGENT_API_KEY set (agents refuse to register without it; it is ALSO the

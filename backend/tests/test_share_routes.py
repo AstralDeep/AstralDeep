@@ -5,7 +5,6 @@ serve, owner-scoped revoke, and the PHI-gate refusal.
 
 from __future__ import annotations
 
-import os
 import sys
 import uuid
 from collections.abc import Mapping
@@ -18,8 +17,6 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
-os.environ["USE_MOCK_AUTH"] = "true"
-
 from fastapi import FastAPI  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -31,13 +28,16 @@ from orchestrator.artifact_share import (  # noqa: E402
 )
 from personalization.phi_gate import PHIGate, set_phi_gate  # noqa: E402
 from shared.feature_flags import flags  # noqa: E402
-from shared.node_identity import canonical_owner_id  # noqa: E402
 from tests.helpers.voice_plane_runtime import isolated_plane_runtime  # noqa: E402
 
 
+_IDENTITY = None
+
+
 @pytest.fixture(autouse=True)
-def mock_auth(monkeypatch):
-    monkeypatch.setenv("USE_MOCK_AUTH", "true")
+def _identity(server_identity, monkeypatch):
+    monkeypatch.setitem(globals(), "_IDENTITY", server_identity)
+    return server_identity
 
 
 class _CleanAnalyzer:
@@ -57,15 +57,8 @@ COMPONENT = {
 }
 
 
-def _make_mock_token(payload: dict) -> str:
-    import base64
-    import json as _json
-    body = base64.b64encode(_json.dumps(payload).encode()).decode().rstrip("=")
-    return f"header.{body}.signature"
-
-
 def _auth(user_id: str) -> dict:
-    return {"Authorization": f"Bearer {_make_mock_token({'sub': user_id})}"}
+    return _IDENTITY.headers(user_id)
 
 
 @pytest.fixture(scope="module")
@@ -75,11 +68,12 @@ def plane_runtime():
 
 
 @pytest.fixture()
-def user(plane_runtime):
+def user(plane_runtime, server_identity):
     uid = f"pytest-shareroutes-{uuid.uuid4().hex[:12]}"
     yield uid
     with plane_runtime.transaction() as transaction:
-        transaction.execute("DELETE FROM share_grant WHERE user_id = %s", (uid,))
+        transaction.execute(
+            "DELETE FROM share_grant WHERE user_id = %s", (server_identity.owner(uid),))
 
 
 @pytest.fixture(autouse=True)
@@ -148,7 +142,7 @@ def _grant_rows(plane_runtime, user_id):
     with plane_runtime.transaction() as transaction:
         rows = transaction.fetch_all(
             "SELECT * FROM share_grant WHERE user_id = %s ORDER BY id ASC",
-            (user_id,),
+            (_IDENTITY.owner(user_id),),
         )
     return [_plain(row) for row in rows]
 
@@ -304,52 +298,38 @@ def test_unauthenticated_browser_navigation_redirects(client, sharing_on, monkey
     assert r.status_code == 401
 
 
-def test_cookie_session_mock_mode_mints_and_lists(plane_runtime, client, sharing_on):
-    r = client.post("/api/share", json={"chat_id": CHAT_ID, "scope": "component",
-                                        "component_id": "wc_shared"})
-    try:
-        assert r.status_code == 201
-        minted_id = r.json()["id"]
-        rows = _grant_rows(plane_runtime, "test_user")
-        assert minted_id in [row["id"] for row in rows]
-        listed = client.get("/api/share")
-        assert listed.status_code == 200
-        assert minted_id in [s["id"] for s in listed.json()["shares"]]
-    finally:
-        if r.status_code == 201:
-            with plane_runtime.transaction() as transaction:
-                transaction.execute(
-                    "DELETE FROM share_grant WHERE id = %s",
-                    (r.json()["id"],),
-                )
-
-
-def test_cookie_session_real_mode_mints(
+def test_cookie_session_mints_and_lists(
     plane_runtime, client, user, sharing_on, monkeypatch
 ):
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
-    monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://idp.example/realms/astral")
-    monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-frontend")
+    session_token = _IDENTITY.token(user)
 
     async def _sess(request):
-        return {"access_token": "signed.jwt.token", "refresh_token": "",
+        return {"access_token": session_token, "refresh_token": "",
                 "sub": user, "created_at": 0, "resumed": True, "sid": "s"}
     monkeypatch.setattr(web_auth, "ensure_session", _sess)
-
-    async def _jwks(url, token=None):
-        return {"keys": [{"kid": "k"}]}
-    monkeypatch.setattr("shared.jwks_cache.get_jwks", _jwks)
-    monkeypatch.setattr(
-        "jose.jwt.decode",
-        lambda token, key, **kw: {"sub": user, "azp": "astral-frontend",
-                                  "iss": "https://idp.example/realms/astral", "aud": "account"},
-    )
 
     r = client.post("/api/share", json={"chat_id": CHAT_ID, "scope": "component",
                                         "component_id": "wc_shared"})
     assert r.status_code == 201
-    owner = canonical_owner_id("https://idp.example/realms/astral", user)
-    assert _grant_rows(plane_runtime, owner)[0]["id"] == r.json()["id"]
+    minted_id = r.json()["id"]
+    assert _grant_rows(plane_runtime, user)[0]["id"] == minted_id
+    listed = client.get("/api/share")
+    assert listed.status_code == 200
+    assert minted_id in [s["id"] for s in listed.json()["shares"]]
+
+
+def test_cookie_session_with_an_unsigned_access_token_is_refused(
+    plane_runtime, client, user, sharing_on, monkeypatch
+):
+    async def _sess(request):
+        return {"access_token": "e30.e30.sig", "refresh_token": "",
+                "sub": user, "created_at": 0, "resumed": True, "sid": "s"}
+    monkeypatch.setattr(web_auth, "ensure_session", _sess)
+
+    r = client.post("/api/share", json={"chat_id": CHAT_ID, "scope": "component",
+                                        "component_id": "wc_shared"})
+    assert r.status_code == 401
+    assert _grant_rows(plane_runtime, user) == []
 
 
 def test_dashboard_with_dates_and_large_values_mints_and_serves(

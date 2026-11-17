@@ -1,16 +1,18 @@
-"""Enrolls a device on a personal node through real PostgreSQL and REST proofs: member and agent tokens are signed by the node key, no Keycloak exchange happens, and other nodes refuse the result."""
+"""A device enrolled through the legacy mesh enrollment keeps its rows when its node turns out to be a personal node, but every step of that flow is closed there: the owner cannot invite, the device cannot redeem, refresh or call in, and no Keycloak exchange happens.
+It drives the mesh SDK client through the app Orchestrator.build_http_app serves (tests/helpers/orchestrator_app.py) into orchestrator/mesh_api.py, on real PostgreSQL from tests/helpers/mesh_runtime.py."""
 
 from __future__ import annotations
 
-import time
-
 import pytest
-from jose import jwt
+from fastapi.testclient import TestClient
 
-from orchestrator import delegation, mesh_admission as ma
+from orchestrator import mesh_admission as ma, web_auth
 from shared import node_identity as ni
+from tests.helpers import orchestrator_app
 from tests.helpers.mesh_runtime import MeshRuntime
 from tests.helpers.voice_plane_runtime import isolated_plane_runtime
+
+CLOSED = (403, {"detail": "node.legacy_enrollment_closed"})
 
 
 @pytest.fixture(scope="module")
@@ -22,12 +24,15 @@ def plane_runtime():
 @pytest.fixture
 def node(plane_runtime, monkeypatch, tmp_path):
     fixture = MeshRuntime(plane_runtime, monkeypatch)
-    monkeypatch.setenv(ni.PROFILE_ENV, "personal")
     monkeypatch.setenv(ni.DATA_DIR_ENV, str(tmp_path / "node"))
     monkeypatch.delenv(ni.OWNER_ENV, raising=False)
-    monkeypatch.delenv("DELEGATION_CHILD_SIGNING_KEY", raising=False)
-    monkeypatch.delenv("KEYCLOAK_CLIENT_SECRET", raising=False)
     ni.reset_cache()
+    host = orchestrator_app.host(None, **vars(fixture.host))
+    app = orchestrator_app.build(monkeypatch, host, surfaces=())
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://mesh.invalid")
+    fixture.client.close()
+    fixture.client = TestClient(app, base_url="https://mesh.invalid")
+    fixture.client.cookies.set(web_auth.COOKIE_NAME, web_auth._sign(fixture.sid))
     try:
         yield fixture
     finally:
@@ -35,62 +40,53 @@ def node(plane_runtime, monkeypatch, tmp_path):
         ni.reset_cache()
 
 
-def test_enrollment_issues_node_signed_tokens_without_a_keycloak_exchange(node):
+def _rows(node):
+    return (node.store.list_members(node.owner), node.store.list_invitations(node.owner),
+            node.store._list(node.owner, ma.SESSION_NAMESPACE))
+
+
+def _personal(node, monkeypatch):
+    monkeypatch.setenv("ASTRAL_ENV", "production")
+    monkeypatch.setenv(ni.PROFILE_ENV, ni.PERSONAL)
+    node.exchanges.clear()
+    node.exchange_forms.clear()
+
+
+def _refused(call):
+    with pytest.raises(Exception, match="403 Forbidden") as refused:
+        call()
+    return refused.value.response.status_code, refused.value.response.json()
+
+
+def test_an_enrolled_device_can_no_longer_refresh_or_call_in(node, monkeypatch):
     device, _ = node.enroll()
-    identity = ni.load_node_identity()
-    claims = ma.verify_member_token(device._token)
+    before = _rows(node)
+    _personal(node, monkeypatch)
+    assert _refused(lambda: device.session(agent_id="reader")) == CLOSED
+    assert _refused(lambda: device.request("GET", "/api/mesh/me")) == CLOSED
+    assert _refused(lambda: device.invoke("reader", "read", {"value": "x"})) == CLOSED
+    assert _rows(node) == before
     assert node.exchanges == [] and node.exchange_forms == []
-    assert ni.peek_algorithm(device._token) == "EdDSA"
-    assert claims["iss"] == identity.node_id
-    assert claims["sub"] == node.owner
-    assert claims["scope"].split() == ["mesh:confirm", "tools:read"]
-    with node.runtime.transaction() as transaction:
-        stored = node.store._get_in_transaction(
-            transaction, node.owner, ma.SESSION_NAMESPACE, device.device.member_id
-        )
-    agent_claims = identity.verify_token(stored["delegation_token"], audience="astral-agent-service")
-    assert agent_claims["sub"] == node.owner
-    assert agent_claims["act"] == {"sub": "agent:reader"}
-    assert agent_claims["scope"].split() == ["tools:read", "tool:read"]
-    assert agent_claims["exp"] - agent_claims["iat"] <= 300
-    assert device.request("GET", "/api/mesh/me")["member"]["member_id"] == device.device.member_id
+    assert ni.bound_owner() is None
 
 
-def test_member_sessions_keep_working_with_the_issuer_offline(node):
-    device, _ = node.enroll()
-    node.refresh_mode = "offline"
-    device.session(agent_id="reader")
-    claims = ma.verify_member_token(device._token)
-    ma.assert_dispatch_current(node.host, claims, "reader", "tools:read")
+def test_a_pending_invitation_can_no_longer_be_confirmed_or_redeemed(node, monkeypatch):
+    device, invitation = node.invitation()
+    before = _rows(node)
+    _personal(node, monkeypatch)
+    invite = invitation["invitation"]["invite_id"]
+    confirmed = node.client.post(f"/api/mesh/invitations/{invite}/confirm", headers=node.owner_headers)
+    assert (confirmed.status_code, confirmed.json()) == CLOSED
+    client = node.sdk.MeshClient("https://mesh.invalid", device, client=node.client)
+    assert _refused(lambda: client.redeem(invitation["payload"], agent_id="reader")) == CLOSED
+    invited = node.client.post("/api/mesh/invitations", headers=node.owner_headers,
+                               json={"label": "Another", "device_key": node.sdk.MeshDevice.generate().public_key})
+    assert (invited.status_code, invited.json()) == CLOSED
+    assert _rows(node) == before
     assert node.exchanges == []
 
 
-def test_a_member_token_from_another_node_is_refused(node, tmp_path, monkeypatch):
+def test_the_same_flow_still_works_on_the_server_profile(node):
     device, _ = node.enroll()
-    monkeypatch.setenv(ni.DATA_DIR_ENV, str(tmp_path / "second-node"))
-    ni.reset_cache()
-    with pytest.raises(ma.MeshAdmissionError):
-        ma.verify_member_token(device._token)
-    response = node.client.get("/api/mesh/me", headers={"Authorization": "Bearer " + device._token})
-    assert response.status_code in {401, 403}
-
-
-def test_unconfirmed_or_expired_custody_still_refuses_activation(node):
-    device, invitation = node.invitation()
-    response = node.client.post(
-        "/api/mesh/enrollment/redeem",
-        json=device.redemption(invitation["payload"], agent_id="reader"),
-    )
-    assert response.status_code in {400, 403, 409}
-    assert node.store.list_members(node.owner) == []
-
-
-def test_delegation_stays_least_privilege_for_a_narrow_member(node):
-    device, _ = node.enroll(scopes=["tools:read"])
-    claims = ma.verify_member_token(device._token)
-    assert claims["scope"].split() == ["tools:read"]
-    assert "tools:write" not in claims["scope"]
-    unsigned = jwt.get_unverified_claims(device._token)
-    assert unsigned["exp"] - unsigned["iat"] <= ma.MAX_TOKEN_SECONDS
-    assert unsigned["exp"] > int(time.time())
-    assert delegation.decode_token_payload(device._token)["delegation"] is True
+    assert device.request("GET", "/api/mesh/me")["member"]["member_id"] == device.device.member_id
+    assert ma.verify_member_token(device._token)["sub"] == node.owner

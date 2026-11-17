@@ -51,7 +51,6 @@ class FixtureIdentity:
             "KEYCLOAK_AUTHORITY": self.authority,
             "KEYCLOAK_CLIENT_ID": "astral-frontend",
             "KEYCLOAK_ALLOWED_AZP": "astral-frontend",
-            "USE_MOCK_AUTH": "false",
         }
         self.previous = {key: os.environ.get(key) for key in self.values}
         os.environ.update(self.values)

@@ -12,11 +12,11 @@ from orchestrator import connection_guide as cg, llm_gate
 from orchestrator.projection_surfaces import connection as surface
 from tests import test_connection_guide as fixtures
 
-mock_auth = fixtures.mock_auth
 production_auth = fixtures.production_auth
+signed_in = fixtures.signed_in
 
 
-async def test_optional_worker_exception_preserves_other_honest_checks(mock_auth, monkeypatch):
+async def test_optional_worker_exception_preserves_other_honest_checks(signed_in, monkeypatch):
     from shared.feature_flags import flags
     monkeypatch.setitem(flags._flags, "conversational_voice", True)
     def broken():
@@ -42,7 +42,7 @@ async def test_auth_exception_does_not_drop_guide_or_expose_authority_secret(pro
 
 @pytest.mark.parametrize("mode,ready,status", [("off", True, "disabled"), ("audit", True, "degraded"),
     ("enforce", False, "blocked"), ("off", False, "disabled")])
-async def test_lets_guide_overall_follows_application_ready(mock_auth, monkeypatch, mode, ready, status):
+async def test_lets_guide_overall_follows_application_ready(signed_in, monkeypatch, mode, ready, status):
     monkeypatch.setattr("orchestrator.lets_health_api.lets_snapshot", lambda _: SimpleNamespace(
         mode=mode, application_ready=ready, component_status=status, operator_code="lets_unavailable"))
     payload = await cg.guide_payload(fixtures.FakeOrch())
@@ -50,7 +50,7 @@ async def test_lets_guide_overall_follows_application_ready(mock_auth, monkeypat
     assert fixtures._check(payload["checks"], "lets")["required"] is (not ready)
 
 
-async def test_unreadable_lets_is_required_unavailable(mock_auth, monkeypatch):
+async def test_unreadable_lets_is_required_unavailable(signed_in, monkeypatch):
     def broken(_):
         raise RuntimeError("private LETS details")
     monkeypatch.setattr("orchestrator.lets_health_api.lets_snapshot", broken)
@@ -69,7 +69,7 @@ def test_ipv6_origin_is_canonical_and_usable():
     assert cg._origin_of("https://[::1]:8001/path") == "https://[::1]:8001"
 
 
-async def test_shared_render_uses_exact_native_component_view(mock_auth, monkeypatch):
+async def test_shared_render_uses_exact_native_component_view(signed_in, monkeypatch):
     from astralprojection.models import ChromeViewModel
     captured = []
     def render(view):
@@ -82,14 +82,14 @@ async def test_shared_render_uses_exact_native_component_view(mock_auth, monkeyp
     assert [item.to_dict() for item in captured[0].components] == await surface.components_from_payload(payload)
 
 
-async def test_watch_uses_native_chrome_surface(mock_auth):
+async def test_watch_uses_native_chrome_surface(signed_in):
     orch = fixtures._PushOrch(device_type="watch")
     assert await cg.push_connection_guide(orch, orch.websocket, "user")
     assert json.loads(orch.sent[0])["type"] == "chrome_surface"
 
 
 @pytest.mark.parametrize("change", ["chat", "gate", "owner", "claims", "registration", "context", "generation", "closing", "pending"])
-async def test_registration_changes_during_checks_cannot_clobber_current_ui(mock_auth, monkeypatch, change):
+async def test_registration_changes_during_checks_cannot_clobber_current_ui(signed_in, monkeypatch, change):
     orch = fixtures._PushOrch()
     entered, release = asyncio.Event(), asyncio.Event()
     async def paused(_):
@@ -123,7 +123,7 @@ async def test_registration_changes_during_checks_cannot_clobber_current_ui(mock
     assert orch.sent == [] and not getattr(orch, "_open_chrome_surface", {})
 
 
-async def test_missing_registered_owner_fails_closed(mock_auth):
+async def test_missing_registered_owner_fails_closed(signed_in):
     orch = fixtures._PushOrch()
     orch.ui_sessions.clear()
     assert await cg.push_connection_guide(orch, orch.websocket, "user") is False
@@ -131,7 +131,7 @@ async def test_missing_registered_owner_fails_closed(mock_auth):
     assert orch.sent == []
 
 
-async def test_owner_change_during_send_does_not_mark_new_owner_surface(mock_auth):
+async def test_owner_change_during_send_does_not_mark_new_owner_surface(signed_in):
     orch = fixtures._PushOrch()
     async def replaced(_, frame):
         orch.ui_sessions[orch.websocket] = {"sub": "other"}
@@ -141,7 +141,7 @@ async def test_owner_change_during_send_does_not_mark_new_owner_surface(mock_aut
     assert not getattr(orch, "_open_chrome_surface", {})
 
 
-async def test_initial_pending_registration_publishes_once_before_delivery(mock_auth, monkeypatch):
+async def test_initial_pending_registration_publishes_once_before_delivery(signed_in, monkeypatch):
     orch = fixtures._PushOrch()
     context = orch._connection_contexts[id(orch.websocket)]
     context.registered, context.connection_generation, context.work_registrations_pending = False, None, 1
@@ -153,7 +153,7 @@ async def test_initial_pending_registration_publishes_once_before_delivery(mock_
     assert len(orch.sent) == 1
 
 
-async def test_direct_helper_rechecks_owner_after_component_render(mock_auth, monkeypatch):
+async def test_direct_helper_rechecks_owner_after_component_render(signed_in, monkeypatch):
     orch = fixtures._PushOrch()
     async def replaced(_):
         orch.ui_sessions[orch.websocket] = {"sub": "other"}
@@ -163,7 +163,7 @@ async def test_direct_helper_rechecks_owner_after_component_render(mock_auth, mo
     assert orch.sent == []
 
 
-async def test_direct_helper_rechecks_owner_after_probe(mock_auth, monkeypatch):
+async def test_direct_helper_rechecks_owner_after_probe(signed_in, monkeypatch):
     orch = fixtures._PushOrch()
     async def replaced(_):
         orch.ui_sessions[orch.websocket] = {"sub": "other"}
@@ -173,7 +173,7 @@ async def test_direct_helper_rechecks_owner_after_probe(mock_auth, monkeypatch):
     assert orch.sent == []
 
 
-async def test_probe_timeout_preserves_bounded_unavailable_and_cancellation(mock_auth, monkeypatch):
+async def test_probe_timeout_preserves_bounded_unavailable_and_cancellation(signed_in, monkeypatch):
     entered = asyncio.Event()
     async def blocked(_):
         entered.set()
@@ -192,7 +192,7 @@ async def test_probe_timeout_preserves_bounded_unavailable_and_cancellation(mock
         await task
 
 
-async def test_html_shared_renderer_escapes_status_and_keeps_refresh_action(mock_auth):
+async def test_html_shared_renderer_escapes_status_and_keeps_refresh_action(signed_in):
     payload = await cg.guide_payload(fixtures.FakeOrch())
     payload["endpoint"]["guidance"] = '<script>private</script>'
     payload["checks"][0]["detail"] = '<img src=x onerror=alert(1)>'
@@ -201,7 +201,7 @@ async def test_html_shared_renderer_escapes_status_and_keeps_refresh_action(mock
     assert '&lt;script&gt;' in html and 'Re-run checks' in html and 'chrome_open' in html
 
 
-async def test_shared_status_text_retains_readiness_without_color_only_meaning(mock_auth):
+async def test_shared_status_text_retains_readiness_without_color_only_meaning(signed_in):
     payload = await cg.guide_payload(fixtures.FakeOrch())
     components = await surface.components_from_payload(payload)
     database = next(item for item in components if item.get("type") == "alert" and item.get("title") == "Database")

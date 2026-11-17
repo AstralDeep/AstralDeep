@@ -1,15 +1,17 @@
-"""Covers shared/node_identity.py: profile selection, key creation and permissions, EdDSA token minting and refusal, canonical owner ids and the single-owner binding."""
+"""Covers shared/node_identity.py: profile selection, key creation and permissions, EdDSA token minting and refusal, issuer owner ids for the server profile, and the mesh-id owner rules of a personal node."""
 
 from __future__ import annotations
 
 import base64
 import json
 import os
+import re
 import stat
 
 import pytest
 
 from shared import node_identity as ni
+from tests.helpers.owner_file import seed_owner
 
 
 @pytest.fixture
@@ -212,28 +214,197 @@ def test_accepted_issuers_merge_and_normalize(node, monkeypatch):
     ]
 
 
-def test_owner_binding_is_first_come_and_then_fixed(node):
-    assert ni.bound_owner() is None
-    ni.enforce_owner("oidc.a.one")
-    assert ni.bound_owner() == "oidc.a.one"
+MESH = "sha256:" + "a" * 64
+STORED = "mesh." + "a" * 64
+OTHER = "sha256:" + "b" * 64
+LEGACY = "oidc.0123456789abcdef.owner"
+
+
+def test_the_mesh_id_and_its_stored_owner_id_convert_exactly_both_ways():
+    assert ni.owner_id_for_mesh(MESH) == STORED
+    assert ni.mesh_id_for_owner(STORED) == MESH
+    every_digit = "sha256:" + "0123456789abcdef" * 4
+    assert ni.mesh_id_for_owner(ni.owner_id_for_mesh(every_digit)) == every_digit
+
+
+@pytest.mark.parametrize("value", [
+    None, 7, "", STORED, LEGACY, "sha256:" + "A" * 64, "sha256:" + "a" * 63, "sha256:" + "a" * 65,
+    "sha256-" + "a" * 64, " " + MESH, MESH + "\n",
+])
+def test_owner_id_for_mesh_refuses_anything_but_a_kernel_mesh_id(value):
+    with pytest.raises(ni.NodeIdentityError):
+        ni.owner_id_for_mesh(value)
+
+
+@pytest.mark.parametrize("value", [
+    None, 7, "", MESH, LEGACY, "mesh." + "A" * 64, "mesh." + "a" * 63, "mesh:" + "a" * 64, STORED + " ",
+])
+def test_mesh_id_for_owner_refuses_anything_but_a_stored_mesh_owner(value):
+    with pytest.raises(ni.NodeIdentityError):
+        ni.mesh_id_for_owner(value)
+
+
+def test_binding_stores_the_mesh_owner_id_and_never_the_wire_form(node):
+    assert ni.bound_owner() is None and ni.bound_mesh_owner() is None
+    assert ni.bind_mesh_owner(MESH) == STORED
+    assert (node / ni.OWNER_FILE).read_text() == STORED
     assert stat.S_IMODE((node / ni.OWNER_FILE).stat().st_mode) == 0o600
-    ni.enforce_owner("oidc.a.one")
-    with pytest.raises(ni.OwnerMismatch):
-        ni.enforce_owner("oidc.a.two")
+    assert ni.bound_owner() == STORED == ni.bound_mesh_owner()
+    assert ni.bind_mesh_owner(MESH) == STORED
+    with pytest.raises(ni.OwnerMismatch) as refused:
+        ni.bind_mesh_owner(OTHER)
+    assert type(refused.value) is ni.OwnerMismatch
+    assert (node / ni.OWNER_FILE).read_text() == STORED
 
 
-def test_owner_from_environment_wins(node, monkeypatch):
-    monkeypatch.setenv(ni.OWNER_ENV, "oidc.a.fixed")
-    with pytest.raises(ni.OwnerMismatch):
-        ni.enforce_owner("oidc.a.other")
-    ni.enforce_owner("oidc.a.fixed")
+def legacy_files(node):
+    return sorted(node.glob(ni.OWNER_FILE + ".legacy-*"))
+
+
+def test_a_legacy_owner_file_is_moved_aside_and_pairing_binds_the_mesh(node, caplog):
+    stored = seed_owner(LEGACY)
+    with caplog.at_level("WARNING", logger="shared.node_identity"):
+        assert ni.bound_mesh_owner() is None
     assert not (node / ni.OWNER_FILE).exists()
+    (kept,) = legacy_files(node)
+    assert kept.read_bytes() == stored
+    assert [r.getMessage().split(":")[0] for r in caplog.records] == [ni.LEGACY_OWNER_RETIRED]
+    assert LEGACY not in caplog.text
+    assert ni.bind_mesh_owner(MESH) == STORED
+    assert (node / ni.OWNER_FILE).read_text() == STORED
+    ni.enforce_owner(STORED)
+    with pytest.raises(ni.OwnerMismatch):
+        ni.enforce_owner(LEGACY)
+
+
+def test_retiring_a_legacy_owner_is_idempotent_and_keeps_the_mode(node, caplog):
+    seed_owner(LEGACY)
+    (node / ni.OWNER_FILE).chmod(0o640)
+    assert ni.retire_legacy_owner() is True
+    caplog.clear()
+    with caplog.at_level("WARNING", logger="shared.node_identity"):
+        assert ni.retire_legacy_owner() is False
+    assert not caplog.records
+    (kept,) = legacy_files(node)
+    assert stat.S_IMODE(kept.stat().st_mode) == 0o640
+    assert re.fullmatch(r"owner\.legacy-\d{8}T\d{6}Z(-\d+)?", kept.name)
+
+
+def test_a_second_legacy_file_in_the_same_second_gets_its_own_name(node, monkeypatch):
+    monkeypatch.setattr(ni, "datetime", type("D", (), {"now": staticmethod(lambda tz=None: __import__("datetime").datetime(2026, 1, 2, 3, 4, 5, tzinfo=tz))}))
+    seed_owner(LEGACY)
+    ni.retire_legacy_owner()
+    seed_owner(LEGACY + "-2")
+    ni.retire_legacy_owner()
+    assert [p.name for p in legacy_files(node)] == ["owner.legacy-20260102T030405Z", "owner.legacy-20260102T030405Z-1"]
+
+
+def test_a_mesh_owner_file_is_untouched_by_retirement(node):
+    stored = seed_owner(MESH)
+    assert ni.retire_legacy_owner() is False
+    assert (node / ni.OWNER_FILE).read_bytes() == stored
+    assert not legacy_files(node)
+
+
+def test_retirement_does_nothing_without_a_file_and_off_the_personal_profile(node, monkeypatch):
+    assert ni.retire_legacy_owner() is False
+    seed_owner(LEGACY)
+    monkeypatch.setenv(ni.PROFILE_ENV, "institution")
+    assert ni.retire_legacy_owner() is False
+    assert (node / ni.OWNER_FILE).exists()
+    with pytest.raises(ni.OwnerMismatch):
+        ni.bound_mesh_owner()
+
+
+def test_retirement_failures_surface_as_identity_errors(node, monkeypatch):
+    seed_owner(LEGACY)
+    monkeypatch.setattr(ni.os, "link", lambda *a, **k: (_ for _ in ()).throw(PermissionError("no")))
+    with pytest.raises(ni.NodeIdentityError):
+        ni.retire_legacy_owner()
+    assert (node / ni.OWNER_FILE).exists()
+
+
+def test_a_wire_form_owner_file_reads_as_the_same_mesh_owner_and_is_never_rewritten(node):
+    stored = seed_owner(MESH)
+    assert ni.bound_owner() == STORED == ni.bound_mesh_owner()
+    assert ni.bind_mesh_owner(MESH) == STORED
+    ni.enforce_owner(STORED)
+    with pytest.raises(ni.OwnerMismatch):
+        ni.bind_mesh_owner(OTHER)
+    assert (node / ni.OWNER_FILE).read_bytes() == stored
+
+
+@pytest.mark.parametrize("configured", [MESH, STORED])
+def test_a_configured_mesh_owner_in_either_form_admits_only_that_mesh(node, monkeypatch, configured):
+    monkeypatch.setenv(ni.OWNER_ENV, configured)
+    assert ni.bound_owner() == STORED
+    with pytest.raises(ni.OwnerMismatch):
+        ni.bind_mesh_owner(OTHER)
+    assert not (node / ni.OWNER_FILE).exists()
+    assert ni.bind_mesh_owner(MESH) == STORED
+    assert (node / ni.OWNER_FILE).read_text() == STORED
+
+
+@pytest.mark.parametrize("configured", [MESH, STORED])
+@pytest.mark.parametrize("stored", [OTHER, "mesh." + "b" * 64])
+def test_a_configured_mesh_owner_cannot_hide_a_different_owner_file(node, monkeypatch, configured, stored):
+    before = seed_owner(stored)
+    monkeypatch.setenv(ni.OWNER_ENV, configured)
+    for attempt in (ni.bound_mesh_owner, lambda: ni.bind_mesh_owner(MESH), lambda: ni.enforce_owner(STORED)):
+        with pytest.raises(ni.OwnerMismatch) as refused:
+            attempt()
+        assert type(refused.value) is ni.OwnerMismatch
+    assert (node / ni.OWNER_FILE).read_bytes() == before
+
+
+def test_a_configured_owner_in_either_form_agrees_with_its_own_file(node, monkeypatch):
+    stored = seed_owner(MESH)
+    monkeypatch.setenv(ni.OWNER_ENV, STORED)
+    assert ni.bound_mesh_owner() == STORED == ni.bind_mesh_owner(MESH)
+    ni.enforce_owner(STORED)
+    assert (node / ni.OWNER_FILE).read_bytes() == stored
+
+
+def test_a_configured_legacy_owner_is_ignored_with_the_warning_code(node, monkeypatch, caplog):
+    monkeypatch.setenv(ni.OWNER_ENV, LEGACY)
+    with caplog.at_level("WARNING", logger="shared.node_identity"):
+        assert ni.bound_owner() is None
+        assert ni.bind_mesh_owner(MESH) == STORED
+    assert [r.getMessage().split(":")[0] for r in caplog.records] == [ni.LEGACY_OWNER_RETIRED]
+    assert LEGACY not in caplog.text
+    assert (node / ni.OWNER_FILE).read_text() == STORED
+
+
+def test_enforcing_an_owner_compares_with_the_bound_mesh_owner_and_never_binds(node):
+    for claimed in (STORED, MESH, LEGACY, ""):
+        with pytest.raises(ni.OwnerMismatch):
+            ni.enforce_owner(claimed)
+    assert not (node / ni.OWNER_FILE).exists()
+    ni.bind_mesh_owner(MESH)
+    ni.enforce_owner(STORED)
+    for claimed in (MESH, "mesh." + "b" * 64, LEGACY):
+        with pytest.raises(ni.OwnerMismatch):
+            ni.enforce_owner(claimed)
+    assert (node / ni.OWNER_FILE).read_text() == STORED
+
+
+def test_no_generic_owner_writer_remains():
+    assert not hasattr(ni, "bind_owner")
 
 
 def test_enforce_owner_is_a_no_op_outside_the_personal_profile(tmp_path, monkeypatch):
     monkeypatch.delenv(ni.PROFILE_ENV, raising=False)
     monkeypatch.setenv(ni.DATA_DIR_ENV, str(tmp_path / "n"))
     ni.enforce_owner("anyone")
+    assert not (tmp_path / "n").exists()
+
+
+def test_mesh_owner_binding_is_personal_only(tmp_path, monkeypatch):
+    monkeypatch.setenv(ni.DATA_DIR_ENV, str(tmp_path / "n"))
+    for profile in ("", "institution"):
+        monkeypatch.setenv(ni.PROFILE_ENV, profile)
+        with pytest.raises(ni.NodeIdentityError):
+            ni.bind_mesh_owner(MESH)
     assert not (tmp_path / "n").exists()
 
 
@@ -244,7 +415,7 @@ def test_unwritable_owner_binding_is_reported(tmp_path, monkeypatch):
     monkeypatch.setenv(ni.DATA_DIR_ENV, str(blocker / "sub"))
     monkeypatch.delenv(ni.OWNER_ENV, raising=False)
     with pytest.raises(ni.NodeIdentityError):
-        ni.bind_owner("oidc.a.one")
+        ni.bind_mesh_owner(MESH)
 
 
 def test_principal_hash_is_stable():
@@ -252,13 +423,13 @@ def test_principal_hash_is_stable():
     assert ni.owner_principal_hash("o").startswith("sha256:")
 
 
-def test_mesh_owner_binding_cannot_hide_an_existing_file_behind_environment(node, monkeypatch):
-    ni.bind_owner("oidc.old.owner")
-    mesh = "sha256:" + "a" * 64
-    monkeypatch.setenv(ni.OWNER_ENV, mesh)
-    with pytest.raises(ni.OwnerMismatch):
-        ni.bind_mesh_owner(mesh)
-    assert (node / ni.OWNER_FILE).read_text() == "oidc.old.owner"
+def test_a_configured_mesh_owner_binds_after_the_legacy_file_is_retired(node, monkeypatch):
+    stored = seed_owner("oidc.old.owner")
+    monkeypatch.setenv(ni.OWNER_ENV, MESH)
+    assert ni.bind_mesh_owner(MESH) == STORED
+    assert (node / ni.OWNER_FILE).read_text() == STORED
+    (kept,) = legacy_files(node)
+    assert kept.read_bytes() == stored
 
 
 def test_concurrent_owner_binding_publishes_one_complete_owner_and_preserves_the_winner(node, monkeypatch):
@@ -277,29 +448,33 @@ def test_concurrent_owner_binding_publishes_one_complete_owner_and_preserves_the
 
     def bind(index):
         ready.wait()
-        return ni.bind_owner("sha256:" + f"{index:064x}")
+        try:
+            return ni.bind_mesh_owner("sha256:" + f"{index:064x}")
+        except ni.OwnerMismatch:
+            return None
 
     with ThreadPoolExecutor(max_workers=12) as pool:
         owners = list(pool.map(bind, range(12)))
-    assert len(set(owners)) == 1
-    assert ni.bound_owner() == owners[0]
-    assert len(owners[0]) == 71
+    winners = [owner for owner in owners if owner is not None]
+    assert len(winners) == 1
+    assert ni.bound_owner() == winners[0] == (node / ni.OWNER_FILE).read_text()
+    assert len(winners[0]) == 69 and winners[0].startswith("mesh.")
     assert stat.S_IMODE((node / ni.OWNER_FILE).stat().st_mode) == 0o600
 
 
-@pytest.mark.parametrize("mesh", [None, "", "mesh-1", "sha256:" + "A" * 64])
+@pytest.mark.parametrize("mesh", [None, "", "mesh-1", "sha256:" + "A" * 64, STORED])
 def test_mesh_owner_binding_rejects_unusable_principal(node, mesh):
     with pytest.raises(ni.NodeIdentityError):
         ni.bind_mesh_owner(mesh)
     assert not (node / ni.OWNER_FILE).exists()
 
 
-@pytest.mark.parametrize("operation", ["bind_owner", "bind_mesh_owner"])
-def test_empty_existing_owner_file_is_a_refusal_not_permission_to_rebind(node, operation):
+def test_empty_existing_owner_file_is_a_refusal_not_permission_to_rebind(node):
     node.mkdir(parents=True)
     (node / ni.OWNER_FILE).write_text("")
-    with pytest.raises(ni.NodeIdentityError):
-        getattr(ni, operation)("sha256:" + "a" * 64)
+    for attempt in (ni.bound_owner, ni.bound_mesh_owner, lambda: ni.bind_mesh_owner(MESH), lambda: ni.enforce_owner(STORED)):
+        with pytest.raises(ni.NodeIdentityError):
+            attempt()
     assert (node / ni.OWNER_FILE).read_text() == ""
 
 
@@ -307,7 +482,6 @@ def test_empty_existing_owner_file_is_a_refusal_not_permission_to_rebind(node, o
 def test_owner_file_failure_never_returns_success_or_leaves_temporary_keys(node, monkeypatch, failure):
     from pathlib import Path
 
-    mesh = "sha256:" + "a" * 64
     if failure == "read":
         read = Path.read_text
 
@@ -326,5 +500,5 @@ def test_owner_file_failure_never_returns_success_or_leaves_temporary_keys(node,
 
         monkeypatch.setattr(os, "link", denied)
     with pytest.raises(ni.NodeIdentityError):
-        ni.bind_mesh_owner(mesh)
+        ni.bind_mesh_owner(MESH)
     assert not list(node.glob(".owner-*"))

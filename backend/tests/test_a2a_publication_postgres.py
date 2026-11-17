@@ -17,7 +17,10 @@ from shared.a2a_publication import (
     A2APublicationError, A2APublicationRegistry, ConfirmationMismatchError,
     PublicationForbiddenError, PublicationStoreUnavailable,
 )
+from tests import test_a2a_publication
 from tests.helpers.voice_plane_runtime import isolated_plane_runtime, VoicePlaneTestRuntime, build_test_database_url
+
+a2a_env = test_a2a_publication.a2a_env
 
 
 @pytest.fixture
@@ -127,15 +130,14 @@ def test_capacity_denial_is_durable_atomic_and_recoverable(publication_workers, 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('route', ['rest', 'card', 'a2a'])
-async def test_requests_progress_while_real_plane_journal_is_locked(publication_workers, monkeypatch, route):
+async def test_requests_progress_while_real_plane_journal_is_locked(
+    publication_workers, monkeypatch, a2a_env, route
+):
     import httpx
     from fastapi import FastAPI
     from orchestrator.a2a_orchestrator_executor import setup_orchestrator_a2a
     from orchestrator.a2a_publication_api import publication_router
     from tests.test_a2a_publication import _auth, _orchestrator
-    monkeypatch.setenv('USE_MOCK_AUTH', 'true')
-    monkeypatch.setenv('KEYCLOAK_AUTHORITY', 'https://iam.example/realms/astral')
-    monkeypatch.setenv('KEYCLOAK_CLIENT_ID', 'astral-frontend')
     actor, workers = publication_workers
     registry = workers[0][0]
     confirm(registry, proposal(registry, actor), actor)

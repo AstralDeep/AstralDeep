@@ -136,7 +136,6 @@ async def normal_turn(host, monkeypatch, signing_key, tmp_path):
     monkeypatch.setenv("KEYCLOAK_AUTHORITY", authority)
     monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-web")
     monkeypatch.setenv("KEYCLOAK_ALLOWED_AZP", "astral-web")
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
     monkeypatch.setenv("DELEGATION_REQUIRED", "false")
     for name in ("policy_engine", "hook_system", "taint_tracking", "hitl_highrisk"):
         monkeypatch.setitem(flags._flags, name, False)

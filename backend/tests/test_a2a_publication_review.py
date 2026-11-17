@@ -14,15 +14,10 @@ from tests.test_a2a_publication import (
     ADMIN, ALICE_EMAIL, _api_client, _auth, _client, _orchestrator, _send, _task, _tool_names,
 )
 from tests import test_a2a_publication_postgres
+from tests import test_a2a_publication
 
 publication_workers = test_a2a_publication_postgres.publication_workers
-
-
-@pytest.fixture
-def mock_publication_auth(monkeypatch):
-    monkeypatch.setenv('USE_MOCK_AUTH', 'true')
-    monkeypatch.setenv('KEYCLOAK_AUTHORITY', 'https://iam.example/realms/astral')
-    monkeypatch.setenv('KEYCLOAK_CLIENT_ID', 'astral-frontend')
+a2a_env = test_a2a_publication.a2a_env
 
 
 def admin_auth():
@@ -109,7 +104,7 @@ def test_audit_lock_wait_revalidates_current_publication_decision(publication_wo
     assert audit.verify_chain(actor) is None
 
 
-def test_admin_cannot_create_unresolved_owner_intent_then_recover_it(mock_publication_auth):
+def test_admin_cannot_create_unresolved_owner_intent_then_recover_it(a2a_env):
     orch = _orchestrator()
     resolved = [False]
     def lookup(agent):
@@ -128,7 +123,7 @@ def test_admin_cannot_create_unresolved_owner_intent_then_recover_it(mock_public
     assert orch.a2a_publications.active()[0].owner == ALICE_EMAIL
 
 
-def test_confirmed_absence_must_still_match_at_admin_confirmation(mock_publication_auth):
+def test_confirmed_absence_must_still_match_at_admin_confirmation(a2a_env):
     orch = _orchestrator()
     client = _api_client(orch)
     intent = admin_proposal(client).json()
@@ -143,7 +138,7 @@ def test_confirmed_absence_must_still_match_at_admin_confirmation(mock_publicati
     (None, 'owned'), (None, 'failure'), (None, 'missing_lookup'),
     (ALICE_EMAIL, 'absent'), (ALICE_EMAIL, 'failure'), (ALICE_EMAIL, 'owned'),
 ])
-def test_current_owner_state_gates_card_listing_and_direct_invocation(mock_publication_auth, original_owner, change):
+def test_current_owner_state_gates_card_listing_and_direct_invocation(a2a_env, original_owner, change):
     owners = {} if original_owner is None else {'weather-1': original_owner}
     orch = _orchestrator(owners=owners)
     api = _api_client(orch)

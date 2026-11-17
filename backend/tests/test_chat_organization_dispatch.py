@@ -10,8 +10,8 @@ import json
 
 import pytest
 
+from tests import test_orchestrator_offloop_paths as offloop
 from tests.test_orchestrator_offloop_paths import (  # noqa: F401
-    USER_ID,
     _frames,
     chat_env,
     orch,
@@ -28,7 +28,7 @@ async def _send(orch, ws, action, payload):  # noqa: F811
 async def test_rename_pin_and_archive_reach_history_list(orch, registered_ws, chat_env):  # noqa: F811
     ws, chat_id = registered_ws, chat_env
     orch.ui_clients.append(ws)
-    await asyncio.to_thread(orch.history.add_message, chat_id, "user", "hello", user_id=USER_ID)
+    await asyncio.to_thread(orch.history.add_message, chat_id, "user", "hello", user_id=offloop.USER_ID)
     await _send(orch, ws, "chat_rename", {"chat_id": chat_id, "title": " Renamed\tchat "})
     await _send(orch, ws, "chat_pin", {"chat_id": chat_id})
     row = next(c for c in _frames(ws, "history_list")[-1]["chats"] if c["id"] == chat_id)

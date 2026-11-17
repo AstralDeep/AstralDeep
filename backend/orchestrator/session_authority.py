@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import json
 import math
-import os
 import re
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field, replace
@@ -110,8 +109,7 @@ async def _refresh_operation_session(
 ) -> _OperationRefresh:
     try:
         async with asyncio.timeout(_TIME_LIMIT_SECONDS):
-            if (os.getenv("USE_MOCK_AUTH", "").strip().lower() in {"true", "1", "yes"}
-                    or not isinstance(owner_id, str) or not 1 <= len(owner_id) <= 256
+            if (not isinstance(owner_id, str) or not 1 <= len(owner_id) <= 256
                     or not _uuid4(assignment_id) or not isinstance(sessions, WebSessionStore)
                     or sessions._sessions.plane_runtime is not plane_runtime):
                 _unavailable()
@@ -185,8 +183,7 @@ async def refresh_operation_execution_authority(
 
 def _cookie_reference(request: Request) -> str:
     if (request.method == "OPTIONS" or "authorization" in request.headers
-            or "token" in request.query_params
-            or os.getenv("USE_MOCK_AUTH", "").strip().lower() in {"true", "1", "yes"}):
+            or "token" in request.query_params):
         _unavailable()
     cookies = [part.strip() for header in request.headers.getlist("cookie")
                for part in header.split(";")]

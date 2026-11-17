@@ -138,13 +138,11 @@ async def test_normal_jwt_policy_and_owner_selection_refuse(service, fixture, ru
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("kind", ["query", "origin", "duplicate-origin", "type", "options", "mock"])
-async def test_write_gates_unchanged(service, fixture, runtime, monkeypatch, kind):
+@pytest.mark.parametrize("kind", ["query", "origin", "duplicate-origin", "type", "options"])
+async def test_write_gates_unchanged(service, fixture, runtime, kind):
     values = {"query": b"token=secret"} if kind == "query" else {}
     if kind == "options":
         values["method"] = "OPTIONS"
-    if kind == "mock":
-        monkeypatch.setenv("USE_MOCK_AUTH", "true")
     headers = [(b"content-type", b"text/plain" if kind == "type" else b"application/json"),
                (b"origin", b"https://app.invalid:0" if kind == "origin" else b"https://app.invalid")]
     if kind == "duplicate-origin":

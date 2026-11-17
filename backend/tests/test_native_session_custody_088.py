@@ -696,19 +696,6 @@ async def test_existing_session_route_refreshes_server_custody_without_cookie_ro
 
 
 @pytest.mark.asyncio
-async def test_mock_auth_discovery_never_advertises_custody(client, fixture, monkeypatch):
-    monkeypatch.setenv("USE_MOCK_AUTH", "true")
-    response = await client.get("/auth/session")
-    assert response.status_code == 200
-    assert response.headers.get_list("x-astral-session-custody") == []
-    assert response.json() == {"authenticated": True, "access_token": "dev-token", "resumed": True}
-    assert "set-cookie" not in response.headers
-    refused = await client.post("/auth/token", data=form(), headers=HEADER)
-    assert refused.status_code == 503
-    assert "set-cookie" not in refused.headers and not fixture[4].requests
-
-
-@pytest.mark.asyncio
 async def test_authenticated_discovery_keeps_body_shape_and_sets_no_cookie(client, fixture):
     issued = await client.post("/auth/token", data=form(), headers=HEADER)
     assert issued.status_code == 200

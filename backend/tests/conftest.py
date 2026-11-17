@@ -14,6 +14,7 @@ import pytest
 _AMBIENT_FLAG_PREFIXES = ("FF_",)
 _AMBIENT_FLAGS = (
     "DELEGATION_REQUIRED",
+    "USE_MOCK_AUTH",
 )
 
 
@@ -88,6 +89,18 @@ async def orchestrator_module_factory():
                 instance._close_started_services(),
                 timeout=30.0,
             )
+
+
+@pytest.fixture
+def server_identity(monkeypatch, tmp_path):
+    from shared import node_identity
+
+    from tests.helpers.server_identity import ServerIdentity
+
+    identity = ServerIdentity.install(monkeypatch, data_dir=tmp_path / "node")
+    yield identity
+    node_identity.reset_cache()
+
 
 @pytest.fixture
 def user_skills_disabled(monkeypatch):

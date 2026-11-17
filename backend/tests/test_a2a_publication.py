@@ -5,7 +5,6 @@ denials, durable Plane state adaptation, and the authenticated publication API.
 
 from __future__ import annotations
 
-import base64
 import json
 import os
 import sys
@@ -121,27 +120,13 @@ def _publish(registry, agent_id="weather-1", audiences=None, lifetime="24h", act
     )
 
 
-def _jwt(claims: dict) -> str:
-    body = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
-    return f"eyJhbGciOiJub25lIn0.{body}.sig"
-
-
-def _claims(sub: str, email: str, roles=("user",), **extra) -> dict:
-    claims = {
-        "sub": sub,
-        "preferred_username": email.split("@")[0],
-        "email": email,
-        "iss": "https://iam.example/realms/astral",
-        "azp": "astral-frontend",
-        "aud": ["astral-agent-service", "account"],
-        "realm_access": {"roles": list(roles)},
-    }
-    claims.update(extra)
-    return claims
+_identity = None
 
 
 def _auth(sub=ALICE, email=ALICE_EMAIL, roles=("user",)) -> dict:
-    return {"Authorization": f"Bearer {_jwt(_claims(sub, email, roles))}"}
+    return _identity.headers(
+        sub, roles=roles, email=email, aud=["astral-agent-service", "account"]
+    )
 
 
 def _skill(skill_id: str, scope: str = "tools:read"):
@@ -210,11 +195,8 @@ def _orchestrator(*, safe=("weather-1",), owners=None):
 
 
 @pytest.fixture
-def mock_env(monkeypatch):
-    monkeypatch.setenv("USE_MOCK_AUTH", "true")
-    monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://iam.example/realms/astral")
-    monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-frontend")
-    monkeypatch.delenv("KEYCLOAK_ALLOWED_AZP", raising=False)
+def a2a_env(monkeypatch, server_identity):
+    monkeypatch.setitem(globals(), "_identity", server_identity)
     monkeypatch.delenv("PUBLIC_BASE_URL", raising=False)
 
 
@@ -553,7 +535,7 @@ def test_registry_store_save_failure_does_not_change_in_memory_state():
 
 
 
-def test_card_without_registry_keeps_safe_catalog_behavior(mock_env):
+def test_card_without_registry_keeps_safe_catalog_behavior(a2a_env):
     from orchestrator.a2a_orchestrator_executor import build_orchestrator_a2a_card
 
     orch = _orchestrator()
@@ -564,7 +546,7 @@ def test_card_without_registry_keeps_safe_catalog_behavior(mock_env):
     assert "draft-secret-9" not in ids
 
 
-def test_card_with_empty_registry_advertises_only_chat(mock_env):
+def test_card_with_empty_registry_advertises_only_chat(a2a_env):
     from orchestrator.a2a_orchestrator_executor import build_orchestrator_a2a_card
     from orchestrator.a2a_publication_wiring import attach_publication_registry
 
@@ -576,7 +558,7 @@ def test_card_with_empty_registry_advertises_only_chat(mock_env):
     assert card.security_requirements in (None, [])
 
 
-def test_card_advertises_published_capability_with_chosen_audience(mock_env):
+def test_card_advertises_published_capability_with_chosen_audience(a2a_env):
     from orchestrator.a2a_orchestrator_executor import build_orchestrator_a2a_card
     from orchestrator.a2a_publication_wiring import attach_publication_registry
 
@@ -594,7 +576,7 @@ def test_card_advertises_published_capability_with_chosen_audience(mock_env):
     assert "tools:read" in requirements
 
 
-def test_card_drops_withdrawn_and_expired_capabilities(mock_env):
+def test_card_drops_withdrawn_and_expired_capabilities(a2a_env):
     from orchestrator.a2a_orchestrator_executor import build_orchestrator_a2a_card
 
     orch = _orchestrator()
@@ -610,7 +592,7 @@ def test_card_drops_withdrawn_and_expired_capabilities(mock_env):
     assert registry.get(first.publication_id).status == "active"
 
 
-def test_card_intersection_keeps_unsafe_agents_unadvertised(mock_env):
+def test_card_intersection_keeps_unsafe_agents_unadvertised(a2a_env):
     from orchestrator.a2a_orchestrator_executor import build_orchestrator_a2a_card
     from orchestrator.a2a_publication_wiring import attach_publication_registry
 
@@ -625,7 +607,7 @@ def test_card_intersection_keeps_unsafe_agents_unadvertised(mock_env):
 
 
 
-def test_tools_list_hides_unpublished_tools_and_shows_published(mock_env):
+def test_tools_list_hides_unpublished_tools_and_shows_published(a2a_env):
     orch = _orchestrator(safe=("weather-1", "web-research-1"))
     client = _client(orch)
     before = _send(client, _auth(ALICE), [{"data": {"method": "tools/list"}}], rpc_id="l1")
@@ -636,7 +618,7 @@ def test_tools_list_hides_unpublished_tools_and_shows_published(mock_env):
     assert _tool_names(after.json()) == {"get_weather"}
 
 
-def test_unmanaged_dynamic_agent_keeps_legacy_authenticated_behavior(mock_env):
+def test_unmanaged_dynamic_agent_keeps_legacy_authenticated_behavior(a2a_env):
     orch = _orchestrator()
     orch.agent_cards["dynamic-1"] = _card(
         "dynamic-1", "Dynamic", [_skill("dynamic_lookup", "tools:read")],
@@ -654,7 +636,7 @@ def test_unmanaged_dynamic_agent_keeps_legacy_authenticated_behavior(mock_env):
     assert orch.execute_authorized_tool.await_args.kwargs["agent_id"] == "dynamic-1"
 
 
-def test_unpublished_direct_tool_is_non_disclosing_and_never_dispatched(mock_env):
+def test_unpublished_direct_tool_is_non_disclosing_and_never_dispatched(a2a_env):
     orch = _orchestrator()
     client = _client(orch)
     response = _send(
@@ -669,7 +651,7 @@ def test_unpublished_direct_tool_is_non_disclosing_and_never_dispatched(mock_env
     orch.execute_authorized_tool.assert_not_awaited()
 
 
-def test_stale_card_invocation_is_refused_after_withdrawal(mock_env):
+def test_stale_card_invocation_is_refused_after_withdrawal(a2a_env):
     orch = _orchestrator()
     client = _client(orch)
     record = _publish_for_client(client)
@@ -687,7 +669,7 @@ def test_stale_card_invocation_is_refused_after_withdrawal(mock_env):
     orch.execute_authorized_tool.assert_not_awaited()
 
 
-def test_published_direct_tool_uses_authorized_dispatch(mock_env):
+def test_published_direct_tool_uses_authorized_dispatch(a2a_env):
     orch = _orchestrator()
     client = _client(orch)
     _publish_for_client(client)
@@ -704,7 +686,7 @@ def test_published_direct_tool_uses_authorized_dispatch(mock_env):
     assert kwargs["channel"] == "a2a"
 
 
-def test_withdrawal_during_admitted_call_does_not_cancel_in_flight_work(mock_env):
+def test_withdrawal_during_admitted_call_does_not_cancel_in_flight_work(a2a_env):
     orch = _orchestrator()
     client = _client(orch)
     record = _publish_for_client(client)
@@ -726,7 +708,7 @@ def test_withdrawal_during_admitted_call_does_not_cancel_in_flight_work(mock_env
     assert not client.orch.a2a_publications.is_published("weather-1")
 
 
-def test_policy_admission_records_publication_snapshot(mock_env):
+def test_policy_admission_records_publication_snapshot(a2a_env):
     from orchestrator.a2a_publication_wiring import attach_publication_registry
 
     orch = _orchestrator()
@@ -739,7 +721,7 @@ def test_policy_admission_records_publication_snapshot(mock_env):
     assert admission.publication_id == record.publication_id
 
 
-def test_policy_denial_is_audited(mock_env):
+def test_policy_denial_is_audited(a2a_env):
     from orchestrator.a2a_publication_wiring import attach_publication_registry
 
     events = []
@@ -819,7 +801,7 @@ def _api_client(orch):
     return TestClient(app)
 
 
-def test_api_requires_authentication(mock_env):
+def test_api_requires_authentication(a2a_env):
     client = _api_client(_orchestrator())
     for method, url in (("get", "/api/a2a/publications"),
                         ("get", "/api/a2a/publications/catalog")):
@@ -827,7 +809,7 @@ def test_api_requires_authentication(mock_env):
         assert response.status_code == 401, url
 
 
-def test_api_full_owner_publish_inventory_withdraw_cycle(mock_env):
+def test_api_full_owner_publish_inventory_withdraw_cycle(a2a_env):
     orch = _orchestrator(owners={"weather-1": ALICE_EMAIL})
     client = _api_client(orch)
     headers = _auth()
@@ -878,7 +860,7 @@ def test_api_full_owner_publish_inventory_withdraw_cycle(mock_env):
     assert capabilities["weather-1"]["published"] is False
 
 
-def test_api_foreign_owner_cannot_manage_and_admin_can(mock_env):
+def test_api_foreign_owner_cannot_manage_and_admin_can(a2a_env):
     orch = _orchestrator(owners={"weather-1": ALICE_EMAIL})
     client = _api_client(orch)
     foreign = _auth(BOB, BOB_EMAIL)
@@ -914,7 +896,7 @@ def test_api_foreign_owner_cannot_manage_and_admin_can(mock_env):
     assert admin_withdraw.status_code == 200
 
 
-def test_api_intent_rejects_unregistered_audience(mock_env):
+def test_api_intent_rejects_unregistered_audience(a2a_env):
     orch = _orchestrator(owners={"weather-1": ALICE_EMAIL})
     client = _api_client(orch)
     response = client.post(
@@ -925,7 +907,7 @@ def test_api_intent_rejects_unregistered_audience(mock_env):
     assert response.status_code == 400
 
 
-def test_api_confirm_with_wrong_token_is_forbidden_and_stale_is_conflict(mock_env):
+def test_api_confirm_with_wrong_token_is_forbidden_and_stale_is_conflict(a2a_env):
     orch = _orchestrator(owners={"weather-1": ALICE_EMAIL})
     client = _api_client(orch)
     clock = _Clock()
@@ -955,7 +937,7 @@ def test_api_confirm_with_wrong_token_is_forbidden_and_stale_is_conflict(mock_en
     assert response.status_code == 409
 
 
-def test_api_withdraw_unknown_is_not_found_and_double_is_conflict(mock_env):
+def test_api_withdraw_unknown_is_not_found_and_double_is_conflict(a2a_env):
     orch = _orchestrator(owners={"weather-1": ALICE_EMAIL})
     client = _api_client(orch)
     headers = _auth()
@@ -976,7 +958,7 @@ def test_api_withdraw_unknown_is_not_found_and_double_is_conflict(mock_env):
     ).status_code == 409
 
 
-def test_api_disabled_without_registry_returns_conflict(mock_env):
+def test_api_disabled_without_registry_returns_conflict(a2a_env):
     from orchestrator.a2a_publication_api import publication_router
 
     app = FastAPI()
@@ -989,7 +971,7 @@ def test_api_disabled_without_registry_returns_conflict(mock_env):
     assert "not enabled" in response.json()["detail"]
 
 
-def test_api_orchestrator_unavailable_returns_503(mock_env):
+def test_api_orchestrator_unavailable_returns_503(a2a_env):
     from orchestrator.a2a_publication_api import publication_router
 
     app = FastAPI()
@@ -999,7 +981,7 @@ def test_api_orchestrator_unavailable_returns_503(mock_env):
     assert response.status_code == 503
 
 
-def test_api_success_has_one_lifecycle_event(mock_env):
+def test_api_success_has_one_lifecycle_event(a2a_env):
     orch = _orchestrator(owners={"weather-1": ALICE_EMAIL})
     client = _api_client(orch)
     recorded = []
@@ -1011,7 +993,7 @@ def test_api_success_has_one_lifecycle_event(mock_env):
     assert [event["action"] for event in recorded] == ["intent_created"]
 
 
-def test_publication_wiring_requires_durable_runtime(mock_env):
+def test_publication_wiring_requires_durable_runtime(a2a_env):
     from orchestrator.a2a_publication_wiring import attach_publication_registry
 
     orch = _orchestrator()
@@ -1020,7 +1002,7 @@ def test_publication_wiring_requires_durable_runtime(mock_env):
         attach_publication_registry(orch)
 
 
-def test_policy_fails_closed_when_catalog_and_registry_reads_fail(mock_env):
+def test_policy_fails_closed_when_catalog_and_registry_reads_fail(a2a_env):
     from orchestrator.a2a_publication_policy import A2APublicationPolicy
     from orchestrator.a2a_publication_wiring import attach_publication_registry
 
@@ -1045,7 +1027,7 @@ def test_policy_fails_closed_when_catalog_and_registry_reads_fail(mock_env):
     assert readable.published_records() == ()
 
 
-def test_policy_admits_framework_work_tools_without_publication(mock_env):
+def test_policy_admits_framework_work_tools_without_publication(a2a_env):
     from orchestrator.a2a_publication_wiring import attach_publication_registry
     from orchestrator.mcp_projection import FRAMEWORK_WORK_AGENT_ID
 
@@ -1056,7 +1038,7 @@ def test_policy_admits_framework_work_tools_without_publication(mock_env):
     assert admission.audiences == ()
 
 
-def test_policy_owner_management_and_lookup_failure(mock_env):
+def test_policy_owner_management_and_lookup_failure(a2a_env):
     from orchestrator.a2a_publication_policy import A2APublicationPolicy
     from orchestrator.a2a_publication_wiring import attach_publication_registry
 
@@ -1090,7 +1072,7 @@ def test_policy_owner_management_and_lookup_failure(mock_env):
         ).owner_of("weather-1")
 
 
-def test_wiring_resolves_plane_owner_and_store_and_reuses_registry(mock_env):
+def test_wiring_resolves_plane_owner_and_store_and_reuses_registry(a2a_env):
     from orchestrator.a2a_publication_policy import A2APublicationPolicy
     from orchestrator.a2a_publication_wiring import attach_publication_registry
 
@@ -1112,7 +1094,7 @@ def test_wiring_resolves_plane_owner_and_store_and_reuses_registry(mock_env):
     assert registry.available is True
 
 
-def test_wiring_supports_callable_owner_lookup(mock_env):
+def test_wiring_supports_callable_owner_lookup(a2a_env):
     from orchestrator.a2a_publication_wiring import attach_publication_registry
 
     orch = _orchestrator()
@@ -1121,7 +1103,7 @@ def test_wiring_supports_callable_owner_lookup(mock_env):
     assert orch.a2a_publication_policy.owner_of("weather-1") == "callable-owner@example.test"
 
 
-def test_card_skips_a_publication_whose_card_vanished(mock_env):
+def test_card_skips_a_publication_whose_card_vanished(a2a_env):
     from orchestrator.a2a_orchestrator_executor import build_orchestrator_a2a_card
     from orchestrator.a2a_publication_wiring import attach_publication_registry
 
@@ -1132,7 +1114,7 @@ def test_card_skips_a_publication_whose_card_vanished(mock_env):
     assert {skill.id for skill in build_orchestrator_a2a_card(orch).skills} == {"chat"}
 
 
-def test_api_audit_failure_does_not_block_lifecycle(mock_env, monkeypatch):
+def test_api_audit_failure_does_not_block_lifecycle(a2a_env, monkeypatch):
     orch = _orchestrator(owners={"weather-1": ALICE_EMAIL})
     client = _api_client(orch)
 
@@ -1150,7 +1132,7 @@ def test_api_audit_failure_does_not_block_lifecycle(mock_env, monkeypatch):
     assert response.status_code == 200
 
 
-def test_api_policy_fallback_and_owner_denial_paths(mock_env):
+def test_api_policy_fallback_and_owner_denial_paths(a2a_env):
     from orchestrator.a2a_publication_api import _policy
 
     orch = _orchestrator(owners={"weather-1": ALICE_EMAIL})
@@ -1164,7 +1146,7 @@ def test_api_policy_fallback_and_owner_denial_paths(mock_env):
     assert _policy(empty) is None
 
 
-def test_api_returns_service_unavailable_when_publication_state_is_degraded(mock_env):
+def test_api_returns_service_unavailable_when_publication_state_is_degraded(a2a_env):
     from orchestrator.a2a_publication_api import publication_router
     from shared.a2a_publication import A2APublicationRegistry
 
@@ -1201,7 +1183,7 @@ def test_registry_store_conflict_is_recoverable_without_corrupting_memory():
     assert store.state["version"] == 2
 
 
-def test_admin_invalid_capability_is_validation_error_not_owner_denial(mock_env):
+def test_admin_invalid_capability_is_validation_error_not_owner_denial(a2a_env):
     orch = _orchestrator(owners={"weather-1": ALICE_EMAIL})
     client = _api_client(orch)
     response = client.post(

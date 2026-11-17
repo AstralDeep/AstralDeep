@@ -14,7 +14,7 @@ from orchestrator.a2a_publication_api import publication_router
 from shared.a2a_publication import A2APublicationError, A2APublicationRegistry
 from tests.test_a2a_publication import (
     ALICE, ALICE_EMAIL, _Clock, _Store, _api_client, _auth, _orchestrator, _task,
-    mock_env as mock_env,
+    a2a_env as a2a_env,
 )
 
 
@@ -71,7 +71,7 @@ def test_all_active_capacity_consumes_denied_intent_without_evicting_consent():
     assert registry.active() == (original, replacement)
 
 
-def test_capacity_refusal_is_http_conflict_and_keeps_existing_publication(mock_env):
+def test_capacity_refusal_is_http_conflict_and_keeps_existing_publication(a2a_env):
     orch = _orchestrator(safe=("weather-1", "web-research-1"),
                          owners={"weather-1": ALICE_EMAIL, "web-research-1": ALICE_EMAIL})
     orch.a2a_publications._max_inventory = 1
@@ -131,7 +131,7 @@ class _ReadBarrier:
     ("call", "load"), ("call", "owner"), ("deny", "save"),
     ("card", "load"), ("card", "owner"),
 ])
-async def test_publication_requests_allow_loop_progress_during_blocking_read(mock_env, route, boundary):
+async def test_publication_requests_allow_loop_progress_during_blocking_read(a2a_env, route, boundary):
     orch = _orchestrator(owners={"weather-1": ALICE_EMAIL})
     store = _Store()
     registry = orch.a2a_publications

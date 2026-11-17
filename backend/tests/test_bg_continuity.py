@@ -6,7 +6,6 @@ chat-rail mirroring for background turns, and register_ui replay.
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import sys
 import uuid
@@ -41,8 +40,7 @@ def bg_flag():
 
 
 @pytest.fixture
-async def orch(bg_flag, monkeypatch):
-    monkeypatch.setenv("USE_MOCK_AUTH", "true")
+async def orch(bg_flag, server_identity):
     from orchestrator.orchestrator import Orchestrator
 
     try:
@@ -95,21 +93,14 @@ def _frames(ws, ftype):
     return [f for f in ws.task.outputs if f.get("type") == ftype]
 
 
-def _isolated_mock_identity():
-    user_id = f"bgc-auth-{uuid.uuid4().hex}"
-    claims = {
-        "sub": user_id,
-        "preferred_username": user_id,
-        "email": f"{user_id}@invalid.example",
-        "realm_access": {"roles": ["admin", "user"]},
-        "resource_access": {
-            "astral-frontend": {"roles": ["admin", "user"]}
-        },
-    }
-    payload = base64.b64encode(
-        json.dumps(claims, separators=(",", ":")).encode("utf-8")
-    ).decode("ascii").rstrip("=")
-    return user_id, f"mock.{payload}.signature"
+def _signed_identity(identity):
+    subject = f"bgc-auth-{uuid.uuid4().hex}"
+    token = identity.token(
+        subject,
+        roles=("admin", "user"),
+        email=f"{subject}@invalid.example",
+    )
+    return identity.owner(subject), token
 
 
 async def _await_manager_tasks(orch):
@@ -346,8 +337,8 @@ async def test_vws_narrative_and_done_reach_chat_socket(orch):
     await _cleanup(orch, user_id, [chat_id])
 
 
-async def test_register_ui_session_resume_replays_in_flight_task(orch):
-    user_id, token = _isolated_mock_identity()
+async def test_register_ui_session_resume_replays_in_flight_task(orch, server_identity):
+    user_id, token = _signed_identity(server_identity)
     await _cleanup(orch, user_id)
     chat_id = await asyncio.to_thread(orch.history.create_chat, user_id=user_id)
     hold = asyncio.Event()
@@ -391,8 +382,8 @@ async def test_register_ui_session_resume_replays_in_flight_task(orch):
     await _cleanup(orch, other_user, [other_chat])
 
 
-async def test_completed_unnotified_replay_marks_notified(orch):
-    user_id, token = _isolated_mock_identity()
+async def test_completed_unnotified_replay_marks_notified(orch, server_identity):
+    user_id, token = _signed_identity(server_identity)
     await _cleanup(orch, user_id)
     task_id = uuid.uuid4().hex[:8]
     await _create_completed_background_task(
@@ -442,7 +433,7 @@ async def test_completed_unnotified_replay_marks_notified(orch):
     await _cleanup(orch, user_id)
 
 
-async def test_flag_off_all_new_sends_absent(orch, signed_background):
+async def test_flag_off_all_new_sends_absent(orch, signed_background, server_identity):
     from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
     flags._flags["bg_continuity"] = False
     user_id = fixture_owner(f"bgc-{uuid.uuid4().hex[:8]}")
@@ -483,7 +474,7 @@ async def test_flag_off_all_new_sends_absent(orch, signed_background):
             if f.get("type") == "chat_status" and f.get("status") == "done"] == \
         [{"type": "chat_status", "status": "done", "message": ""}]
 
-    auth_user, token = _isolated_mock_identity()
+    auth_user, token = _signed_identity(server_identity)
     ws3 = _capture_socket(orch, auth_user)
     orch._registered_events[id(ws3)] = asyncio.Event()
     await _handle_ui_message_and_join_background(orch, ws3, json.dumps({

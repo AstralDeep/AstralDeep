@@ -8,6 +8,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import time
 from collections import Counter
 from dataclasses import dataclass
@@ -15,6 +16,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from orchestrator import vessel_executor
 from orchestrator.remote_mcp_pins import sanitize_annotations
+from shared import node_identity
 
 logger = logging.getLogger("Orchestrator.NodeMeshCalls")
 
@@ -22,6 +24,7 @@ READ_SCOPES = frozenset({"tools:read", "tools:search"})
 MAX_CONTENT = 65536
 QUALIFIER = "__"
 GRANT_AGENTS = frozenset({"kernel", "*"})
+PERSONAL_WITHDRAWN_AGENTS = frozenset({"remote-mcp-1"})
 
 
 class CallRefused(Exception):
@@ -136,12 +139,42 @@ def _text(value: Any) -> str:
     return text[:MAX_CONTENT]
 
 
+CATALOG_LIMIT = 64
+ALLOWLIST_ENV = "ASTRAL_NODE_PUBLISHED_TOOLS"
+
+
+def published_allowlist() -> Optional[frozenset]:
+    raw = os.environ.get(ALLOWLIST_ENV)
+    if raw is None or not raw.strip():
+        return None
+    return frozenset(name.strip() for name in raw.split(",") if name.strip())
+
+
 class OrchestratorCalls:
     def __init__(self, orch: Any):
         self._orch = orch
 
     def published_tools(self, owner_id: str) -> List[Dict[str, Any]]:
-        return [tool for _, tool in self._entries(owner_id)]
+        return self.published_selection(owner_id)[0]
+
+    def published_selection(self, owner_id: str) -> Tuple[List[Dict[str, Any]], int]:
+        allowed = published_allowlist()
+        entries = [
+            (agent_id, tool) for agent_id, tool in self._entries(owner_id)
+            if self._remotely_callable(owner_id, agent_id, tool["name"])
+            and (allowed is None or f"{agent_id}__{tool['name']}" in allowed)
+        ]
+        entries.sort(key=lambda entry: (entry[0], entry[1]["name"]))
+        kept = entries[:CATALOG_LIMIT]
+        return [tool for _, tool in kept], len(entries) - len(kept)
+
+    def _remotely_callable(self, owner_id: str, agent_id: str, name: str) -> bool:
+        try:
+            if self._orch._is_draft_agent(agent_id):
+                return False
+            return self._orch.tool_permissions.is_tool_allowed(owner_id, agent_id, name) is True
+        except Exception:  # noqa: BLE001
+            return False
 
     def catalog(self, owner_id: str) -> Dict[Tuple[str, str], CatalogTool]:
         return {
@@ -176,6 +209,8 @@ class OrchestratorCalls:
             from orchestrator.tool_visibility import eligible_tool_pairs
 
             first_party = frozenset(FIRST_PARTY_PUBLIC_AGENT_IDS)
+            if node_identity.is_personal():
+                first_party -= PERSONAL_WITHDRAWN_AGENTS
             for agent_id, skill in eligible_tool_pairs(self._orch, owner_id):
                 if agent_id not in first_party or agent_id not in local_agents:
                     continue
@@ -204,7 +239,8 @@ class OrchestratorCalls:
         from orchestrator.tool_visibility import eligible_tool_pairs
 
         pairs: List[Tuple[str, Any]] = await asyncio.to_thread(eligible_tool_pairs, self._orch, owner_id)
-        matches = [(agent, skill) for agent, skill in pairs if _matches(tool, agent, skill.id)]
+        withdrawn = PERSONAL_WITHDRAWN_AGENTS if node_identity.is_personal() else frozenset()
+        matches = [(agent, skill) for agent, skill in pairs if agent not in withdrawn and _matches(tool, agent, skill.id)]
         if not matches:
             raise CallRefused("node.tool_unknown")
         if len(matches) > 1:
@@ -218,7 +254,6 @@ class OrchestratorCalls:
         from orchestrator.chain_authority import AuthoritySkip
         from orchestrator import node_mesh_admission
         from orchestrator.node_mesh import NodeMeshError
-        from shared import node_identity
 
         if node_identity.is_personal():
             bound = node_mesh_admission.current_admission()

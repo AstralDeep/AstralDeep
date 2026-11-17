@@ -58,7 +58,7 @@ services:
 
 DEV_ENV = {
     "ASTRAL_ENV": "development",
-    "USE_MOCK_AUTH": "true",
+    "ASTRAL_NODE_PROFILE": "personal",
     "DB_PASSWORD": "",
     "DB_USER": "astral",
     "DB_NAME": "astraldeep",
@@ -72,7 +72,6 @@ DEV_ENV = {
 
 PRODUCTION_ENV = {
     "ASTRAL_ENV": "production",
-    "USE_MOCK_AUTH": "false",
     "DB_PASSWORD": "",
     "WEB_SESSION_ENC_KEY": "",
     "CREDENTIAL_ENCRYPTION_KEY": "",
@@ -497,7 +496,6 @@ def test_production_with_missing_secrets_is_repair_and_redacted(tmp_path):
     env.update(
         {
             "ASTRAL_ENV": "production",
-            "USE_MOCK_AUTH": "false",
             "WEB_SESSION_ENC_KEY": "",
             "AUDIT_HMAC_SECRET": "change-me",
             "KEYCLOAK_AUTHORITY": "",
@@ -584,9 +582,9 @@ def test_keycloak_discovery_failures_are_repair(tmp_path):
     assert "services.keycloak-discovery-invalid" in problem_codes(report)
 
 
-def test_mock_off_without_authority_is_problem_even_in_development(tmp_path):
+def test_institution_profile_without_authority_is_problem_in_development(tmp_path):
     env = dict(DEV_ENV)
-    env["USE_MOCK_AUTH"] = "false"
+    env["ASTRAL_NODE_PROFILE"] = "institution"
     env.pop("KEYCLOAK_AUTHORITY", None)
     root = make_checkout(tmp_path, env=env)
     report = collect(root, env=env, runner=running_services()[0])
@@ -594,7 +592,29 @@ def test_mock_off_without_authority_is_problem_even_in_development(tmp_path):
     assert report.outcome == "repair"
 
 
-def test_dev_mock_auth_skips_keycloak_probe(tmp_path):
+def test_development_without_profile_or_authority_needs_no_keycloak(tmp_path):
+    env = dict(DEV_ENV)
+    env.pop("ASTRAL_NODE_PROFILE")
+    env.pop("KEYCLOAK_AUTHORITY", None)
+    root = make_checkout(tmp_path, env=env)
+    report = collect(root, env=env, runner=running_services()[0])
+    assert "services.keycloak-unconfigured" not in problem_codes(report)
+
+
+def test_shipped_env_example_reports_no_keycloak_problem(tmp_path):
+    values = {}
+    for line in (Path(__file__).resolve().parents[2] / ".env.example").read_text(encoding="utf-8").splitlines():
+        key, separator, value = line.partition("=")
+        if separator and not line.lstrip().startswith("#"):
+            values[key.strip()] = value.split(" #")[0].strip()
+    assert values.get("ASTRAL_ENV") == "development"
+    assert not values.get("KEYCLOAK_AUTHORITY")
+    root = make_checkout(tmp_path, env=values)
+    report = collect(root, env=values, runner=running_services()[0])
+    assert "services.keycloak-unconfigured" not in problem_codes(report)
+
+
+def test_personal_profile_skips_keycloak_probe(tmp_path):
     root = make_checkout(tmp_path, env=DEV_ENV)
     http = FakeHttp(
         {

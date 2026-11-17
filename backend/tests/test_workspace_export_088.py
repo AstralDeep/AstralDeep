@@ -384,7 +384,6 @@ async def test_original_iam_rechecked_after_render_without_profile_write(host, m
     from jose import JWTError
     from orchestrator import web_auth
     monkeypatch.setattr(auth, "get_web_or_bearer_user_payload", REAL_AUTHENTICATE)
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
     monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-frontend")
     monkeypatch.setattr(auth, "_get_keycloak_config", lambda: ("https://iam.example/realms/test", "astral-frontend", ""))
     monkeypatch.setattr("shared.jwks_cache.get_jwks", AsyncMock(return_value={"keys": []}))

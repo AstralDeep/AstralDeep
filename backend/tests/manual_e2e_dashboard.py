@@ -1,10 +1,11 @@
 """Manual E2E script, not collected by pytest: drives the live orchestrator over its /ws
 endpoint with a real dev LLM and checks that a chat query produces a designed
-dashboard on the canvas.
+dashboard on the canvas. Set TEST_UI_TOKEN to an access token the orchestrator accepts.
 """
 
 import asyncio
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -16,14 +17,18 @@ import websockets
 QUERY = sys.argv[1] if len(sys.argv) > 1 else \
     "generate a rich dashboard for a fake dog walking business"
 DEADLINE_S = 420
+ACCESS_TOKEN = os.getenv("TEST_UI_TOKEN", "")
 
 
 async def main():
+    if not ACCESS_TOKEN:
+        print("Set TEST_UI_TOKEN to an access token for this orchestrator.")
+        return 2
     summary = {"upserts": [], "canvas_renders": [], "chat_renders": 0, "steps": []}
     last_canvas_html = ""
     async with websockets.connect("ws://localhost:8001/ws", max_size=32 * 1024 * 1024) as ws:
         await ws.send(json.dumps({
-            "type": "register_ui", "token": "dev-token",
+            "type": "register_ui", "token": ACCESS_TOKEN,
             "capabilities": ["render", "stream"], "session_id": f"e2e-{int(time.time())}",
             "device": {"device_type": "browser", "screen_width": 1920, "screen_height": 1080,
                        "supports_charts": True, "supports_tables": True, "supports_images": True},

@@ -5,37 +5,39 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: install-personal-node.sh --issuer URL --client-id ID [options]
+Usage: install-personal-node.sh [options]
 
-  --issuer URL         Keycloak realm URL the node trusts (required)
-  --client-id ID       OIDC client id your Astral apps sign in with (required)
   --home DIR           Node home (default: $ASTRAL_NODE_HOME or ~/.astral-node)
-  --owner-subject SUB  Bind the node to this Keycloak subject now instead of at first pairing
   --public-url URL     Origin your devices use to reach the node
   --database-url URL   Database URL (default: SQLite in the node data directory)
   -h, --help           Show this help
+
+The node needs no sign-in. Its owner is the mesh you pair it with.
 USAGE
 }
 
-issuer="" client_id="" owner_subject="" public_url="" database_url=""
+removed_option() {
+  case "$1" in
+    --issuer|--issuer=*|--client-id|--client-id=*)
+      echo "${1%%=*} was removed. A personal node needs no Keycloak issuer or client id. Pair it with your mesh instead (see the next steps this script prints)." >&2 ;;
+    --owner-subject|--owner-subject=*)
+      echo "${1%%=*} was removed. A personal node takes its owner from the mesh you pair it with, not from a sign-in subject." >&2 ;;
+    *) return 1 ;;
+  esac
+}
+
+public_url="" database_url=""
 home="${ASTRAL_NODE_HOME:-$HOME/.astral-node}"
 while [ $# -gt 0 ]; do
   case "$1" in
-    --issuer) issuer="${2:-}"; shift 2 ;;
-    --client-id) client_id="${2:-}"; shift 2 ;;
     --home) home="${2:-}"; shift 2 ;;
-    --owner-subject) owner_subject="${2:-}"; shift 2 ;;
     --public-url) public_url="${2:-}"; shift 2 ;;
     --database-url) database_url="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
-    *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
+    *) if removed_option "$1"; then exit 2; fi
+       echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
-if [ -z "$issuer" ] || [ -z "$client_id" ]; then
-  echo "--issuer and --client-id are required" >&2
-  exit 2
-fi
-issuer="${issuer%/}"
 
 umask 077
 data_dir="$home/data"
@@ -56,23 +58,25 @@ add_value() {
 }
 
 added=()
+legacy_owner=""
+if [ -f "$env_file" ]; then
+  owner_line="$(grep '^ASTRAL_NODE_OWNER=' "$env_file" | head -n 1 || true)"
+  case "${owner_line#ASTRAL_NODE_OWNER=}" in
+    "" | sha256:????????????????????????????????????????????????????????????????) ;;
+    mesh.????????????????????????????????????????????????????????????????) ;;
+    *) legacy_owner=1 ;;
+  esac
+fi
 touch "$env_file"
 chmod 600 "$env_file"
 add_value ASTRAL_NODE_PROFILE personal
 add_value ASTRAL_NODE_DATA_DIR "$data_dir"
-add_value KEYCLOAK_AUTHORITY "$issuer"
-add_value KEYCLOAK_CLIENT_ID "$client_id"
 add_value WEB_SESSION_ENC_KEY "$(random_fernet)"
 add_value CREDENTIAL_ENCRYPTION_KEY "$(random_fernet)"
 add_value AUDIT_HMAC_SECRET "$(random_hex)"
 add_value AGENT_API_KEY "$(random_hex)"
 [ -n "$public_url" ] && add_value PUBLIC_BASE_URL "${public_url%/}"
 [ -n "$database_url" ] && add_value DATABASE_URL "$database_url"
-if [ -n "$owner_subject" ]; then
-  issuer_hash="$(printf '%s' "$issuer" | openssl dgst -sha256 -hex | sed 's/^.* //' | cut -c1-16)"
-  add_value ASTRAL_NODE_OWNER "oidc.$issuer_hash.$owner_subject"
-fi
-
 key_state="kept"
 if [ ! -f "$key_file" ]; then
   if openssl genpkey -algorithm ED25519 -out "$key_file" 2>/dev/null; then
@@ -92,14 +96,17 @@ if [ "${#added[@]}" -gt 0 ]; then
 else
   echo "Added settings:     none, everything was already present"
 fi
+if [ -n "$legacy_owner" ]; then
+  echo "Legacy owner:       $env_file holds an ASTRAL_NODE_OWNER from the sign-in era. It is left as it is. The old sign-in owner will be retired when the node starts, and your data stays where it is."
+fi
 echo
 echo "Next steps"
-echo "  1. Check the issuer, client id and database settings in $env_file."
 if ! has_key DATABASE_URL; then
-  echo "  2. The node stores its data in SQLite at $data_dir/plane.sqlite3. Add DATABASE_URL to $env_file to use PostgreSQL instead."
+  echo "  1. The node stores its data in SQLite at $data_dir/plane.sqlite3. Add DATABASE_URL to $env_file to use PostgreSQL instead."
 else
-  echo "  2. DATABASE_URL is set."
+  echo "  1. DATABASE_URL is set."
 fi
-echo "  3. Start the orchestrator with that file, for example: docker run --env-file $env_file -v $data_dir:$data_dir -p 8001:8001 <image>"
-echo "  4. Sign in from your app, then ask the node for a pairing code with POST /api/node/pairing."
+echo "  2. Start the orchestrator with that file, for example: docker run --env-file $env_file -v $data_dir:$data_dir -p 8001:8001 <image>"
+echo "  3. Pair it from the same machine. Read the secret in $data_dir/pairing-secret and call POST /api/node/mesh/offer on 127.0.0.1:8001 with it in the Astral-Pairing-Secret header."
+echo "  4. Scan the code or payload it returns with your Mac or iPhone app and approve. The mesh you pair becomes the node's owner."
 echo "  5. Keep $data_dir and $env_file private and back them up. The signing key is the node's identity."

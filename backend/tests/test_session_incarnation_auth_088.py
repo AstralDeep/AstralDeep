@@ -36,7 +36,6 @@ def web_session(incarnation=A):
 @pytest.fixture(autouse=True)
 def cache(monkeypatch):
     monkeypatch.setattr(web_auth, "_SESSIONS", {})
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
     monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://issuer.invalid")
     monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "web")
 

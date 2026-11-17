@@ -35,7 +35,6 @@ def require_isolated_target(qualification_id: str, environment: dict[str, str]) 
             or not target.password or target.fragment
             or options != {"options": [f"-csearch_path=astralplane_fixture_{qualification_id},pg_catalog"]}
             or environment.get("ASTRAL_ENV") != "production"
-            or environment.get("USE_MOCK_AUTH", "false").lower() != "false"
             or not environment.get("CREDENTIAL_ENCRYPTION_KEY")
             or not environment.get("AUDIT_HMAC_SECRET")):
         raise ValueError("explicit isolated production-posture target and rehearsal keys required")

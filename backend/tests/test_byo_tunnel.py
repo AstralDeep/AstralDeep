@@ -6,7 +6,6 @@ host-only delivery, and soft delete.
 from __future__ import annotations
 
 import asyncio
-import base64
 from dataclasses import dataclass
 import json
 import os
@@ -29,21 +28,14 @@ async def _t(fn, *a, **k):
     return await asyncio.to_thread(fn, *a, **k)
 
 
-def _isolated_mock_identity(prefix: str) -> tuple[str, str]:
-    user_id = f"{prefix}-{uuid.uuid4().hex}"
-    claims = {
-        "sub": user_id,
-        "preferred_username": user_id,
-        "email": f"{user_id}@invalid.example",
-        "realm_access": {"roles": ["admin", "user"]},
-        "resource_access": {
-            "astral-frontend": {"roles": ["admin", "user"]}
-        },
-    }
-    payload = base64.b64encode(
-        json.dumps(claims, separators=(",", ":")).encode("utf-8")
-    ).decode("ascii").rstrip("=")
-    return user_id, f"mock.{payload}.signature"
+def _signed_identity(identity, prefix: str) -> tuple[str, str]:
+    subject = f"{prefix}-{uuid.uuid4().hex}"
+    token = identity.token(
+        subject,
+        roles=("admin", "user"),
+        email=f"{subject}@invalid.example",
+    )
+    return identity.owner(subject), token
 
 
 class FakeUI:
@@ -283,13 +275,12 @@ async def test_bundle_is_never_pushed_to_a_browser_tab(orch, tunnel_ids):
     assert len(_code_frames(host)) == 1
 
 
-async def test_register_ui_marks_only_a_declared_host(monkeypatch, tunnel_ids):
+async def test_register_ui_marks_only_a_declared_host(monkeypatch, tunnel_ids, server_identity):
     import asyncio as _asyncio
     import uuid as _uuid
-    monkeypatch.setenv("USE_MOCK_AUTH", "true")
     from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
     o = await _t(Orchestrator)
-    user_id, token = _isolated_mock_identity("pytest-byo-host")
+    user_id, token = _signed_identity(server_identity, "pytest-byo-host")
 
     async def _register(**extra):
         ws = VirtualWebSocket(BackgroundTask(task_id=_uuid.uuid4().hex, chat_id="",
