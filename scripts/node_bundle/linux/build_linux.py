@@ -22,6 +22,7 @@ import install_kernel_binding as binding  # noqa: E402
 PLATFORMS = {"linux-aarch64": "linux/arm64", "linux-x86_64": "linux/amd64"}
 DOCKERFILE = HERE / "Dockerfile"
 SOURCE_ENV_PREFIX = "NODE_BUNDLE_SOURCE_"
+BUILD_ROOT = "/astral-node-build"
 KERNEL_ARTIFACTS_ENV = "ASTRAL_KERNEL_ARTIFACTS"
 RECEIPT_NAME = "node-pack-build.json"
 ARG_PATTERN = re.compile(r"^ARG (\w+)=(\S+)$", re.MULTILINE)
@@ -81,7 +82,7 @@ def source_mounts(environment: dict[str, str]) -> tuple[list[str], list[str]]:
     mounts, variables = [], []
     for name, value in sorted(environment.items()):
         if name.startswith(SOURCE_ENV_PREFIX) and value:
-            target = f"/sources/{name[len(SOURCE_ENV_PREFIX):].lower()}"
+            target = f"{BUILD_ROOT}/sources/{name[len(SOURCE_ENV_PREFIX):].lower()}"
             mounts += ["-v", f"{Path(value).resolve()}:{target}:ro"]
             variables += ["-e", f"{name}={target}"]
     return mounts, variables
@@ -98,10 +99,11 @@ def assemble_in_container(platform: str, tag: str, names: str, source: Path, ker
     mounts, variables = source_mounts(environment)
     docker(
         "run", "--rm", "--name", f"{names}build-{platform}", "--platform", PLATFORMS[platform],
-        "-v", f"{source}:/src:ro", "-v", f"{kernel_dir.resolve()}:/kernel:ro", "-v", f"{out.resolve()}:/out",
+        "-v", f"{source}:{BUILD_ROOT}/src:ro", "-v", f"{kernel_dir.resolve()}:{BUILD_ROOT}/kernel:ro",
+        "-v", f"{out.resolve()}:{BUILD_ROOT}/out",
         *mounts, *variables, tag,
-        "python3", "/src/scripts/node_bundle/assemble.py", "--platform", platform, "--out", "/out",
-        "--work", "/work", "--kernel-dir", "/kernel",
+        "python3", f"{BUILD_ROOT}/src/scripts/node_bundle/assemble.py", "--platform", platform,
+        "--out", f"{BUILD_ROOT}/out", "--work", f"{BUILD_ROOT}/work", "--kernel-dir", f"{BUILD_ROOT}/kernel",
         timeout=timeout,
     )
 

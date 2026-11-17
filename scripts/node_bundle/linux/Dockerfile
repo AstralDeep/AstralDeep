@@ -17,4 +17,3 @@ RUN rm -f /etc/apt/sources.list /etc/apt/sources.list.d/debian.sources \
         libmagic1=1:5.44-3 libmagic-mgc=1:5.44-3 poppler-utils=22.12.0-2+deb12u3 \
     && rm -rf /var/lib/apt/lists/* \
     && git config --system --add safe.directory '*'
-WORKDIR /work

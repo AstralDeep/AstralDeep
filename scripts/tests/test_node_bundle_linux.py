@@ -381,8 +381,8 @@ def test_the_builder_refuses_an_unknown_platform_and_a_dirty_checkout(tmp_path):
 
 def test_source_overrides_are_mounted_read_only_and_renamed_for_the_container(tmp_path):
     mounts, variables = bl.source_mounts({"NODE_BUNDLE_SOURCE_LETS": str(tmp_path), "OTHER": "x", "NODE_BUNDLE_SOURCE_EMPTY": ""})
-    assert mounts == ["-v", f"{tmp_path.resolve()}:/sources/lets:ro"]
-    assert variables == ["-e", "NODE_BUNDLE_SOURCE_LETS=/sources/lets"]
+    assert mounts == ["-v", f"{tmp_path.resolve()}:{bl.BUILD_ROOT}/sources/lets:ro"]
+    assert variables == ["-e", f"NODE_BUNDLE_SOURCE_LETS={bl.BUILD_ROOT}/sources/lets"]
 
 
 def test_the_relocation_script_refuses_a_clean_image_that_has_python_on_its_path():
@@ -582,3 +582,7 @@ def test_a_library_missing_from_the_image_is_left_for_the_audit_to_refuse(monkey
     natives.link_system_needs(stage, stage / "native", [library_dir])
     assert calls == []
     assert elfaudit.audit_tree(stage, (2, 36))[0]
+
+
+def test_container_build_paths_are_distinctive_enough_for_the_leak_scan_not_to_match_source_text():
+    assert bl.BUILD_ROOT == "/astral-node-build"
