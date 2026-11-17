@@ -43,3 +43,16 @@ Search used: `AstralDeep/(AstralVessel|AstralPlane|LETS-demo|mcp_server_examples
 | AstralProjection | One refused-input fixture, `tests/migration/test_materialize_extraction.py` |
 | LETS | History only: `CHANGELOG.md`, `results/`, and the pinned benchmark anchors under `benchmarks/nsdi_strengthening/` |
 | Site | History and bounty records: `data/config.json`, `data/awards.json`, `state/`, the bounty actions and their tests, and one commit-pinned link in `docs/INTRODUCTION.md` |
+
+## Archive check
+
+Date: 2026-11-17. Read-only checks with `gh repo view` and `gh issue list`. Nothing was unarchived, edited or deleted.
+
+| Repository | Archived | Open issues | Description pointer | README pointer |
+|---|---|---|---|---|
+| AstralVessel | Yes | 0 | Moved to AstralDeep (`vessel/`) | Yes |
+| AstralPlane | Yes | 0 | Moved to AstralDeep (`plane/`) | Yes |
+| LETS-demo | Yes | 0 | Moved to AstralDeep/LETS (`demo/`) | Yes |
+| mcp_server_examples | Yes | 0 | None, the description is empty | Yes, points at `examples/` |
+
+The mcp_server_examples description is still empty. The README carries the pointer. Setting a description needs an unarchive, so it was left alone.
