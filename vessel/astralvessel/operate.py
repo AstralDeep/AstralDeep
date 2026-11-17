@@ -20,8 +20,8 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from . import caller as callers
-from . import conformance, node
-from .deployment import AGENT_ID, Deployment, load_deployment
+from . import conformance, node, process_ops
+from .deployment import AGENT_ID, ContainerData, Deployment, load_deployment, runtime_of
 from .manifest import load_package
 from .probes import run_probes
 from .stack import Stack
@@ -210,7 +210,8 @@ def _relative(path: Path, folder: Path) -> str:
         return str(path.resolve())
 
 
-def write_deployment(folder: Path, answers: Answers, *, example: bool) -> Path:
+def write_deployment(folder: Path, answers: Answers, *, example: bool, process: bool = False,
+                     bundle: str | None = None, bundle_sha256: str | None = None) -> Path:
     deployment, env = folder / "deployment.toml", folder / ".env"
     if env.exists():
         raise SystemExit(f"{env} exists but deployment.toml does not; move the old .env away first")
@@ -224,14 +225,26 @@ def write_deployment(folder: Path, answers: Answers, *, example: bool) -> Path:
         shutil.copytree(agents[0], folder / "agents" / "field-guide")
         shutil.copytree(mounts[(0, "/data")], folder / "data")
         agents[0], mounts[(0, "/data")] = folder / "agents" / "field-guide", str(folder / "data")
-    subnet = pick_subnet()
-    lines = ["# Written by astralvessel up. Edit it and run astralvessel up again to apply a change.", "",
-             "[node]", f"project = {_toml(pick_project(folder))}"]
-    if answers.image:
-        lines.append(f"image = {_toml(answers.image)}")
-    if answers.port:
-        lines.append(f"port = {answers.port}")
-    lines += [f"front_subnet = {_toml(str(subnet))}", f"front_address = {_toml(str(subnet.network_address + 10))}", ""]
+    lines = ["# Written by astralvessel up. Edit it and run astralvessel up again to apply a change.", ""]
+    if process:
+        lines += ["[runtime]", 'mode = "process"']
+        if bundle:
+            lines.append(f"bundle = {_toml(bundle)}")
+        if bundle_sha256:
+            lines.append(f"bundle_sha256 = {_toml(bundle_sha256)}")
+        lines += ["", "[node]", f"project = {_toml(_slug(folder.name))}"]
+        if answers.port:
+            lines.append(f"port = {answers.port}")
+        lines.append("")
+    else:
+        subnet = pick_subnet()
+        lines += ["[node]", f"project = {_toml(pick_project(folder))}"]
+        if answers.image:
+            lines.append(f"image = {_toml(answers.image)}")
+        if answers.port:
+            lines.append(f"port = {answers.port}")
+        lines += [f"front_subnet = {_toml(str(subnet))}", f"front_address = {_toml(str(subnet.network_address + 10))}",
+                  ""]
     if answers.upstream_url:
         key_ref = answers.api_key if answers.api_key.startswith("env:") else f"env:{KEY_VARIABLE}"
         lines += ["[egress]", f"upstream_url = {_toml(answers.upstream_url)}", f"upstream_key = {_toml(key_ref)}", ""]
@@ -273,10 +286,10 @@ def write_deployment(folder: Path, answers: Answers, *, example: bool) -> Path:
     return deployment
 
 
-def ignore_private(folder: Path) -> None:
+def ignore_private(folder: Path, extra: tuple[str, ...] = ()) -> None:
     gitignore = folder / ".gitignore"
     existing = gitignore.read_text() if gitignore.exists() else ""
-    wanted = (".env", ".generated/", "compose.generated.yml", callers.KEY_FILE)
+    wanted = (".env", ".generated/", "compose.generated.yml", callers.KEY_FILE, *extra)
     needed = [line for line in wanted if line not in existing.splitlines()]
     if needed:
         lead = "\n" if existing and not existing.endswith("\n") else ""
@@ -388,16 +401,48 @@ def node_checks(stack: Stack, deployment: Deployment) -> list[str]:
     return failed
 
 
+def mode_for(stack: Stack, deployment: Deployment) -> str:
+    # An older file with no [runtime] and a Compose file beside it is a container deployment; nothing else is.
+    if deployment.runtime is not None:
+        return deployment.runtime.mode
+    return "container" if stack.compose_file.exists() else "process"
+
+
+def _target(args: argparse.Namespace) -> tuple[Stack, Deployment, str]:
+    stack = Stack.at(args.deployment or "deployment.toml")
+    if not stack.deployment.exists():
+        raise SystemExit(f"{stack.deployment} does not exist; run astralvessel up first")
+    deployment = load(stack.deployment)
+    mode = mode_for(stack, deployment)
+    if mode == "container":
+        stack.require_compose()
+    return stack, deployment, mode
+
+
 def up(args: argparse.Namespace) -> None:
     stack = Stack.at(args.deployment or "deployment.toml")
+    setup = (args.example, args.agent, args.image, args.port, args.upstream_url, args.api_key, args.mount)
     if not stack.deployment.exists():
         if args.deployment:
             raise SystemExit(f"{stack.deployment} does not exist")
+        if args.image:
+            raise SystemExit("--image belongs to container mode; add [runtime] mode = \"container\" to a "
+                             "deployment file to run in Docker")
         answers = gather(args, interactive=sys.stdin.isatty() and sys.stdout.isatty())
-        write_deployment(stack.deployment.parent, answers, example=args.example)
-    elif any((args.example, args.agent, args.image, args.port, args.upstream_url, args.api_key, args.mount)):
+        write_deployment(stack.deployment.parent, answers, example=args.example, process=True,
+                         bundle=args.bundle, bundle_sha256=args.bundle_sha256)
+    elif any(setup):
         raise SystemExit(f"{stack.deployment} exists; edit it instead of passing setup options")
+    existing = load(stack.deployment)
+    try:
+        section = runtime_of(existing)
+    except ContainerData as exc:
+        raise SystemExit(f"{exc.code}: {exc}") from None
     ignore_private(stack.deployment.parent)
+    if section.mode == "process":
+        ignore_private(stack.deployment.parent, (".runtime/",))
+        process_ops.up(args, stack, existing)
+        return
     deployment, _ = write_compose(stack)
     _require_env(stack, deployment)
     require_image(deployment)
@@ -414,10 +459,11 @@ def up(args: argparse.Namespace) -> None:
 
 
 def check(args: argparse.Namespace) -> None:
-    stack = Stack.at(args.deployment or "deployment.toml")
-    stack.require_compose()
+    stack, deployment, mode = _target(args)
+    if mode == "process":
+        process_ops.check(args, stack, deployment)
+        return
     stack.load_env()
-    deployment = load(stack.deployment)
     _require_env(stack, deployment)
     report = run_probes(stack, deployment, os.environ.get("VESSEL_SANDBOX_TOKEN", ""))
     failed = [] if args.isolation_only else node_checks(stack, deployment)
@@ -427,17 +473,17 @@ def check(args: argparse.Namespace) -> None:
 
 
 def down(args: argparse.Namespace) -> None:
-    stack = Stack.at(args.deployment or "deployment.toml")
-    stack.require_compose()
+    stack, deployment, mode = _target(args)
+    if mode == "process":
+        process_ops.down(args, stack, deployment)
+        return
     stack.load_env()
-    _require_env(stack, load(stack.deployment))
+    _require_env(stack, deployment)
     stack.compose("down", *(["-v"] if args.volumes else []))
 
 
 def _node_of(args: argparse.Namespace) -> Deployment:
-    stack = Stack.at(args.deployment or "deployment.toml")
-    stack.require_compose()
-    return load(stack.deployment)
+    return _target(args)[1]
 
 
 OFFER_SCRIPT = r'''
@@ -471,8 +517,10 @@ WAITING = {"executor.waiting_for_node": "the node has not joined the owner's mes
 
 
 def pair_executor(args: argparse.Namespace) -> None:
-    stack = Stack.at(args.deployment or "deployment.toml")
-    stack.require_compose()
+    stack, deployment, mode = _target(args)
+    if mode == "process":
+        process_ops.pair_executor(deployment, process_ops.Layout(stack.deployment.parent), WAITING)
+        return
     stack.load_env()
     done = stack.python("executor", EXECUTOR_OFFER, timeout=60)
     try:
@@ -505,11 +553,12 @@ def pair(args: argparse.Namespace) -> None:
     if args.executor:
         pair_executor(args)
         return
-    stack = Stack.at(args.deployment or "deployment.toml")
-    stack.require_compose()
+    stack, deployment, mode = _target(args)
     stack.load_env()
-    deployment = load(stack.deployment)
-    reply = node_offer(stack)
+    if mode == "process":
+        reply = process_ops.node_offer(deployment, process_ops.Layout(stack.deployment.parent))
+    else:
+        reply = node_offer(stack)
     if reply.get("status") != 200:
         raise SystemExit(node.pairing_refusal(reply.get("status", 0), reply))
     try:
@@ -553,15 +602,15 @@ def chat(args: argparse.Namespace) -> None:
 
 
 def conformance_suite(args: argparse.Namespace) -> None:
-    stack = Stack.at(args.deployment or "deployment.toml")
-    stack.require_compose()
+    stack, deployment, mode = _target(args)
     stack.load_env()
-    deployment = load(stack.deployment)
     try:
         caller = callers.load_caller(deployment.path.parent, args.ticket_file)
     except callers.CallerError as exc:
         raise SystemExit(str(exc)) from None
-    failed = conformance.run(deployment, caller, lambda: node_offer(stack))
+    offer = (lambda: process_ops.node_offer(deployment, process_ops.Layout(stack.deployment.parent))) \
+        if mode == "process" else (lambda: node_offer(stack))
+    failed = conformance.run(deployment, caller, offer)
     print(f"{len(conformance.CHECKS) - len(failed)} passed, {len(failed)} failed")
     if failed:
         raise SystemExit(1)

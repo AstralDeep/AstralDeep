@@ -303,3 +303,29 @@ def test_runtime_foreground_start_and_stop(tmp_path, package_dir, bundle):
         runtime.stop()
     assert calls == [] and runtime.supervisor.children == {}
     assert Path(runtime.layout.logs).is_dir()
+
+
+def run_bootstrap(tmp_path, *args, env_text=""):
+    (tmp_path / "run.py").write_text(rt.RUN_PY)
+    env_file = tmp_path / "role.env"
+    env_file.write_text(env_text)
+    return subprocess.run([sys.executable, "-I", "-B", str(tmp_path / "run.py"), *args, "--env-file", str(env_file)],
+                          capture_output=True, text=True, env={"PATH": os.environ["PATH"]})
+
+
+def test_the_bootstrap_loads_the_env_file_then_hands_the_node_to_the_pack_launcher(tmp_path):
+    pack = tmp_path / "pack"
+    (pack / "launcher").mkdir(parents=True)
+    out = tmp_path / "seen.json"
+    (pack / "launcher" / "astral_node_launch.py").write_text(
+        "import json, os, sys\n"
+        f"open({str(out)!r}, 'w').write(json.dumps([sys.argv[1:], os.environ.get('SECRET_VALUE')]))\n")
+    done = run_bootstrap(tmp_path, "node", env_text=f"VESSEL_PACK_ROOT={pack}\nSECRET_VALUE='abc'\n")
+    assert done.returncode == 0, done.stderr
+    argv, secret = json.loads(out.read_text())
+    assert argv[0] == "--env-file" and secret == "abc"
+
+
+def test_the_bootstrap_refuses_an_unknown_role(tmp_path):
+    done = run_bootstrap(tmp_path, "shell")
+    assert done.returncode != 0 and "usage" in done.stderr

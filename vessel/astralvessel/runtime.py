@@ -49,18 +49,19 @@ def load(path):
 
 
 def main(argv):
-    if len(argv) < 2 or argv[1] not in ROLES:
-        raise SystemExit("usage: run.py node|executor|sandbox|egress [--env-file FILE] [role arguments]")
-    role, rest = argv[1], argv[2:]
+    role = argv[1].split("-", 1)[0] if len(argv) > 1 else ""
+    if role not in ROLES:
+        raise SystemExit("usage: run.py node|executor|sandbox-NAME|egress --env-file FILE [role arguments]")
+    rest = argv[2:]
     sys.dont_write_bytecode = True
     sys.path.insert(0, HERE)
+    if "--env-file" in rest:
+        load(rest[rest.index("--env-file") + 1])
     if role == "node":
         launcher = os.path.join(os.environ["VESSEL_PACK_ROOT"], "launcher", "astral_node_launch.py")
         sys.argv = [launcher, *rest]
         runpy.run_path(launcher, run_name="__main__")
         return
-    if rest[:1] == ["--env-file"]:
-        load(rest[1])
     if role == "egress":
         runpy.run_module("egress.main", run_name="__main__")
         return
@@ -108,6 +109,20 @@ def dependency_problems(bundle: InstalledBundle, required: list[Requirement], ro
         elif not need.specifier.contains(have[name], prereleases=True):
             problems.append(f"{role} needs {need.name}{need.specifier}, and the pack has {have[name]}")
     return problems
+
+
+def ports_of(deployment: Deployment) -> dict[str, int]:
+    sandboxes = {f"sandbox-{a}": SANDBOX_FIRST_PORT + i for i, a in enumerate(deployment.agents)}
+    return {"node": deployment.node.port, "executor": EXECUTOR_PORT, "egress": EGRESS_PORT, **sandboxes}
+
+
+def roles_of(deployment: Deployment) -> list[str]:
+    roles = ["node"]
+    if deployment.egress.upstream_url is not None:
+        roles.append("egress")
+    if deployment.agents:
+        roles += [f"sandbox-{a}" for a in deployment.agents] + ["executor"]
+    return roles
 
 
 @dataclass
@@ -164,8 +179,7 @@ class Runtime:
 
     @property
     def ports(self) -> dict[str, int]:
-        sandboxes = {f"sandbox-{a}": SANDBOX_FIRST_PORT + i for i, a in enumerate(self.deployment.agents)}
-        return {"node": self.deployment.node.port, "executor": EXECUTOR_PORT, "egress": EGRESS_PORT, **sandboxes}
+        return ports_of(self.deployment)
 
     @property
     def gateway(self) -> bool:
@@ -173,12 +187,7 @@ class Runtime:
 
     @property
     def roles(self) -> list[str]:
-        roles = ["node"]
-        if self.gateway:
-            roles.append("egress")
-        if self.deployment.agents:
-            roles += [f"sandbox-{a}" for a in self.deployment.agents] + ["executor"]
-        return roles
+        return roles_of(self.deployment)
 
     def check_dependencies(self) -> None:
         here = Path(__file__).resolve().parent.parent
