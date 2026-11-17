@@ -1,5 +1,6 @@
-# Command line entry points: up, check, down and pair for the operator, ask and chat with a caller ticket, and caller
-# key for the holder key. deploy writes Compose from a deployment file; executor and sandbox run in their containers.
+# Command line entry points: up, check, down, pair and connections for the operator, ask and chat with a caller
+# ticket, and caller key for the holder key. deploy writes Compose from a deployment file; executor and sandbox run
+# in their containers.
 
 from __future__ import annotations
 
@@ -76,6 +77,17 @@ def parser() -> argparse.ArgumentParser:
     caller_commands = caller.add_subparsers(dest="caller_command", required=True)
     key = caller_commands.add_parser("key", help="create the private caller-key file and print its public holder key")
     key.add_argument("--deployment", help="deployment file; the key goes in its folder (default: deployment.toml here)")
+    links = sub.add_parser("connections", help="list the node's outside connections and sign one in")
+    link_commands = links.add_subparsers(dest="connections_command", required=True)
+    listing = link_commands.add_parser("list", help="show each connection and whether the node is signed in")
+    signing = link_commands.add_parser("sign-in", help="sign the node in to a connection from this machine")
+    signing.add_argument("connection", help="the connection's name or id (or the start of its id)")
+    how = signing.add_mutually_exclusive_group()
+    how.add_argument("--paste", action="store_true", help="print the address, then read the address you end on")
+    how.add_argument("--device-code", action="store_true", help="print a code to enter on any device")
+    signing.add_argument("--port", type=int, default=0, help="the local port for the browser redirect (default: any)")
+    for command in (listing, signing):
+        command.add_argument("--deployment", help="deployment file (default: deployment.toml here)")
     down = sub.add_parser("down", help="stop the deployment")
     down.add_argument("deployment", nargs="?")
     down.add_argument("--volumes", action="store_true", help="also delete the node's data volume")
@@ -117,6 +129,9 @@ def main() -> None:
     from . import operate
     if args.command == "caller":
         operate.caller_key(args)
+        return
+    if args.command == "connections":
+        operate.connections_command(args)
         return
     sys.stdout.reconfigure(line_buffering=True)  # keep our lines in order with docker's when logged
     getattr(operate, "conformance_suite" if args.command == "conformance" else args.command)(args)

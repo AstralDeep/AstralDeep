@@ -1,6 +1,7 @@
 # The operator's commands: up writes a deployment when there is none, starts the personal node and its executor, waits
 # and probes; check re-runs the probes and the node checks, down stops it, pair reads the node's offer from inside its
-# container, ask and chat talk to the node with a caller ticket, and caller key makes the holder key.
+# container, ask and chat talk to the node with a caller ticket, caller key makes the holder key, and connections lists
+# and signs in the node's outside connections through connections.py.
 
 from __future__ import annotations
 
@@ -20,7 +21,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from . import caller as callers
-from . import conformance, node
+from . import conformance, connections, node
 from .deployment import AGENT_ID, Deployment, load_deployment
 from .manifest import load_package
 from .probes import run_probes
@@ -388,6 +389,23 @@ def node_checks(stack: Stack, deployment: Deployment) -> list[str]:
     return failed
 
 
+def connection_notes(stack: Stack) -> None:
+    # Attention and legacy connectors are reported, never failed: the owner decides, and nothing is changed or deleted.
+    try:
+        rows, legacy = connections.list_connections(stack)
+    except connections.ConnectionsError as exc:
+        print(f"NOTE  node: connections were not listed ({exc})")
+        return
+    for row in rows:
+        if row.get("state") == "needs_attention":
+            name = connections.printable(row.get("name") or row["id"][:8], 40)
+            print(f"ATTENTION  connection {name}: {connections.describe(row).split('  ')[-1]}; "
+                  f"run astralvessel connections sign-in {row['id'][:8]}")
+    if legacy:
+        print(f"NOTE  node: {legacy} connector(s) added before connections are kept as they are and are not used "
+              "by this node; nothing was changed or deleted")
+
+
 def up(args: argparse.Namespace) -> None:
     stack = Stack.at(args.deployment or "deployment.toml")
     if not stack.deployment.exists():
@@ -421,6 +439,8 @@ def check(args: argparse.Namespace) -> None:
     _require_env(stack, deployment)
     report = run_probes(stack, deployment, os.environ.get("VESSEL_SANDBOX_TOKEN", ""))
     failed = [] if args.isolation_only else node_checks(stack, deployment)
+    if not args.isolation_only:
+        connection_notes(stack)
     print(f"{report.passed} probes passed, {len(report.failed)} failed, {report.skipped} skipped")
     if report.failed or failed:
         raise SystemExit(1)
@@ -578,3 +598,18 @@ def caller_key(args: argparse.Namespace) -> None:
                       "Ask the owner to mint a caller ticket for this node in the AstralDeep app with this holder key.",
                       "It is public. Save the ticket they give you to a file and pass --ticket-file.", "",
                       f"  holder  {holder}"]))
+
+
+def connections_command(args: argparse.Namespace) -> None:
+    stack = Stack.at(args.deployment or "deployment.toml")
+    stack.require_compose()
+    stack.load_env()
+    load(stack.deployment)
+    try:
+        if args.connections_command == "list":
+            connections.show(stack)
+        else:
+            connections.sign_in(stack, args.connection, paste=args.paste, use_device_code=args.device_code,
+                                port=args.port)
+    except connections.ConnectionsError as exc:
+        raise SystemExit(str(exc)) from None
