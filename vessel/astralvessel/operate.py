@@ -1,5 +1,6 @@
 # The operator's commands: up writes a deployment when there is none, starts the personal node and its executor, waits
-# and probes; check re-runs the probes and the node checks, down stops it, and pair, ask and chat talk to the node.
+# and probes; check re-runs the probes and the node checks, down stops it, pair reads the node's offer from inside its
+# container, ask and chat talk to the node with a caller ticket, and caller key makes the holder key.
 
 from __future__ import annotations
 
@@ -16,7 +17,9 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit
 
+from . import caller as callers
 from . import conformance, node
 from .deployment import AGENT_ID, Deployment, load_deployment
 from .manifest import load_package
@@ -40,6 +43,16 @@ print(json.dumps(out))
 '''
 
 
+LEGACY_OWNER = "node.legacy_owner"
+
+
+def load(path: Path) -> Deployment:
+    deployment = load_deployment(path)
+    for notice in deployment.notices:
+        print(f"notice: {notice}", file=sys.stderr)
+    return deployment
+
+
 def example_root() -> Path:
     # Installed, the example ships inside the package; in a checkout it is the repository's examples folder.
     packaged = Path(__file__).resolve().parent / "example"
@@ -48,9 +61,6 @@ def example_root() -> Path:
 
 @dataclass
 class Answers:
-    issuer: str = ""
-    client_id: str = ""
-    subject: str = ""
     image: str = ""
     port: int = 0
     upstream_url: str = ""
@@ -67,11 +77,9 @@ def _ask(prompt: str, secret: bool = False) -> str:
 
 
 def _check_url(url: str, what: str = "URL") -> str | None:
-    from .deployment import OwnerSection
-    try:
-        OwnerSection(issuer=url, client_id="x")
-    except ValueError:
-        return f"give an http(s) {what} with a host, such as https://keycloak.example.com/realms/astral"
+    parts = urlsplit(url)
+    if parts.scheme.lower() not in ("http", "https") or not parts.hostname or re.search(r"\s", url):
+        return f"give an http(s) {what} with a host, such as https://models.example.com/v1"
     return None
 
 
@@ -99,14 +107,12 @@ def _check_agent(path: str) -> str | None:
 
 
 def gather(args: argparse.Namespace, interactive: bool) -> Answers:
-    answers = Answers(issuer=(args.issuer or "").rstrip("/"), client_id=args.client_id or "",
-                      subject=args.subject or "", image=args.image or "", port=args.port or 0,
-                      upstream_url=args.upstream_url or "", api_key=args.api_key or "")
+    answers = Answers(image=args.image or "", port=args.port or 0, upstream_url=args.upstream_url or "",
+                      api_key=args.api_key or "")
     if answers.api_key and not answers.api_key.startswith("env:"):
         raise SystemExit("--api-key takes env:NAME, so the key never appears in a command line; "
                          "or leave it out and type it at the prompt")
-    for given, check in ((answers.issuer, _check_url), (answers.upstream_url, _check_url),
-                         (answers.api_key, _check_key)):
+    for given, check in ((answers.upstream_url, _check_url), (answers.api_key, _check_key)):
         if given and (problem := check(given)):
             raise SystemExit(problem)
     if answers.api_key and not answers.upstream_url:
@@ -131,22 +137,12 @@ def gather(args: argparse.Namespace, interactive: bool) -> Answers:
             raise SystemExit(f"--mount {grant}: {folder} is not a folder")
         answers.mounts[(index, match[2])] = str(folder)
     if not interactive:
-        missing = [flag for flag, have in (("--issuer URL", answers.issuer), ("--client-id ID", answers.client_id))
-                   if not have]
-        missing += [f"--mount {a.name}:{m.target}=FOLDER" for i, a in enumerate(answers.agents)
+        missing = [f"--mount {a.name}:{m.target}=FOLDER" for i, a in enumerate(answers.agents)
                     for m in load_package(a).manifest.sandbox.mounts if (i, m.target) not in answers.mounts]
         if missing:
             raise SystemExit("no deployment.toml here and no terminal to ask on; pass " + ", ".join(missing))
         return answers
     print("No deployment.toml here, so let's write one. Press Ctrl-C to stop.\n")
-    while not answers.issuer:
-        url = _ask("Your identity provider (OIDC issuer URL, such as https://keycloak.example.com/realms/astral): ")
-        if problem := _check_url(url, "issuer URL"):
-            print("  " + problem)
-        else:
-            answers.issuer = url.rstrip("/")
-    while not answers.client_id:
-        answers.client_id = _ask("The client id your Astral apps sign in with: ")
     for index, agent in enumerate(answers.agents):
         for mount in load_package(agent).manifest.sandbox.mounts:
             while (index, mount.target) not in answers.mounts:
@@ -235,11 +231,7 @@ def write_deployment(folder: Path, answers: Answers, *, example: bool) -> Path:
         lines.append(f"image = {_toml(answers.image)}")
     if answers.port:
         lines.append(f"port = {answers.port}")
-    lines += [f"front_subnet = {_toml(str(subnet))}", f"front_address = {_toml(str(subnet.network_address + 10))}", "",
-              "[owner]", f"issuer = {_toml(answers.issuer)}", f"client_id = {_toml(answers.client_id)}"]
-    if answers.subject:
-        lines.append(f"subject = {_toml(answers.subject)}")
-    lines.append("")
+    lines += [f"front_subnet = {_toml(str(subnet))}", f"front_address = {_toml(str(subnet.network_address + 10))}", ""]
     if answers.upstream_url:
         key_ref = answers.api_key if answers.api_key.startswith("env:") else f"env:{KEY_VARIABLE}"
         lines += ["[egress]", f"upstream_url = {_toml(answers.upstream_url)}", f"upstream_key = {_toml(key_ref)}", ""]
@@ -276,15 +268,20 @@ def write_deployment(folder: Path, answers: Answers, *, example: bool) -> Path:
         deployment.unlink(missing_ok=True)
         env.unlink(missing_ok=True)
         raise
+    ignore_private(folder)
+    print(f"wrote {deployment} and {env} (private)")
+    return deployment
+
+
+def ignore_private(folder: Path) -> None:
     gitignore = folder / ".gitignore"
     existing = gitignore.read_text() if gitignore.exists() else ""
-    needed = [line for line in (".env", ".generated/", "compose.generated.yml") if line not in existing.splitlines()]
+    wanted = (".env", ".generated/", "compose.generated.yml", callers.KEY_FILE)
+    needed = [line for line in wanted if line not in existing.splitlines()]
     if needed:
         lead = "\n" if existing and not existing.endswith("\n") else ""
         with gitignore.open("a") as handle:
             handle.write(lead + "\n".join(needed) + "\n")
-    print(f"wrote {deployment} and {env} (private)")
-    return deployment
 
 
 def write_compose(stack: Stack, out: Path | None = None) -> tuple[Deployment, Path]:
@@ -293,7 +290,7 @@ def write_compose(stack: Stack, out: Path | None = None) -> tuple[Deployment, Pa
     master = os.environ.get("VESSEL_SANDBOX_TOKEN", "")
     if len(master) < 16:
         raise SystemExit("set VESSEL_SANDBOX_TOKEN (16+ characters) in the environment or the env file")
-    deployment = load_deployment(stack.deployment)
+    deployment = load(stack.deployment)
     repo = Path(__file__).resolve().parent.parent
     target = out or stack.compose_file
     for path in write(deployment, target, repo_root=repo if (repo / "Dockerfile").exists() else None,
@@ -371,8 +368,13 @@ def node_checks(stack: Stack, deployment: Deployment) -> list[str]:
 
     state = node.health(deployment.node)
     report("answers /readyz", state == "ok", state)
-    problem = node.descriptor_problem(node.fetch_descriptor(deployment.node), deployment.owner)
-    report("publishes a descriptor for this owner's issuer", problem is None, problem or "")
+    document = node.fetch_descriptor(deployment.node)
+    problem = node.descriptor_problem(document)
+    report("publishes a v2 descriptor with an Ed25519 key", problem is None, problem or "")
+    legacy = node.owner_binding(document).get("code") == LEGACY_OWNER
+    report("carries no legacy owner", not legacy,
+           "its data belongs to an owner who signed in through an identity provider; nothing was changed or deleted, "
+           "and the node will not join a mesh until it runs on a new data volume")
     done = stack.python("node", DATA_MODES, timeout=30)
     try:
         modes = json.loads(done.stdout)
@@ -393,9 +395,9 @@ def up(args: argparse.Namespace) -> None:
             raise SystemExit(f"{stack.deployment} does not exist")
         answers = gather(args, interactive=sys.stdin.isatty() and sys.stdout.isatty())
         write_deployment(stack.deployment.parent, answers, example=args.example)
-    elif any((args.example, args.agent, args.issuer, args.client_id, args.subject, args.image, args.port,
-              args.upstream_url, args.api_key, args.mount)):
+    elif any((args.example, args.agent, args.image, args.port, args.upstream_url, args.api_key, args.mount)):
         raise SystemExit(f"{stack.deployment} exists; edit it instead of passing setup options")
+    ignore_private(stack.deployment.parent)
     deployment, _ = write_compose(stack)
     _require_env(stack, deployment)
     require_image(deployment)
@@ -415,7 +417,7 @@ def check(args: argparse.Namespace) -> None:
     stack = Stack.at(args.deployment or "deployment.toml")
     stack.require_compose()
     stack.load_env()
-    deployment = load_deployment(stack.deployment)
+    deployment = load(stack.deployment)
     _require_env(stack, deployment)
     report = run_probes(stack, deployment, os.environ.get("VESSEL_SANDBOX_TOKEN", ""))
     failed = [] if args.isolation_only else node_checks(stack, deployment)
@@ -428,16 +430,32 @@ def down(args: argparse.Namespace) -> None:
     stack = Stack.at(args.deployment or "deployment.toml")
     stack.require_compose()
     stack.load_env()
-    _require_env(stack, load_deployment(stack.deployment))
+    _require_env(stack, load(stack.deployment))
     stack.compose("down", *(["-v"] if args.volumes else []))
 
 
 def _node_of(args: argparse.Namespace) -> Deployment:
     stack = Stack.at(args.deployment or "deployment.toml")
     stack.require_compose()
-    return load_deployment(stack.deployment)
+    return load(stack.deployment)
 
 
+OFFER_SCRIPT = r'''
+import json, os, urllib.error, urllib.request
+directory = os.environ.get("ASTRAL_NODE_DATA_DIR", "/node-data/node")
+try:
+    with open(os.path.join(directory, "pairing-secret")) as handle:
+        secret = handle.read().strip() or "absent"
+except OSError:
+    secret = "absent"
+port = os.environ.get("ORCHESTRATOR_PORT", "8001")
+request = urllib.request.Request("http://127.0.0.1:%s/api/node/mesh/offer" % port, data=b"", method="POST",
+                                 headers={"Astral-Pairing-Secret": secret})
+try:
+    print(json.dumps({"status": 200, **json.loads(urllib.request.urlopen(request, timeout=20).read())}))
+except urllib.error.HTTPError as exc:
+    print(json.dumps({"status": exc.code, **json.loads(exc.read() or b"{}")}))
+'''
 EXECUTOR_OFFER = r'''
 import json, os, urllib.error, urllib.request
 request = urllib.request.Request("http://%s:%s/pairing" % (os.environ["VESSEL_HOST"], os.environ["VESSEL_PORT"]),
@@ -467,30 +485,55 @@ def pair_executor(args: argparse.Namespace) -> None:
                       "", f"  code     {reply['code']}", f"  payload  {reply['payload']}"]))
 
 
+def node_offer(stack: Stack) -> dict:
+    # The node's secret never leaves its container: the script reads it there and asks the node over its own loopback.
+    for attempt in range(2):
+        done = stack.python("node", OFFER_SCRIPT, timeout=60)
+        try:
+            reply = json.loads(done.stdout)
+        except json.JSONDecodeError:
+            raise SystemExit("the node did not answer; check that the deployment is running") from None
+        # The first refusal makes an unenrolled node write its secret, so one more try can succeed.
+        if attempt == 0 and reply.get("status") == 401 and reply.get("detail") == "node.pairing_secret_required":
+            time.sleep(1)
+            continue
+        break
+    return reply
+
+
 def pair(args: argparse.Namespace) -> None:
     if args.executor:
         pair_executor(args)
         return
-    deployment = _node_of(args)
+    stack = Stack.at(args.deployment or "deployment.toml")
+    stack.require_compose()
+    stack.load_env()
+    deployment = load(stack.deployment)
+    reply = node_offer(stack)
+    if reply.get("status") != 200:
+        raise SystemExit(node.pairing_refusal(reply.get("status", 0), reply))
     try:
-        offer = node.request_pairing(deployment.node, node.owner_token(args.token_file), args.label)
+        print(node.describe_offer(reply, deployment.node))
     except node.NodeError as exc:
         raise SystemExit(str(exc)) from None
-    print(node.describe_offer(offer, deployment.node))
 
 
 def ask(args: argparse.Namespace) -> None:
     deployment = _node_of(args)
     try:
-        answer = node.ask(deployment.node, node.owner_token(args.token_file), args.question)
-    except node.NodeError as exc:
+        caller = callers.load_caller(deployment.path.parent, args.ticket_file)
+        answer = node.ask(deployment.node, caller, args.question)
+    except (node.NodeError, callers.CallerError) as exc:
         raise SystemExit(str(exc)) from None
     print(answer)
 
 
 def chat(args: argparse.Namespace) -> None:
     deployment = _node_of(args)
-    token = node.owner_token(args.token_file)
+    try:
+        caller = callers.load_caller(deployment.path.parent, args.ticket_file)
+    except callers.CallerError as exc:
+        raise SystemExit(str(exc)) from None
     context = None
     print("Chatting with your node. Press Ctrl-D to stop.")
     while True:
@@ -502,7 +545,7 @@ def chat(args: argparse.Namespace) -> None:
         if not line:
             continue
         try:
-            answer, context = node.converse(deployment.node, token, line, context)
+            answer, context = node.converse(deployment.node, caller, line, context)
         except node.NodeError as exc:
             print(f"error: {exc}")
             continue
@@ -510,8 +553,28 @@ def chat(args: argparse.Namespace) -> None:
 
 
 def conformance_suite(args: argparse.Namespace) -> None:
-    deployment = _node_of(args)
-    failed = conformance.run(deployment, node.owner_token(args.token_file))
+    stack = Stack.at(args.deployment or "deployment.toml")
+    stack.require_compose()
+    stack.load_env()
+    deployment = load(stack.deployment)
+    try:
+        caller = callers.load_caller(deployment.path.parent, args.ticket_file)
+    except callers.CallerError as exc:
+        raise SystemExit(str(exc)) from None
+    failed = conformance.run(deployment, caller, lambda: node_offer(stack))
     print(f"{len(conformance.CHECKS) - len(failed)} passed, {len(failed)} failed")
     if failed:
         raise SystemExit(1)
+
+
+def caller_key(args: argparse.Namespace) -> None:
+    folder = Path(args.deployment or "deployment.toml").resolve().parent
+    try:
+        holder = callers.create_key(folder)
+        ignore_private(folder)
+    except (callers.CallerError, OSError) as exc:
+        raise SystemExit(str(exc)) from None
+    print("\n".join([f"wrote {callers.key_path(folder)} (private, mode 0600)", "",
+                      "Ask the owner to mint a caller ticket for this node in the AstralDeep app with this holder key.",
+                      "It is public. Save the ticket they give you to a file and pass --ticket-file.", "",
+                      f"  holder  {holder}"]))

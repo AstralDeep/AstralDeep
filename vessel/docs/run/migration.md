@@ -5,7 +5,7 @@
 ## What was removed
 
 - The agent loop, the model client, the A2A server and the Python client for it.
-- The app key, issuer and `X-Vessel-User` identity model. The node's owner token takes its place.
+- The app key, issuer and `X-Vessel-User` identity model. The owner's mesh takes its place: devices in the mesh reach the node, and scripts use caller tickets the owner mints.
 - The task store, the app-side history store and the transcript format.
 - Service tools, web tools (`webfetch`, `websearch`), the SearXNG search container and the rich-output tool.
 - `prompt.md`, the `[model]` table and `[output] primitives` in `vessel.toml`.
@@ -19,7 +19,7 @@ Nothing was left behind in a disabled state. If you need the old server, stay on
 | 0.6.0 | Now |
 |---|---|
 | A2A to `vessel:8700/agents/<id>` | A2A to the node at `/a2a`, served by Deep's loop |
-| App key and `X-Vessel-User` | The owner's access token from the owner's issuer |
+| App key and `X-Vessel-User` | A caller ticket the owner mints in the AstralDeep app |
 | `astralvessel chat AGENT` | `astralvessel chat` |
 | `astralvessel ask AGENT QUESTION` | `astralvessel ask QUESTION` |
 | The vessel container | The `node` and `executor` containers |
@@ -28,7 +28,7 @@ Nothing was left behind in a disabled state. If you need the old server, stay on
 ## Convert the deployment file
 
 1. Replace `[vessel]` with `[node]`. Keep `project`, `front_subnet` and `front_address`. Add `image` if you do not use the default.
-2. Add `[owner]` with `issuer` and `client_id`. Add `subject` to bind the node now.
+2. Leave out `[owner]`. The node's owner is the mesh it joins. An old `[owner]` section still loads with a notice.
 3. Keep `[egress]` only if you want the model gateway. Its `upstream_url` is now optional.
 4. Delete `[search]`, every `[[apps]]` and `[[issuers]]` table, and every `services` table.
 5. Delete `model`, `prompt_append` and any other agent field the loader now rejects.

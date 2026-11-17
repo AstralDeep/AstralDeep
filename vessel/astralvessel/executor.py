@@ -210,9 +210,7 @@ def executor_app(deployment: Deployment, verifier: Verifier, runners: dict[str, 
             return _refusal("ticket.unauthorized", 403)
         if verified.mesh != await verifier.mesh_id():
             return _refusal("ticket.wrong_mesh", 403)
-        bound_owner = deployment.owner.owner_id
-        if bound_owner is None:
-            return _refusal("executor.owner_unbound", 403)
+        bound_owner = "mesh." + verified.mesh.removeprefix("sha256:")
         bound_workspace = workspace_for(verified.mesh, verified.turn)
         if verified.agents and verified.agents[-1] != action.get("agent"):
             return _refusal("ticket.unauthorized", 403)

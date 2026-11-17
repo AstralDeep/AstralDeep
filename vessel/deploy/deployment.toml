@@ -4,10 +4,6 @@
 [node]
 image = "astralvessel-node:local"
 
-[owner]
-issuer = "https://keycloak.example.com/realms/astral"
-client_id = "astral-app"
-
 [[agents]]
 id = "field-guide"
 package = "../examples/field-guide"

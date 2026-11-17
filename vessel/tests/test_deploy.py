@@ -19,14 +19,14 @@ from astralvessel.sandbox import LocalRunner, confinement_for
 
 landlock = pytest.mark.skipif(confine.abi_version() < confine.REQUIRED_ABI, reason="kernel lacks Landlock ABI 6")
 
-OWNER = '[owner]\nissuer = "https://keycloak.test/realms/astral"\nclient_id = "astral-app"\n'
+LEGACY_OWNER = ('[owner]\nissuer = "https://keycloak.test/realms/astral"\nclient_id = "astral-app"\n'
+                'subject = "owner-1"\n')
 
 
 def deployment_text(package, mounts='mounts = [{ target = "/data", source = "env:DATA_DIR" }]', head="",
                     egress=True) -> str:
     gateway = '[egress]\nupstream_url = "https://models.test/v1"\n' if egress else ""
     return f"""{head}
-{OWNER}
 {gateway}
 [[agents]]
 id = "guide"
@@ -116,8 +116,7 @@ def test_compose_runs_a_personal_node_and_isolates_each_sandbox(data_package, tm
     assert not any(name.startswith("tools-") for name in node["networks"])
     env = node["environment"]
     assert env["ASTRAL_NODE_PROFILE"] == "personal" and env["ASTRAL_NODE_DATA_DIR"] == "/node-data/node"
-    assert env["KEYCLOAK_AUTHORITY"] == "https://keycloak.test/realms/astral"
-    assert env["KEYCLOAK_CLIENT_ID"] == "astral-app" and env["FF_A2A_SERVER"] == "true"
+    assert "KEYCLOAK_AUTHORITY" not in env and "KEYCLOAK_CLIENT_ID" not in env and env["FF_A2A_SERVER"] == "true"
     assert env["ORCHESTRATOR_HOST"] == "0.0.0.0" and "DATABASE_URL" not in env and "ASTRAL_NODE_OWNER" not in env
     assert node["env_file"] == [".generated/node.env", ".generated/node-executor.env"]
     assert not any("postgres" in str(value).lower() for value in spec["services"].values())
@@ -153,20 +152,21 @@ def test_compose_runs_a_personal_node_and_isolates_each_sandbox(data_package, tm
     assert named["volumes"]["shared-corpus"] == {"external": True}
 
 
-def test_the_node_runs_without_a_gateway_and_binds_the_owner_when_told_the_subject(data_package, tmp_path):
+def test_the_node_runs_without_a_gateway_and_names_no_identity_provider(data_package, tmp_path):
     path = tmp_path / "deployment.toml"
-    path.write_text(deployment_text(data_package, egress=False).replace(
-        'client_id = "astral-app"', 'client_id = "astral-app"\nsubject = "owner-1"\nallowed_azp = ["a", "b"]\n'
-        'accepted_issuers = ["https://other.test/realms/x/"]') + "")
-    deployment = load_deployment(path)
-    spec = generate(deployment, repo_root=None)
+    path.write_text(deployment_text(data_package, egress=False))
+    spec = generate(load_deployment(path), repo_root=None)
     assert "egress" not in spec["services"] and "egress" not in spec["networks"]
     assert "egress" not in spec["services"]["node"]["networks"]
     env = spec["services"]["node"]["environment"]
-    assert env["ASTRAL_NODE_OWNER"] == deployment.owner.owner_id
-    assert env["ASTRAL_NODE_OWNER"].startswith("oidc.") and env["ASTRAL_NODE_OWNER"].endswith(".owner-1")
-    assert env["KEYCLOAK_ALLOWED_AZP"] == "a,b" and env["ASTRAL_ACCEPTED_ISSUERS"] == "https://other.test/realms/x"
     assert env["PUBLIC_BASE_URL"] == "http://127.0.0.1:8001"
+    removed = {"KEYCLOAK_AUTHORITY", "KEYCLOAK_CLIENT_ID", "KEYCLOAK_ALLOWED_AZP", "ASTRAL_ACCEPTED_ISSUERS",
+               "ASTRAL_NODE_OWNER"}
+    assert not removed & set(env)
+    assert not any(name.startswith("KEYCLOAK") for service in spec["services"].values()
+                   for name in service.get("environment", {}))
+    assert not any("keycloak" in line.lower() for service in spec["services"].values()
+                   for line in service.get("env_file", []))
 
 
 def test_the_node_section_validates_what_it_publishes_and_what_it_may_set(data_package, tmp_path):
@@ -185,9 +185,10 @@ def test_the_node_section_validates_what_it_publishes_and_what_it_may_set(data_p
         path.write_text(bad + deployment_text(data_package))
         with pytest.raises(ValueError):
             load_deployment(path)
-    path.write_text(deployment_text(data_package).replace(OWNER, '[owner]\nissuer = "ftp://x"\nclient_id = "c"\n'))
-    with pytest.raises(ValueError, match="issuer"):
-        load_deployment(path)
+    for name in ("KEYCLOAK_AUTHORITY", "ASTRAL_ACCEPTED_ISSUERS", "ASTRAL_NODE_OWNER"):
+        path.write_text(f'[node.environment]\n{name} = "x"\n' + deployment_text(data_package))
+        with pytest.raises(ValueError, match=name):
+            load_deployment(path)
 
 
 def test_secrets_stay_out_of_the_compose_file_and_in_private_files(data_package, tmp_path):
@@ -392,7 +393,7 @@ def test_the_node_is_told_where_the_executor_is_and_given_its_tokens(data_packag
 
 def test_a_node_without_agents_is_not_pointed_at_an_executor(tmp_path):
     path = tmp_path / "deployment.toml"
-    path.write_text(OWNER)
+    path.write_text("")
     node = generate(load_deployment(path), repo_root=None)["services"]["node"]
     assert "ASTRAL_VESSEL_EXECUTOR_URL" not in node["environment"] and node["env_file"] == [".generated/node.env"]
     assert node["volumes"] == ["node_data:/node-data"]
@@ -412,15 +413,14 @@ def test_the_executor_token_file_is_rewritten_on_every_deploy_but_the_node_secre
         "guide": agent_token("b" * 20, "guide")}
 
 
-def test_the_node_owner_must_be_the_one_the_deployment_names(data_package, tmp_path):
+def test_an_old_owner_section_loads_with_a_notice_and_the_file_is_untouched(data_package, tmp_path):
     path = tmp_path / "deployment.toml"
-    path.write_text(deployment_text(data_package).replace(
-        'client_id = "astral-app"', 'client_id = "astral-app"\nsubject = "owner-1"'))
+    path.write_text(LEGACY_OWNER + deployment_text(data_package))
+    before = path.read_bytes()
     deployment = load_deployment(path)
+    assert len(deployment.notices) == 1 and "[owner]" in deployment.notices[0]
     env = generate(deployment, repo_root=None)["services"]["node"]["environment"]
-    assert env["ASTRAL_NODE_OWNER"] == deployment.owner.owner_id
+    assert not any(name.startswith("KEYCLOAK") or name == "ASTRAL_NODE_OWNER" for name in env)
+    assert path.read_bytes() == before
     path.write_text(deployment_text(data_package))
-    unbound = load_deployment(path)
-    unbound.node.environment["ASTRAL_NODE_OWNER"] = "oidc.0000000000000000.other"
-    with pytest.raises(SystemExit, match="ASTRAL_NODE_OWNER"):
-        generate(unbound, repo_root=None)
+    assert load_deployment(path).notices == ()

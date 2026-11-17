@@ -133,7 +133,7 @@ async def test_the_executor_waits_for_the_nodes_mailbox_and_then_offers_pairing(
     assert kernel.network and kernel.config.network.mailbox == "MAILBOX"
     assert kernel.config.network.relay == "disabled" and kernel.config.network.local_discovery is False
     assert kernel.config.network.internet_lookup is False and kernel.config.device_kind == "node"
-    assert kernel.config.issuers == [] and kernel.config.data_dir == str(tmp_path / "kernel")
+    assert not hasattr(kernel.config, "issuers") and kernel.config.data_dir == str(tmp_path / "kernel")
     assert await verifier.pairing_offer() == {"code": "1234 5678", "payload": "PAYLOAD", "expires_ms": 77}
     with pytest.raises(mesh.Refused, match="executor.not_enrolled"):
         await verifier.verify("{}", "{}", "mesh_read")

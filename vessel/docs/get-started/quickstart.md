@@ -6,7 +6,7 @@ This guide builds a personal AstralDeep node, installs the AstralVessel command,
 
 - Python 3.11 or newer, Git, and Docker with Buildx and the Compose v2 plugin.
 - A supported sandbox host: Linux x86_64 or arm64 with kernel 6.12 or newer and Landlock ABI 6; or an Apple silicon Mac with Docker Desktop whose Linux VM provides Landlock ABI 6. Docker Desktop 29.5 with a kernel 6.12 VM was checked; older versions may ship an older kernel. Windows with Docker Desktop is unverified. See [platform support](../security/platforms.md).
-- An AstralDeep Keycloak issuer and client ID. Use the values configured for the AstralDeep app you use. See [realm setup](https://github.com/AstralDeep/AstralDeep/blob/main/docs/keycloak-realm-settings.md) and the relevant [Android and iOS client](https://github.com/AstralDeep/AstralDeep/blob/main/docs/keycloak-android-client-setup.md) or [Windows client](https://github.com/AstralDeep/AstralDeep/blob/main/docs/keycloak-windows-client-setup.md) guide.
+- The AstralDeep app on a device you already use, to approve the node into your mesh.
 
 ## 1. Prepare the node build inputs
 
@@ -58,26 +58,30 @@ python3 -m pip install astralvessel==0.7.0
 
 ## 4. Start and check the node
 
-Use your Keycloak realm URL as the issuer and the client ID configured for your AstralDeep app. The example uses `astral-mobile`:
-
 ```bash
 cd ..
 mkdir mynode && cd mynode
-astralvessel up --issuer https://keycloak.example/realms/astral --client-id astral-mobile --example
+astralvessel up --example
 ```
 
 `up` writes a private deployment file, starts the node and executor, waits for them to become ready, and runs the checks. The node listens on `127.0.0.1:8001` by default.
 
-For commands that act as the owner, set a current access token issued for that owner by the configured issuer. The CLI reads it from the environment or a file and never prints it or accepts it as a command-line value:
+Pair the node into your mesh with no sign-in, then approve it on a device you already use:
 
 ```bash
-export ASTRAL_OWNER_TOKEN="<current owner access token>"
-astralvessel check
-astralvessel ask "hello"
-astralvessel conformance
+astralvessel pair
 ```
 
-See [CLI token handling](../reference/cli.md#the-owners-token) and [pairing](../run/pairing.md).
+To ask the node a question from a script, create a holder key, give its public form to the owner, and save the caller ticket they mint for this node to a file. The private key stays in a 0600 `caller-key` file and is never printed:
+
+```bash
+astralvessel caller key
+astralvessel check
+astralvessel ask "hello" --ticket-file ticket.txt
+astralvessel conformance --ticket-file ticket.txt
+```
+
+See [the caller ticket](../reference/cli.md#the-caller-ticket) and [pairing](../run/pairing.md).
 
 ## Stop the node
 

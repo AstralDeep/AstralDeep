@@ -64,6 +64,6 @@ no secret appears in a process listing.
 | Executor | no direct route to the internet, refuses a caller without its token, lists what its agents may run, keeps its keys private, refuses a forged ticket with a dotted code and runs nothing, refuses a tool the agent does not offer, refuses an unknown agent |
 | Egress | refuses the cloud metadata address, private addresses and shared addresses, refuses odd ports, allows a public site on 443, refuses a model call without the token |
 
-`check` also runs five node checks: the node reports ready, its descriptor names the owner's issuer, and its data directory, database file and signing key are private.
+`check` also runs six node checks: the node reports ready, it publishes a v2 descriptor with an Ed25519 key, it carries no legacy owner, and its data directory, database file and signing key are private.
 
-The example deployment with one agent runs 33 probes and 5 node checks. Each further agent adds about 25 probes. The disk limit probe is skipped, and says so, when `turn_disk` is too close to `scratch` to overfill one without filling the other.
+The example deployment with one agent runs 33 probes and 6 node checks. Each further agent adds about 25 probes. The disk limit probe is skipped, and says so, when `turn_disk` is too close to `scratch` to overfill one without filling the other.
