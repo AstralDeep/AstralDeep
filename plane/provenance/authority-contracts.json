@@ -1,0 +1,24 @@
+{
+  "schemaVersion": "astralplane.authority-contract-evidence/v1",
+  "task": "T140",
+  "status": "passed",
+  "schemaRevision": "074.004",
+  "verification": {
+    "command": "python -m pytest -q tests/authority",
+    "status": "passed",
+    "passed": 228,
+    "failed": 0,
+    "maxWorkers": 1,
+    "postgres": "isolated ASTRALPLANE_TEST_POSTGRES_DSN"
+  },
+  "requiredBehaviors": {
+    "migrationRepeatability": "passed_real_postgresql",
+    "activeBindingUniqueness": "passed_real_postgresql_concurrent_one_winner",
+    "ownerIsolation": "passed_public_repository_and_real_postgresql",
+    "requestFingerprintConflict": "passed_real_postgresql",
+    "claimReplay": "passed_real_postgresql",
+    "strictSequence": "passed_real_postgresql",
+    "callerOwnedRollback": "passed_real_postgresql_savepoint"
+  },
+  "migrationRequired": false
+}

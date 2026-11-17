@@ -8,7 +8,7 @@ PG=astraldeep-postgres
 SRC=astralbody
 COPY=astralbody_089_rehearsal
 ENVFILE="${ASTRAL_ENV_FILE:-Y:/WORK/MCP/AstralDeep/.env}"
-CHAIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -W 2>/dev/null || pwd)"
+CHAIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../plane/scripts" && pwd -W 2>/dev/null || pwd)"
 
 q() { docker exec "$PG" psql -U astral -d "$1" -t -A -c "$2"; }
 

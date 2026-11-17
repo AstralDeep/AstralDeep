@@ -15,7 +15,7 @@ The required Deep CI aggregate now includes:
   probe, not a required gate.
 - Disposable PostgreSQL 17 for those tests, and the exact pinned Plane's
   PostgreSQL suite: complete, with its coverage gates, when the
-  `components/AstralPlane` gitlink differs between the immutable base and the
+  `plane/` tree differs between the immutable base and the
   candidate (`scripts/ci_plane_lane.py`; an unreadable base counts as a
   change), otherwise Plane's architecture, API, domain and bootstrap tests,
   because Plane's own CI runs the complete suite. The test producer refuses

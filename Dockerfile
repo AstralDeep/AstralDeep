@@ -25,8 +25,8 @@ COPY components/AstralProjection/contracts/ ./components/AstralProjection/contra
 COPY components/AstralKernel/python/rote/pyproject.toml components/AstralKernel/python/rote/README.md ./components/AstralKernel/python/rote/
 COPY components/AstralKernel/python/rote/src/rote/ ./components/AstralKernel/python/rote/src/rote/
 
-COPY components/AstralPlane/pyproject.toml components/AstralPlane/README.md components/AstralPlane/LICENSE ./components/AstralPlane/
-COPY components/AstralPlane/src/astralplane/ ./components/AstralPlane/src/astralplane/
+COPY plane/pyproject.toml plane/README.md plane/LICENSE ./plane/
+COPY plane/src/astralplane/ ./plane/src/astralplane/
 
 COPY components/AstralPrimitives/pyproject.toml components/AstralPrimitives/README.md components/AstralPrimitives/LICENSE ./components/AstralPrimitives/
 COPY components/AstralPrimitives/src/astralprims/ ./components/AstralPrimitives/src/astralprims/

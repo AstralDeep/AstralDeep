@@ -120,7 +120,7 @@ def test_public_ci_contains_only_repository_owned_qualification() -> None:
 
     composition = _workflow_job(workflow, "composition-declarations")
     assert "submodules: false" in composition
-    assert 'test "${#COMPONENT_STATUS[@]}" -eq 5' in composition
+    assert 'test "${#COMPONENT_STATUS[@]}" -eq 4' in composition
     assert "--declarations-only --require-gitlinks" in composition
     ui_contracts = _workflow_job(workflow, "ui-v2-contracts")
     assert "submodules: recursive" in ui_contracts
@@ -170,8 +170,12 @@ def test_public_ci_contains_only_repository_owned_qualification() -> None:
     assert "name: voice-worker-image" not in workflow
     for job_id in ("projection-backend-web", "plane-postgres"):
         component_job = _workflow_job(workflow, job_id)
-        assert '[[ "$base_component" == "$candidate_component" ]]' in component_job
-        assert '"status":"not-applicable","reason":"identical-component-commit"' in component_job
+        if job_id == "plane-postgres":
+            assert '[[ "$PLANE_BASE_TREE" == "$PLANE_CANDIDATE_TREE" ]]' in component_job
+            assert '"status":"not-applicable","reason":"identical-plane-tree"' in component_job
+        else:
+            assert '[[ "$base_component" == "$candidate_component" ]]' in component_job
+            assert '"status":"not-applicable","reason":"identical-component-commit"' in component_job
         assert "--fail-under" in component_job and "90" in component_job
 
 

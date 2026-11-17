@@ -97,7 +97,7 @@ def test_synthetic_component_context_excludes_nested_sensitive_state(
     tmp_path: Path,
 ) -> None:
     included = {
-        "components/AstralPlane/src/astralplane/store.py",
+        "plane/src/astralplane/store.py",
         "components/AstralPrimitives/src/astralprims/core.py",
         "components/AstralProjection/src/astralprojection/render.py",
         "components/LETS/lets/client.py",
@@ -107,16 +107,16 @@ def test_synthetic_component_context_excludes_nested_sensitive_state(
         "components/AstralProjection/config/private/service.env",
         "components/AstralProjection/config/private/service.key",
         "components/AstralProjection/config/private/trust.pem",
-        "components/AstralPlane/runtime/nested/state/app.db",
-        "components/AstralPlane/runtime/nested/state/app.db-wal",
-        "components/AstralPlane/runtime/nested/logs/app.log.1",
+        "plane/runtime/nested/state/app.db",
+        "plane/runtime/nested/state/app.db-wal",
+        "plane/runtime/nested/logs/app.log.1",
         "components/AstralProjection/android-client/app/signing/release.jks",
         "components/AstralProjection/android-client/app/signing/key.properties",
         "components/LETS/paper/submission/sections/method.tex",
         "components/LETS/paper/paper.pdf",
         "components/LETS/results/generated/nested/trial.json",
         "components/AstralProjection/backend/agents/example/data/session.json",
-        "components/AstralPlane/backend/knowledge/tenants/test/index.json",
+        "plane/backend/knowledge/tenants/test/index.json",
     }
 
     context_root = tmp_path / "synthetic-context"

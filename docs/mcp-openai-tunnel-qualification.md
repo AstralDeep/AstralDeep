@@ -91,7 +91,7 @@ and exact component submodules, run:
 
 ```sh
 git submodule update --init --recursive
-export PYTHONPATH=backend:components/AstralProjection/src:components/AstralProjection/backend:components/AstralProjection:components/AstralPlane/src:components/AstralPrimitives/src:components/LETS/src
+export PYTHONPATH=backend:components/AstralProjection/src:components/AstralProjection/backend:components/AstralProjection:plane/src:components/AstralPrimitives/src:components/LETS/src
 ASTRAL_ENV=development PYTHON_DOTENV_DISABLED=1 python3.11 -m pytest -q \
   backend/tests/test_mcp_openai_tunnel_qualification_103.py
 ```

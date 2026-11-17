@@ -319,3 +319,27 @@ def test_explicit_repeat_never_skips_on_prior_receipt(setup):
     receipt = command.retire(setup.args)
     assert receipt["retired_sessions"] == 0 and len(calls) == 1
     assert receipt["status"] == "commit_confirmed"
+
+
+def _in_tree(setup, entries):
+    manifest = json.loads(setup.path.read_text())
+    manifest["components"] = {}
+    manifest["in_tree"] = {"astral-plane": {"path": "plane"}}
+    setup.path.write_text(json.dumps(manifest))
+    setup.lock.write_text(json.dumps({"components": entries}))
+
+
+def test_in_tree_plane_is_identified_by_its_locked_source_digest(setup):
+    _in_tree(setup, [{"component": "lets", "source_sha256": "1" * 64},
+                     {"component": "astral-plane", "source_sha256": "a" * 64}])
+    result = command.retire(setup.args)
+    assert result["plane_commit"] == "in-tree:" + "a" * 64
+
+
+@pytest.mark.parametrize("entries", [[], [{"component": "astral-plane"}],
+                                     [{"component": "astral-plane", "source_sha256": 5}]])
+def test_in_tree_plane_without_a_locked_source_digest_is_refused(setup, entries):
+    _in_tree(setup, entries)
+    with pytest.raises(Exception):
+        command.retire(setup.args)
+    assert setup.calls == []

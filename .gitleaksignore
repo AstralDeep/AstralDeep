@@ -589,3 +589,11 @@ a2dad76472aa81ccb6874e9fe30d8ecf44c63fa3:specs/106-sign-in-free-clients/contract
 48c74313e88f26649ea4ddc3197441f8c9e27e61:scripts/tests/test_node_bundle_logging.py:generic-api-key:11
 48c74313e88f26649ea4ddc3197441f8c9e27e61:scripts/tests/test_node_bundle_logging.py:generic-api-key:12
 48c74313e88f26649ea4ddc3197441f8c9e27e61:scripts/tests/test_node_bundle_logging.py:jwt:17
+# Imported Plane history, tests/integration/test_catalog_caller_rollback.py line 625: a twelve digit key fingerprint literal passed to a rollback test.
+70508449046127c7a9af914bcc7da01501ab2fea:tests/integration/test_catalog_caller_rollback.py:generic-api-key:625
+# Imported Plane history, tests/repositories/test_typesafe_credential.py line 420: an assertion on a stored verification outcome that names the credentials fixture.
+70508449046127c7a9af914bcc7da01501ab2fea:tests/repositories/test_typesafe_credential.py:generic-api-key:420
+# Imported Plane history, provenance/attachment-parser-and-blob-composition.json line 68: a SHA-256 digest of a test file in a provenance record.
+098588d6256599e4902bb3f6c322df267ddaccde:provenance/attachment-parser-and-blob-composition.json:generic-api-key:68
+# Imported Plane history, tests/repositories/test_audit.py line 280: a one byte placeholder passed as an expected digest in an audit chain test.
+c1182c09ca767c7c8b3396fae91aa27d0b1c56ce:tests/repositories/test_audit.py:generic-api-key:280

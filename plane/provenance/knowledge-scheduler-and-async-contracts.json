@@ -1,0 +1,99 @@
+{
+  "schemaVersion": "astralplane.repository-slice/v1",
+  "slice": "knowledge-scheduler-and-async-contracts",
+  "status": "implemented_composition_in_progress",
+  "schemaRevision": "074.004",
+  "migrationRequired": false,
+  "baseline": "066.001",
+  "publicFactories": [
+    "create_background_task_repository",
+    "create_knowledge_repository",
+    "create_maintenance_repository",
+    "create_personalization_graph_repository",
+    "create_scheduler_repository",
+    "create_tracked_job_repository",
+    "create_work_admission_repository"
+  ],
+  "publicAdapters": [
+    "AsyncPlaneRuntime"
+  ],
+  "catalogKeys": [
+    "background_tasks",
+    "knowledge",
+    "maintenance",
+    "personalization_graph",
+    "scheduler",
+    "tracked_jobs",
+    "work_admission"
+  ],
+  "sourceSurfaces": [
+    "backend/feedback/quality.py",
+    "backend/orchestrator/async_tasks.py",
+    "backend/orchestrator/knowledge_synthesis.py",
+    "backend/orchestrator/remote_jobs.py",
+    "backend/personalization/repository.py",
+    "backend/scheduler/store.py",
+    "backend/shared/database.py"
+  ],
+  "tables": [
+    "background_task",
+    "component_feedback",
+    "consolidation_sweep",
+    "interaction_log",
+    "knowledge_update_proposal",
+    "maintenance_unit",
+    "maintenance_unit_input",
+    "memory_item",
+    "memory_link",
+    "quarantine_entry",
+    "short_term_signal",
+    "scheduled_job",
+    "scheduled_occurrence",
+    "job_run",
+    "scheduled_effect_ledger",
+    "tool_quality_signal",
+    "tracked_job"
+  ],
+  "invariants": [
+    "caller-owned synchronous transactions",
+    "ordinary knowledge and scheduler reads are owner scoped",
+    "cross-owner system surfaces are explicitly administrative",
+    "quality replacement uses an exact computed-at fence",
+    "quarantine and proposal lifecycle writes are compare-and-set",
+    "memory links require two live same-owner endpoints and persist bidirectionally",
+    "maintenance claims use lease token, claim generation, state revision, and operation generation",
+    "expired maintenance claims are recovered under bounded skip-locked selection",
+    "tracked-job poll writes use owner, failure count, and prior-poll timestamp fences",
+    "background operation projections are monotonic and terminal-safe",
+    "scheduled occurrence claims and transitions use owner, state, lease, and revision fences",
+    "scheduler chat publication is atomic with occurrence/run/effect state",
+    "Deep scheduler composition uses the one application Plane runtime and no raw SQL or legacy pool",
+    "work-admission configuration binds only after caller commit",
+    "async admission and concurrency are bounded",
+    "async adapter exposes callbacks over typed transactions, never generic SQL"
+  ],
+  "focusedVerification": {
+    "command": "python -m pytest -q tests/test_async_runtime.py tests/repositories/test_background_tasks.py tests/repositories/test_knowledge.py tests/repositories/test_maintenance.py tests/repositories/test_personalization_graph.py tests/repositories/test_scheduler.py tests/repositories/test_tracked_jobs.py",
+    "status": "passed",
+    "passed": 134,
+    "failed": 0
+  },
+  "focusedCoverage": {
+    "command": "python -m coverage run --source=astralplane.async_runtime,astralplane.repositories.background_tasks,astralplane.repositories.knowledge,astralplane.repositories.maintenance,astralplane.repositories.personalization_graph,astralplane.repositories.tracked_jobs -m pytest tests/test_async_runtime.py tests/repositories/test_background_tasks.py tests/repositories/test_knowledge.py tests/repositories/test_maintenance.py tests/repositories/test_personalization_graph.py tests/repositories/test_tracked_jobs.py -q && python -m coverage report -m",
+    "status": "passed",
+    "lineCoverage": "93%",
+    "minimumModuleLineCoverage": "91%"
+  },
+  "schedulerFocusedCoverage": {
+    "command": "python -m coverage run --branch --source=astralplane.repositories.scheduler -m pytest -q tests/repositories/test_scheduler.py && python -m coverage report -m",
+    "status": "passed",
+    "statementLineCoverage": "90.3%",
+    "branchAwareCombinedCoverage": "86%"
+  },
+  "focusedStaticVerification": {
+    "command": "ruff check src/astralplane/api.py src/astralplane/__init__.py src/astralplane/async_runtime.py src/astralplane/repositories/background_tasks.py src/astralplane/repositories/knowledge.py src/astralplane/repositories/maintenance.py src/astralplane/repositories/personalization_graph.py src/astralplane/repositories/tracked_jobs.py tests/test_api.py tests/test_async_runtime.py tests/repositories/test_background_tasks.py tests/repositories/test_knowledge.py tests/repositories/test_maintenance.py tests/repositories/test_personalization_graph.py tests/repositories/test_tracked_jobs.py",
+    "status": "passed"
+  },
+  "livePostgresVerification": "passed_serial_isolated_postgresql",
+  "deepCutover": "in_progress"
+}

@@ -267,11 +267,13 @@ class Env:
         manifest = {"format": "astral.nodepack-manifest/v1", "platform": "macos-arm64",
                     "version": "3.11.18-aaaaaaaa-ccccccc", "deep": {"commit": DEEP},
                     "kernel": {"commit": "c" * 40}, "installed_bytes": 123}
-        names = ("astral-projection", "astral-kernel", "astral-plane", "astral-primitives", "lets")
-        commits = (PACKED_PROJECTION, "c" * 40, "1" * 40, "2" * 40, "3" * 40)
-        paths = ("components/AstralProjection", "components/AstralKernel", "components/AstralPlane",
+        names = ("astral-projection", "astral-kernel", "astral-primitives", "lets")
+        commits = (PACKED_PROJECTION, "c" * 40, "2" * 40, "3" * 40)
+        paths = ("components/AstralProjection", "components/AstralKernel",
                  "components/AstralPrimitives", "components/LETS")
-        self.packed_composition = {"format": "astral.composition/v1", "components": {
+        self.packed_composition = {"format": "astral.composition/v2",
+            "in_tree": {"astral-plane": {"path": "plane", "contract_version": "astralplane.contract/v1"}},
+            "components": {
             name: {"repository": f"https://example.invalid/{name}.git", "path": path,
                    "commit": commit, "contract_version": "v1"}
             for name, commit, path in zip(names, commits, paths, strict=True)
@@ -418,7 +420,7 @@ def test_steps_run_in_the_documented_order(env):
     subject.execute()
     assert tools(runner) == [
         "git status", "git status", "git rev-parse", "git rev-parse", "git ls-tree", "git merge-base",
-        "git diff", "git show", *("git ls-tree" for _ in range(10)), "git diff", "git show", "gh api",
+        "git diff", "git show", *("git ls-tree" for _ in range(8)), "git diff", "git show", "gh api",
         "xcodebuild", "xcodebuild", "codesign", "codesign",
         "ditto", "xcrun notarytool", "xcrun stapler", "xcrun stapler", "spctl",
         "ditto", "hdiutil create", "codesign", "xcrun notarytool", "xcrun stapler", "xcrun stapler", "spctl",
@@ -1232,14 +1234,31 @@ def test_pack_cannot_accompany_nonmetadata_projection_change(env):
 def test_pack_manifest_must_match_all_packed_component_sources(env):
     manifest_path = env.node_pack / "node-pack-manifest.json"
     manifest = json.loads(manifest_path.read_text())
-    manifest["components"]["astral-plane"]["commit"] = "d" * 40
+    manifest["components"]["astral-primitives"]["commit"] = "d" * 40
     manifest_path.write_text(json.dumps(manifest))
     descriptor_path = env.node_pack / "node-pack.json"
     descriptor = json.loads(descriptor_path.read_text())
     descriptor["manifest_sha256"] = release.sha256_file(manifest_path)
     descriptor_path.write_text(json.dumps(descriptor))
     subject, runner = env.release()
-    with pytest.raises(release.ReleaseError, match="astral-plane differs from packed Deep composition"):
+    with pytest.raises(release.ReleaseError, match="astral-primitives differs from packed Deep composition"):
+        subject.execute()
+    assert not any(command[0] == "xcodebuild" for command in runner.history)
+
+
+def test_pack_listing_plane_as_a_pinned_component_is_refused_after_the_move(env):
+    manifest_path = env.node_pack / "node-pack-manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["components"]["astral-plane"] = {"repository": "https://example.invalid/astral-plane.git",
+                                              "commit": "1" * 40}
+    manifest_path.write_text(json.dumps(manifest))
+    descriptor_path = env.node_pack / "node-pack.json"
+    descriptor = json.loads(descriptor_path.read_text())
+    descriptor["manifest_sha256"] = release.sha256_file(manifest_path)
+    descriptor_path.write_text(json.dumps(descriptor))
+    subject, runner = env.release()
+    with pytest.raises(release.ReleaseError,
+                       match="Node pack component inventory differs from packed Deep composition"):
         subject.execute()
     assert not any(command[0] == "xcodebuild" for command in runner.history)
 
@@ -1247,7 +1266,7 @@ def test_pack_manifest_must_match_all_packed_component_sources(env):
 def test_release_composition_may_change_only_projection_commit(env):
     composition_path = env.deep / "config/astral-composition.json"
     composition = json.loads(composition_path.read_text())
-    composition["components"]["astral-plane"]["commit"] = "d" * 40
+    composition["components"]["astral-primitives"]["commit"] = "d" * 40
     composition_path.write_text(json.dumps(composition))
     subject, runner = env.release()
     with pytest.raises(release.ReleaseError, match="composition changes beyond"):

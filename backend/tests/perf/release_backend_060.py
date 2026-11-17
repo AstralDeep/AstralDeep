@@ -212,13 +212,13 @@ REPLAYED_SUITES = (
         check_id="migration_multi_instance",
         junit_environment="ASTRAL_RELEASE_MIGRATION_JUNIT",
         pytest_arguments=(
-            "../components/AstralPlane/tests/integration/"
+            "../plane/tests/integration/"
             "test_empty_database_startup.py"
             "::test_two_starter_migration_race_converges_once",
         ),
         required_test="test_two_starter_migration_race_converges_once",
         source=(
-            "../components/AstralPlane/tests/integration/"
+            "../plane/tests/integration/"
             "test_empty_database_startup.py"
         ),
         counter_pattern=r"^    start = threading\.Barrier\(2\)$",
