@@ -74,7 +74,7 @@ required-wheel-paths = [
 
 [tool.astraldeep.local-components.astral-plane]
 distribution = "astralplane"
-version = "0.1.12"
+version = "0.1.13"
 path = "plane"
 contract = "astralplane.contract/v1"
 availability = "required-embedded"

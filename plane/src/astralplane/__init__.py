@@ -170,9 +170,11 @@ from astralplane.database.revision import (
     SCHEMA_REVISION,
     DataPlaneRevision,
 )
+from astralplane.database.sqlite import is_sqlite_url
 from astralplane.database.sqlite_migrations import (
     SQLITE_DATA_PLANE_REVISION,
     SQLITE_MIGRATION_DIGEST,
+    SQLITE_SCHEMA_STRUCTURE_DIGEST,
     SQLITE_MIGRATION_REGISTRY,
 )
 from astralplane.database.transaction import CommandResult, PlaneDatabase, Transaction
@@ -334,6 +336,7 @@ __all__ = (
     "SQLITE_DATA_PLANE_REVISION",
     "SQLITE_MIGRATION_DIGEST",
     "SQLITE_MIGRATION_REGISTRY",
+    "SQLITE_SCHEMA_STRUCTURE_DIGEST",
     "AdmissionClass",
     "AgentRevisionRecord",
     "ApprovalFence",
@@ -572,6 +575,7 @@ __all__ = (
     "inspect_compatibility",
     "inspect_endpoint_readiness",
     "is_lock_contention",
+    "is_sqlite_url",
     "paths_for",
     "qualify_joint_restore",
     "recover_joint_restore",

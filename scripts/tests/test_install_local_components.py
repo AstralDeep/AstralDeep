@@ -716,7 +716,7 @@ def test_earlier_manifest_formats_are_refused_with_a_format_error(format_value: 
 def test_in_tree_plane_must_keep_its_folder_name(tmp_path: Path) -> None:
     with pytest.raises(installer.ComponentInstallError, match="repository folder"):
         installer._component_spec("astral-plane", {
-            "distribution": "astralplane", "version": "0.1.12", "path": "components/AstralPlane",
+            "distribution": "astralplane", "version": "0.1.13", "path": "components/AstralPlane",
             "contract": "c", "availability": "required-embedded", "import": "astralplane",
             "extras": [], "build-inputs": ["pyproject.toml"], "required-wheel-paths": ["a"],
         })

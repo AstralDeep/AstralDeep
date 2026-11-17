@@ -2,8 +2,9 @@
 
 `examples/external_host_example.py` is a standalone, executable example for teams that embed
 AstralPlane in an independently implemented service, such as an MCP or A2A server. It imports only
-the public facade (the `astralplane` package with its `api`, `errors`, and `repositories` modules)
-plus the standard library, and it never imports another Astral product. The example is
+the public facade (the `astralplane` package with its `api`, `errors`, `contracts`, `async_runtime`,
+`repositories` and `authority` modules, the last two with their submodules, as listed in
+`facade.json`) plus the standard library, and it never imports another Astral product. The example is
 documentation in executable form: every scenario below is one function in that file, and
 `tests/integration/test_external_host_example.py` runs the example against a real, test-owned
 PostgreSQL instance so the documented boundary cannot drift from the code.

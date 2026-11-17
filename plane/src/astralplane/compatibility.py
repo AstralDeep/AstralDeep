@@ -14,7 +14,7 @@ from astralplane.database.migrations import CURRENT_DATA_PLANE_REVISION, MIGRATI
 from astralplane.database.revision import ADVISORY_LOCK_IDS, SCHEMA_REVISION, DataPlaneRevision
 
 CONTRACT_VERSION: Final = "astralplane.contract/v1"
-PACKAGE_VERSION: Final = "0.1.12"
+PACKAGE_VERSION: Final = "0.1.13"
 MINIMUM_CONSUMER_VERSION: Final = "0.1.0"
 BLOB_LAYOUT_VERSION: Final = "astralplane.blob-layout/v1"
 RECOVERY_CONTRACT_VERSION: Final = "astralplane.recovery/v1"
