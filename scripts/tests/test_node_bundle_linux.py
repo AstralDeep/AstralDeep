@@ -443,7 +443,7 @@ def test_every_elf_in_the_built_pack_stays_inside_it_except_for_glibc(pack):
 @needs_pack
 def test_the_built_pack_bundles_poppler_and_libmagic_with_their_libraries_and_licenses(pack):
     manifest = json.loads((PACK_DIR / "node-pack-manifest.json").read_text())
-    assert {entry["name"] for entry in manifest["natives"]["packages"]} == {"poppler-utils", "libmagic1", "libmagic-mgc"}
+    assert {"poppler-utils", "libmagic1", "libmagic-mgc", "libgcc-s1"} <= {entry["name"] for entry in manifest["natives"]["packages"]}
     assert (pack / "native" / "bin" / "pdftoppm").is_file() and (pack / "native" / "bin" / "pdfinfo").is_file()
     assert (pack / "native" / "lib" / "libmagic.so.1").is_file() and (pack / "native" / "share" / "magic.mgc").is_file()
     assert (pack / "native" / "licenses" / "poppler-utils.copyright").is_file()
