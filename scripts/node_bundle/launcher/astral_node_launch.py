@@ -9,8 +9,6 @@ import runpy
 import sys
 from pathlib import Path
 
-sys.dont_write_bytecode = True
-
 PACK_ROOT = Path(__file__).resolve().parent.parent
 LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
 
@@ -65,6 +63,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--log-dir", type=Path)
     arguments = parser.parse_args(argv)
 
+    sys.dont_write_bytecode = True
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     values = configure(arguments)
     os.environ.update(values)

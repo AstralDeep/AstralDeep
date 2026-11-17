@@ -174,21 +174,21 @@ def strip_install_origins(site_packages: Path) -> None:
         record = origin.with_name("RECORD")
         origin.unlink()
         if record.is_file():
-            lines = [line for line in record.read_text().splitlines() if not line.startswith("direct_url.json,")]
+            lines = [line for line in record.read_text().splitlines() if line.split(",")[0] != f"{origin.parent.name}/direct_url.json"]
             record.write_text("\n".join(lines) + "\n")
 
 
-def copy_launcher(stage: Path) -> None:
+def copy_launcher(stage: Path, source_root: Path) -> None:
     target = stage / "launcher"
     target.mkdir()
-    for source in sorted((HERE / "launcher").glob("*.py")):
+    for source in sorted(source_root.glob("*.py")):
         shutil.copy2(source, target / source.name)
 
 
 def bake_bytecode(python: Path, stage: Path) -> None:
     roots = [stage / "python" / "lib" / "python3.11", stage / "app" / "backend", stage / "app" / "scripts",
              stage / "launcher"]
-    run([python, "-I", "-m", "compileall", "-q", "-j", "0", "--invalidation-mode", "checked-hash",
+    run([python, "-I", "-B", "-m", "compileall", "-q", "-f", "-j", "0", "--invalidation-mode", "checked-hash",
          "-s", stage, "-p", BYTECODE_PREFIX, *roots])
 
 
@@ -333,7 +333,7 @@ def assemble(platform: str, output: Path, kernel_dir: Path, work: Path, mailbox:
         (stage / "bin").mkdir()
         shutil.copy2(mailbox, stage / "bin" / "astral-mailbox")
         (stage / "bin" / "astral-mailbox").chmod(0o755)
-    copy_launcher(stage)
+    copy_launcher(stage, components_root / "scripts" / "node_bundle" / "launcher")
     bake_bytecode(python, stage)
     scan_for_leaks(stage, [work, repo, components_root])
 
