@@ -41,6 +41,8 @@ NEW = {
     "flow-outside-service-on-sync": {"error": "labels.invalid"},
     "flow-outside-service-missing": {"error": "labels.invalid"},
     "flow-outside-service-not-a-boolean": {"error": "labels.invalid"},
+    "flow-endpoint-approved-missing": {"error": "labels.invalid"},
+    "flow-endpoint-approved-not-a-boolean": {"error": "labels.invalid"},
     "flow-phi-to-model-is-unchanged-for-services": {
         "ok": {"outcome": "refuse", "code": "flow.phi_to_model", "reasons": []}
     },

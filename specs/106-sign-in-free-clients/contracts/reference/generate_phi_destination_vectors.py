@@ -1165,6 +1165,8 @@ def generate_labels() -> dict[str, Any]:
     untrusted = ("public", "untrusted")
     missing = _effect()
     del missing["outside_service"]
+    unstated = _effect()
+    del unstated["endpoint_phi_approved"]
     flows = [
         ("flow-phi-to-an-unapproved-outside-service", _turn(phi_owner), _effect()),
         ("flow-phi-to-an-approved-outside-service", _turn(phi_owner), _effect(endpoint_phi_approved=True)),
@@ -1181,6 +1183,8 @@ def generate_labels() -> dict[str, Any]:
         ("flow-outside-service-on-sync", _turn(phi_owner), _effect(target="sync", kind="mesh_write")),
         ("flow-outside-service-missing", _turn(phi_owner), missing),
         ("flow-outside-service-not-a-boolean", _turn(phi_owner), _effect(outside_service=1)),
+        ("flow-endpoint-approved-missing", _turn(phi_owner), unstated),
+        ("flow-endpoint-approved-not-a-boolean", _turn(phi_owner), _effect(endpoint_phi_approved="yes")),
         (
             "flow-phi-to-model-is-unchanged-for-services",
             _turn(phi_owner),

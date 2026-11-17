@@ -29,10 +29,10 @@ def _check_effect(effect: Any) -> None:
         raise MeshError("labels.invalid", "effect")
     if effect.get("kind") not in EFFECT_KINDS or effect.get("target") not in TARGETS:
         raise MeshError("labels.invalid", "effect kind or target")
-    outside = effect.get("outside_service")
-    if type(outside) is not bool:
-        raise MeshError("labels.invalid", "outside_service")
-    if outside and effect["target"] != "remote_tool":
+    for field in ("outside_service", "endpoint_phi_approved"):
+        if type(effect.get(field)) is not bool:
+            raise MeshError("labels.invalid", field)
+    if effect["outside_service"] and effect["target"] != "remote_tool":
         raise MeshError("labels.invalid", "an outside service is a remote tool")
 
 

@@ -2329,6 +2329,57 @@
     },
     {
       "expect": {
+        "error": "labels.invalid"
+      },
+      "input": {
+        "effect": {
+          "argument_integrity": [],
+          "kind": "outside_effect",
+          "outside_service": true,
+          "target": "remote_tool"
+        },
+        "turn": {
+          "context": [
+            {
+              "confidentiality": "phi",
+              "integrity": "owner"
+            }
+          ],
+          "private_access": false,
+          "secret_in_context": false
+        }
+      },
+      "kind": "labels_flow",
+      "name": "flow-endpoint-approved-missing"
+    },
+    {
+      "expect": {
+        "error": "labels.invalid"
+      },
+      "input": {
+        "effect": {
+          "argument_integrity": [],
+          "endpoint_phi_approved": "yes",
+          "kind": "outside_effect",
+          "outside_service": true,
+          "target": "remote_tool"
+        },
+        "turn": {
+          "context": [
+            {
+              "confidentiality": "phi",
+              "integrity": "owner"
+            }
+          ],
+          "private_access": false,
+          "secret_in_context": false
+        }
+      },
+      "kind": "labels_flow",
+      "name": "flow-endpoint-approved-not-a-boolean"
+    },
+    {
+      "expect": {
         "ok": {
           "code": "flow.phi_to_model",
           "outcome": "refuse",

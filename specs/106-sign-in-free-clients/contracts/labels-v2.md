@@ -12,10 +12,10 @@ The effect is `{"kind", "target", "argument_integrity", "endpoint_phi_approved",
 
 | Field | Rule |
 |---|---|
-| `outside_service` | A boolean. True for every tool whose host is an MCP server (a legacy `remote.mcp.*` server or a connection), an A2A agent or a launched connection. False for local first-party tools and for peer tools |
-| `endpoint_phi_approved` | True when the effect's destination may receive PHI: an on-device model, a loopback model or a confined launched service on a device in the PHI group, or a destination for which `phi_destination_allowed(kind, target)` is true. Never supplied by a host or a request |
+| `outside_service` | A boolean. False only for local first-party tools and for peer tools. True for every other `remote_tool`, including a legacy `remote.mcp.*` server, a connection, an A2A agent and a launched connection, so a new kind of host is outside by default |
+| `endpoint_phi_approved` | A boolean. True when the effect's destination may receive PHI: an on-device model or a loopback model on a device in the PHI group, or a destination for which `phi_destination_allowed(kind, target)` is true. Never supplied by a host or a request |
 
-An effect without `outside_service`, with a value that is not a boolean, or with `outside_service` true and a target other than `remote_tool` is `labels.invalid`. So every outside service is a remote tool and none can be labelled another way.
+An effect without `outside_service` or without `endpoint_phi_approved`, with either value not a boolean, or with `outside_service` true and a target other than `remote_tool` is `labels.invalid`. So every outside service is a remote tool and none can be labelled another way.
 
 Peer tools stay false because the executing peer runs its own PHI check and refuses a ticket with a `phi` label when it is not in the group. Caller tickets never cover connection tools.
 
@@ -61,6 +61,7 @@ Connection records of `astral.connection/v1` carry no server confidentiality hin
 | `flow-approved-service-still-asks-for-consent` | Approval does not skip the consent rules |
 | `flow-outside-service-on-a-model-target`, `flow-outside-service-on-a-local-tool`, `flow-outside-service-on-sync` | An outside service is a remote tool |
 | `flow-outside-service-missing`, `flow-outside-service-not-a-boolean` | The field is required |
+| `flow-endpoint-approved-missing`, `flow-endpoint-approved-not-a-boolean` | That field is required and strict too |
 | `flow-phi-to-model-is-unchanged-for-services` | The model rule stands |
 | `gate-5-phi-to-service`, `gate-5-approved-service-dispatches`, `order-policy-before-service-flow` | The gate order |
 
