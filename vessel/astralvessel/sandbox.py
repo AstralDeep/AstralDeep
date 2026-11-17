@@ -141,12 +141,13 @@ def reap_strays() -> None:
             pass
 
 
-def process_confinement(package: AgentPackage, process: Any) -> Confinement:
+def process_confinement(package: AgentPackage, process: Any, env: Any = None) -> Confinement:
     # Host paths stand in for the container's mounts: VESSEL_READS lists the granted folders, and VESSEL_WORKDIR names
     # the one the agent's working directory maps to.
     sandbox = package.manifest.sandbox
-    workdir = os.environ.get("VESSEL_WORKDIR") or sandbox.workdir
-    granted = [part for part in os.environ.get("VESSEL_READS", "").split(os.pathsep) if part]
+    env = os.environ if env is None else env
+    workdir = env.get("VESSEL_WORKDIR") or sandbox.workdir
+    granted = [part for part in env.get("VESSEL_READS", "").split(os.pathsep) if part]
     scratch = os.path.join(process.data_dir, "exec")
     os.makedirs(scratch, mode=0o700, exist_ok=True)
     readable = tuple(dict.fromkeys((workdir, str(package.root), *granted)))

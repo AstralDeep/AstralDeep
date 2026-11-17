@@ -161,3 +161,34 @@ def refusal_text(code: int, output: str) -> str | None:
         if isinstance(body, dict) and "code" in body:
             return f"{body['code']}: {body.get('message') or ''}".strip()
     return None
+
+
+def agent_probe(env: Mapping[str, str] | None = None) -> list[dict[str, Any]]:
+    # One agent's policy as the pack's interpreter sees it: the backend, the node data rule and the profile's limits.
+    from .manifest import load_package
+    from .sandbox import process_confinement
+    env = os.environ if env is None else env
+    process = ProcessExec.from_environment(env)
+    package = load_package(env["VESSEL_PACKAGE"])
+    lines: list[dict[str, Any]] = []
+    backend, refusal = process.backend()
+    if backend is not None:
+        lines.append({"name": f"a backend confines its tools ({backend.name})", "ok": True})
+    else:
+        lines.append({"name": "a backend confines its tools", "skip": refusal.text})
+    confinement = process_confinement(package, process, env)
+    scratch = os.path.join(process.data_dir, "exec", "probe")
+    os.makedirs(scratch, mode=0o700, exist_ok=True)
+    try:
+        platform = process.facts()["platform"]
+        document = process._document(platform, tuple(confinement.readable), process.canonical(scratch, platform),
+                                     1, 0)
+        lines.append({"name": "no read root holds the node data", "ok": True})
+        limits = document["limits"]
+        lines.append({"name": "the call limits come from the agent's profile",
+                      "ok": limits["processes"] == min(max(process.pids, 1), 4096)
+                      and limits["memory_bytes"] == min(max(process.memory_bytes, MIN_MEMORY), MAX_MEMORY)})
+    except ProcessRefused as exc:
+        lines.append({"name": "no read root holds the node data", "ok": False})
+        lines.append({"name": "the policy is accepted", "ok": False, "detail": exc.text})
+    return lines

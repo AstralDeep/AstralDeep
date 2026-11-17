@@ -6,7 +6,6 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
-import subprocess
 import urllib.parse
 from dataclasses import dataclass, field
 
@@ -314,32 +313,4 @@ def run_probes(stack: Stack, deployment: Deployment, master: str) -> Report:
     _run(stack, report, "executor", "executor", EXECUTOR, {"agents": ids})
     if gateway:
         _run(stack, report, "egress", "egress", EGRESS, {})
-    return report
-
-
-def run_process_probes(runtime) -> Report:
-    # Process mode: the backend conformance suite that ships with the pack's astral_exec runs once on this machine.
-    report = Report()
-    command = [str(runtime.bundle.python), "-I", "-B", str(runtime.layout.code / "astral_exec" / "run.py"),
-               "conformance", "--json"]
-    try:
-        done = subprocess.run(command, capture_output=True, text=True, timeout=900, check=False)
-    except (OSError, subprocess.SubprocessError) as exc:
-        report.add("isolation", {"name": "conformance suite ran", "ok": False})
-        print(f"  {exc}")
-        return report
-    seen = 0
-    for raw in done.stdout.splitlines():
-        try:
-            line = json.loads(raw)
-        except json.JSONDecodeError:
-            continue
-        seen += 1
-        result = line.get("result")
-        if result == "REFUSED":
-            report.add("isolation", {"name": line["case"], "skip": line.get("detail") or "no backend"})
-        else:
-            report.add("isolation", {"name": line["case"], "ok": result == "PASS"})
-    if not seen:
-        report.add("isolation", {"name": "conformance suite ran", "ok": False})
     return report

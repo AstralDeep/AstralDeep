@@ -20,8 +20,8 @@ import httpx
 
 from . import bundle as bundles
 from . import node
+from .conformance import run_process as run_process_probes
 from .deployment import Deployment
-from .probes import run_process_probes
 from .runtime import Layout, Runtime, RuntimeProblem, ports_of, roles_of, run_command
 from .stack import Stack
 from .units import Manager

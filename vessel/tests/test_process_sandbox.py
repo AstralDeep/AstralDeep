@@ -421,3 +421,62 @@ def test_a_file_swapped_for_a_link_after_the_walk_is_refused_at_open():
             tools.fnmatch.fnmatch = original
         assert target.is_symlink()
         assert "outside canary" not in out and "swap.txt" not in out
+
+
+def test_the_agent_probe_reports_the_backend_the_node_data_rule_and_the_limits():
+    from astralvessel import execmode
+    with tempfile.TemporaryDirectory() as tmp:
+        world = build_world(Path(tmp))
+        env = {"VESSEL_EXEC_DATA": str(world["data"]), "VESSEL_NODE_DATA_DIR": str(world["node"]),
+               "VESSEL_PACKAGE": str(world["package"]), "VESSEL_PIDS": "64", "VESSEL_MEMORY_BYTES": str(1 << 30)}
+        lines = execmode.agent_probe(env)
+        names = {line["name"] for line in lines}
+        assert "no read root holds the node data" in names and "the call limits come from the agent's profile" in names
+        assert all(line.get("ok") or line.get("skip") for line in lines), lines
+        env["VESSEL_READS"] = str(world["root"])
+        lines = execmode.agent_probe(env)
+        assert {"name": "no read root holds the node data", "ok": False} in lines
+
+
+def test_the_executor_checks_run_over_loopback_against_a_real_executor_app():
+    from astralvessel import conformance
+    with tempfile.TemporaryDirectory() as tmp:
+        world = build_world(Path(tmp))
+        deployment, verifier, app = executor_stack(world)
+        verifier.fail = "ticket.forged"
+        gen = world["root"] / "gen"
+        gen.mkdir()
+        (gen / "executor.env").write_text(f"VESSEL_EXECUTOR_TOKEN={OPERATOR}\n")
+        (gen / "executor-agents.json").write_text(json.dumps({"guide": agent_token(MASTER, "guide")}))
+        keys = world["root"] / "executor" / "keys"
+        keys.mkdir(parents=True)
+        (keys / "k").write_text("x")
+        (keys / "k").chmod(0o600)
+
+        class Layout:
+            generated, executor_data = gen, world["root"] / "executor"
+
+        class Runtime:
+            ports = {"executor": 1}
+
+        Runtime.deployment, Runtime.layout = deployment, Layout()
+
+        def through_app(method, url, json=None, headers=None, timeout=None):
+            async def go():
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://ex") as http:
+                    return await http.request(method, url.removeprefix("http://127.0.0.1:1"), json=json,
+                                              headers=headers)
+            return asyncio.run(go())
+
+        original = conformance.httpx.request
+        conformance.httpx.request = through_app
+        try:
+            lines = conformance.executor_lines(Runtime())
+        finally:
+            conformance.httpx.request = original
+        assert [line["name"] for line in lines] == [
+            "refuses a caller without its token", "lists what its agents may run", "refuses a forged ticket",
+            "refuses an unknown agent", "operator token cannot run a call", "keeps its keys private"]
+        assert all(line["ok"] for line in lines), lines
+        (keys / "k").chmod(0o644)
+        assert conformance.executor_lines(Runtime())[-1]["ok"] is False

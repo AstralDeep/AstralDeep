@@ -37,7 +37,7 @@ import runpy
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ROLES = {"node", "executor", "sandbox", "egress"}
+ROLES = {"node", "executor", "sandbox", "egress", "probe"}
 
 
 def load(path):
@@ -64,6 +64,12 @@ def main(argv):
         return
     if role == "egress":
         runpy.run_module("egress.main", run_name="__main__")
+        return
+    if role == "probe":
+        import json
+        from astralvessel import execmode
+        for line in execmode.agent_probe():
+            print(json.dumps(line))
         return
     sys.argv = ["astralvessel", role]
     from astralvessel import cli

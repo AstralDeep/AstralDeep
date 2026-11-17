@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+Vessel runs a node from a node pack as host processes. Docker is for container mode only.
+
+- `astralvessel up` in an empty folder writes `[runtime] mode = "process"`, installs a verified node pack, starts the node, the executor and each agent's sandbox, and runs the checks. It makes no Docker call.
+- New `up` options: `--bundle`, `--bundle-sha256` and `--foreground`. Linux gets systemd user units and macOS gets launchd agents. `--foreground` supervises in the terminal.
+- Tool calls run under `astral_exec`: Seatbelt on macOS, bubblewrap with Landlock and seccomp on Linux. A host with no backend refuses `bash` and declared tools with `exec.backend_unavailable` and its reason.
+- `check` prints one line per isolation case and exits 1 on a failure.
+- A folder with container data and no `[runtime]` section stops `up` with `deployment.container_data`. Nothing is written or deleted. See [Migration](run/migration.md#from-containers-to-processes).
+
 Vessel pins the Kernel with mesh identity, pairs the node with no token and carries no owner section.
 
 - The pinned Kernel commit and the Linux wheel and mailbox digests in `config/kernel-binding.json` are the mesh-identity build, version 0.2.0.
