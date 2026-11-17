@@ -32,15 +32,21 @@ class Node(BaseHTTPRequestHandler):
         size = int(self.headers.get("Content-Length") or 0)
         body = json.loads(self.rfile.read(size)) if size else None
         Node.seen.append((self.command, self.path, {k.lower(): v for k, v in self.headers.items()}, body))
-        queue = Node.answers[(self.command, self.path)]
+        if self.headers.get("Astral-Node-Operator") != SECRET:
+            queue = [(401, {"detail": "node.operator_secret_required"})]
+        else:
+            queue = Node.answers.get((self.command, self.path), [(404, {"detail": "node.flow_unknown"})])
         status, answer = queue.pop(0) if len(queue) > 1 else queue[0]
+        retry = answer.pop("retry-after", None) if isinstance(answer, dict) else None
         raw = json.dumps(answer).encode() if not isinstance(answer, bytes) else answer
         self.send_response(status)
+        if retry:
+            self.send_header("Retry-After", retry)
         self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
         self.wfile.write(raw)
 
-    do_GET = do_POST = handle_any
+    do_GET = do_POST = do_DELETE = handle_any
 
     def log_message(self, *args):
         return None
@@ -68,6 +74,10 @@ def node(tmp_path):
 
 def posts():
     return [(path, body) for method, path, _, body in Node.seen if method == "POST"]
+
+
+def deletes():
+    return [path for method, path, _, _ in Node.seen if method == "DELETE"]
 
 
 def start_path(connection_id=ID_A):
@@ -191,11 +201,12 @@ def test_the_first_callback_wins_and_a_busy_port_is_explained(node):
     listener.server_close()
 
 
-def test_the_device_code_is_the_only_thing_printed_and_polling_follows_the_servers_interval(node, capsys):
-    Node.answers[start_path()] = [(200, {"flow": "f3", "user_code": "WDJB-MJHT", "interval": 7, "expires_in": 600,
+def test_the_device_code_is_the_only_thing_printed_and_polling_never_beats_seven_seconds(node, capsys):
+    Node.answers[start_path()] = [(200, {"flow": "f3", "user_code": "WDJB-MJHT", "interval": 2, "expires_in": 600,
                                          "verification_uri": "https://auth.test/device"})]
     poll = ("POST", "/api/node/connections/sign-in/f3/poll")
-    Node.answers[poll] = [(200, {"status": "pending"}), (429, {"detail": "node.rate_limited"}),
+    Node.answers[poll] = [(200, {"status": "authorization_pending"}),
+                          (429, {"detail": "node.rate_limited", "retry-after": "30"}),
                           (200, {"status": "slow_down"}), (200, {"status": "signed_in"})]
     waits = []
     now = iter(range(0, 1000, 10))
@@ -203,22 +214,24 @@ def test_the_device_code_is_the_only_thing_printed_and_polling_follows_the_serve
     out = capsys.readouterr().out
     assert posts()[0] == (start_path()[1], {"redirect": "device_code"})
     assert [body for _, body in posts()[1:]] == [{}, {}, {}, {}]
-    assert waits == [7, 7, 12, 17] and "WDJB-MJHT" in out and "https://auth.test/device" in out and SECRET not in out
+    assert waits == [7, 7, 30, 37] and "WDJB-MJHT" in out and "https://auth.test/device" in out and SECRET not in out
+    assert deletes() == [f"/api/node/connections/{ID_A}/sign-in/f3"]
 
 
-@pytest.mark.parametrize("status,text", [("denied", "denied"), ("expired", "expired")])
-def test_a_denied_or_expired_device_code_stops(node, status, text):
+@pytest.mark.parametrize("status,text", [("access_denied", "access_denied"), ("expired_token", "expired_token")])
+def test_a_denied_or_expired_device_code_stops_and_cancels_the_flow(node, status, text):
     Node.answers[start_path()] = [(200, {"flow": "f4", "user_code": "ABCD", "verification_uri": "https://a.test/d"})]
     Node.answers[("POST", "/api/node/connections/sign-in/f4/poll")] = [(200, {"status": status})]
     with pytest.raises(connections.ConnectionsError, match=text):
         connections.sign_in(node, "Notes", use_device_code=True, sleep=lambda s: None)
+    assert deletes() == [f"/api/node/connections/{ID_A}/sign-in/f4"]
 
 
 def test_a_device_code_that_runs_out_of_time_or_polls_into_a_refusal_stops(node):
     Node.answers[start_path()] = [(200, {"flow": "f5", "user_code": "ABCD", "interval": 1, "expires_in": 5,
                                          "verification_uri": "https://a.test/d"})]
     poll = ("POST", "/api/node/connections/sign-in/f5/poll")
-    Node.answers[poll] = [(200, {"status": "pending"})]
+    Node.answers[poll] = [(200, {"status": "authorization_pending"})]
     now = iter(range(0, 100, 3))
     with pytest.raises(connections.ConnectionsError, match="expired before"):
         connections.sign_in(node, "Notes", use_device_code=True, sleep=lambda s: None, clock=lambda: next(now))
@@ -271,7 +284,8 @@ def test_a_silent_node_says_so():
 
 def test_a_missing_secret_file_is_sent_as_absent_and_the_secret_never_enters_the_script(node, tmp_path):
     (tmp_path / "operator-secret").unlink()
-    connections.list_connections(node)
+    with pytest.raises(connections.ConnectionsError, match="operator secret"):
+        connections.list_connections(node)
     assert Node.seen[0][2]["astral-node-operator"] == "absent"
     assert "operator-secret" in node.scripts[0][1] and SECRET not in node.scripts[0][1]
 
@@ -353,3 +367,99 @@ def test_check_runs_the_notes_unless_only_isolation_is_checked(tmp_path, monkeyp
     assert seen == []
     operate.check(argparse.Namespace(deployment=str(path), isolation_only=False))
     assert len(seen) == 1
+
+
+def test_a_bad_paste_a_failed_complete_and_a_listener_timeout_all_cancel_their_flow(node):
+    Node.answers[start_path()] = [(200, {"flow": "f6", "authorization_url": "https://auth.test/a?state=s"})]
+    with pytest.raises(connections.ConnectionsError, match="full https"):
+        connections.sign_in(node, "Notes", paste=True, read=lambda: "nope")
+    Node.answers[("POST", "/api/node/connections/sign-in/f6/complete")] = [(400, {"detail": "connection.iss_mismatch"})]
+    with pytest.raises(connections.ConnectionsError, match="iss_mismatch"):
+        connections.sign_in(node, "Notes", paste=True, read=lambda: "https://x.test/cb?code=1")
+
+    class Quiet(connections.Listener):
+        def wait(self, seconds, clock=None):
+            raise connections.ConnectionsError("no sign-in came back in time; run the command again")
+
+    with pytest.raises(connections.ConnectionsError, match="no sign-in came back"):
+        connections.sign_in(node, "Notes", listener=Quiet)
+    assert deletes() == [f"/api/node/connections/{ID_A}/sign-in/f6"] * 3
+
+
+def test_a_cancel_the_node_refuses_does_not_hide_the_real_result(node, capsys):
+    Node.answers[start_path()] = [(200, {"flow": "f7", "authorization_url": "https://auth.test/a"})]
+    Node.answers[("POST", "/api/node/connections/sign-in/f7/complete")] = [(200, {"state": "signed_in"})]
+    Node.answers[("DELETE", f"/api/node/connections/{ID_A}/sign-in/f7")] = [(404, {"detail": "node.flow_unknown"})]
+    connections.sign_in(node, "Notes", paste=True, read=lambda: "https://x.test/cb?code=1")
+    assert "signed in: Notes" in capsys.readouterr().out
+
+
+def test_a_callback_with_the_wrong_state_is_ignored_until_the_right_one_arrives():
+    listener = connections.Listener()
+    listener.expected_state = "good"
+    try:
+        for query in ("code=1&state=evil", "code=1", "code=2&state=good"):
+            thread = threading.Thread(target=lambda q=query: _knock(listener.port, "/callback?" + q))
+            thread.start()
+            listener.handle_request()
+            thread.join()
+            if query.endswith("evil") or query == "code=1":
+                assert listener.captured is None
+        assert listener.captured.endswith("/callback?code=2&state=good")
+    finally:
+        listener.server_close()
+
+
+def _knock(port, path):
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    connection.request("GET", path)
+    connection.getresponse().read()
+
+
+@pytest.mark.parametrize("failure", [subprocess.TimeoutExpired("docker", 60), FileNotFoundError(2, "no docker"),
+                                     PermissionError(13, "denied")])
+def test_a_container_call_that_times_out_or_cannot_start_is_a_connection_error(failure, tmp_path, monkeypatch, capsys):
+    class Broken:
+        def python(self, *args, **kwargs):
+            raise failure
+
+    with pytest.raises(connections.ConnectionsError):
+        connections.list_connections(Broken())
+    operate.connection_notes(Broken())
+    assert "NOTE  node: connections were not listed" in capsys.readouterr().out
+
+
+def test_a_wrong_operator_secret_is_refused(node, tmp_path):
+    (tmp_path / "operator-secret").write_text("wrong\n")
+    with pytest.raises(connections.ConnectionsError, match="operator secret"):
+        connections.list_connections(node)
+
+
+def test_the_pasted_address_is_read_from_standard_input_or_the_terminal(monkeypatch):
+    import io
+    monkeypatch.setattr(sys, "stdin", io.StringIO("https://x.test/cb?code=1\n"))
+    assert connections.read_pasted() == "https://x.test/cb?code=1"
+
+    class Terminal(io.StringIO):
+        def isatty(self):
+            return True
+
+    monkeypatch.setattr(sys, "stdin", Terminal())
+    monkeypatch.setattr(connections.getpass, "getpass", lambda prompt: "  https://y.test/cb  ")
+    assert connections.read_pasted() == "https://y.test/cb"
+
+
+def test_an_unknown_state_reads_as_unknown_and_ports_are_range_checked(monkeypatch):
+    assert "unknown" in connections.describe({"id": ID_A, "name": "n", "state": "odd"})
+    monkeypatch.setattr(operate, "connections_command", lambda args: None)
+    for bad in ("65536", "-1", "x"):
+        monkeypatch.setattr("sys.argv", ["astralvessel", "connections", "sign-in", "N", "--port", bad])
+        with pytest.raises(SystemExit):
+            cli.main()
+
+
+def test_the_container_script_makes_the_call_without_a_proxy(node, monkeypatch):
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
+    monkeypatch.setenv("http_proxy", "http://127.0.0.1:9")
+    node.env.update({"HTTP_PROXY": "http://127.0.0.1:9", "http_proxy": "http://127.0.0.1:9"})
+    assert connections.list_connections(node)[0][0]["id"] == ID_A

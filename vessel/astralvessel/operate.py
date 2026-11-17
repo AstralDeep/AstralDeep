@@ -399,7 +399,7 @@ def connection_notes(stack: Stack) -> None:
     for row in rows:
         if row.get("state") == "needs_attention":
             name = connections.printable(row.get("name") or row["id"][:8], 40)
-            print(f"ATTENTION  connection {name}: {connections.describe(row).split('  ')[-1]}; "
+            print(f"ATTENTION  connection {name}: {connections.state_text(row)}; "
                   f"run astralvessel connections sign-in {row['id'][:8]}")
     if legacy:
         print(f"NOTE  node: {legacy} connector(s) added before connections are kept as they are and are not used "
@@ -460,21 +460,9 @@ def _node_of(args: argparse.Namespace) -> Deployment:
     return load(stack.deployment)
 
 
-OFFER_SCRIPT = r'''
-import json, os, urllib.error, urllib.request
-directory = os.environ.get("ASTRAL_NODE_DATA_DIR", "/node-data/node")
-try:
-    with open(os.path.join(directory, "pairing-secret")) as handle:
-        secret = handle.read().strip() or "absent"
-except OSError:
-    secret = "absent"
-port = os.environ.get("ORCHESTRATOR_PORT", "8001")
-request = urllib.request.Request("http://127.0.0.1:%s/api/node/mesh/offer" % port, data=b"", method="POST",
-                                 headers={"Astral-Pairing-Secret": secret})
-try:
-    print(json.dumps({"status": 200, **json.loads(urllib.request.urlopen(request, timeout=20).read())}))
-except urllib.error.HTTPError as exc:
-    print(json.dumps({"status": exc.code, **json.loads(exc.read() or b"{}")}))
+OFFER_SCRIPT = connections.NODE_CALL + r'''
+status, body, _ = node_call("pairing-secret", "Astral-Pairing-Secret", "POST", "/api/node/mesh/offer", b"")
+print(json.dumps({"status": status, **body}))
 '''
 EXECUTOR_OFFER = r'''
 import json, os, urllib.error, urllib.request

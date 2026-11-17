@@ -41,6 +41,12 @@ def removed(command: argparse.ArgumentParser, *names: str) -> None:
         command.add_argument(name, action=Removed, nargs="?", help=argparse.SUPPRESS)
 
 
+def port_number(text: str) -> int:
+    if not text.isdigit() or int(text) > 65535:
+        raise argparse.ArgumentTypeError("a port is a number from 0 to 65535")
+    return int(text)
+
+
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(prog="astralvessel")
     sub = root.add_subparsers(dest="command", required=True)
@@ -85,7 +91,8 @@ def parser() -> argparse.ArgumentParser:
     how = signing.add_mutually_exclusive_group()
     how.add_argument("--paste", action="store_true", help="print the address, then read the address you end on")
     how.add_argument("--device-code", action="store_true", help="print a code to enter on any device")
-    signing.add_argument("--port", type=int, default=0, help="the local port for the browser redirect (default: any)")
+    signing.add_argument("--port", type=port_number, default=0,
+                         help="the local port for the browser redirect (default: any)")
     for command in (listing, signing):
         command.add_argument("--deployment", help="deployment file (default: deployment.toml here)")
     down = sub.add_parser("down", help="stop the deployment")

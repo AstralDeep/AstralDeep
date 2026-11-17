@@ -7,11 +7,13 @@ from __future__ import annotations
 import getpass
 import json
 import re
+import subprocess
 import sys
 import time
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 from .stack import Stack
 
@@ -19,37 +21,49 @@ LISTEN_HOST = "127.0.0.1"
 CALLBACK_PATH = "/callback"
 FLOW_WAIT = 600
 MAX_URL = 8192
-DEFAULT_INTERVAL = 5
+DEFAULT_INTERVAL = 7
+MIN_INTERVAL = 7
+MAX_INTERVAL = 60
+SOCKET_TIMEOUT = 5
 CONNECTION_ID = re.compile(r"[0-9a-f]{32}")
 FLOW_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 CODE = re.compile(r"[A-Za-z0-9 -]{1,32}")
 DETAIL = re.compile(r"[a-z0-9_.]{1,64}")
 STATES = ("not_signed_in", "signed_in", "needs_attention")
-OPERATOR_SCRIPT = r'''
+NODE_CALL = r'''
 import json, os, urllib.error, urllib.request
+opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def node_call(secret_file, header, method, path, data=None, content_type=None):
+    directory = os.environ.get("ASTRAL_NODE_DATA_DIR", "/node-data/node")
+    try:
+        with open(os.path.join(directory, secret_file)) as handle:
+            secret = handle.read().strip() or "absent"
+    except OSError:
+        secret = "absent"
+    headers = {header: secret}
+    if content_type:
+        headers["Content-Type"] = content_type
+    call = urllib.request.Request("http://127.0.0.1:%s%s" % (os.environ.get("ORCHESTRATOR_PORT", "8001"), path),
+                                  data=data, method=method, headers=headers)
+    retry = None
+    try:
+        status, raw = 200, opener.open(call, timeout=30).read()
+    except urllib.error.HTTPError as exc:
+        status, raw, retry = exc.code, exc.read(), exc.headers.get("Retry-After")
+    try:
+        body = json.loads(raw or b"{}")
+    except ValueError:
+        body = {}
+    return status, body if isinstance(body, dict) else {}, retry
+'''
+OPERATOR_SCRIPT = NODE_CALL + r'''
 request = json.loads(__REQUEST__)
-directory = os.environ.get("ASTRAL_NODE_DATA_DIR", "/node-data/node")
-try:
-    with open(os.path.join(directory, "operator-secret")) as handle:
-        secret = handle.read().strip() or "absent"
-except OSError:
-    secret = "absent"
-port = os.environ.get("ORCHESTRATOR_PORT", "8001")
 data = None if request["body"] is None else json.dumps(request["body"]).encode()
-headers = {"Astral-Node-Operator": secret}
-if data is not None:
-    headers["Content-Type"] = "application/json"
-call = urllib.request.Request("http://127.0.0.1:%s%s" % (port, request["path"]), data=data,
-                              method=request["method"], headers=headers)
-try:
-    status, raw = 200, urllib.request.urlopen(call, timeout=30).read()
-except urllib.error.HTTPError as exc:
-    status, raw = exc.code, exc.read()
-try:
-    body = json.loads(raw or b"{}")
-except ValueError:
-    body = {}
-print(json.dumps({"status": status, "body": body}))
+status, body, retry = node_call("operator-secret", "Astral-Node-Operator", request["method"], request["path"], data,
+                                None if data is None else "application/json")
+print(json.dumps({"status": status, "body": body, "retry_after": retry}))
 '''
 REFUSALS = {
     "node.loopback_required": "the node only serves this to its own machine; run the command on the node's host",
@@ -59,9 +73,10 @@ REFUSALS = {
 
 
 class ConnectionsError(Exception):
-    def __init__(self, message: str, status: int = 0):
+    def __init__(self, message: str, status: int = 0, retry_after: int = 0):
         super().__init__(message)
         self.status = status
+        self.retry_after = retry_after
 
 
 def printable(text: Any, limit: int = 80) -> str:
@@ -70,7 +85,12 @@ def printable(text: Any, limit: int = 80) -> str:
 
 def call(stack: Stack, method: str, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
     script = OPERATOR_SCRIPT.replace("__REQUEST__", repr(json.dumps({"method": method, "path": path, "body": body})))
-    done = stack.python("node", script, timeout=60)
+    try:
+        done = stack.python("node", script, timeout=60)
+    except subprocess.TimeoutExpired:
+        raise ConnectionsError("the node did not answer in time; check that the deployment is running") from None
+    except OSError as exc:
+        raise ConnectionsError(f"cannot reach the node's container: {exc.strerror or type(exc).__name__}") from None
     try:
         reply = json.loads(done.stdout)
         status, answer = int(reply["status"]), reply["body"]
@@ -81,7 +101,9 @@ def call(stack: Stack, method: str, path: str, body: dict[str, Any] | None = Non
     if status >= 400:
         detail = answer.get("detail")
         detail = detail if isinstance(detail, str) and DETAIL.fullmatch(detail) else f"http.{status}"
-        raise ConnectionsError(REFUSALS.get(detail, f"the node refused: {detail}"), status)
+        retry = reply.get("retry_after")
+        raise ConnectionsError(REFUSALS.get(detail, f"the node refused: {detail}"), status,
+                               int(retry) if isinstance(retry, str) and retry.isdigit() else 0)
     return answer
 
 
@@ -93,11 +115,17 @@ def list_connections(stack: Stack) -> tuple[list[dict[str, Any]], int]:
     return rows, legacy if isinstance(legacy, int) and legacy > 0 else 0
 
 
-def describe(row: dict[str, Any]) -> str:
-    state = row.get("state") if row.get("state") in STATES else "not_signed_in"
+def state_text(row: dict[str, Any]) -> str:
+    state = row.get("state")
+    if state not in STATES:
+        return "unknown"
     reason = f" ({printable(row['reason'], 24)})" if state == "needs_attention" and row.get("reason") else ""
+    return state.replace("_", " ") + reason
+
+
+def describe(row: dict[str, Any]) -> str:
     note = "" if row.get("status", "ok") == "ok" else f"  unsupported: {printable(row.get('reason') or 'unknown')}"
-    return f"{row['id'][:8]}  {printable(row.get('name') or '-', 40):<40}  {state.replace('_', ' ')}{reason}{note}"
+    return f"{row['id'][:8]}  {printable(row.get('name') or '-', 40):<40}  {state_text(row)}{note}"
 
 
 def show(stack: Stack, out: Callable[[str], None] = print) -> None:
@@ -126,6 +154,7 @@ class Listener(HTTPServer):
     def __init__(self, port: int = 0) -> None:
         super().__init__((LISTEN_HOST, port), Handler)
         self.captured: str | None = None
+        self.expected_state: str | None = None
         self.timeout = 1
 
     @property
@@ -143,12 +172,18 @@ class Listener(HTTPServer):
 
 class Handler(BaseHTTPRequestHandler):
     server: Listener
+    timeout = SOCKET_TIMEOUT
 
     def do_GET(self) -> None:
         # A browser on this machine only: a foreign Host header is a rebinding attempt.
         local = self.headers.get("Host") == f"{LISTEN_HOST}:{self.server.port}"
         if not local or self.path.split("?", 1)[0] != CALLBACK_PATH or len(self.path) > MAX_URL:
             self.send_response(404 if local else 400)
+            self.end_headers()
+            return
+        expected = self.server.expected_state
+        if expected is not None and parse_qs(urlsplit(self.path).query).get("state") != [expected]:
+            self.send_response(400)
             self.end_headers()
             return
         if self.server.captured is None:
@@ -197,35 +232,47 @@ def complete(stack: Stack, flow: str, redirect_url: str) -> dict[str, Any]:
     return call(stack, "POST", f"/api/node/connections/sign-in/{flow}/complete", {"redirect_url": redirect_url})
 
 
+def cancel(stack: Stack, row: dict[str, Any], flow: str) -> None:
+    try:
+        call(stack, "DELETE", f"/api/node/connections/{row['id']}/sign-in/{flow}")
+    except ConnectionsError:
+        pass
+
+
 def device_code(stack: Stack, row: dict[str, Any], out: Callable[[str], None], sleep: Callable[[float], None],
                 clock: Callable[[], float]) -> None:
     answer = start(stack, row, {"redirect": "device_code"})
     code, uri = answer.get("user_code"), answer.get("verification_uri")
     if not isinstance(code, str) or not CODE.fullmatch(code) or not isinstance(uri, str) \
             or not uri.startswith("https://") or not uri.isprintable() or " " in uri:
+        cancel(stack, row, answer["flow"])
         raise ConnectionsError("the node sent no usable device code")
     out(f"open {uri} on any device and enter the code {code}")
-    interval = max(1, min(answer["interval"], 60)) if isinstance(answer.get("interval"), int) else DEFAULT_INTERVAL
+    given = answer.get("interval")
+    interval = max(MIN_INTERVAL, min(given, MAX_INTERVAL)) if isinstance(given, int) else DEFAULT_INTERVAL
     expires = answer.get("expires_in")
     deadline = clock() + (min(expires, FLOW_WAIT) if isinstance(expires, int) and expires > 0 else FLOW_WAIT)
-    while clock() < deadline:
-        sleep(interval)
-        try:
-            reply = call(stack, "POST", f"/api/node/connections/sign-in/{answer['flow']}/poll", {})
-        except ConnectionsError as exc:
-            if exc.status != 429:
-                raise
-            interval = min(interval + DEFAULT_INTERVAL, 60)
-            continue
-        status = reply.get("status")
-        if status == "signed_in":
-            out(f"signed in: {printable(row.get('name') or row['id'][:8], 40)}")
-            return
-        if status in ("denied", "expired"):
-            raise ConnectionsError(f"the service {status} the sign-in; run the command again")
-        if status == "slow_down":
-            interval = min(interval + DEFAULT_INTERVAL, 60)
-    raise ConnectionsError("the code expired before it was used; run the command again")
+    try:
+        while clock() < deadline:
+            sleep(interval)
+            try:
+                reply = call(stack, "POST", f"/api/node/connections/sign-in/{answer['flow']}/poll", {})
+            except ConnectionsError as exc:
+                if exc.status != 429:
+                    raise
+                interval = min(max(interval + DEFAULT_INTERVAL, exc.retry_after), MAX_INTERVAL)
+                continue
+            status = reply.get("status")
+            if status == "signed_in":
+                out(f"signed in: {printable(row.get('name') or row['id'][:8], 40)}")
+                return
+            if status in ("access_denied", "expired_token"):
+                raise ConnectionsError(f"the service ended the sign-in ({status}); run the command again")
+            if status == "slow_down":
+                interval = min(interval + DEFAULT_INTERVAL, MAX_INTERVAL)
+        raise ConnectionsError("the code expired before it was used; run the command again")
+    finally:
+        cancel(stack, row, answer["flow"])
 
 
 def sign_in(stack: Stack, key: str, *, paste: bool = False, use_device_code: bool = False, port: int = 0,
@@ -240,20 +287,29 @@ def sign_in(stack: Stack, key: str, *, paste: bool = False, use_device_code: boo
         return
     if paste:
         answer = start(stack, row, {"redirect": "pasted"})
-        out(f"open this address, sign in, then copy the address your browser ends on:\n  {sign_in_url(answer)}")
-        pasted = read()
-        if not pasted.startswith("https://") or len(pasted) > MAX_URL:
-            raise ConnectionsError("paste the full https:// address your browser ended on")
-        finish(complete(stack, answer["flow"], pasted), row, out)
+        try:
+            out(f"open this address, sign in, then copy the address your browser ends on:\n  {sign_in_url(answer)}")
+            pasted = read()
+            if not pasted.startswith("https://") or len(pasted) > MAX_URL:
+                raise ConnectionsError("paste the full https:// address your browser ended on")
+            finish(complete(stack, answer["flow"], pasted), row, out)
+        finally:
+            cancel(stack, row, answer["flow"])
         return
     try:
         waiting = listener(port)
     except OSError as exc:
         raise ConnectionsError(f"cannot listen on {LISTEN_HOST}:{port}: {exc.strerror}") from None
+    answer = None
     try:
         answer = start(stack, row, {"redirect": "loopback", "port": waiting.port})
-        out(f"open this address in a browser on this machine and sign in:\n  {sign_in_url(answer)}")
+        url = sign_in_url(answer)
+        waiting.expected_state = (parse_qs(urlsplit(url).query).get("state") or [None])[0]
+        out(f"open this address in a browser on this machine and sign in:\n  {url}")
         captured = waiting.wait(FLOW_WAIT, clock)
+        waiting.server_close()
+        finish(complete(stack, answer["flow"], captured), row, out)
     finally:
         waiting.server_close()
-    finish(complete(stack, answer["flow"], captured), row, out)
+        if answer is not None:
+            cancel(stack, row, answer["flow"])
