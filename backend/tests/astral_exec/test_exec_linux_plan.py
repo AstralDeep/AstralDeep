@@ -1536,3 +1536,50 @@ def test_select_refuses_a_root_node_before_any_mount_read(monkeypatch):
     assert isinstance(outcome, Refusal)
     assert outcome.code == "exec.backend_unavailable"
     assert outcome.reason == "root_node"
+
+
+def test_a_missing_children_file_on_a_live_task_fails_closed(tmp_path):
+    (tmp_path / "123" / "task" / "123").mkdir(parents=True)
+    system = watchdog.LinuxSystem(str(tmp_path))
+    with pytest.raises(OSError, match="children"):
+        system.children(123)
+
+
+def test_a_task_that_vanished_mid_walk_is_not_an_error(tmp_path):
+    (tmp_path / "123" / "task").mkdir(parents=True)
+    system = watchdog.LinuxSystem(str(tmp_path))
+    assert system.children(123) == []
+    assert system.children(999) == []
+
+
+def test_the_watch_surfaces_a_kernel_without_children_files():
+    class Blind(_Draining):
+        def children(self, pid):
+            raise OSError("the kernel has no /proc children files")
+
+    watch = watchdog.LinuxWatch(99, system=Blind({99: _proc(1)}))
+    with pytest.raises(OSError):
+        watch.sample()
+
+
+def test_the_forwarder_survives_a_thread_that_cannot_start(monkeypatch):
+    import errno
+
+    down, down_peer = socket.socketpair()
+    up, up_peer = socket.socketpair()
+    next_down, next_peer = socket.socketpair()
+
+    class Refusing:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(forwarder.threading, "Thread", Refusing)
+    listener = _Accepting([down, next_down, OSError(errno.EBADF, "closed")])
+    forwarder.serve(listener, "/x", connect=lambda path: up)
+    assert down_peer.recv(8) == b"" and up_peer.recv(8) == b""
+    assert next_peer.recv(8) == b""
+    for end in (down_peer, up_peer, next_peer):
+        end.close()

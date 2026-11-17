@@ -154,11 +154,19 @@ class LinuxSystem:
     def children(self, pid: int) -> list[int]:
         found: list[int] = []
         try:
-            for task in os.listdir(f"{self._root}/{pid}/task"):
-                with open(f"{self._root}/{pid}/task/{task}/children", "rb") as handle:
+            tasks = os.listdir(f"{self._root}/{pid}/task")
+        except OSError:
+            return found
+        for task in tasks:
+            path = f"{self._root}/{pid}/task/{task}"
+            try:
+                with open(f"{path}/children", "rb") as handle:
                     found += [int(part) for part in handle.read().split()]
-        except (OSError, ValueError):
-            pass
+            except FileNotFoundError:
+                if os.path.isdir(path):
+                    raise OSError("the kernel has no /proc children files") from None
+            except (OSError, ValueError):
+                pass
         return found
 
 

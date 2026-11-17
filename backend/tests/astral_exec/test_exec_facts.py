@@ -12,7 +12,7 @@ import pytest
 from astral_exec import Backend, Refusal, select
 from astral_exec.constants import FACT_KEYS
 from astral_exec.facts import Hooks, probe, resolve_bwrap
-from exec_vectors import DATA_DIR, loaded, minimal_policy
+from exec_vectors import DATA_DIR, good_facts, loaded, minimal_policy
 
 
 def _stat(mode=0o100755, uid=0):
@@ -34,6 +34,8 @@ def _hooks(**overrides):
         "run": lambda argv: 0,
         "env": {},
         "euid": lambda: 1000,
+        "exists": lambda path: True,
+        "tid": lambda: 4242,
     }
     base.update(overrides)
     return Hooks(**base)
@@ -64,6 +66,34 @@ def test_a_root_or_unreadable_effective_uid_refuses_the_linux_backend(euid):
     assert isinstance(outcome, Refusal)
     assert outcome.code == "exec.backend_unavailable" and outcome.reason == "root_node"
     assert "unprivileged" in outcome.message
+
+
+def test_the_probe_checks_the_children_file_of_its_own_thread():
+    seen = []
+
+    def exists(path):
+        seen.append(path)
+        return path == "/proc/self/task/4242/children"
+
+    assert probe(_hooks(exists=exists)).proc_children is True
+    assert seen == ["/proc/self/task/4242/children"]
+    assert probe(_hooks(exists=lambda path: False)).proc_children is False
+    assert probe(_hooks(exists=lambda path: 1 / 0)).proc_children is False
+
+
+def test_a_kernel_without_proc_children_refuses_the_linux_backend():
+    outcome = _select(_hooks(exists=lambda path: False))
+    assert isinstance(outcome, Refusal)
+    assert outcome.code == "exec.backend_unavailable"
+    assert outcome.reason == "proc_children_missing"
+    assert "CONFIG_PROC_CHILDREN" in outcome.message
+
+
+def test_facts_that_never_probed_proc_children_fail_closed():
+    facts = good_facts()
+    facts.proc_children = False
+    outcome = select(loaded(minimal_policy()), facts, DATA_DIR)
+    assert isinstance(outcome, Refusal) and outcome.reason == "proc_children_missing"
 
 
 def test_the_userns_refusal_outranks_the_root_refusal():

@@ -9,6 +9,7 @@ import stat as stat_module
 import subprocess
 import sys
 import tempfile
+import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -76,6 +77,8 @@ class Hooks:
     sandbox_check: Callable[[int], Any] = _sandbox_check
     pid: Callable[[], int] = os.getpid
     euid: Callable[[], int] = os.geteuid
+    exists: Callable[[str], bool] = os.path.exists
+    tid: Callable[[], int] = threading.get_native_id
     read_text: Callable[[str], str] = _read_text
     run: Callable[[Sequence[str]], int] = _run
     env: Mapping[str, str] = field(default_factory=lambda: dict(os.environ))
@@ -181,6 +184,13 @@ def _euid(hooks: Hooks) -> int:
     )
 
 
+def _proc_children(hooks: Hooks) -> bool:
+    try:
+        return bool(hooks.exists(f"/proc/self/task/{hooks.tid()}/children"))
+    except Exception:
+        return False
+
+
 def _sandbox_exec(hooks: Hooks) -> bool:
     try:
         return bool(hooks.executable(SANDBOX_EXEC))
@@ -202,6 +212,7 @@ def _app_sandboxed(hooks: Hooks) -> bool:
 
 class Facts(dict):
     bwrap_path: str | None = None
+    proc_children: bool = False
 
 
 def probe(hooks: Hooks | None = None) -> Facts:
@@ -219,4 +230,5 @@ def probe(hooks: Hooks | None = None) -> Facts:
         app_sandboxed=_app_sandboxed(hooks) if darwin else False,
     )
     facts.bwrap_path = bwrap
+    facts.proc_children = linux and _proc_children(hooks)
     return facts

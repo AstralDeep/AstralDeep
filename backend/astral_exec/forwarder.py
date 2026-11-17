@@ -100,7 +100,14 @@ def serve(
             downstream.close()
             slots.release()
             continue
-        threading.Thread(target=run, args=(downstream, upstream), daemon=True).start()
+        try:
+            threading.Thread(
+                target=run, args=(downstream, upstream), daemon=True
+            ).start()
+        except RuntimeError:
+            downstream.close()
+            upstream.close()
+            slots.release()
 
 
 def _connect_unix(socket_path: str) -> socket.socket:

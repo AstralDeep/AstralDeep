@@ -66,4 +66,5 @@ def good_facts(**overrides: Any) -> Facts:
     )
     facts.update(overrides)
     facts.bwrap_path = "/usr/bin/bwrap"
+    facts.proc_children = True
     return facts

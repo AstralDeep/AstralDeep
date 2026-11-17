@@ -114,6 +114,10 @@ BACKEND_REASONS = (
     "app_sandboxed",
     "platform_unsupported",
 )
+PROC_CHILDREN_MISSING = "proc_children_missing"
+HOST_MESSAGES = {
+    PROC_CHILDREN_MISSING: "This Linux kernel has no /proc children files (CONFIG_PROC_CHILDREN), and the process limit cannot be enforced without them.",
+}
 EXEC_CODES = (
     "exec.backend_unavailable",
     "exec.agent_server_unsupported",

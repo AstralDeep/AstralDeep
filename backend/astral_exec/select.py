@@ -16,6 +16,7 @@ from .constants import (
     FACT_KEYS,
     LANDLOCK_ABI,
     LINUX_BASE,
+    PROC_CHILDREN_MISSING,
 )
 from .errors import ContextError, Refusal, refuse
 from .fold import assigned, contains, fold
@@ -190,6 +191,8 @@ def select(
         path = getattr(facts, "bwrap_path", None)
         if path not in BWRAP_PATHS:
             return refuse("exec.backend_unavailable", "bwrap_missing")
+        if not getattr(facts, "proc_children", False):
+            return refuse("exec.backend_unavailable", PROC_CHILDREN_MISSING)
         document = Policy.parse(policy.canonical_bytes(), "linux").document
         if _mountinfo_refuses(document, data_dir):
             return refuse("exec.policy_overlaps_data")
