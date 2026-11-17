@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+AstralVessel moved into the `vessel/` folder of the AstralDeep repository, with its history. Releases are `vessel-v` tags there. The package name, the image names and the documentation URLs do not change. The `v0.5.0` to `v0.7.0` tags stay in the archived AstralVessel repository.
+
 ## 0.7.0
 
 AstralVessel becomes the base's headless installation. See [Migration from 0.6.0](run/migration.md).

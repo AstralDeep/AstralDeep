@@ -19,9 +19,9 @@ dependencies = [
 ]
 
 [project.urls]
-Repository = "https://github.com/AstralDeep/AstralVessel"
+Repository = "https://github.com/AstralDeep/AstralDeep/tree/main/vessel"
 Documentation = "https://astraldeep.github.io/AstralVessel/"
-Issues = "https://github.com/AstralDeep/AstralVessel/issues"
+Issues = "https://github.com/AstralDeep/AstralDeep/issues"
 Changelog = "https://astraldeep.github.io/AstralVessel/changelog/"
 
 [project.scripts]
