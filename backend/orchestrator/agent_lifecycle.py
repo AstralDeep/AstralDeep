@@ -54,6 +54,7 @@ from orchestrator.lets_lifecycle import (
     LifecycleConvergence,
     LetsLifecycleError,
 )
+from orchestrator.phi_node_policy import refuse_on_phi_node
 from orchestrator.user_agents import (
     PersonalAgentRuntimeRepository,
     StaleRuntimeGenerationError,
@@ -5148,6 +5149,8 @@ class AgentLifecycleManager:
         draft = await asyncio.to_thread(self.db.get_draft_agent, draft_id)
         if not draft:
             raise ValueError(f"Draft {draft_id} not found")
+
+        await refuse_on_phi_node()
 
         # Refused structurally — no legitimate path starts BYO code here
         if draft.get("origin") == BYO_ORIGIN:
