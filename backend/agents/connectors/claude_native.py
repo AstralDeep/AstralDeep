@@ -22,7 +22,7 @@ class ClaudeNativeAdapter:
             },
             trust_env=False,
             verify=True,
-            proxies={"http://": None, "https://": None}
+            proxies=None
         )
 
     def send_message(self, payload: Dict[str, Any]) -> Dict[str, Any]:
