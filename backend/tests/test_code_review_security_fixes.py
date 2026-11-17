@@ -1,5 +1,5 @@
 """Tests for a code-review security-hardening pass
-(backend/shared/expression_evaluator.py, orchestrator/delegation.py, mas_defense.py):
+(backend/shared/expression_evaluator.py, orchestrator/agent_authority.py, mas_defense.py):
 sandbox escape refusal, scope-fallback removal, and fail-closed signing-key defaults.
 """
 
@@ -41,32 +41,31 @@ def test_sandbox_still_allows_legitimate_expressions(expr, row, expected):
     assert ExpressionEvaluator(expr).evaluate(row) == expected
 
 
-from orchestrator.delegation import DelegationService  # noqa: E402
+from orchestrator import agent_authority as dg  # noqa: E402
 
 
 def test_required_scope_absent_is_denied_not_fallen_through():
-    assert DelegationService.is_tool_in_scope(
+    assert dg.is_tool_in_scope(
         "fetch_page", ["tools:search"], "tools:read") is False
 
 
 def test_required_scope_present_is_allowed():
-    assert DelegationService.is_tool_in_scope(
+    assert dg.is_tool_in_scope(
         "fetch_page", ["tools:read"], "tools:read") is True
 
 
 def test_required_scope_present_but_tool_level_constrained():
     scopes = ["tools:read", "tool:other"]
-    assert DelegationService.is_tool_in_scope("fetch_page", scopes, "tools:read") is False
-    assert DelegationService.is_tool_in_scope("other", scopes, "tools:read") is True
+    assert dg.is_tool_in_scope("fetch_page", scopes, "tools:read") is False
+    assert dg.is_tool_in_scope("other", scopes, "tools:read") is True
 
 
 def test_no_required_scope_falls_back_to_tool_level():
-    assert DelegationService.is_tool_in_scope("x", [], "") is True
-    assert DelegationService.is_tool_in_scope("x", ["tool:x"], "") is True
-    assert DelegationService.is_tool_in_scope("y", ["tool:x"], "") is False
+    assert dg.is_tool_in_scope("x", [], "") is True
+    assert dg.is_tool_in_scope("x", ["tool:x"], "") is True
+    assert dg.is_tool_in_scope("y", ["tool:x"], "") is False
 
 
-from orchestrator import delegation as dg  # noqa: E402
 
 
 def test_normalize_hop_parent_synthesizes_missing_actor():

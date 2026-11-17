@@ -804,7 +804,7 @@ async def test_unavailable_reference_metadata_still_requires_current_source_auth
         elif loss == "retention":
             state.policy.write_text("[]")
         else:
-            from orchestrator.delegation import authorize_chained_tool_call
+            from orchestrator.agent_authority import authorize_chained_tool_call
             parent = base_token(sub=state.owner, agent="requester", scopes=["tools:read", "tool:recall_observation"])
             assert authorize_chained_tool_call(parent, "recall_observation", "tools:read")[0]
             assert not authorize_chained_tool_call(parent, TOOL, "tools:read")[0]

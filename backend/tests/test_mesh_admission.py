@@ -16,7 +16,7 @@ import uuid
 import pytest
 from jose import jwt
 
-from orchestrator import delegation, mesh_admission as ma, mesh_enrollment as me
+from orchestrator import agent_authority as delegation, mesh_admission as ma, mesh_enrollment as me
 from tests.helpers.mesh_runtime import MeshRuntime
 from tests.helpers.voice_plane_runtime import isolated_plane_runtime
 

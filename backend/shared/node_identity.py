@@ -1,5 +1,5 @@
 """Personal-node identity: the profile switch, the node signing key, issuer owner ids for server profiles, and single-owner custody of the verified mesh id, stored as mesh.<hex> because storage paths refuse the kernel's sha256: form.
-shared/token_verify.py, orchestrator/delegation.py, node_mesh.py and node_api.py build on it; it never imports orchestrator code.
+shared/token_verify.py, orchestrator/agent_authority.py, node_mesh.py and node_api.py build on it; it never imports orchestrator code.
 """
 
 from __future__ import annotations

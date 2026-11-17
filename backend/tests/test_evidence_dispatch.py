@@ -396,7 +396,7 @@ async def test_delegated_dispatch_preserves_parent_requester_and_mints_child_aut
                                                   {"roll_dice": "dice-roller-1"}, "conversation", user_id="alice",
                                                   parent_token=parent, initiating_agent_id="initiator-1")
     assert result and not result.error
-    from orchestrator import delegation
+    from orchestrator import agent_authority as delegation
 
     context = state.observed[0]
     assert context["requester_verified"] is True and context["requester_parent"] == snapshot

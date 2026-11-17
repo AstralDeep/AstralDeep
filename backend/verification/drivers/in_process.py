@@ -523,7 +523,7 @@ class InProcessDriver:
         from verification.isolation import make_principal
 
         d = self._execution_principal(make_principal(run_id, "delegD"))
-        from orchestrator.delegation import mint_child_delegation
+        from orchestrator.agent_authority import mint_child_delegation
 
         claims: Dict[str, Any] = mint_child_delegation(
             {"sub": d.user_id, "scope": "tools:read", "exp": int(time.time()) + 300},

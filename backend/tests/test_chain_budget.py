@@ -131,7 +131,7 @@ def test_new_turn_resets_the_budget():
 
 
 def test_depth_bound_composes_with_the_048_bound():
-    from orchestrator.delegation import DEFAULT_MAX_DELEGATION_DEPTH
+    from orchestrator.agent_authority import DEFAULT_MAX_DELEGATION_DEPTH
 
     b = ChainBudget(turn_id="t")
     assert b.max_depth == DEFAULT_MAX_DELEGATION_DEPTH

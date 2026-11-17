@@ -19,7 +19,7 @@ import pytest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import audit.recorder as audit_recorder  # noqa: E402
-from orchestrator import delegation as dg  # noqa: E402
+from orchestrator import agent_authority as dg  # noqa: E402
 from orchestrator import subtasks  # noqa: E402
 from orchestrator.orchestrator import Orchestrator  # noqa: E402
 from shared.feature_flags import flags  # noqa: E402

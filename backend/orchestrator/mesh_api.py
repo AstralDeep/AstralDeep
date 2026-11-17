@@ -48,7 +48,7 @@ async def _owner_claims_optional(
             401, "Keycloak or possession-bound delegated identity required"
         )
     if credentials is not None:
-        from orchestrator.delegation import decode_token_payload
+        from orchestrator.agent_authority import decode_token_payload
 
         unverified = decode_token_payload(credentials.credentials)
         if isinstance(unverified, dict) and ma.MEMBER_CLAIM in unverified:

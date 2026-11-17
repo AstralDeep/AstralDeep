@@ -20606,7 +20606,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
     def _register_dispatch_context(self, request_id: str, agent_id: str,
                                    args: Dict, ui_websocket) -> None:
         try:
-            from orchestrator import delegation as _dg
+            from orchestrator import agent_authority as _dg
             token = args.get("_delegation_token") if isinstance(args, dict) else None
             parent_payload = _dg.decode_token_payload(token) if token else None
             if parent_payload is not None:
@@ -20639,7 +20639,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                 requested_scopes=None, granted_scopes=None) -> None:
         from audit.recorder import get_recorder, now_utc
         from audit.schemas import AuditEventCreate
-        from orchestrator import delegation as _dg
+        from orchestrator import agent_authority as _dg
         rec = get_recorder()
         if rec is None:
             return
@@ -20683,7 +20683,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                   tool_name: str, user_id: str,
                                   chat_id: Optional[str]):
         from audit.recorder import make_correlation_id
-        from orchestrator import delegation as _dg
+        from orchestrator import agent_authority as _dg
         corr = make_correlation_id()
 
         card = self.agent_cards.get(agent_id)
@@ -20782,7 +20782,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         return _dg.encode_delegation_payload(child), corr
 
     async def _handle_agent_hop_request(self, websocket, msg: "AgentHopRequest") -> None:
-        from orchestrator import delegation as _dg
+        from orchestrator import agent_authority as _dg
         hop_id = msg.request_id or ""
         callee = msg.callee_agent_id or ""
         tool_name = msg.tool_name or ""
@@ -22734,7 +22734,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 service = mesh_admission.admission_from_orchestrator(self)
                 return await asyncio.to_thread(service.delegation_token, session, agent_id)
             if session.get("_invocation_channel") == "mcp":
-                from orchestrator import delegation as _dg
+                from orchestrator import agent_authority as _dg
                 try:
                     return await self._mint_mcp_delegation_token(
                         agent_id,
@@ -22752,7 +22752,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     return None
             from shared import node_identity
             if node_identity.is_personal():
-                from orchestrator import delegation as _dg
+                from orchestrator import agent_authority as _dg
                 if session.get("sub") != user_id:
                     return None
                 try:
@@ -22936,7 +22936,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         *,
         node_session: bool = False,
     ) -> Optional[str]:
-        from orchestrator import delegation as _dg
+        from orchestrator import agent_authority as _dg
         from orchestrator.chain_authority import machine_tool_admitted
 
         card = self.agent_cards.get(agent_id)
@@ -22999,7 +22999,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 list(enabled_scopes) + [f"tool:{tool}" for tool in allowed_tools]
             ),
             "iss": "astral-internal-delegation",
-            "aud": self.delegation.agent_service_client_id,
+            "aud": _dg.AGENT_AUDIENCE,
             "iat": now,
             "exp": now + 300 if node_session else min(inbound_exp, now + 300),
             "delegation": True,

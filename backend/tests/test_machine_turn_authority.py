@@ -241,7 +241,7 @@ async def test_unbound_machine_turn_still_refused_in_production(real_orch, monke
 async def test_machine_turn_chains_attenuate(real_orch):
     import asyncio
 
-    from orchestrator import delegation as dg
+    from orchestrator import agent_authority as dg
     from shared.feature_flags import flags
     from shared.protocol import AgentHopRequest
 

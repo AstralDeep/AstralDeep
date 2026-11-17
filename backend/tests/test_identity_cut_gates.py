@@ -11,7 +11,7 @@ import pytest
 
 from devtools import dev_mesh
 from orchestrator import node_mesh
-from orchestrator import delegation as dg
+from orchestrator import agent_authority as dg
 from shared import node_identity
 from shared.protocol import MCPResponse
 from tests import fake_astral_kernel

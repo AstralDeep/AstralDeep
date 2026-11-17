@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 from jose import jwt
 
 from audit.repository import AuditRepository
-from orchestrator import delegation, mesh_api, mesh_admission as ma, web_auth
+from orchestrator import agent_authority as delegation, mesh_api, mesh_admission as ma, web_auth
 from orchestrator.mesh_enrollment import MeshEnrollmentStore
 from orchestrator.plane_repository_context import ApplicationPlaneSource
 from orchestrator.session_store import WebSessionStore

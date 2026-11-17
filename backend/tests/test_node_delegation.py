@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from orchestrator import delegation as dg
+from orchestrator import agent_authority as dg
 from orchestrator import mesh_admission as ma
 from orchestrator.emergency_stop import EmergencyStopCoordinator, EmergencyStopRefused
 from shared import node_identity as ni
