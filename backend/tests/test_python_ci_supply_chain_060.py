@@ -77,6 +77,12 @@ REVIEWED_VESSEL_DEPLOY_UP_FIXTURE_FINGERPRINT = (
     "46bc2006932ed18ad4632690565431d10c683aeb:"
     "tests/test_cli.py:generic-api-key:53"
 )
+REVIEWED_PLANE_FIXTURE_FINGERPRINTS = {
+    "70508449046127c7a9af914bcc7da01501ab2fea:tests/integration/test_catalog_caller_rollback.py:generic-api-key:625",
+    "70508449046127c7a9af914bcc7da01501ab2fea:tests/repositories/test_typesafe_credential.py:generic-api-key:420",
+    "098588d6256599e4902bb3f6c322df267ddaccde:provenance/attachment-parser-and-blob-composition.json:generic-api-key:68",
+    "c1182c09ca767c7c8b3396fae91aa27d0b1c56ce:tests/repositories/test_audit.py:generic-api-key:280",
+}
 REVIEWED_CONTEXT_TOKEN_ACCOUNTING_FINGERPRINTS = {
     (
         "a061349f7fcda21b417280679ce17ace99c27404:"
@@ -263,7 +269,7 @@ def test_gitleaks_history_baseline_is_exact_fingerprint_only() -> None:
     assert len(share) == 381
     assert hashlib.sha256("\n".join(sorted(share)).encode()).hexdigest() == REVIEWED_SHARE_VECTOR_BASELINE_SHA256
     assert REVIEWED_PUBLIC_LOCAL_MESH_FINGERPRINTS <= set(fingerprints)
-    assert len(fingerprints) == 28 + len(public_mesh) + len(share) + 19
+    assert len(fingerprints) == 28 + len(public_mesh) + len(share) + 23
     assert len(fingerprints) == len(set(fingerprints))
     assert REVIEWED_074_FINGERPRINTS <= set(fingerprints)
     assert REVIEWED_079_FINGERPRINT in fingerprints
@@ -273,6 +279,7 @@ def test_gitleaks_history_baseline_is_exact_fingerprint_only() -> None:
     assert REVIEWED_DEV_MESH_ANNOTATION_FINGERPRINT in fingerprints
     assert REVIEWED_VESSEL_DEPLOY_FIXTURE_FINGERPRINT in fingerprints
     assert REVIEWED_VESSEL_DEPLOY_UP_FIXTURE_FINGERPRINT in fingerprints
+    assert REVIEWED_PLANE_FIXTURE_FINGERPRINTS <= set(fingerprints)
     assert REVIEWED_CONTEXT_TOKEN_ACCOUNTING_FINGERPRINTS <= set(fingerprints)
     assert REVIEWED_NODE_PACK_REDACTION_FINGERPRINTS <= set(fingerprints)
     assert all(
