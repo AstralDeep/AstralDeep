@@ -2,6 +2,7 @@
 It reuses the roster v2 test devices and the preserved 105 helpers, and `--check` fails when the committed file differs."""
 
 import argparse
+import hashlib
 import importlib
 import json
 import sys
@@ -12,6 +13,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 caller_ticket = importlib.import_module("caller_ticket")
 crypto = importlib.import_module("astral_mesh_ref.crypto")
+strict = importlib.import_module("ed25519_strict")
 tools = importlib.import_module("astral_mesh_ref.tools")
 testkit = importlib.import_module("astral_mesh_ref.testkit")
 DetRng, TestDevice, seed, scalar = (
@@ -72,6 +74,88 @@ def _high_s(signature_b64: str) -> str:
     raw = caller_ticket.b64url_decode(signature_b64)
     s = int.from_bytes(raw[32:], "big")
     return b64(raw[:32] + (crypto.P256_ORDER - s).to_bytes(32, "big"))
+
+
+def clamped_scalar(secret: bytes) -> int:
+    digest = bytearray(hashlib.sha512(secret).digest()[:32])
+    digest[0] &= 248
+    digest[31] &= 127
+    digest[31] |= 64
+    return int.from_bytes(digest, "little")
+
+
+def challenge(r: bytes, public: bytes, message: bytes) -> int:
+    digest = hashlib.sha512(r + public + message).digest()
+    return int.from_bytes(digest, "little") % strict.L
+
+
+def schnorr(
+    secret: bytes, public: bytes, r: bytes, r_scalar: int, message: bytes
+) -> bytes:
+    k = challenge(r, public, message)
+    s = (r_scalar + k * clamped_scalar(secret)) % strict.L
+    return r + s.to_bytes(32, "little")
+
+
+def cofactored_valid(public: bytes, message: bytes, signature: bytes) -> bool:
+    r, a = strict.decode_point(signature[:32]), strict.decode_point(public)
+    assert r is not None and a is not None
+    s = int.from_bytes(signature[32:], "little")
+    k = challenge(signature[:32], public, message)
+    left = strict.multiply(strict.BASE, 8 * s)
+    return left == strict.multiply(strict.add(r, strict.multiply(a, k)), 8)
+
+
+def small_order_points() -> dict[str, bytes]:
+    points = {
+        "identity": bytes([1]) + bytes(31),
+        "order_2": bytes.fromhex("ec" + "ff" * 30 + "7f"),
+        "order_4": bytes(32),
+        "order_8": bytes.fromhex(
+            "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a"
+        ),
+    }
+    for value in points.values():
+        point = strict.decode_point(value)
+        assert point is not None and strict.small_order(point)
+    return points
+
+
+def mixed_order_holder_keys(public: bytes) -> dict[str, bytes]:
+    a = strict.decode_point(public)
+    assert a is not None and strict.torsion_free(a)
+    out = {}
+    for name, value in small_order_points().items():
+        if name == "identity":
+            continue
+        torsion = strict.decode_point(value)
+        assert torsion is not None
+        mixed = strict.encode_point(strict.add(a, torsion))
+        point = strict.decode_point(mixed)
+        assert point is not None and not strict.small_order(point)
+        assert not strict.torsion_free(point)
+        out["mixed_" + name] = mixed
+    return out
+
+
+def bad_holder_keys() -> dict[str, bytes]:
+    small = {name + "_point": value for name, value in small_order_points().items()}
+    odd = next(
+        y
+        for y in range(2, 19)
+        if (point := strict.decode_point(y.to_bytes(32, "little"))) is not None
+        and not strict.small_order(point)
+    )
+    dark = next(
+        y
+        for y in range(2, 200)
+        if strict.decode_point(y.to_bytes(32, "little")) is None
+    )
+    return {
+        **small,
+        "non_canonical_encoding": (odd + strict.P).to_bytes(32, "little"),
+        "off_curve": dark.to_bytes(32, "little"),
+    }
 
 
 def generate() -> dict[str, Any]:
@@ -179,6 +263,7 @@ def generate() -> dict[str, Any]:
     def sequence(name: str, steps: list[dict[str, Any]], want: list[str]) -> None:
         record(name, "caller_verify_sequence", {"state": state, "steps": steps}, want)
 
+    holder_keys = bad_holder_keys()
     ticket = make_ticket()
     verify("valid_mcp_tool", "ok", step(ticket))
     both = make_ticket(
@@ -389,6 +474,17 @@ def generate() -> dict[str, Any]:
         "caller.proof_stale",
         step(ticket),
         started_ms=NOW - 1000 - 5000,
+    )
+    good = make_proof(ticket)
+    raw = caller_ticket.b64url_decode(good["sig"])
+    high = int.from_bytes(raw[32:], "little") + strict.L
+    verify(
+        "proof_non_canonical_s",
+        "caller.proof_bad_signature",
+        step(
+            ticket,
+            {**good, "sig": b64(raw[:32] + high.to_bytes(32, "little"))},
+        ),
     )
     verify(
         "bad_holder_signature",
@@ -645,6 +741,18 @@ def generate() -> dict[str, Any]:
         "caller.malformed",
         step(make_ticket(tools=[{"def": echo, "name": "echo", "x": 1}])),
     )
+    for name, key in holder_keys.items():
+        verify(
+            "holder_key_" + name,
+            "caller.malformed",
+            step(make_ticket(holder=b64(key))),
+        )
+    forger = make_ticket(holder=b64(holder_keys["identity_point"]))
+    forged = caller_ticket.sign_proof(
+        holder, {k: v for k, v in make_proof(forger).items() if k != "sig"}
+    )
+    forged["sig"] = b64(holder_keys["identity_point"] + bytes(32))
+    verify("small_order_holder_forged_proof", "caller.malformed", step(forger, forged))
     verify(
         "holder_key_31_bytes",
         "caller.malformed",
@@ -853,6 +961,13 @@ def generate() -> dict[str, Any]:
         {"text": holder_text.replace(":v1:", ":v2:")},
         "caller.malformed",
     )
+    for name, key in holder_keys.items():
+        record(
+            "holder_form_" + name,
+            "caller_holder_text",
+            {"text": caller_ticket.HOLDER_TEXT + b64(key)},
+            "caller.malformed",
+        )
     record("key_form_derives_holder", "caller_key_text", {"text": key_text}, "ok")
     record(
         "key_form_31_bytes",
@@ -866,6 +981,127 @@ def generate() -> dict[str, Any]:
         {"text": holder_text},
         "caller.malformed",
     )
+
+    holder_raw = crypto.ed25519_public(holder)
+    assert (
+        strict.encode_point(strict.multiply(strict.BASE, clamped_scalar(holder)))
+        == holder_raw
+    )
+
+    def small_order_r_proof(r: bytes) -> dict[str, Any]:
+        body = {k: v for k, v in make_proof(ticket).items() if k != "sig"}
+        message = caller_ticket.signing_message(caller_ticket.PROOF_CONTEXT, body)
+        signature = schnorr(holder, holder_raw, r, 0, message)
+        assert cofactored_valid(holder_raw, message, signature)
+        library = crypto.ed25519_verify(holder_raw, message, signature)
+        assert library == (r == bytes([1]) + bytes(31))
+        return {**body, "sig": b64(signature)}
+
+    for name, r in small_order_points().items():
+        verify(
+            "proof_small_order_r_" + name,
+            "caller.proof_bad_signature",
+            step(ticket, small_order_r_proof(r)),
+        )
+
+    body = {k: v for k, v in make_proof(ticket).items() if k != "sig"}
+    message = caller_ticket.signing_message(caller_ticket.PROOF_CONTEXT, body)
+    r_scalar = int.from_bytes(rng.bytes(32), "little") % strict.L
+    torsion = strict.decode_point(small_order_points()["order_8"])
+    assert torsion is not None
+    mixed_r = strict.encode_point(
+        strict.add(strict.multiply(strict.BASE, r_scalar), torsion)
+    )
+    signature = schnorr(holder, holder_raw, mixed_r, r_scalar, message)
+    assert cofactored_valid(holder_raw, message, signature)
+    assert not crypto.ed25519_verify(holder_raw, message, signature)
+    verify(
+        "proof_mixed_order_r_cofactored_only",
+        "caller.proof_bad_signature",
+        step(ticket, {**body, "sig": b64(signature)}),
+    )
+
+    mixed_keys = mixed_order_holder_keys(holder_raw)
+    for name, key in mixed_keys.items():
+        verify(
+            "holder_key_" + name + "_point",
+            "caller.malformed",
+            step(make_ticket(holder=b64(key))),
+        )
+        record(
+            "holder_form_" + name + "_point",
+            "caller_holder_text",
+            {"text": caller_ticket.HOLDER_TEXT + b64(key)},
+            "caller.malformed",
+        )
+
+    def mixed_order_proof(cofactorless: bool) -> dict[str, Any]:
+        key = mixed_keys["mixed_order_8"]
+        minted = make_ticket(holder=b64(key))
+        while True:
+            body = {k: v for k, v in make_proof(minted).items() if k != "sig"}
+            message = caller_ticket.signing_message(caller_ticket.PROOF_CONTEXT, body)
+            r_scalar = int.from_bytes(rng.bytes(32), "little") % strict.L
+            r = strict.encode_point(strict.multiply(strict.BASE, r_scalar))
+            if (challenge(r, key, message) % 8 == 0) == cofactorless:
+                break
+        signature = schnorr(holder, key, r, r_scalar, message)
+        assert cofactored_valid(key, message, signature)
+        assert crypto.ed25519_verify(key, message, signature) == cofactorless
+        return step(minted, {**body, "sig": b64(signature)})
+
+    verify(
+        "mixed_order_holder_cofactorless_valid_proof",
+        "caller.malformed",
+        mixed_order_proof(True),
+    )
+    verify(
+        "mixed_order_holder_cofactored_only_proof",
+        "caller.malformed",
+        mixed_order_proof(False),
+    )
+
+    verify(
+        "label_format_character_added_in_unicode_15",
+        "caller.malformed",
+        step(make_ticket(label="a\U00013439b")),
+    )
+    verify(
+        "label_unassigned_code_point",
+        "caller.malformed",
+        step(make_ticket(label="a\u0378b")),
+    )
+    verify(
+        "label_private_use_code_point",
+        "caller.malformed",
+        step(make_ticket(label="a\ue000b")),
+    )
+    verify(
+        "label_letter_added_in_unicode_16_accepted",
+        "ok",
+        step(make_ticket(label="Garay \U00010d50")),
+    )
+    verify(
+        "label_symbol_added_in_unicode_17_refused",
+        "caller.malformed",
+        step(make_ticket(label="a\U0001faeab")),
+    )
+    for key_name, later, change in (
+        ("identity_point", "expired", {"expires_ms": NOW - 1}),
+        ("identity_point", "wrong_mesh", {"mesh": other_mesh}),
+        ("identity_point", "bad_presence_signature", {"signing": stranger_scalar}),
+        ("mixed_order_8", "expired", {"expires_ms": NOW - 1}),
+        ("mixed_order_8", "wrong_mesh", {"mesh": other_mesh}),
+    ):
+        verify(
+            f"holder_key_{key_name}_with_later_{later}",
+            "caller.malformed",
+            step(
+                make_ticket(
+                    holder=b64(({**holder_keys, **mixed_keys})[key_name]), **change
+                )
+            ),
+        )
 
     return {
         "format": "astral.vectors/v1",

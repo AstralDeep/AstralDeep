@@ -59,6 +59,18 @@ REVIEWED_HARNESS_CANARY_FINGERPRINT = (
     "3f01f0eca9255bb779fa5ff3ff67ce93716d51f1:"
     "backend/orchestrator/harness/conformance.py:typesafe-system-one-key:33"
 )
+REVIEWED_DEV_MESH_ANNOTATION_FINGERPRINT = (
+    "0e39f3eb46f250cf2d1e109637fd8a2a076fca46:"
+    "backend/devtools/dev_mesh.py:generic-api-key:86"
+)
+REVIEWED_VESSEL_DEPLOY_FIXTURE_FINGERPRINT = (
+    "46bc2006932ed18ad4632690565431d10c683aeb:"
+    "tests/test_cli.py:generic-api-key:44"
+)
+REVIEWED_VESSEL_DEPLOY_UP_FIXTURE_FINGERPRINT = (
+    "46bc2006932ed18ad4632690565431d10c683aeb:"
+    "tests/test_cli.py:generic-api-key:53"
+)
 REVIEWED_CONTEXT_TOKEN_ACCOUNTING_FINGERPRINTS = {
     (
         "a061349f7fcda21b417280679ce17ace99c27404:"
@@ -80,6 +92,7 @@ REVIEWED_PUBLIC_LOCAL_MESH_FINGERPRINTS = {
     f"generic-api-key:{line}"
     for line in (78, 101, 124, 147, 170, 193, 216, 239, 468, 484, 497, 510)
 }
+REVIEWED_SHARE_VECTOR_BASELINE_SHA256 = '541a7b2d97e32f3bf575c15f2bc325d8e6420f2dec45ff1c7b11903e6e0d119b'
 REVIEWED_PUBLIC_MESH_BASELINE_SHA256 = '3dae639f3d4261b5a0fef550bb0645bbd39bc143e6a85eb6f2e464881c8e3ea0'
 WINDOWS_CANDIDATE = REPO_ROOT / ".github" / "workflows" / "build-windows-candidate.yml"
 WINDOWS_RELEASE_BRIDGE = REPO_ROOT / ".github" / "workflows" / "release-windows.yml"
@@ -239,14 +252,21 @@ def test_gitleaks_history_baseline_is_exact_fingerprint_only() -> None:
     assert public_mesh <= set(fingerprints)
     assert len(public_mesh) == 133
     assert hashlib.sha256("\n".join(sorted(public_mesh)).encode()).hexdigest() == REVIEWED_PUBLIC_MESH_BASELINE_SHA256
+    share = {fingerprint for fingerprint in fingerprints
+             if ":specs/106-sign-in-free-clients/contracts/vectors/share-v1.json:" in fingerprint}
+    assert len(share) == 381
+    assert hashlib.sha256("\n".join(sorted(share)).encode()).hexdigest() == REVIEWED_SHARE_VECTOR_BASELINE_SHA256
     assert REVIEWED_PUBLIC_LOCAL_MESH_FINGERPRINTS <= set(fingerprints)
-    assert len(fingerprints) == 28 + len(public_mesh) + 12
+    assert len(fingerprints) == 28 + len(public_mesh) + len(share) + 15
     assert len(fingerprints) == len(set(fingerprints))
     assert REVIEWED_074_FINGERPRINTS <= set(fingerprints)
     assert REVIEWED_079_FINGERPRINT in fingerprints
     assert REVIEWED_089_FINGERPRINTS <= set(fingerprints)
     assert REVIEWED_GAIA_SDK_FINGERPRINT in fingerprints
     assert REVIEWED_HARNESS_CANARY_FINGERPRINT in fingerprints
+    assert REVIEWED_DEV_MESH_ANNOTATION_FINGERPRINT in fingerprints
+    assert REVIEWED_VESSEL_DEPLOY_FIXTURE_FINGERPRINT in fingerprints
+    assert REVIEWED_VESSEL_DEPLOY_UP_FIXTURE_FINGERPRINT in fingerprints
     assert REVIEWED_CONTEXT_TOKEN_ACCOUNTING_FINGERPRINTS <= set(fingerprints)
     assert all(
         re.fullmatch(

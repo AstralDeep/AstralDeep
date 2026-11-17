@@ -1,3 +1,5 @@
+> Spec 106 reserves every `settings.set` key that starts with `connection/` or `connection.`, among them `connection/<id>` and `connection.state/<id>/<device id>`, for [connections](../../106-sign-in-free-clients/contracts/connection.md).
+
 # Event contract, `astral.event/v1`
 
 This contract fixes the bytes of a signed, encrypted event, the chain each device keeps, and the rules that make every peer compute the same state from the same events. It covers canonical encoding, ids, signatures, the header, the body, the wire envelope, feeds, the event types, and the merge rules of the event families.

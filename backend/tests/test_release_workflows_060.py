@@ -1258,7 +1258,7 @@ def test_release_windows_signing_identity_surface_matches_the_shipped_client() -
     # Must trigger on tag push — branch push would change the cert SAN
     assert re.search(r'(?m)^on:$', head)
     assert re.search(r'(?m)^  push:$', head)
-    assert re.search(r'(?m)^    tags: \["v\*"\]$', head)
+    assert re.search(r'(?m)^    tags: \["v\[0-9\]\*"\]$', head)
 
     identity = (
         "https://github.com/AstralDeep/AstralDeep/.github/workflows/"
