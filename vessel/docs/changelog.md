@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+Vessel pins the Kernel with mesh identity, pairs the node with no token and carries no owner section.
+
+- The pinned Kernel commit and the Linux wheel and mailbox digests in `config/kernel-binding.json` are the mesh-identity build, version 0.2.0.
+- `astralvessel pair` needs no sign-in. It reads the node's pairing secret inside the node container and asks the node's loopback offer route. `--token-file` and `--label` are gone.
+- `ask`, `chat` and `conformance` use an owner-minted caller ticket and its holder key (`ASTRAL_CALLER_TICKET`, `ASTRAL_CALLER_KEY`, `--ticket-file`, `--key-file`). A bearer token is never sent.
+- `up` takes no `--issuer`, `--client-id` or `--subject`, and the generated deployment has no `[owner]` section. The generated Compose file sets no `KEYCLOAK_*`, `ASTRAL_ACCEPTED_ISSUERS` or `ASTRAL_NODE_OWNER`.
+- An older `deployment.toml` with an `[owner]` section still loads, with a notice, and is never rewritten.
+- The descriptor must be v2. A v1 descriptor gets a clear error.
+- `check` reports a node in `node.legacy_owner` and deletes nothing.
+- The executor derives a call's owner from the verified mesh.
+
 AstralVessel moved into the `vessel/` folder of the AstralDeep repository, with its history. Releases are `vessel-v` tags there. The package name, the image names and the documentation URLs do not change. The `v0.5.0` to `v0.7.0` tags stay in the archived AstralVessel repository.
 
 ## 0.7.0

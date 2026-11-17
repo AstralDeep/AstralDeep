@@ -6,9 +6,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import threading
-import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 
@@ -29,7 +29,6 @@ from cryptography.hazmat.primitives.asymmetric import ec, utils  # noqa: E402
 pytestmark = pytest.mark.asyncio(loop_scope="module")
 
 ORDER = 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551
-ISSUER, CLIENT, SUBJECT = "https://auth.example.test/realms/astral", "astral-desktop", "owner-1"
 MASTER = "m" * 20
 SANDBOX_TOKEN = "s" * 16
 ANSWER = "the model saw the tool output"
@@ -119,22 +118,13 @@ async def world(tmp_path_factory):
     tmp = tmp_path_factory.mktemp("e2e")
     server = ThreadingHTTPServer(("127.0.0.1", 0), Model)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    issuer_key = ec.generate_private_key(ec.SECP256R1())
-    raw = point(issuer_key)
-    jwk = {"kid": "k1", "kty": "EC", "crv": "P-256", "x": b64(raw[1:33]), "y": b64(raw[33:])}
-    jwks = json.dumps({"keys": [jwk]})
     owner = k.Kernel.open(k.KernelConfig(
         data_dir=str(tmp / "owner"), operations_secret=k.new_operations_secret(), wrap_secret=k.new_operations_secret(),
         restore_marker=None, device_label="owner phone", device_kind=k.DeviceKind.DESKTOP,
-        issuers=[k.IssuerConfig(issuer=ISSUER, client_id=CLIENT, jwks_json=jwks)],
         network=k.NetworkConfig(relay=k.RelayChoice.DISABLED(), local_discovery=False, internet_lookup=False,
                                 loopback_only=True, sync_interval_ms=500, mailbox=None)), Signer())
-    request = owner.begin_mesh_creation()
-    header = b64(json.dumps({"alg": "ES256", "kid": "k1", "typ": "JWT"}, separators=(",", ":")).encode())
-    now = int(time.time())
-    claims = {"iss": ISSUER, "aud": CLIENT, "sub": SUBJECT, "iat": now, "exp": now + 300, "nonce": request.nonce}
-    signing = f"{header}.{b64(json.dumps(claims, sort_keys=True, separators=(',', ':')).encode())}"
-    owner.complete_mesh_creation(f"{signing}.{b64(sign(issuer_key, signing.encode()))}")
+    owner.create_mesh()
+    owner.confirm_mesh_recovery()
     await owner.start_network()
     owner.set_model_provider(k.ModelProviderConfig(
         name="fake", base_url=f"http://127.0.0.1:{server.server_address[1]}/v1", models=["fake-1"],
@@ -149,8 +139,7 @@ async def world(tmp_path_factory):
         f'[agent]\nname = "tester"\ndescription = "A test agent."\n[tools]\nbuiltin = ["read", "list", "bash"]\n'
         f'[sandbox]\nworkdir = "{work}"\ndeadline_seconds = 20\ntool_timeout_seconds = 5\n')
     path = tmp / "deployment.toml"
-    path.write_text(deployment_text(package, mounts="", egress=False).replace(
-        'client_id = "astral-app"', f'client_id = "astral-app"\nsubject = "{SUBJECT}"'))
+    path.write_text(deployment_text(package, mounts="", egress=False))
     deployment = load_deployment(path)
     sandbox_app = sandbox.sandbox_app(str(deployment.agents["guide"].package.root), token=SANDBOX_TOKEN, confine=False)
     runner = sandbox.RemoteRunner("http://sb", SANDBOX_TOKEN, 5, [])
@@ -181,8 +170,9 @@ async def world(tmp_path_factory):
         await until(lambda: len(owner.peer_tool_catalog()) == 3, "the executor's catalog to reach the owner")
         listed = {t.tool.name: t for t in owner.peer_tool_catalog()}
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://ex") as http:
-            yield SimpleNamespace(owner=owner, service=service, device=device, http=http, tools=tools, listed=listed,
-                                  deployment=deployment, server=server)
+            owner_id = "mesh." + owner.roster().mesh_id.removeprefix("sha256:")
+            yield SimpleNamespace(owner_id=owner_id, owner=owner, service=service, device=device, http=http,
+                                  tools=tools, listed=listed, deployment=deployment, server=server)
     await owner.stop_network()
     server.shutdown()
 
@@ -216,7 +206,7 @@ def body(world, asked, **over):
     call = asked.call
     return {"agent": "guide", "tool": call.tool, "arguments_json": call.arguments_json,
             "action_json": call.action_json, "ticket_json": call.ticket_json,
-            "owner": world.deployment.owner.owner_id, **over}
+            "owner": world.owner_id, **over}
 
 
 def headers():
@@ -319,3 +309,40 @@ async def test_a_stopped_mesh_refuses_a_ticket_minted_before_the_stop(world):
 
 async def _executor_stopped(world):
     return (await world.service.mesh_status()).stopped
+
+
+async def test_the_kernel_accepts_the_proofs_a_vessel_caller_signs_and_refuses_a_forged_one(world):
+    from cryptography.hazmat.primitives.asymmetric import ed25519
+
+    from astralvessel.node import KEY_TEXT, TICKET_TEXT, Caller
+    from astralvessel.node import b64 as encode
+
+    seed = bytes(range(1, 33))
+    public = ed25519.Ed25519PrivateKey.from_private_bytes(seed).public_key().public_bytes(
+        serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    minted = world.owner.mint_caller_ticket(world.device, "astral-caller-holder:v1:" + encode(public), "vessel script",
+                                            ["list"], True, 3600)
+    assert minted.text.startswith(TICKET_TEXT)
+    caller = Caller(minted.text, KEY_TEXT + encode(seed))
+    forger = Caller(minted.text, KEY_TEXT + encode(bytes(range(2, 34))))
+    raw = b'{"jsonrpc":"2.0"}'
+
+    def verify(who, tool="a2a.message"):
+        headers = who.headers("POST", "/a2a", raw)
+        return world.service.verify_caller_request(k.CallerRequest(
+            authorization=headers["Authorization"], proof=headers["Astral-Caller-Proof"], method="POST",
+            target="/a2a", body_sha256="sha256:" + hashlib.sha256(raw).hexdigest(), tool=tool))
+
+    for _ in range(120):
+        try:
+            verified = verify(caller)
+            break
+        except k.KernelError as exc:
+            assert "stale" in str(exc.code if hasattr(exc, "code") else exc), exc
+            await asyncio.sleep(0.1)
+    else:
+        raise AssertionError("the kernel never accepted a fresh proof")
+    assert verified.label == "vessel script" and verified.id == caller.ticket_id
+    with pytest.raises(k.KernelError) as refused:
+        verify(forger)
+    assert "proof_bad_signature" in str(refused.value)

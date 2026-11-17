@@ -71,12 +71,6 @@ The top level of `deployment.toml`.
 
 <!-- config: astralvessel.deployment.NodeSection -->
 
-### OwnerSection
-
-`[owner]`
-
-<!-- config: astralvessel.deployment.OwnerSection -->
-
 ### ExecutorSection
 
 `[executor]`

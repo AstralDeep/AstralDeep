@@ -11,7 +11,7 @@
 
 ## The node
 
-The node runs with `ASTRAL_NODE_PROFILE=personal`. Its data directory is mode 0700 and its database file and keys are mode 0600. It trusts one issuer and one owner. Its A2A endpoint is `/a2a` and it publishes a descriptor at `/api/node/descriptor`. Deep's turn loop runs every turn. AstralVessel has no loop of its own.
+The node runs with `ASTRAL_NODE_PROFILE=personal`. Its data directory is mode 0700 and its database file and keys are mode 0600. Its owner is the mesh it joins. It signs nobody in and refuses a bearer token, so devices in the mesh and holders of an owner-minted caller ticket are the only callers. Its A2A endpoint is `/a2a` and it publishes a descriptor at `/api/node/descriptor`. Deep's turn loop runs every turn. AstralVessel has no loop of its own.
 
 ## The executor
 

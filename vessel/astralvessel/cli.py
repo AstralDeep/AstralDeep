@@ -1,5 +1,5 @@
-# Command line entry points: up, check, down, pair, ask and chat for the owner; deploy writes Compose from a
-# deployment file; executor and sandbox run inside their containers, configured through the environment.
+# Command line entry points: up, check, down and pair for the operator, ask and chat with a caller ticket; deploy
+# writes Compose from a deployment file; executor and sandbox run inside their containers, configured by environment.
 
 from __future__ import annotations
 
@@ -30,9 +30,6 @@ def parser() -> argparse.ArgumentParser:
     sub = root.add_subparsers(dest="command", required=True)
     up = sub.add_parser("up", help="start the node, writing a deployment first if there is none; then check it")
     up.add_argument("deployment", nargs="?", help="deployment file (default: deployment.toml here)")
-    up.add_argument("--issuer", help="the owner's OIDC issuer URL")
-    up.add_argument("--client-id", help="the client id the owner's apps sign in with")
-    up.add_argument("--subject", help="bind the node to this issuer subject now, instead of at first pairing")
     up.add_argument("--image", help="the AstralDeep node image to run")
     up.add_argument("--port", type=int, help="the local port to publish the node on (default 8001)")
     up.add_argument("--upstream-url", help="a model gateway: the provider's OpenAI-compatible base URL")
@@ -46,19 +43,19 @@ def parser() -> argparse.ArgumentParser:
     check.add_argument("--isolation-only", action="store_true", help="skip the node checks, for hosts with no node")
     suite = sub.add_parser("conformance", help="run the acceptance checks against the running node")
     suite.add_argument("--deployment")
-    suite.add_argument("--token-file", help="a file holding the owner's access token (default: $ASTRAL_OWNER_TOKEN)")
+    suite.add_argument("--ticket-file", help="a file holding the caller ticket (default: $ASTRAL_CALLER_TICKET)")
+    suite.add_argument("--key-file", help="a file holding the caller key (default: $ASTRAL_CALLER_KEY)")
     pair = sub.add_parser("pair", help="print the node's pairing code and payload for the AstralDeep app")
-    pair.add_argument("--label", help="a name for the offer (default: astralvessel)")
     for name, help_text in (("ask", "ask the node one question"), ("chat", "chat with the node")):
         talk = sub.add_parser(name, help=help_text)
         if name == "ask":
             talk.add_argument("question")
         talk.add_argument("--deployment")
-        talk.add_argument("--token-file", help="a file holding the owner's access token (default: $ASTRAL_OWNER_TOKEN)")
+        talk.add_argument("--ticket-file", help="a file holding the caller ticket (default: $ASTRAL_CALLER_TICKET)")
+        talk.add_argument("--key-file", help="a file holding the caller key (default: $ASTRAL_CALLER_KEY)")
     pair.add_argument("--executor", action="store_true",
                       help="print the executor's offer instead, so it can check the owner's tickets")
     pair.add_argument("--deployment")
-    pair.add_argument("--token-file", help="a file holding the owner's access token (default: $ASTRAL_OWNER_TOKEN)")
     down = sub.add_parser("down", help="stop the deployment")
     down.add_argument("deployment", nargs="?")
     down.add_argument("--volumes", action="store_true", help="also delete the node's data volume")

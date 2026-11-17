@@ -19,10 +19,11 @@ The AstralDeep app is a separate installation. It carries everything here and ad
 
 ```bash
 pip install astralvessel
-astralvessel up --issuer https://keycloak.example.com/realms/astral --client-id astral-app --example
-export ASTRAL_OWNER_TOKEN=<an access token for the owner>
+astralvessel up --example
 astralvessel check
 astralvessel pair
+export ASTRAL_CALLER_TICKET=<a caller ticket the owner minted>
+export ASTRAL_CALLER_KEY=<its holder key>
 astralvessel ask "hello"
 ```
 
@@ -34,7 +35,7 @@ astralvessel ask "hello"
 | `check` | Runs the isolation probes and the node checks |
 | `conformance` | Runs the acceptance checks against the running node |
 | `pair` | Prints the node's pairing code and payload for the AstralDeep app |
-| `ask`, `chat` | Talk to the node over A2A |
+| `ask`, `chat` | Talk to the node over A2A with a caller ticket |
 | `down` | Stops the deployment |
 
 ## What it protects, and what it trusts
@@ -46,7 +47,7 @@ AstralVessel assumes the model, and everything it reads, may be hostile. It keep
 - agent data read-only, tool calls with no network, and each call out of other calls' files and processes
 - agent-driven web traffic to public addresses on ports 80 and 443
 
-It trusts the operator, the host kernel, Docker, the owner's issuer and the owner's devices. See the [threat model](docs/security/threat-model.md).
+It trusts the operator, the host kernel, Docker and the owner's devices. See the [threat model](docs/security/threat-model.md).
 
 ## Upgrading from 0.6.0
 
