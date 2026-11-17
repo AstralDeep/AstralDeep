@@ -1,4 +1,4 @@
-"""The node's peer in its owner's mesh: it opens the pinned kernel binding with the node's own keys, a software signer and a node device kind, serves a pairing offer only to a holder of the node's private pairing secret, reports mesh status for the descriptor, and refuses to bind, serve or sync a mesh listing a seeded development device (shared/dev_mesh_keys.py) unless ASTRAL_ENV is development.
+"""The node's peer in its owner's mesh: it opens the pinned kernel binding with the node's own keys, a software signer and a node device kind, serves a pairing offer only to a holder of the node's private pairing secret, keeps the operator secret file the loopback connections API checks, reports mesh status for the descriptor, and refuses to bind, serve or sync a mesh listing a seeded development device (shared/dev_mesh_keys.py) unless ASTRAL_ENV is development.
 node_api.py serves it, node_mailbox.py supervises the node's mailbox beside it, node_mesh_chat.py moves chat activity through it, and nothing else imports the kernel binding.
 """
 
@@ -49,6 +49,7 @@ DEVELOPMENT_MESH = "node.development_mesh"
 ROSTER_CHANGES = frozenset({"ROSTER_CHANGED", "RosterChanged", "ENROLLMENT", "Enrollment"})
 PAIRING_SECRET_FILE = "pairing-secret"
 PAIRING_SECRET_BYTES = 32
+OPERATOR_SECRET_FILE = "operator-secret"
 OFFERS_PER_WINDOW = 5
 OFFER_WINDOW_SECONDS = 60.0
 
@@ -265,6 +266,43 @@ class PairingSecret:
             raise
 
 
+class OperatorSecret:
+    def __init__(self, directory: Path):
+        self._directory = Path(directory)
+        self._path = self._directory / OPERATOR_SECRET_FILE
+
+    def ensure(self) -> None:
+        if self._read() is None:
+            self._write()
+
+    def matches(self, presented: str) -> bool:
+        stored = self._read()
+        return stored is not None and hmac.compare_digest(stored, presented.encode())
+
+    def _read(self) -> Optional[bytes]:
+        try:
+            info = self._path.lstat()
+            if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) & 0o077:
+                return None
+            stored = self._path.read_bytes().strip()
+        except OSError:
+            return None
+        return stored or None
+
+    def _write(self) -> None:
+        node_identity._ensure_private_dir(self._directory)
+        descriptor, temporary = tempfile.mkstemp(prefix=".operator-secret-", dir=self._directory)
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(secrets.token_urlsafe(PAIRING_SECRET_BYTES).encode())
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, self._path)
+        except BaseException:
+            Path(temporary).unlink(missing_ok=True)
+            raise
+
+
 def _relay(binding: Any, relay: Sequence[str]) -> Any:
     if relay == ("default",):
         return binding.RelayChoice.DEFAULT()
@@ -373,6 +411,10 @@ class NodeMesh:
         return self._kernel
 
     @property
+    def binding(self) -> Any:
+        return self._binding
+
+    @property
     def started(self) -> bool:
         return self._started
 
@@ -408,6 +450,8 @@ class NodeMesh:
             self._loop = asyncio.get_running_loop()
             self._quarantined = False
             (self._data_dir / KERNEL_DIR).mkdir(mode=0o700, parents=True, exist_ok=True)
+            if node_identity.is_personal():
+                await asyncio.to_thread(OperatorSecret(self._data_dir).ensure)
             checked = await self._check_stored_mesh(keys)
             if self._quarantined:
                 self._pairing.close()

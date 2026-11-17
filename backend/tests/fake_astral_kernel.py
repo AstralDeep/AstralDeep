@@ -89,6 +89,34 @@ class PeerIntegrity(enum.Enum):
     UNTRUSTED = 2
 
 
+class SignInRedirect:
+    class LOOPBACK:
+        def __init__(self, port):
+            self.port = port
+
+    class PASTED:
+        pass
+
+    class DEVICE_CODE:
+        pass
+
+
+class SignInPoll:
+    class PENDING:
+        def __init__(self, interval_s):
+            self.interval_s = interval_s
+
+        def is_DONE(self):
+            return False
+
+    class DONE:
+        def __init__(self, state):
+            self.state = state
+
+        def is_DONE(self):
+            return True
+
+
 class RequestState(enum.Enum):
     PENDING = 0
     CLAIMED = 1

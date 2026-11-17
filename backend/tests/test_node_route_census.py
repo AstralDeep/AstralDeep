@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends
 from fastapi.routing import APIRoute, APIWebSocketRoute, iter_route_contexts
 from starlette.routing import Mount, Route, WebSocketRoute
 
-from orchestrator import auth, mesh_api, node_api
+from orchestrator import auth, mesh_api, node_api, node_connection_api
 from orchestrator.voice_worker_endpoint import WORKER_CONTROL_PATH
 from tests.helpers import orchestrator_app
 from tests.helpers.voice_plane_runtime import isolated_plane_runtime
@@ -23,6 +23,7 @@ GATES = frozenset({
     auth.get_download_user_payload,
     mesh_api.refuse_legacy_enrollment,
     node_api.pairing_gate,
+    node_connection_api.operator_gate,
 })
 
 PUBLIC = {
@@ -48,6 +49,14 @@ IN_BAND = {
     ("POST", "/a2a"): "the gated JSON-RPC endpoint takes only a caller ticket and refuses every bearer unread",
     ("POST", "/mcp"): "authorize_mcp_caller takes only a caller ticket and refuses every bearer unread",
     ("WS", WORKER_CONTROL_PATH): "the worker control socket refuses any Authorization or cookie header",
+}
+
+OPERATOR_PATHS = {
+    "/api/node/connections",
+    "/api/node/connections/{connection}/sign-in",
+    "/api/node/connections/sign-in/{flow}/complete",
+    "/api/node/connections/sign-in/{flow}/poll",
+    "/api/node/connections/sign-in/{flow}",
 }
 
 FLAG_GATED = {"/mcp", "/a2a", "/kiosk", "/auth/kiosk/start", "/api/remote-mcp/oauth/start", WORKER_CONTROL_PATH}
@@ -100,7 +109,7 @@ def app(plane_runtime, server_identity, monkeypatch):
 def test_every_served_route_refuses_a_bearer_or_is_named(app):
     findings, seen = census(app)
     assert findings == []
-    assert {path for _, path in seen} >= FLAG_GATED | {"/api/node/mesh/offer", "/ws"}
+    assert {path for _, path in seen} >= FLAG_GATED | {"/api/node/mesh/offer", "/ws", *OPERATOR_PATHS}
     assert set(PUBLIC) | set(IN_BAND) <= seen
     assert len(seen) > 250
 
