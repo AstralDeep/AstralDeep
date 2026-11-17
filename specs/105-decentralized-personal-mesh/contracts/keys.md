@@ -72,6 +72,8 @@ A content key for a chat that holds PHI is introduced by a `key.content` event u
 
 ### 4.1 Credential items
 
+> The content rule of this section is replaced by [credential-items.md](../../106-sign-in-free-clients/contracts/credential-items.md). An item holds a pasted secret and its configuration and never a token obtained by signing in, and every writer refuses `access_token`, `refresh_token` and `id_token` fields. The event, boxes, audience, recipients, late device rule and fold below are unchanged.
+
 A credential, such as a model provider's API keys, must sync to every member yet open only on the devices the owner chose. It travels as a `key.credential` event with scope `mesh`. The header label is `{"confidentiality": "secret", "integrity": "owner"}`. The header's `key` is the mesh content key like any other mesh event.
 
 The body has the fields `name` and `boxes`, and optionally `audience`. `name` is the credential's name, 1 to 128 characters of `a-z`, `0-9`, `.`, `_` and `-`, starting with a letter or digit. `boxes` maps a device id to a box, at most 64 of them. The value is never in the body in the clear. A body with no `boxes` is `credential.not_sealed` and any other wrong shape is `credential.malformed`. A `key.credential` event whose label is not secret is `credential.label`.

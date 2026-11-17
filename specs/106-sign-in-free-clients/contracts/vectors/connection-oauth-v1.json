@@ -2196,6 +2196,401 @@
     {
       "expect": {
         "ok": {
+          "application_type": "native",
+          "client_id": "dyn-1",
+          "requests": [
+            {
+              "application_type": "native",
+              "client_name": "Astral",
+              "grant_types": [
+                "authorization_code",
+                "refresh_token"
+              ],
+              "redirect_uris": [
+                "https://astraldeep.github.io/oauth/callback"
+              ],
+              "response_types": [
+                "code"
+              ],
+              "token_endpoint_auth_method": "none"
+            }
+          ]
+        }
+      },
+      "input": {
+        "redirect_uri": "https://astraldeep.github.io/oauth/callback",
+        "responses": [
+          {
+            "json": {
+              "client_id": "dyn-1",
+              "token_endpoint_auth_method": "none"
+            },
+            "status": 201
+          }
+        ]
+      },
+      "kind": "oauth_dynamic_registration",
+      "name": "dyn_method_none_accepted"
+    },
+    {
+      "expect": {
+        "ok": {
+          "application_type": "native",
+          "client_id": "dyn-1",
+          "requests": [
+            {
+              "application_type": "native",
+              "client_name": "Astral",
+              "grant_types": [
+                "authorization_code",
+                "refresh_token"
+              ],
+              "redirect_uris": [
+                "https://astraldeep.github.io/oauth/callback"
+              ],
+              "response_types": [
+                "code"
+              ],
+              "token_endpoint_auth_method": "none"
+            }
+          ]
+        }
+      },
+      "input": {
+        "redirect_uri": "https://astraldeep.github.io/oauth/callback",
+        "responses": [
+          {
+            "json": {
+              "client_id": "dyn-1"
+            },
+            "status": 201
+          }
+        ]
+      },
+      "kind": "oauth_dynamic_registration",
+      "name": "dyn_method_absent_accepted"
+    },
+    {
+      "expect": {
+        "error": "connection.registration_refused",
+        "requests": [
+          {
+            "application_type": "native",
+            "client_name": "Astral",
+            "grant_types": [
+              "authorization_code",
+              "refresh_token"
+            ],
+            "redirect_uris": [
+              "https://astraldeep.github.io/oauth/callback"
+            ],
+            "response_types": [
+              "code"
+            ],
+            "token_endpoint_auth_method": "none"
+          }
+        ]
+      },
+      "input": {
+        "redirect_uri": "https://astraldeep.github.io/oauth/callback",
+        "responses": [
+          {
+            "json": {
+              "client_id": "dyn-1",
+              "client_secret": "s",
+              "token_endpoint_auth_method": "client_secret_basic"
+            },
+            "status": 201
+          }
+        ]
+      },
+      "kind": "oauth_dynamic_registration",
+      "name": "dyn_method_client_secret_basic_refused"
+    },
+    {
+      "expect": {
+        "error": "connection.registration_refused",
+        "requests": [
+          {
+            "application_type": "native",
+            "client_name": "Astral",
+            "grant_types": [
+              "authorization_code",
+              "refresh_token"
+            ],
+            "redirect_uris": [
+              "https://astraldeep.github.io/oauth/callback"
+            ],
+            "response_types": [
+              "code"
+            ],
+            "token_endpoint_auth_method": "none"
+          }
+        ]
+      },
+      "input": {
+        "redirect_uri": "https://astraldeep.github.io/oauth/callback",
+        "responses": [
+          {
+            "json": {
+              "client_id": "dyn-1",
+              "token_endpoint_auth_method": "client_secret_post"
+            },
+            "status": 200
+          }
+        ]
+      },
+      "kind": "oauth_dynamic_registration",
+      "name": "dyn_method_client_secret_post_refused"
+    },
+    {
+      "expect": {
+        "error": "connection.registration_refused",
+        "requests": [
+          {
+            "application_type": "native",
+            "client_name": "Astral",
+            "grant_types": [
+              "authorization_code",
+              "refresh_token"
+            ],
+            "redirect_uris": [
+              "https://astraldeep.github.io/oauth/callback"
+            ],
+            "response_types": [
+              "code"
+            ],
+            "token_endpoint_auth_method": "none"
+          }
+        ]
+      },
+      "input": {
+        "redirect_uri": "https://astraldeep.github.io/oauth/callback",
+        "responses": [
+          {
+            "json": {
+              "client_id": "dyn-1",
+              "token_endpoint_auth_method": "private_key_jwt"
+            },
+            "status": 201
+          }
+        ]
+      },
+      "kind": "oauth_dynamic_registration",
+      "name": "dyn_method_private_key_jwt_refused"
+    },
+    {
+      "expect": {
+        "error": "connection.registration_refused",
+        "requests": [
+          {
+            "application_type": "native",
+            "client_name": "Astral",
+            "grant_types": [
+              "authorization_code",
+              "refresh_token"
+            ],
+            "redirect_uris": [
+              "https://astraldeep.github.io/oauth/callback"
+            ],
+            "response_types": [
+              "code"
+            ],
+            "token_endpoint_auth_method": "none"
+          }
+        ]
+      },
+      "input": {
+        "redirect_uri": "https://astraldeep.github.io/oauth/callback",
+        "responses": [
+          {
+            "json": {
+              "client_id": "dyn-1",
+              "token_endpoint_auth_method": null
+            },
+            "status": 201
+          }
+        ]
+      },
+      "kind": "oauth_dynamic_registration",
+      "name": "dyn_method_null_refused"
+    },
+    {
+      "expect": {
+        "error": "connection.registration_refused",
+        "requests": [
+          {
+            "application_type": "native",
+            "client_name": "Astral",
+            "grant_types": [
+              "authorization_code",
+              "refresh_token"
+            ],
+            "redirect_uris": [
+              "https://astraldeep.github.io/oauth/callback"
+            ],
+            "response_types": [
+              "code"
+            ],
+            "token_endpoint_auth_method": "none"
+          }
+        ]
+      },
+      "input": {
+        "redirect_uri": "https://astraldeep.github.io/oauth/callback",
+        "responses": [
+          {
+            "json": {
+              "client_id": "dyn-1",
+              "token_endpoint_auth_method": [
+                "none"
+              ]
+            },
+            "status": 201
+          }
+        ]
+      },
+      "kind": "oauth_dynamic_registration",
+      "name": "dyn_method_not_text_refused"
+    },
+    {
+      "expect": {
+        "error": "connection.registration_refused",
+        "requests": [
+          {
+            "application_type": "native",
+            "client_name": "Astral",
+            "grant_types": [
+              "authorization_code",
+              "refresh_token"
+            ],
+            "redirect_uris": [
+              "https://astraldeep.github.io/oauth/callback"
+            ],
+            "response_types": [
+              "code"
+            ],
+            "token_endpoint_auth_method": "none"
+          }
+        ]
+      },
+      "input": {
+        "redirect_uri": "https://astraldeep.github.io/oauth/callback",
+        "responses": [
+          {
+            "json": {
+              "client_id": "dyn-1",
+              "token_endpoint_auth_method": "None"
+            },
+            "status": 201
+          }
+        ]
+      },
+      "kind": "oauth_dynamic_registration",
+      "name": "dyn_method_uppercase_refused"
+    },
+    {
+      "expect": {
+        "error": "connection.registration_refused",
+        "requests": [
+          {
+            "application_type": "native",
+            "client_name": "Astral",
+            "grant_types": [
+              "authorization_code",
+              "refresh_token"
+            ],
+            "redirect_uris": [
+              "https://astraldeep.github.io/oauth/callback"
+            ],
+            "response_types": [
+              "code"
+            ],
+            "token_endpoint_auth_method": "none"
+          },
+          {
+            "application_type": "web",
+            "client_name": "Astral",
+            "grant_types": [
+              "authorization_code",
+              "refresh_token"
+            ],
+            "redirect_uris": [
+              "https://astraldeep.github.io/oauth/callback"
+            ],
+            "response_types": [
+              "code"
+            ],
+            "token_endpoint_auth_method": "none"
+          }
+        ]
+      },
+      "input": {
+        "redirect_uri": "https://astraldeep.github.io/oauth/callback",
+        "responses": [
+          {
+            "json": {
+              "error": "invalid_client_metadata"
+            },
+            "status": 400
+          },
+          {
+            "json": {
+              "client_id": "dyn-1",
+              "token_endpoint_auth_method": "client_secret_basic"
+            },
+            "status": 201
+          }
+        ]
+      },
+      "kind": "oauth_dynamic_registration",
+      "name": "dyn_web_retry_method_refused"
+    },
+    {
+      "expect": {
+        "error": "connection.registration_refused",
+        "requests": [
+          {
+            "application_type": "native",
+            "client_name": "Astral",
+            "grant_types": [
+              "authorization_code",
+              "refresh_token"
+            ],
+            "redirect_uris": [
+              "https://astraldeep.github.io/oauth/callback"
+            ],
+            "response_types": [
+              "code"
+            ],
+            "token_endpoint_auth_method": "none"
+          }
+        ]
+      },
+      "input": {
+        "redirect_uri": "https://astraldeep.github.io/oauth/callback",
+        "responses": [
+          {
+            "json": {
+              "client_id": "dyn-1",
+              "token_endpoint_auth_method": "client_secret_basic"
+            },
+            "status": 201
+          },
+          {
+            "json": {
+              "client_id": "dyn-1"
+            },
+            "status": 201
+          }
+        ]
+      },
+      "kind": "oauth_dynamic_registration",
+      "name": "dyn_native_method_refused_has_no_retry"
+    },
+    {
+      "expect": {
+        "ok": {
           "scopes": [
             "mcp.read",
             "mcp.tools"
@@ -3008,6 +3403,395 @@
       },
       "kind": "oauth_bearer_target",
       "name": "bearer_endpoint_not_canonical"
+    },
+    {
+      "expect": {
+        "ok": {
+          "entries": [
+            "device.research.example",
+            "login.research.example",
+            "mcp.research.example",
+            "register.research.example"
+          ]
+        }
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "issuer": "https://login.research.example",
+        "local": false,
+        "metadata": {
+          "authorization_endpoint": "https://login.research.example/authorize",
+          "code_challenge_methods_supported": [
+            "S256"
+          ],
+          "device_authorization_endpoint": "https://device.research.example/device",
+          "issuer": "https://login.research.example",
+          "registration_endpoint": "https://register.research.example/register",
+          "token_endpoint": "https://login.research.example/token"
+        }
+      },
+      "kind": "oauth_egress_entries",
+      "name": "egress_entries_full_metadata"
+    },
+    {
+      "expect": {
+        "ok": {
+          "entries": [
+            "device.research.example",
+            "login.research.example",
+            "mcp.research.example"
+          ]
+        }
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "issuer": "https://login.research.example",
+        "local": false,
+        "metadata": {
+          "authorization_endpoint": "https://login.research.example/authorize",
+          "code_challenge_methods_supported": [
+            "S256"
+          ],
+          "device_authorization_endpoint": "https://device.research.example/device",
+          "issuer": "https://login.research.example",
+          "token_endpoint": "https://login.research.example/token"
+        }
+      },
+      "kind": "oauth_egress_entries",
+      "name": "egress_entries_device_authorization_host_joins"
+    },
+    {
+      "expect": {
+        "ok": {
+          "entries": [
+            "login.research.example",
+            "mcp.research.example"
+          ]
+        }
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "issuer": "https://login.research.example",
+        "local": false,
+        "metadata": {
+          "authorization_endpoint": "https://login.research.example/authorize",
+          "code_challenge_methods_supported": [
+            "S256"
+          ],
+          "device_authorization_endpoint": "https://login.research.example/device",
+          "issuer": "https://login.research.example",
+          "token_endpoint": "https://login.research.example/token"
+        }
+      },
+      "kind": "oauth_egress_entries",
+      "name": "egress_entries_device_host_same_as_issuer_listed_once"
+    },
+    {
+      "expect": {
+        "ok": {
+          "entries": [
+            "login.research.example",
+            "login.research.example:8443",
+            "mcp.research.example"
+          ]
+        }
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "issuer": "https://login.research.example",
+        "local": false,
+        "metadata": {
+          "authorization_endpoint": "https://login.research.example/authorize",
+          "code_challenge_methods_supported": [
+            "S256"
+          ],
+          "device_authorization_endpoint": "https://login.research.example:8443/device",
+          "issuer": "https://login.research.example",
+          "token_endpoint": "https://login.research.example/token"
+        }
+      },
+      "kind": "oauth_egress_entries",
+      "name": "egress_entries_device_host_other_port"
+    },
+    {
+      "expect": {
+        "ok": {
+          "entries": [
+            "login.research.example",
+            "mcp.research.example"
+          ]
+        }
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "issuer": "https://login.research.example",
+        "local": false,
+        "metadata": {
+          "authorization_endpoint": "https://login.research.example/authorize",
+          "code_challenge_methods_supported": [
+            "S256"
+          ],
+          "issuer": "https://login.research.example",
+          "token_endpoint": "https://login.research.example/token"
+        }
+      },
+      "kind": "oauth_egress_entries",
+      "name": "egress_entries_without_device_endpoint"
+    },
+    {
+      "expect": {
+        "ok": {
+          "entries": [
+            "login.research.example",
+            "mcp.research.example",
+            "tokens.research.example"
+          ]
+        }
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "issuer": "https://login.research.example",
+        "local": false,
+        "metadata": {
+          "authorization_endpoint": "https://login.research.example/authorize",
+          "code_challenge_methods_supported": [
+            "S256"
+          ],
+          "issuer": "https://login.research.example",
+          "token_endpoint": "https://tokens.research.example/token"
+        }
+      },
+      "kind": "oauth_egress_entries",
+      "name": "egress_entries_token_host_elsewhere"
+    },
+    {
+      "expect": {
+        "ok": {
+          "entries": [
+            "login.research.example",
+            "mcp.research.example",
+            "register.research.example"
+          ]
+        }
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "issuer": "https://login.research.example",
+        "local": false,
+        "metadata": {
+          "authorization_endpoint": "https://login.research.example/authorize",
+          "code_challenge_methods_supported": [
+            "S256"
+          ],
+          "issuer": "https://login.research.example",
+          "registration_endpoint": "https://register.research.example/register",
+          "token_endpoint": "https://login.research.example/token"
+        }
+      },
+      "kind": "oauth_egress_entries",
+      "name": "egress_entries_registration_host_joins"
+    },
+    {
+      "expect": {
+        "ok": {
+          "entries": [
+            "login.research.example",
+            "mcp.research.example"
+          ]
+        }
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "issuer": null,
+        "local": false,
+        "metadata": {
+          "authorization_endpoint": "https://login.research.example/authorize",
+          "code_challenge_methods_supported": [
+            "S256"
+          ],
+          "issuer": "https://login.research.example",
+          "token_endpoint": "https://login.research.example/token"
+        }
+      },
+      "kind": "oauth_egress_entries",
+      "name": "egress_entries_no_issuer"
+    },
+    {
+      "expect": {
+        "ok": {
+          "entries": [
+            "login.research.example",
+            "mcp.research.example"
+          ]
+        }
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "issuer": "https://login.research.example",
+        "local": false,
+        "metadata": {
+          "authorization_endpoint": "https://login.research.example/authorize",
+          "code_challenge_methods_supported": [
+            "S256"
+          ],
+          "device_authorization_endpoint": 5,
+          "issuer": "https://login.research.example",
+          "token_endpoint": "https://login.research.example/token"
+        }
+      },
+      "kind": "oauth_egress_entries",
+      "name": "egress_entries_non_text_endpoint_ignored"
+    },
+    {
+      "expect": {
+        "error": "connection.egress_refused"
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "issuer": "https://login.research.example",
+        "local": false,
+        "metadata": {
+          "authorization_endpoint": "https://login.research.example/authorize",
+          "code_challenge_methods_supported": [
+            "S256"
+          ],
+          "device_authorization_endpoint": "http://device.research.example/device",
+          "issuer": "https://login.research.example",
+          "token_endpoint": "https://login.research.example/token"
+        }
+      },
+      "kind": "oauth_egress_entries",
+      "name": "egress_entries_device_endpoint_http_refused"
+    },
+    {
+      "expect": {
+        "error": "connection.egress_refused"
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "issuer": "https://login.research.example",
+        "local": false,
+        "metadata": {
+          "authorization_endpoint": "https://login.research.example/authorize",
+          "code_challenge_methods_supported": [
+            "S256"
+          ],
+          "device_authorization_endpoint": "http://127.0.0.1:9000/device",
+          "issuer": "https://login.research.example",
+          "token_endpoint": "https://login.research.example/token"
+        }
+      },
+      "kind": "oauth_egress_entries",
+      "name": "egress_entries_device_endpoint_loopback_refused"
+    },
+    {
+      "expect": {
+        "error": "connection.egress_refused"
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "issuer": "https://login.research.example",
+        "local": false,
+        "metadata": {
+          "authorization_endpoint": "https://login.research.example/authorize",
+          "code_challenge_methods_supported": [
+            "S256"
+          ],
+          "device_authorization_endpoint": "https://Device.research.example/device",
+          "issuer": "https://login.research.example",
+          "token_endpoint": "https://login.research.example/token"
+        }
+      },
+      "kind": "oauth_egress_entries",
+      "name": "egress_entries_device_endpoint_uppercase_host_refused"
+    },
+    {
+      "expect": {
+        "error": "connection.egress_refused"
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "issuer": "https://login.research.example",
+        "local": false,
+        "metadata": {
+          "authorization_endpoint": "https://login.research.example/authorize",
+          "code_challenge_methods_supported": [
+            "S256"
+          ],
+          "device_authorization_endpoint": "https://x@device.research.example/device",
+          "issuer": "https://login.research.example",
+          "token_endpoint": "https://login.research.example/token"
+        }
+      },
+      "kind": "oauth_egress_entries",
+      "name": "egress_entries_device_endpoint_userinfo_refused"
+    },
+    {
+      "expect": {
+        "error": "connection.egress_refused"
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "issuer": "https://login.research.example",
+        "local": false,
+        "metadata": {
+          "authorization_endpoint": "http://login.research.example/authorize",
+          "code_challenge_methods_supported": [
+            "S256"
+          ],
+          "issuer": "https://login.research.example",
+          "token_endpoint": "https://login.research.example/token"
+        }
+      },
+      "kind": "oauth_egress_entries",
+      "name": "egress_entries_authorization_endpoint_http_refused"
+    },
+    {
+      "expect": {
+        "ok": {
+          "entries": [
+            "127.0.0.1:8765",
+            "127.0.0.1:8766",
+            "127.0.0.1:8767"
+          ]
+        }
+      },
+      "input": {
+        "endpoint": "http://127.0.0.1:8765/mcp",
+        "issuer": "http://127.0.0.1:8766",
+        "local": true,
+        "metadata": {
+          "authorization_endpoint": "http://127.0.0.1:8766/authorize",
+          "code_challenge_methods_supported": [
+            "S256"
+          ],
+          "device_authorization_endpoint": "http://127.0.0.1:8767/device",
+          "issuer": "http://127.0.0.1:8766",
+          "token_endpoint": "http://127.0.0.1:8766/token"
+        }
+      },
+      "kind": "oauth_egress_entries",
+      "name": "egress_entries_local_loopback"
+    },
+    {
+      "expect": {
+        "error": "connection.malformed"
+      },
+      "input": {
+        "endpoint": "https://Mcp.research.example/mcp",
+        "issuer": "https://login.research.example",
+        "local": false,
+        "metadata": {
+          "authorization_endpoint": "https://login.research.example/authorize",
+          "code_challenge_methods_supported": [
+            "S256"
+          ],
+          "issuer": "https://login.research.example",
+          "token_endpoint": "https://login.research.example/token"
+        }
+      },
+      "kind": "oauth_egress_entries",
+      "name": "egress_entries_endpoint_not_canonical"
     }
   ],
   "format": "astral.vectors/v1",
