@@ -420,13 +420,20 @@ class MeshChatBridge:
         return started
 
     async def _publish_catalog(self) -> None:
+        selection = getattr(self._calls, "published_selection", None)
         listing = getattr(self._calls, "published_tools", None)
-        tools = listing(self._owner) if listing is not None else []
+        omitted = 0
+        if selection is not None:
+            tools, omitted = selection(self._owner)
+        else:
+            tools = listing(self._owner) if listing is not None else []
         if not tools:
             return
         digest = hashlib.sha256(json.dumps(tools, sort_keys=True).encode()).hexdigest()
         if digest == self._published:
             return
+        if omitted:
+            logger.warning("node_mesh_catalog_truncated: omitted %d tools", omitted)
         try:
             await self._mesh.publish_tool_catalog(tools)
         except (NodeMeshError, MeshUnavailable) as exc:
