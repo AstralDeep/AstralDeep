@@ -1,5 +1,5 @@
-"""Validates Bearer tokens on incoming A2A requests via Keycloak JWKS (or mock decode in
-dev) and enforces RFC 8693 delegation scopes; A2ASecurityValidator serves an
+"""Validates Bearer tokens on incoming A2A requests via Keycloak JWKS
+and enforces RFC 8693 delegation scopes; A2ASecurityValidator serves an
 agent-inbound posture and a stricter orchestrator-inbound one, and on a personal node
 accepts only node-minted delegation agent-inbound and refuses every orchestrator-inbound bearer.
 """

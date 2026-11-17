@@ -255,7 +255,7 @@ async def test_machine_turn_chains_attenuate(real_orch):
         now = int(time.time())
         root = {"sub": "u1", "act": {"sub": "agent:a1"},
                 "scope": "tools:read tool:peer_tool",
-                "iss": "mock-astral-delegation", "aud": "svc",
+                "iss": "astral-delegation", "aud": "svc",
                 "iat": now, "exp": now + 300, "delegation": True}
         real_orch.local_agents["b1"] = MagicMock()
         real_orch.agent_cards["b1"] = SimpleNamespace(

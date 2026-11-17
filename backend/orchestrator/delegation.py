@@ -5,6 +5,7 @@ node signs these tokens locally with its Ed25519 key (shared/node_identity.py).
 """
 
 import os
+import secrets
 import time
 import json
 import hmac
@@ -194,6 +195,8 @@ def recursive_delegation_enabled() -> bool:
         return False
 
 
+_DELEGATION_ISSUER = "astral-delegation"
+_process_dev_key: Optional[bytes] = None
 _NODE_HS256_INFO = "astral.delegation.hs256/v1"
 
 
@@ -215,8 +218,11 @@ def _child_signing_key() -> bytes:
         raise DelegationConfigError(
             "child delegation minting requires DELEGATION_CHILD_SIGNING_KEY "
             "(or MEMORY_HMAC_KEY) to be set in production posture — refusing "
-            "to sign with the committed development constant.")
-    return b"mock-delegation-secret"
+            "to sign with a derived or committed key.")
+    global _process_dev_key
+    if _process_dev_key is None:
+        _process_dev_key = secrets.token_bytes(32)
+    return _process_dev_key
 
 
 def _audience_list(value) -> List[str]:
@@ -365,7 +371,7 @@ def mint_child_delegation(parent: dict, child_agent_id: str,
         "sub": parent.get("sub"),
         "act": child_act,
         "scope": " ".join(child_scopes),
-        "iss": parent.get("iss", "mock-astral-delegation"),
+        "iss": parent.get("iss", _DELEGATION_ISSUER),
         "aud": parent.get("aud"),
         "iat": now,
         "exp": parent_exp,

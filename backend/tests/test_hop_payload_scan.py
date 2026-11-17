@@ -59,7 +59,7 @@ def orch(orchestrator_factory):
 async def _hop(orch, result):
     now = int(time.time())
     parent = {"sub": "u1", "act": {"sub": "agent:initiator-1"},
-              "scope": "tools:read tool:peer_tool", "iss": "mock-astral-delegation",
+              "scope": "tools:read tool:peer_tool", "iss": "astral-delegation",
               "aud": "svc", "iat": now, "exp": now + 300, "delegation": True}
     ui_ws = MagicMock()
     ui_ws.machine_claims = None
@@ -123,7 +123,7 @@ async def test_poison_in_ui_components_is_quarantined(orch, captured):
 
     now = int(time.time())
     parent = {"sub": "u1", "act": {"sub": "agent:initiator-1"},
-              "scope": "tools:read tool:peer_tool", "iss": "mock-astral-delegation",
+              "scope": "tools:read tool:peer_tool", "iss": "astral-delegation",
               "aud": "svc", "iat": now, "exp": now + 300, "delegation": True}
     ui_ws = MagicMock()
     ui_ws.machine_claims = None

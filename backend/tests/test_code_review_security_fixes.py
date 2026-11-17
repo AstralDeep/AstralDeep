@@ -103,7 +103,24 @@ def test_child_signing_key_dev_fallback(monkeypatch):
     monkeypatch.setenv("ASTRAL_ENV", "development")
     monkeypatch.delenv("DELEGATION_CHILD_SIGNING_KEY", raising=False)
     monkeypatch.delenv("MEMORY_HMAC_KEY", raising=False)
-    assert dg._child_signing_key() == b"mock-delegation-secret"
+    key = dg._child_signing_key()
+    assert len(key) == 32 and key != b"mock-delegation-secret"
+    assert dg._child_signing_key() == key
+    monkeypatch.setattr(dg, "_process_dev_key", None)
+    assert dg._child_signing_key() != key
+
+
+def test_a_token_signed_with_the_former_constant_is_refused(monkeypatch):
+    from jose import jwt as jose_jwt
+
+    monkeypatch.setenv("ASTRAL_ENV", "development")
+    monkeypatch.delenv("DELEGATION_CHILD_SIGNING_KEY", raising=False)
+    monkeypatch.delenv("MEMORY_HMAC_KEY", raising=False)
+    monkeypatch.setattr(dg, "_process_dev_key", None)
+    forged = jose_jwt.encode({"sub": "u", "exp": int(__import__("time").time()) + 60},
+                             b"mock-delegation-secret", algorithm="HS256")
+    with pytest.raises(dg.RecursiveDelegationError):
+        dg.verify_signed_delegation(forged)
 
 
 from orchestrator import mas_defense as mas  # noqa: E402

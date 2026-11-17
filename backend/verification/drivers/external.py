@@ -81,7 +81,9 @@ class ExternalDriver:
                 },
             )
             return (resp or {}).get("access_token", "")
-        return ""
+        raise RuntimeError(
+            "external verification needs a configured identity authority: set KEYCLOAK_AUTHORITY, "
+            "KEYCLOAK_CLIENT_ID and KEYCLOAK_CLIENT_SECRET")
 
     async def run_scenario(self, scenario: Any) -> CapturedEvidence:
         principal = scenario.principal

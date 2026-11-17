@@ -120,7 +120,7 @@ def spies(monkeypatch):
 def node(request, plane_runtime, server_identity, spies, monkeypatch):
     if request.param == "dev-token":
         monkeypatch.setenv("ASTRAL_ENV", "development")
-        monkeypatch.setenv("USE_MOCK_AUTH", "true")
+        monkeypatch.setenv("USE_MOCK_AUTH", "true")  # the removed flag must change nothing
         token, mcp_token = "dev-token", "dev-mcp-token"
     else:
         monkeypatch.setenv("ASTRAL_ENV", "production")

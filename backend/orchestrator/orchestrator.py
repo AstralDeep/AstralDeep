@@ -20710,7 +20710,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 render_components=[alert.to_dict()],
                 hop_audited=True)
 
-        # Never sign with the committed dev key in production
+        # Refuse to mint when no signing key can be resolved
         try:
             _dg._child_signing_key()
         except _dg.DelegationConfigError:
