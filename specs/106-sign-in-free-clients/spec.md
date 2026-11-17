@@ -59,6 +59,8 @@ signs in to that service directly from each device. Six ideas carry it.
 6. **Tool code runs in an OS-native sandbox.** The node ships as a bundle and runs as a process. The
    four Vessel containers become processes. Docker stays for development, CI and institutions.
 
+The owner added a seventh change on 2026-11-16: fewer repositories. AstralVessel and then AstralPlane move into AstralDeep, LETS-demo moves into LETS, and the old MCP examples are reviewed or archived (section 17).
+
 Section 7.8 walks through the owner's example. A University of Kentucky MCP server protected by OAuth
 is added on the Mac, approved once and signed in at the server's own login page. The iPhone in the
 same mesh then asks for its own sign-in.
@@ -101,7 +103,7 @@ same mesh then asks for its own sign-in.
 
 ## 4. Decisions
 
-### 4.1 Decided by the owner (2026-11-13)
+### 4.1 Decided by the owner (2026-11-13, and O30 to O36 on 2026-11-16)
 
 | # | Decision |
 |---|---|
@@ -134,6 +136,13 @@ same mesh then asks for its own sign-in.
 | O27 | Mock auth is removed. Tests and local runs use the seeded test mesh. |
 | O28 | A mesh made under the 105 roster format is created again. No upgrade reader is written. |
 | O29 | C1, C3, C5, C6, C8, C10, C11, C12, C13, C14, C25, C26, C29 and C30 are accepted as written. |
+| O30 | AstralVessel merges into AstralDeep first. `astralvessel` stays a separate package and command inside the repository. |
+| O31 | AstralPlane merges into AstralDeep next, after a check for independent consumers. Its package, migration registry and storage boundary stay intact. |
+| O32 | AstralPrimitives and AstralProjection may merge later. They stay separate in 106, because Primitives is also a published, reusable vocabulary. |
+| O33 | AstralVesselVscode merges into AstralProjection only if it becomes an official Astral client. Until then it stays separate. |
+| O34 | LETS-demo merges into LETS and keeps its own build target. |
+| O35 | The older MCP examples are reviewed or archived first. They describe Plane as running middleware, so they are not merged as current guidance. |
+| O36 | AstralKernel, LETS and the site stay separate. |
 
 O8 to O22 are the owner's answers to this spec's questions. O23 to O29 come from the owner's review
 of the design calls. All were given the same day.
@@ -181,6 +190,13 @@ line 156). Both go.
 | C31 | The container backend stays for institution deployments and CI. It is never required and never auto-selected on a user install. | Use Docker when present. The owner chose against it (O3). |
 | C32 | Docker-only runtime assumptions in Deep leave the user path: `backend/start-docker.sh`, the Docker host aliases in `backend/orchestrator/agent_peer_auth.py`, the `/app/.frame_trace` path, the `docker run` step in `scripts/node/install-personal-node.sh`. | Leave them behind flags. They would keep Docker in the default path. |
 | C33 | 105's phase 7 institution profile is dropped. An institution that wants to serve many people runs Deep as an outside service behind its own authorization server. That deployment recipe is designed in a later spec (O15) and a user never installs it. Until it exists, the owner's UK example is tested against a fixture server. | Keep 105's profile with fresh Keycloak attestation and a move runbook. It binds institutions to one vendor. |
+| C34 | History is kept. A moved repository lands under its folder with its full history and commit ids. A private repository moving into a public one first passes a secret scan over its whole history. If the scan finds anything, a reviewed snapshot moves instead and the history stays in the archived repository. | Copy a snapshot every time. Blame and bisect would lose the history. |
+| C35 | A moved package keeps its name, its manifest and its command. Deep's root tooling does not take it over. Each moved package keeps its own test job inside the 30 minute cap. | Fold it into Deep's backend package. It would mix two release trains and two dependency sets. |
+| C36 | Plane's boundary holds after the move. Deep code reaches Plane only through its public facade, and a static test fails otherwise. Plane's migration registry, `SCHEMA_REVISION` and recovery procedure stay as they are. `config/astral-composition.json` still checks the schema revision and migration digest, now against the in-tree package. | Let Deep import Plane internals once they share a tree. That is the coupling the boundary exists to stop. |
+| C37 | Release tags stay unambiguous. Vessel releases from Deep with a `vessel-v` tag prefix, and Deep's `v*` tags stay Deep's. Plane has no separate release. | Reuse `v*`. Deep's tags are immutable and would collide. |
+| C38 | A source repository is archived, never deleted, once its move lands. Its README points to the new folder. Open issues are transferred. Open pull requests are rebuilt on the new folder or closed with a link. | Delete it. Links and history elsewhere would break. |
+| C39 | Links keep working. The site's install link and the Vessel docs URLs still resolve after the move, served from the new home at the same paths or redirected. | Change the URLs. Bookmarks and links in other docs would break. |
+| C40 | A move lands on `main` between feature branches, never inside one. Open 106 branches merge `main` after a move, and later tasks land in the new folder. | Pause the program for the move. It would stall every lane for a mechanical change. |
 
 Section 16 lists the questions only the owner can settle.
 
@@ -781,7 +797,7 @@ then.
 A phase is finished when macOS and iOS pass, as in 105 C9. Android and Windows are paused until their
 kernel port (O9). Criteria marked *(live)* need devices or a live server and all others
 are automated tests. A phase is finished only when both kinds are shown. Every phase starts after
-spec 105 merges.
+spec 105 merges. Phase R runs beside phases 1 to 7 and lands before phase 8.
 
 | Phase | Work | Exit criteria |
 |---|---|---|
@@ -793,6 +809,7 @@ spec 105 merges.
 | 5. PHI on the device | The detector rules ported with shared vectors, the on-device model where hardware allows, the PHI destination entry, the warning card, the flow input, the PHI group following the owner's devices | The same vectors pass in Python and in the kernel. A failed or missing detector labels content PHI. An uncertain match asks the owner and is PHI when nobody can be asked. PHI to a model endpoint is refused until the owner approves it by name. An iPhone with no node labels and gates its own content *(live)* |
 | 6. Sharing | Contacts, the comparison code, `view` grants, revocation with key rotation, the second sync session kind | Two meshes exchange a `view` grant and the contact reads the item live *(live)*. A contact's new device receives the item and a removed one does not. After revocation the contact cannot read new events. A grant to an unverified contact is refused. A PHI item is refused for a contact that is not a PHI destination. A contact's event is labeled untrusted |
 | 7. Keycloak removal | Delete the modules in 6.4 and the Keycloak parts of the clients. Android and Windows open to a "not available yet" screen (O22) | A search for Keycloak in non-test product code finds nothing. Every earlier exit criterion still passes |
+| R. Repository consolidation | AstralVessel into AstralDeep first. AstralPlane into AstralDeep after the consumer check and after phase 1 lands. LETS-demo into LETS. The old MCP examples reviewed and archived. Section 17 | `astralvessel` installs and runs from Deep's tree with its own tests passing. Deep boots on the in-tree Plane with the same schema revision and migration digest, and a static test fails when Deep code imports Plane internals. Each moved repository is archived with a pointer and its open issues transferred. The site's Vessel links resolve |
 
 ---
 
@@ -839,3 +856,47 @@ revocation (C24) and the four containers becoming processes (C28).
 **This design's reading of three answers.** The owner should check them. An uncertain match is PHI
 when nobody can be asked (8.2). A valid roster change keeps a contact verified (9.2). The downloaded
 bundle covers the direct-download Mac build only (10.2).
+
+## 17. Repository consolidation
+
+The owner decided on 2026-11-16 to fold several AstralDeep organization repositories together (O30
+to O36). The aim is fewer pins between repositories that always change together, and no stale
+guidance. Phase R carries it out.
+
+### 17.1 What exists today
+
+| Repository | Role today | Consumers |
+|---|---|---|
+| AstralVessel | The `astralvessel` command line and headless distribution of the Deep node. Its own `v*` release tags and a docs site at `astraldeep.github.io/AstralVessel/`. 6 open pull requests and 7 open issues on 2026-11-16 | The site's download card, AstralVesselVscode over A2A, links in other docs |
+| AstralPlane | The `astralplane` data plane, embedded in Deep at `components/AstralPlane` and pinned in `config/astral-composition.json` by commit, schema revision and migration digest. 5 open issues | Deep. LETS benchmarks read its import identity |
+| AstralPrimitives, AstralProjection | Primitive definitions, and the clients that render them | Deep and each other |
+| AstralVesselVscode | A private VS Code extension that talks to Vessel's A2A interface | None |
+| LETS-demo | A private demo built on LETS 1.0.10 | None |
+| mcp_server_examples | Private MCP server examples written for Plane as running middleware | None |
+| AstralKernel, LETS, astraldeep.github.io | The shared kernel, the LETS library and the site | Many |
+
+### 17.2 What moves where
+
+| Move | When | Rule |
+|---|---|---|
+| AstralVessel into AstralDeep | First. Its lane is idle, so later Vessel tasks land in the new folder | `astralvessel` keeps its package, manifest and command under `vessel/` in Deep. It now builds against Deep's own tree instead of a Deep pin |
+| AstralPlane into AstralDeep | Next, after the consumer check and after phase 1 lands | `astralplane` keeps its package, guarded migration registry, `SCHEMA_REVISION` and storage boundary under `plane/` in Deep (C36) |
+| LETS-demo into LETS | Any time | The demo keeps its own build target. Its history passes the secret scan first, because LETS is public (C34) |
+| mcp_server_examples | Any time | Each example is reviewed. Only those that fit today's model are rewritten into Deep `examples/`. The repository is then archived |
+| AstralPrimitives with AstralProjection | Not in 106 | Optional later (O32) |
+| AstralVesselVscode into AstralProjection | Only if it becomes an official Astral client | Not in 106 (O33) |
+| AstralKernel, LETS, the site | Never | Kept separate (O36) |
+
+The calls C34 to C40 in section 4.2 govern every move: history kept, packages kept whole, Plane's
+boundary enforced, unambiguous release tags, archived never deleted, links kept working, and moves
+landed between feature branches.
+
+### 17.3 What changes for the rest of 106
+
+- Vessel tasks in phases 1, 2 and 4 land in Deep's `vessel/` once the Vessel move merges. They pin
+  nothing in Deep, because they build against the same tree.
+- After the Plane move, a Plane schema change lands in Deep with the same `SCHEMA_REVISION` bump,
+  repeat-safe migration and recovery procedure. The composition check runs against the in-tree
+  package.
+- `AGENTS.md` routing, the cross-repository landing order and the CI jobs of phase 8 follow the new
+  layout.
