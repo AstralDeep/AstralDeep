@@ -149,15 +149,15 @@ def code_of(response: httpx.Response) -> str:
 
 
 @asynccontextmanager
-async def served(tmp_path, monkeypatch, *, bind: bool = True) -> AsyncIterator[Door]:
+async def served(tmp_path, monkeypatch, *, bind: bool = True, host: Optional[Host] = None) -> AsyncIterator[Door]:
     async with dev_node(tmp_path, monkeypatch, bind=bind) as mesh:
         previous = node_mesh.current()
         node_mesh.install(mesh.node)
         try:
             node_identity.load_node_identity()
-            host = Host()
+            host = host or Host()
             owner = node_identity.owner_id_for_mesh((await mesh.node.status())["mesh_id"])
-            await publish_catalog(mesh, host.published(owner))
+            await publish_catalog(mesh, OrchestratorCalls(host).published_tools(owner))
             await wait_for_caller_pause(mesh)
             app = FastAPI()
             install_mcp_server(app, host, public_base_url=BASE)
