@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Linux test harness for the execution backends: runs pytest as uid 1000 in a throwaway container, never a product path.
-# Usage: run.sh [--repo DIR] [--exec DIR] [--pip FILE] [--cov FILE] -- PYTEST_ARGS (test paths are relative to the repo root)
+# Usage: run.sh [--repo DIR] [--exec DIR] [--pip FILE] [--cov FILE] [--pack DIR] -- PYTEST_ARGS (test paths are relative to the repo root)
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -8,6 +8,7 @@ repo="$(cd "$here/../.." && pwd)"
 exec_dir=""
 pip_file=""
 cov_file=""
+pack_dir=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -15,6 +16,7 @@ while [ $# -gt 0 ]; do
     --exec) exec_dir="$(cd "$2" && pwd)"; shift 2 ;;
     --pip) pip_file="$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"; shift 2 ;;
     --cov) cov_file="$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"; shift 2 ;;
+    --pack) pack_dir="$(cd "$2" && pwd)"; shift 2 ;;
     --) shift; break ;;
     *) echo "run.sh: unknown option $1" >&2; exit 2 ;;
   esac
@@ -49,6 +51,9 @@ runner=(python -m pytest)
 if [ -n "$cov_file" ]; then
   args+=(-v "$(dirname "$cov_file"):/cov")
   runner=(python -m coverage run --rcfile=/dev/null "--data-file=/cov/$(basename "$cov_file")" "--source=$source_dir" -m pytest)
+fi
+if [ -n "$pack_dir" ]; then
+  args+=(-v "$pack_dir:/pack:ro" -e ASTRAL_NODE_PACK=/pack)
 fi
 args+=(-e "PYTHONPATH=$path")
 
