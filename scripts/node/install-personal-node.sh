@@ -97,7 +97,7 @@ else
   echo "Added settings:     none, everything was already present"
 fi
 if [ -n "$legacy_owner" ]; then
-  echo "Legacy owner:       $env_file holds an ASTRAL_NODE_OWNER from the sign-in era. It is left as it is. The node reports it as a legacy owner and keeps your data."
+  echo "Legacy owner:       $env_file holds an ASTRAL_NODE_OWNER from the sign-in era. It is left as it is. The node reports it as a legacy owner and keeps your data. The production posture refuses to start while that line is set, so remove it yourself before you pair."
 fi
 echo
 echo "Next steps"

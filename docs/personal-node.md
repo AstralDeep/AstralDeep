@@ -23,7 +23,7 @@ scripts/node/install-personal-node.sh
 
 The old `--issuer`, `--client-id` and `--owner-subject` options were removed. The installer refuses them and says what replaced them.
 
-It creates `~/.astral-node/data` and `~/.astral-node/node.env`, both private to you. It generates the node key and the encryption secrets. It keeps any value that already exists and it never prints a secret. An env file from the sign-in era keeps its `ASTRAL_NODE_OWNER` line untouched. The node reports that owner as a legacy owner and keeps your data.
+It creates `~/.astral-node/data` and `~/.astral-node/node.env`, both private to you. It generates the node key and the encryption secrets. It keeps any value that already exists and it never prints a secret. An env file from the sign-in era keeps its `ASTRAL_NODE_OWNER` line untouched. The node reports that owner as a legacy owner and keeps your data. The production posture refuses to start while the line is set, so remove it yourself before you pair.
 
 The node stores its data in a SQLite file named `plane.sqlite3` in the node data directory. The file is mode 0600 and needs no database server. Pass `--database-url postgresql://...` to use PostgreSQL instead. A `sqlite:///absolute/path.db` URL picks another SQLite file. The shared multi-user deployment stays on PostgreSQL and refuses a SQLite URL.
 
