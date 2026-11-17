@@ -10,6 +10,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Dict, List, Sequence
 
+import astral_kernel as ak
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec
 from devtools import dev_mesh
 from orchestrator import node_mesh
 from orchestrator.node_mailbox import MailboxSettings
@@ -124,20 +127,27 @@ class ContactMesh:
     owner: dev_mesh.DevOwner
     phone: dev_mesh.DevDevice
 
+    async def pair_phone(self) -> None:
+        await self.phone.start()
+        await self.owner.approve_offer(await self.phone.pairing_offer())
+        await until(self.phone.enrolled, "the second phone to join the second mesh")
+
 
 @asynccontextmanager
-async def contact_mesh(tmp_path: Path, monkeypatch: Any) -> AsyncIterator[ContactMesh]:
+async def contact_mesh(
+    tmp_path: Path, monkeypatch: Any, *, pair_phone: bool = True, tools: Any = None,
+) -> AsyncIterator[ContactMesh]:
     monkeypatch.setenv(dev_mesh.ENV, dev_mesh.DEVELOPMENT)
-    owner = dev_mesh.DevOwner("second-owner", tmp_path / "second-owner")
+    owner = dev_mesh.DevOwner("second-owner", tmp_path / "second-owner", tools)
     phone = dev_mesh.DevDevice("second-phone", tmp_path / "second-phone")
+    mesh = ContactMesh(owner, phone)
     try:
         owner.create_mesh()
         owner.confirm_recovery()
         await owner.start()
-        await phone.start()
-        await owner.approve_offer(await phone.pairing_offer())
-        await until(phone.enrolled, "the second phone to join the second mesh")
-        yield ContactMesh(owner, phone)
+        if pair_phone:
+            await mesh.pair_phone()
+        yield mesh
     finally:
         await phone.stop()
         await owner.stop()
@@ -152,3 +162,50 @@ async def verified_contacts(mine: dev_mesh.DevOwner, theirs: dev_mesh.DevOwner) 
         raise AssertionError("the two meshes disagree on the contact code")
     mine.verify_contact(at_mine.id)
     theirs.verify_contact(at_theirs.id)
+
+
+class _StrangerSigner(ak.HostSigner):
+    def __init__(self) -> None:
+        self._identity = ec.generate_private_key(ec.SECP256R1())
+        self._presence = ec.generate_private_key(ec.SECP256R1())
+
+    @staticmethod
+    def _point(key: ec.EllipticCurvePrivateKey) -> bytes:
+        return key.public_key().public_bytes(serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)
+
+    def identity_public_key(self):
+        return self._point(self._identity)
+
+    def identity_sign(self, message):
+        return dev_mesh._sign(self._identity, bytes(message))
+
+    def presence_public_key(self):
+        return self._point(self._presence)
+
+    def presence_sign(self, prompt, message):
+        return dev_mesh._sign(self._presence, bytes(message))
+
+    def hardware_backed(self):
+        return False
+
+
+@asynccontextmanager
+async def stranger_mesh(tmp_path: Path, monkeypatch: Any) -> AsyncIterator[ak.Kernel]:
+    monkeypatch.setenv(dev_mesh.ENV, dev_mesh.DEVELOPMENT)
+    config = ak.KernelConfig(
+        data_dir=str(tmp_path / "stranger"), operations_secret=ak.new_operations_secret(),
+        wrap_secret=ak.new_operations_secret(), restore_marker=None, device_label="stranger",
+        device_kind=ak.DeviceKind.DESKTOP,
+        network=ak.NetworkConfig(
+            relay=ak.RelayChoice.DISABLED(), local_discovery=False, internet_lookup=False, loopback_only=True,
+            sync_interval_ms=dev_mesh.SYNC_INTERVAL_MS, mailbox=None,
+        ),
+    )
+    kernel = ak.Kernel.open(config, _StrangerSigner())
+    try:
+        kernel.create_mesh()
+        kernel.confirm_mesh_recovery()
+        await kernel.start_network()
+        yield kernel
+    finally:
+        await kernel.stop_network()
