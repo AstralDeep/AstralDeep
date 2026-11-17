@@ -37,6 +37,7 @@ PUBLIC = {
     ("GET", "/healthz"): "liveness",
     ("GET", "/readyz"): "readiness",
     ("MOUNT", "/static"): "static shell assets",
+    ("GET", "/api/node/agent-servers"): "a loopback-only answer that reads no bearer",
     ("GET", "/api/node/descriptor"): "the node descriptor",
     ("GET", "/.well-known/astral-node/jwks.json"): "the node's public keys",
     ("GET", "/share/{token}"): "a capability link that reads no Authorization header",

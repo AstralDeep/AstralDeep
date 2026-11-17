@@ -70,6 +70,7 @@ BACKEND_REASONS = (
     "app_sandboxed",
     "platform_unsupported",
 )
+AGENT_SERVER_REASONS = ("phi_node",)
 MESSAGES = {
     "exec.backend_unavailable": "No confinement backend can run untrusted tools on this machine.",
     "exec.agent_server_unsupported": "Agents you create cannot run on this node yet, because it has no way to confine them.",
@@ -86,6 +87,7 @@ MESSAGES = {
     "root_node": "This node runs as root, and bubblewrap would map root to root inside the sandbox. Run the node as an unprivileged user.",
     "sandbox_exec_missing": "/usr/bin/sandbox-exec is missing, and untrusted tools need it on macOS.",
     "app_sandboxed": "The App Sandboxed build cannot confine child processes, so it cannot host untrusted tools. Use the direct-download build.",
+    "phi_node": "This node is in your PHI group, so agents you create cannot run on it. Exclude the node from the PHI group to run them here.",
     "platform_unsupported": "No confinement backend exists for {platform}.",
 }
 DENIED_SYSCALLS = (
