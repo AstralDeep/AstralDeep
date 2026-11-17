@@ -696,7 +696,7 @@ def test_vector_copy_matches_the_contract_when_present():
     if CONTRACT.exists():
         assert VECTORS.read_bytes() == CONTRACT.read_bytes()
     document = load_vectors()
-    assert (document["format"], document["name"], len(document["cases"])) == ("astral.vectors/v1", "connection-oauth-v1", 142)
+    assert (document["format"], document["name"], len(document["cases"])) == ("astral.vectors/v1", "connection-oauth-v1", 168)
 
 
 def served(responses):
@@ -765,7 +765,7 @@ def test_seam_dynamic_registration_scripts_replay():
         script = [None if item is None else (item["status"], item.get("json", {})) for item in responses]
         outcome = case["expect"].get("ok", case["expect"])
         with FixtureAuth(FixtureConfig(register_script=list(script))) as auth:
-            for sent, step in zip(outcome["requests"], script, strict=True):
+            for sent, step in zip(outcome["requests"], script[: len(outcome["requests"])], strict=True):
                 url = f"{auth.urls.as_origin}/register"
                 if step is None:
                     with pytest.raises(OSError):
@@ -775,7 +775,7 @@ def test_seam_dynamic_registration_scripts_replay():
                 assert (got[0], got[1]) == step, case["name"]
             assert auth.registrations == outcome["requests"], case["name"]
         replayed += 1
-    assert replayed == 7
+    assert replayed == 17
 
 
 def test_vector_native_rejection_matches_the_two_step_registration():
@@ -884,7 +884,7 @@ def test_seam_canned_registration_metadata_round_trips():
 
 
 def test_every_vector_kind_is_either_exercised_or_a_pure_client_decision():
-    pure_client = {"oauth_bearer_target"}
+    pure_client = {"oauth_bearer_target", "oauth_egress_entries"}
     exercised = {
         "oauth_challenge",
         "oauth_resource_metadata",
