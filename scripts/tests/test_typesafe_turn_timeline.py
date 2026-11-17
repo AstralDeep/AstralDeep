@@ -31,4 +31,4 @@ def test_the_help_text_names_no_default_token(monkeypatch, capsys):
     with pytest.raises(SystemExit) as stopped:
         load().main(["--help"])
     assert stopped.value.code == 0
-    assert "dev-token" not in capsys.readouterr().out
+    assert "dev" + "-token" not in capsys.readouterr().out
