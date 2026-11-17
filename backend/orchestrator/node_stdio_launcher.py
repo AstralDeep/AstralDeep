@@ -1,5 +1,5 @@
 """The node's launcher for local stdio MCP servers: it starts each server through a sandbox backend, serves the child's stdio to the kernel as JSON-RPC over a loopback HTTP endpoint guarded by a per-launch bearer, and stops the child and endpoint on removal.
-Production installs no backend, so every launch refuses with connection.sandbox_unavailable; node_mesh.py installs it on the kernel and node_connections.py reports the refusal beside each stdio connection.
+Without a backend every launch refuses with connection.sandbox_unavailable, and node_stdio_exec.py supplies the real one; node_mesh.py installs it on the kernel and node_connections.py reports the refusal beside each stdio connection.
 """
 
 from __future__ import annotations
