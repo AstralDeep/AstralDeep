@@ -248,11 +248,11 @@ async def test_legacy_connector_rows_are_counted_by_key_name_and_their_bytes_are
         assert node_connections.legacy_count(["remote_mcp_x", 3, None]) == 1
 
 
-def test_the_binding_pin_names_the_phase_two_kernel():
+def test_the_binding_pin_names_the_phase_five_kernel():
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[2] / "config"
     binding = json.loads((root / "astral-kernel-binding.json").read_text())
     composition = json.loads((root / "astral-composition.json").read_text())
     assert binding["source"]["commit"] == composition["components"]["astral-kernel"]["commit"]
-    assert binding["source"]["commit"] == "11645bc80d8cb08534f21e3731715dc2fe6b4cad"
+    assert binding["source"]["commit"] == "ac2360b4f9fd8856fd7896677a80c80261e56833"
