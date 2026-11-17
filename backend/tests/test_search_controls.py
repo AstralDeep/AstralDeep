@@ -17,3 +17,5 @@ def test_search_denial_boundary() -> None:
     orchestrator = SearchOrchestrator(kernel_context={})
     result = orchestrator.execute_search("restricted_query")
     assert result["status"] == "denied"
+    assert "metadata" in result
+    assert result["metadata"]["timestamp"] == "2026-11-15T00:00:00Z"
