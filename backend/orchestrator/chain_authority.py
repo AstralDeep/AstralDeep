@@ -13,7 +13,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-from orchestrator.delegation import DEFAULT_MAX_DELEGATION_DEPTH
+from orchestrator.agent_authority import DEFAULT_MAX_DELEGATION_DEPTH
 
 logger = logging.getLogger("orchestrator.chain_authority")
 

@@ -165,7 +165,7 @@ def test_revocation_is_durable_and_effects_persist(tmp_path: Path) -> None:
 
 
 def test_handoff_attenuation_and_drift(tmp_path: Path) -> None:
-    from orchestrator.delegation import _token_scopes
+    from orchestrator.agent_authority import _token_scopes
 
     from tests.multiturn_replay.engine import _delegation_parent, ReplayEngine
 

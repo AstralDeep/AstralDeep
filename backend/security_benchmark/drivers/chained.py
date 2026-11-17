@@ -75,7 +75,7 @@ class ChainedDriver(Driver):
     async def _drive_hop(self, case: BenchmarkCase, chaining_on: bool):
         import os
 
-        from orchestrator import delegation as dg
+        from orchestrator import agent_authority as dg
         from orchestrator.orchestrator import Orchestrator
         from shared.protocol import AgentHopRequest, MCPResponse
 

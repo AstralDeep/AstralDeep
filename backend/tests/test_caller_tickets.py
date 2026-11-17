@@ -634,7 +634,7 @@ def ticket_claims() -> Dict[str, Any]:
 
 
 async def test_the_delegation_token_of_a_ticketed_call_names_only_that_tool(orchestrator_factory):
-    from orchestrator import delegation as dg
+    from orchestrator import agent_authority as dg
 
     orch = ticketed_orchestrator(orchestrator_factory)
     session = {**ticket_claims(), "_invocation_channel": "mcp"}
@@ -666,7 +666,7 @@ async def test_a_ticketed_call_is_bound_to_its_tool_scope_and_definition(orchest
 
 
 async def test_a_chained_hop_from_a_ticketed_call_is_refused_and_the_uncovered_tool_never_runs(orchestrator_factory):
-    from orchestrator import delegation as dg
+    from orchestrator import agent_authority as dg
     from shared.feature_flags import flags
     from shared.protocol import AgentHopRequest
 
@@ -706,5 +706,5 @@ async def test_the_real_dispatch_of_a_ticketed_call_sends_the_agent_a_token_for_
         claims=ticket_claims(), user_id=OWNER_ID, agent_id=AGENT, tool_name="read_value", arguments={})
     assert ran.error is None and orch._execute_with_retry.await_count == 1
     sent = orch._execute_with_retry.await_args.args[3]["_delegation_token"]
-    from orchestrator import delegation as dg
+    from orchestrator import agent_authority as dg
     assert dg.decode_token_payload(sent)["scope"].split() == ["tools:read", "tool:read_value"]

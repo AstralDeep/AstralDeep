@@ -19,7 +19,7 @@ from orchestrator.chain_authority import (  # noqa: E402
     MachineAuthority,
     MachineTurnAuthority,
 )
-from orchestrator.delegation import DEFAULT_MAX_DELEGATION_DEPTH  # noqa: E402
+from orchestrator.agent_authority import DEFAULT_MAX_DELEGATION_DEPTH  # noqa: E402
 
 
 def test_budget_charges_until_hop_limit():

@@ -300,7 +300,7 @@ def test_from_json_decodes_hop_frames():
 
 
 def test_encode_decode_roundtrip():
-    from orchestrator import delegation as dg
+    from orchestrator import agent_authority as dg
 
     payload = {"sub": "u1", "act": {"sub": "agent:a"}, "scope": "tools:read",
                "exp": 123, "delegation": True}
@@ -310,7 +310,7 @@ def test_encode_decode_roundtrip():
 
 
 def test_decode_rejects_malformed():
-    from orchestrator import delegation as dg
+    from orchestrator import agent_authority as dg
 
     assert dg.decode_token_payload("") is None
     assert dg.decode_token_payload("not-a-token") is None
@@ -318,7 +318,7 @@ def test_decode_rejects_malformed():
 
 
 def test_child_signing_key_prefers_env(monkeypatch):
-    from orchestrator import delegation as dg
+    from orchestrator import agent_authority as dg
 
     monkeypatch.setenv("ASTRAL_ENV", "development")
 

@@ -127,7 +127,7 @@ async def test_mcp_delegation_is_newly_minted_without_inbound_bearer(monkeypatch
         claims,
     )
     assert token and "not-a-token" not in token
-    from orchestrator.delegation import decode_token_payload
+    from orchestrator.agent_authority import decode_token_payload
 
     payload = decode_token_payload(token)
     assert payload["sub"] == "u1"

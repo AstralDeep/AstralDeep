@@ -25,7 +25,7 @@ from astralplane.repositories.history import (
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from jose import jwt
 
-from orchestrator import auth, delegation, mesh_enrollment as me, web_auth
+from orchestrator import auth, agent_authority, mesh_enrollment as me, web_auth
 from orchestrator.plane_repository_context import plane_source_from_orchestrator
 from orchestrator.session_store import WebSessionStore
 from orchestrator.tool_permissions import VALID_SCOPES
@@ -104,7 +104,7 @@ def _decode_member_token(token):
         )
     return jwt.decode(
         token,
-        delegation._child_signing_key(),
+        agent_authority._child_signing_key(),
         algorithms=["HS256"],
         issuer=MEMBER_ISSUER,
         audience=MEMBER_AUDIENCE,
@@ -537,7 +537,7 @@ class MeshAdmission:
                         allowed_tools.append(skill.id)
             if personal:
                 now = int(time.time())
-                subject_token = delegation.encode_delegation_payload(
+                subject_token = agent_authority.encode_delegation_payload(
                     {
                         "sub": owner_id,
                         "act": {"sub": "agent:" + (agent_id or "mesh-control")},
@@ -695,10 +695,10 @@ class MeshAdmission:
             },
         }
         try:
-            token = delegation.encode_delegation_payload(payload)
-        except delegation.DelegationConfigError:
+            token = agent_authority.encode_delegation_payload(payload)
+        except agent_authority.DelegationConfigError:
             raise MeshIAMUnavailable() from None
-        payload = delegation.decode_token_payload(token)
+        payload = agent_authority.decode_token_payload(token)
         now = me._now_ms()
         self.store._credentials.repository.upsert_credential(
             transaction,

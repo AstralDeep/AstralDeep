@@ -24,7 +24,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from audit.schemas import AuditEventCreate, AuditEventDTO
 
-from orchestrator.delegation import attenuate_scopes
+from orchestrator.agent_authority import attenuate_scopes
 from orchestrator.plane_repository_context import (
     PlaneRepositoryContext,
     repository_from,

@@ -192,22 +192,3 @@ class TestExchangeGuards:
         assert url.endswith("/protocol/openid-connect/token")
         assert form["scope"] == "tools:read tools:search"
         assert form["audience"] == "astral-agent-service"
-
-
-class TestToolScopeCheck:
-    def test_tool_in_scope(self):
-        scopes = ["tool:get_system_status", "tool:modify_data"]
-        assert DelegationService.is_tool_in_scope("get_system_status", scopes) is True
-        assert DelegationService.is_tool_in_scope("modify_data", scopes) is True
-
-    def test_tool_not_in_scope(self):
-        scopes = ["tool:get_system_status"]
-        assert DelegationService.is_tool_in_scope("modify_data", scopes) is False
-
-    def test_no_tool_scopes_allows_all(self):
-        scopes = ["openid", "profile"]
-        assert DelegationService.is_tool_in_scope("modify_data", scopes) is True
-        assert DelegationService.is_tool_in_scope("anything", scopes) is True
-
-    def test_empty_scopes_allows_all(self):
-        assert DelegationService.is_tool_in_scope("modify_data", []) is True

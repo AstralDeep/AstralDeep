@@ -1,4 +1,4 @@
-"""Tests for the mediated delegation hop seam (backend/orchestrator/delegation.py): a
+"""Tests for the mediated delegation hop seam (backend/orchestrator/agent_authority.py): a
 hop mints a strictly-narrower child token and re-enters the full gate stack, refusing
 per-call without tearing down the session.
 """
@@ -16,7 +16,7 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from orchestrator import delegation as dg  # noqa: E402
+from orchestrator import agent_authority as dg  # noqa: E402
 from shared.feature_flags import flags  # noqa: E402
 from shared.protocol import AgentHopRequest, MCPResponse  # noqa: E402
 

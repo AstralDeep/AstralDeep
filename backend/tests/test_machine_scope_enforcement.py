@@ -281,7 +281,7 @@ def test_the_tool_list_admits_exact_tools_at_their_current_definition():
 @pytest.mark.parametrize("tools", ["granted", "empty", "missing", "changed"])
 async def test_delegated_mesh_tools_never_exceed_the_exact_root_tools(monkeypatch, personal, tools):
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-    from orchestrator import delegation
+    from orchestrator import agent_authority as delegation
     from shared import node_identity
 
     identity = node_identity.NodeIdentity.from_private(Ed25519PrivateKey.generate())
@@ -316,7 +316,7 @@ async def test_delegated_mesh_tools_never_exceed_the_exact_root_tools(monkeypatc
 @pytest.mark.parametrize("authority", ["interactive", "scheduled", "peer_call"])
 async def test_other_authorities_keep_enabled_siblings_when_delegating(monkeypatch, personal, authority):
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-    from orchestrator import delegation
+    from orchestrator import agent_authority as delegation
     from shared import node_identity
 
     identity = node_identity.NodeIdentity.from_private(Ed25519PrivateKey.generate())
