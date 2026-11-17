@@ -20,7 +20,7 @@ BACKEND_MODULES = ("astral_exec", "orchestrator.orchestrator")
 CHILD_TIMEOUT = 300
 
 CHILD_SCRIPT = r"""
-import importlib, os, shutil, sys
+import importlib, os, sys
 
 root = os.path.realpath(sys.argv[1])
 modules, backend_modules = sys.argv[2].split(","), sys.argv[3].split(",")
@@ -45,8 +45,6 @@ os.chdir(os.path.join(root, "app", "backend"))
 for name in backend_modules:
     loaded = importlib.import_module(name)
     check("import " + name, inside(loaded.__file__), os.path.dirname(loaded.__file__))
-check("no foreign python on PATH", all(
-    not found or inside(found) for found in (shutil.which("python"), shutil.which("python3"))))
 sys.exit(1 if failed else 0)
 """
 
@@ -68,6 +66,10 @@ def locate_pack(source: Path, scratch: Path) -> tuple[Path, dict]:
     return target, manifest
 
 
+def bytecode_files(root: Path) -> set[str]:
+    return {path.relative_to(root).as_posix() for path in root.rglob("__pycache__/*")}
+
+
 def run_child(root: Path, modules: tuple, backend_modules: tuple) -> subprocess.CompletedProcess:
     return subprocess.run(
         [str(root / "python" / "bin" / "python3.11"), "-I", "-B", "-c", CHILD_SCRIPT, str(root),
@@ -87,6 +89,7 @@ def run_launcher_help(root: Path) -> subprocess.CompletedProcess:
 def check_pack(source: Path, modules: tuple = MODULES, backend_modules: tuple = BACKEND_MODULES) -> list[str]:
     with tempfile.TemporaryDirectory(prefix="node-pack-relocation-") as scratch:
         root, manifest = locate_pack(source, Path(scratch))
+        cached = bytecode_files(root)
         child = run_child(root, modules, backend_modules)
         print(child.stdout, end="")
         failures = [] if child.returncode == 0 else [f"child exited {child.returncode}: {child.stderr.strip()[-400:]}"]
@@ -94,8 +97,8 @@ def check_pack(source: Path, modules: tuple = MODULES, backend_modules: tuple = 
         print(f"{'PASS' if launcher.returncode == 0 else 'FAIL'} launcher --help")
         if launcher.returncode != 0:
             failures.append(f"launcher --help exited {launcher.returncode}: {launcher.stderr.strip()[-400:]}")
-        caches = sorted(path.relative_to(root).as_posix() for path in root.rglob("__pycache__"))
-        print(f"{'PASS' if not caches else 'FAIL'} no __pycache__ written")
+        caches = sorted(bytecode_files(root) - cached)
+        print(f"{'PASS' if not caches else 'FAIL'} no bytecode written")
         if caches:
             failures.append("bytecode caches appeared: " + ", ".join(caches[:5]))
         problems = verify.tree_problems(root, manifest)

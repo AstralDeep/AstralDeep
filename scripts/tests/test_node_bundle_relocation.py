@@ -66,7 +66,7 @@ def test_a_launcher_that_fails_to_start_is_reported(tmp_path):
 
 
 def test_bytecode_written_during_the_run_is_reported(tmp_path):
-    out, _ = fake_pack(tmp_path, 'mkdir "$(dirname "$0")/../../launcher/__pycache__"; exit 0')
+    out, _ = fake_pack(tmp_path, 'mkdir "$(dirname "$0")/../../launcher/__pycache__"; echo x > "$(dirname "$0")/../../launcher/__pycache__/m.pyc"; exit 0')
     assert any("bytecode caches appeared" in failure for failure in rc.check_pack(out))
 
 
