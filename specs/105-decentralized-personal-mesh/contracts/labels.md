@@ -1,3 +1,5 @@
+> Superseded by [labels v2](../../106-sign-in-free-clients/contracts/labels-v2.md), which adds the outside-service rule. This version 1 document is kept as history.
+
 # Label and gate contract, `astral.labels/v1`
 
 Flow labels mark how far content can be trusted and where it may go. Deterministic code enforces rules on them. This document fixes the two axes, how labels combine, the running label of a turn, quarantined reader outputs, the flow rules and the gate order for one effect.
