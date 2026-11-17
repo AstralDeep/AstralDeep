@@ -15,7 +15,7 @@ from orchestrator.mesh_push_gateway import MeshPushPublisher
 from orchestrator.mesh_push_registry import MeshPushRegistry
 from orchestrator.push_wake import NO_DESTINATION, SENT, WakeLimiter
 from orchestrator import node_api, node_mesh
-from orchestrator.session_store import assert_production_posture
+from orchestrator.boot_posture import assert_production_posture
 from shared import node_identity, token_verify
 from tests.test_mesh_push_api import Apns
 from tests.test_mesh_push_registry import KEY, plane  # noqa: F401

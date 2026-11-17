@@ -1433,7 +1433,7 @@ class Orchestrator:
             plane_runtime=self.runtime_composition.plane.runtime,
             plane_repositories=self.runtime_composition.plane.repositories,
         )
-        from orchestrator.session_store import WebSessionStore
+        from orchestrator.boot_posture import WebSessionStore
         from orchestrator.web_auth import bind_credential_manager, bind_session_store
 
         bind_credential_manager(self.credential_manager)
@@ -26581,7 +26581,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         logger.info(f"Orchestrator starting on port {PORT}")
 
         # Mock auth outside dev is fatal; refuse rather than run open
-        from orchestrator.session_store import assert_production_posture
+        from orchestrator.boot_posture import assert_production_posture
         assert_production_posture()
 
         self.runtime_composition.start()
@@ -27480,7 +27480,7 @@ async def _join_orchestrator_close_through_cancellation(
 
 
 def main() -> None:
-    from orchestrator.session_store import assert_production_posture
+    from orchestrator.boot_posture import assert_production_posture
 
     assert_production_posture()
     orch = Orchestrator()

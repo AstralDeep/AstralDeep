@@ -640,7 +640,7 @@ async def download_file(session_id: str, filename: str, user_id: str = Depends(r
 def validate_agent_api_key(api_key: str) -> bool:
     configured_key = os.getenv("AGENT_API_KEY", "")
     if not configured_key:
-        from orchestrator.session_store import is_dev_mode
+        from orchestrator.boot_posture import is_dev_mode
         if is_dev_mode():
             return True
         logger.warning(

@@ -6,7 +6,7 @@ import os
 from unittest.mock import AsyncMock
 
 from orchestrator import node_mesh, node_mesh_chat
-from orchestrator.session_store import assert_production_posture
+from orchestrator.boot_posture import assert_production_posture
 from shared import node_identity
 from tests.test_node_mesh_kernel_integration import Listener, ak, enrolled, free_port, until
 from tests.test_node_mesh_kernel_integration import adopt_phi_group

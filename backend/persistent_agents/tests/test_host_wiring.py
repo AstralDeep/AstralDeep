@@ -28,9 +28,9 @@ class StartupObserved(Exception):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("enabled", [False, True])
 async def test_actual_startup_only_starts_explicitly_enabled_assignment_runner(monkeypatch, enabled):
-    from orchestrator import session_store
+    from orchestrator import boot_posture
     from persistent_agents import runtime
-    monkeypatch.setattr(session_store, "assert_production_posture", Mock())
+    monkeypatch.setattr(boot_posture, "assert_production_posture", Mock())
     monkeypatch.setattr(flags, "is_enabled", lambda name: name == "persistent_agents" and enabled)
     created_service = SimpleNamespace(approval_executor=None)
     created_runner = SimpleNamespace(start=Mock(), fixed_research_ready=Mock(return_value=True))

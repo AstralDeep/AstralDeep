@@ -1,5 +1,5 @@
 """Proves the phase gates of contact sharing through the real kernel binding with the two seeded development meshes, a personal node serving mesh A, and a third unrelated mesh: unverified contacts, readers and strangers, added and removed devices, revocation online and offline, PHI destinations, untrusted shared content with its consent rule, and the production boot posture.
-It builds on tests/helpers/dev_mesh.py and devtools/dev_mesh.py, and drives orchestrator/session_store.py for the boot exit."""
+It builds on tests/helpers/dev_mesh.py and devtools/dev_mesh.py, and drives orchestrator/boot_posture.py for the boot exit."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import pytest
 from cryptography.fernet import Fernet
 
 import astral_kernel as ak
-from orchestrator import session_store
+from orchestrator import boot_posture
 from shared import node_identity
 from tests.helpers.dev_mesh import contact_mesh, dev_node, stranger_mesh, until, verified_contacts
 
@@ -265,7 +265,7 @@ def test_a_production_boot_with_a_placeholder_secret_still_exits_78(monkeypatch,
     monkeypatch.setenv("AUDIT_HMAC_SECRET", "change-me")
     node_identity.reset_cache()
     with pytest.raises(SystemExit) as exited:
-        session_store.assert_production_posture()
+        boot_posture.assert_production_posture()
     assert exited.value.code == 78
     assert "AUDIT_HMAC_SECRET" in caplog.text
     node_identity.reset_cache()

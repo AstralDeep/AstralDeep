@@ -602,12 +602,12 @@ class _StartAsyncTasks:
 async def test_startup_recovers_generated_publications_before_background_loop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from orchestrator import session_store
+    from orchestrator import boot_posture
     from orchestrator.orchestrator import Orchestrator
 
     events: list[str] = []
     monkeypatch.setattr(
-        session_store,
+        boot_posture,
         "assert_production_posture",
         lambda: events.append("posture"),
     )

@@ -77,7 +77,7 @@ def _child_signing_key() -> bytes:
     key = os.getenv("DELEGATION_CHILD_SIGNING_KEY") or os.getenv("MEMORY_HMAC_KEY")
     if key:
         return key.encode("utf-8")
-    from orchestrator.session_store import is_dev_mode
+    from orchestrator.boot_posture import is_dev_mode
     if not is_dev_mode():
         raise DelegationConfigError(
             "child delegation minting requires DELEGATION_CHILD_SIGNING_KEY "

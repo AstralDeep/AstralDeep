@@ -532,7 +532,7 @@ def test_dispatch_requires_current_publication_after_withdrawal(monkeypatch, pub
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("configured", "expected"), [(None, "0.0.0.0"), ("192.168.1.5", "192.168.1.5"), ("::1", "::1")])
 async def test_startup_mounts_a2a_and_publication_routes_when_server_enabled(monkeypatch, publication_host, configured, expected):
-    from orchestrator import session_store
+    from orchestrator import boot_posture
     from orchestrator import orchestrator as module
     from shared.a2a_publication import A2APublicationRegistry
     from tests.test_evidence_entry import lifetime_host
@@ -543,7 +543,7 @@ async def test_startup_mounts_a2a_and_publication_routes_when_server_enabled(mon
     monkeypatch.delenv("ASTRAL_NODE_PROFILE", raising=False)
     if configured:
         monkeypatch.setenv("ORCHESTRATOR_HOST", configured)
-    monkeypatch.setattr(session_store, "assert_production_posture", lambda: None)
+    monkeypatch.setattr(boot_posture, "assert_production_posture", lambda: None)
     monkeypatch.setattr(
         module.flags, "is_enabled", lambda name: name == "a2a_server"
     )

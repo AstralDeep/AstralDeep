@@ -63,6 +63,10 @@
       "until": "T6"
     },
     {
+      "path": "backend/orchestrator/boot_posture.py",
+      "until": "T6"
+    },
+    {
       "path": "backend/orchestrator/computer_managed_policy.py",
       "until": "T9"
     },
@@ -133,10 +137,6 @@
     {
       "path": "backend/orchestrator/sandbox.py",
       "until": "T9"
-    },
-    {
-      "path": "backend/orchestrator/session_store.py",
-      "until": "T5"
     },
     {
       "path": "backend/orchestrator/ui_auth_renewal.py",

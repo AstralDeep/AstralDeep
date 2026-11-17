@@ -1,6 +1,6 @@
 """Tests that real startup schedules private-note expiry after recovery and joins that
 task before AstralPlane shuts down, using backend/orchestrator/orchestrator.py,
-session_store.py and personalization/explicit_note_service.py.
+boot_posture.py and personalization/explicit_note_service.py.
 """
 
 import asyncio
@@ -25,7 +25,7 @@ runtime = plane
 @pytest.mark.asyncio
 async def test_actual_startup_owns_expiry_after_recovery_and_before_plane_shutdown(
         notes, note_clock, monkeypatch):
-    from orchestrator import session_store
+    from orchestrator import boot_posture
     from shared.feature_flags import flags
 
     await apply(notes, expires_at=note_clock.expiry)
@@ -39,7 +39,7 @@ async def test_actual_startup_owns_expiry_after_recovery_and_before_plane_shutdo
         return result
 
     monkeypatch.setattr(ExplicitNoteService, "expire_batch", batch)
-    monkeypatch.setattr(session_store, "assert_production_posture", lambda: history.append("posture"))
+    monkeypatch.setattr(boot_posture, "assert_production_posture", lambda: history.append("posture"))
     host = Orchestrator.__new__(Orchestrator)
     host.async_task_manager = _StartAsyncTasks(history)
     host.human_request_boundary = notes.boundary

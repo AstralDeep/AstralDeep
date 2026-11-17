@@ -571,13 +571,13 @@ async def test_evidence_shutdown_failure_still_closes_other_authority_services(m
 
 @pytest.mark.parametrize("enabled", [False, True])
 async def test_startup_constructs_evidence_service_only_when_enabled_and_starts_once(monkeypatch, enabled):
-    from orchestrator import session_store
+    from orchestrator import boot_posture
     from orchestrator import orchestrator as module
 
     monkeypatch.setattr(flags, "is_enabled", lambda name: enabled and name == "observation_packing")
     monkeypatch.setenv("ASTRAL_ENV", "development")
     monkeypatch.delenv("A2A_EXTERNAL_AGENTS", raising=False)
-    monkeypatch.setattr(session_store, "assert_production_posture", lambda: None)
+    monkeypatch.setattr(boot_posture, "assert_production_posture", lambda: None)
     host = lifetime_host(monkeypatch)
     host.voice_services = None
     host.generated_agent_publication_service = SimpleNamespace(

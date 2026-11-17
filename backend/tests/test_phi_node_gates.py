@@ -11,7 +11,7 @@ import pytest
 
 from orchestrator import api, node_mesh, phi_node_policy
 from orchestrator.agent_lifecycle import AgentLifecycleManager
-from orchestrator.session_store import assert_production_posture
+from orchestrator.boot_posture import assert_production_posture
 from tests.fixtures.connections import FixtureAuth, FixtureConfig, ModelServer
 from tests.helpers.dev_mesh import connection_reached, dev_node
 from tests.helpers.dev_mesh import until as wait_until
