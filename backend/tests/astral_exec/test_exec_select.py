@@ -195,6 +195,7 @@ def test_a_loaded_darwin_policy_selects_seatbelt():
         landlock_abi=0,
         bwrap=False,
         userns=False,
+        euid=501,
         sandbox_exec=True,
         app_sandboxed=False,
     )

@@ -80,9 +80,12 @@ def plan_document(document: dict[str, Any], egress_socket: Any) -> dict[str, Any
             "deny_syscalls": list(DENIED_SYSCALLS),
             "deny_fork": limits["processes"] == 1,
             "fork_syscalls": list(FORK_SYSCALLS),
-            "inet_stream_sockets": hosted,
-            "deny_socket_types": ["SOCK_DGRAM", "SOCK_RAW"],
-            "deny_socket_domains": ["AF_UNIX"],
+            "socket_allow": [
+                {"domain": "AF_INET", "type": "SOCK_STREAM"},
+                {"domain": "AF_INET6", "type": "SOCK_STREAM"},
+            ]
+            if hosted
+            else [],
             "allow_socketpair": True,
         },
         "rlimits": {

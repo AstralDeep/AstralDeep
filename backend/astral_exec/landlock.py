@@ -27,8 +27,7 @@ FILE_RIGHTS = EXECUTE | WRITE_FILE | READ_FILE | TRUNCATE
 READ_RIGHTS = EXECUTE | READ_FILE | READ_DIR
 DEVICE_RIGHTS = READ_FILE | WRITE_FILE
 NET_BIND_TCP, NET_CONNECT_TCP = 1, 2
-SCOPE_ABSTRACT_UNIX_SOCKET, SCOPE_SIGNAL = 1, 2
-PROXY_PORT = 3128
+SCOPES = {"abstract_unix_socket": 1, "signal": 2}
 _ABI_FS_BITS = {1: 13, 2: 14, 3: 15, 4: 15, 5: 16}
 
 
@@ -40,13 +39,17 @@ def workspace_rights(fs: int) -> int:
     return fs & ~(EXECUTE | MAKE_SOCK)
 
 
-def ruleset_attr(fs: int) -> bytes:
-    return struct.pack(
-        "QQQ",
-        fs,
-        NET_BIND_TCP | NET_CONNECT_TCP,
-        SCOPE_ABSTRACT_UNIX_SOCKET | SCOPE_SIGNAL,
-    )
+def scope_bits(names: Any) -> int:
+    bits = 0
+    for name in names:
+        if name not in SCOPES:
+            raise OSError(f"unknown Landlock scope {name!r}")
+        bits |= SCOPES[name]
+    return bits
+
+
+def ruleset_attr(fs: int, scopes: int) -> bytes:
+    return struct.pack("QQQ", fs, NET_BIND_TCP | NET_CONNECT_TCP, scopes)
 
 
 def grants(plan: dict[str, Any], fs: int) -> list[tuple[str, int]]:
@@ -89,7 +92,6 @@ def _real_kernel() -> Kernel:
 
 def apply(
     plan: dict[str, Any],
-    hosted: bool,
     kernel: Kernel | None = None,
     open_path: Callable[[str], int] = lambda path: os.open(
         path, os.O_PATH | os.O_CLOEXEC
@@ -104,7 +106,7 @@ def apply(
             f"Landlock ABI {REQUIRED_ABI} or newer is required; this kernel offers {abi}"
         )
     fs = fs_rights(REQUIRED_ABI)
-    ruleset = kernel.create_ruleset(ruleset_attr(fs))
+    ruleset = kernel.create_ruleset(ruleset_attr(fs, scope_bits(plan["scopes"])))
     try:
         for path, rights in grants(plan, fs):
             try:
@@ -118,12 +120,14 @@ def apply(
                 )
             finally:
                 close(fd)
-        if hosted:
-            kernel.add_rule(
-                ruleset,
-                RULE_NET_PORT,
-                struct.pack("=QQ", NET_CONNECT_TCP, PROXY_PORT),
-            )
+        for access, ports in (
+            (NET_CONNECT_TCP, plan["tcp_connect"]),
+            (NET_BIND_TCP, plan["tcp_bind"]),
+        ):
+            for port in ports:
+                kernel.add_rule(
+                    ruleset, RULE_NET_PORT, struct.pack("=QQ", access, port)
+                )
         kernel.restrict(ruleset)
     finally:
         close(ruleset)

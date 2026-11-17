@@ -1,4 +1,4 @@
-"""Probes the machine for the facts select.py needs: platform, Landlock ABI, bubblewrap, user namespaces, sandbox-exec and the App Sandbox.
+"""Probes the machine for the facts select.py needs: platform, Landlock ABI, bubblewrap, user namespaces, effective user, sandbox-exec and the App Sandbox.
 Every probe is injectable through Hooks, and a probe that errors reports the safe answer (absent, or sandboxed for the App Sandbox) so selection fails closed.
 """
 
@@ -8,6 +8,7 @@ import os
 import stat as stat_module
 import subprocess
 import sys
+import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -16,7 +17,7 @@ from .constants import BWRAP_PATHS, SANDBOX_EXEC
 
 SYS_LANDLOCK_CREATE_RULESET = 444
 LANDLOCK_CREATE_RULESET_VERSION = 1
-TRUE_BINARIES = ("/usr/bin/true", "/bin/true")
+INNER_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "inner.py")
 USERNS_SYSCTLS = (
     "/proc/sys/user/max_user_namespaces",
     "/proc/sys/kernel/unprivileged_userns_clone",
@@ -74,6 +75,7 @@ class Hooks:
     stat: Callable[[str], Any] = os.stat
     sandbox_check: Callable[[int], Any] = _sandbox_check
     pid: Callable[[], int] = os.getpid
+    euid: Callable[[], int] = os.geteuid
     read_text: Callable[[str], str] = _read_text
     run: Callable[[Sequence[str]], int] = _run
     env: Mapping[str, str] = field(default_factory=lambda: dict(os.environ))
@@ -125,29 +127,38 @@ def _sysctls_allow_userns(hooks: Hooks) -> bool:
 
 
 def _trial_confines(hooks: Hooks, bwrap: str) -> bool:
+    interpreter = sys.executable
     try:
-        true_binary = next(path for path in TRUE_BINARIES if hooks.executable(path))
-    except (StopIteration, Exception):
-        return False
-    argv = [
-        bwrap,
-        "--unshare-user",
-        "--unshare-pid",
-        "--unshare-net",
-        "--unshare-ipc",
-        "--unshare-uts",
-        "--unshare-cgroup",
-        "--ro-bind",
-        "/",
-        "/",
-        "--proc",
-        "/proc",
-        "--dev",
-        "/dev",
-        true_binary,
-    ]
-    try:
-        return hooks.run(argv) == 0
+        if not os.path.isabs(interpreter) or not hooks.executable(interpreter):
+            return False
+        with tempfile.TemporaryDirectory(prefix="astral-trial-") as work:
+            argv = [
+                bwrap,
+                "--unshare-user",
+                "--unshare-pid",
+                "--unshare-net",
+                "--unshare-ipc",
+                "--unshare-uts",
+                "--unshare-cgroup",
+                "--ro-bind",
+                "/",
+                "/",
+                "--bind",
+                work,
+                work,
+                "--proc",
+                "/proc",
+                "--dev",
+                "/dev",
+                interpreter,
+                "-I",
+                "-S",
+                "-B",
+                INNER_PY,
+                "--probe",
+                work,
+            ]
+            return hooks.run(argv) == 0
     except Exception:
         return False
 
@@ -156,6 +167,18 @@ def _userns(hooks: Hooks, bwrap: str | None) -> bool:
     if bwrap is None or not _sysctls_allow_userns(hooks):
         return False
     return _trial_confines(hooks, bwrap)
+
+
+def _euid(hooks: Hooks) -> int:
+    try:
+        value = hooks.euid()
+    except Exception:
+        return 0
+    return (
+        value
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+        else 0
+    )
 
 
 def _sandbox_exec(hooks: Hooks) -> bool:
@@ -191,6 +214,7 @@ def probe(hooks: Hooks | None = None) -> Facts:
         landlock_abi=_landlock_abi(hooks) if linux else 0,
         bwrap=bwrap is not None,
         userns=_userns(hooks, bwrap) if linux else False,
+        euid=_euid(hooks),
         sandbox_exec=_sandbox_exec(hooks) if darwin else False,
         app_sandboxed=_app_sandboxed(hooks) if darwin else False,
     )

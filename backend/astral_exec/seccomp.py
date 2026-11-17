@@ -1,5 +1,5 @@
-"""Builds and installs the classic BPF seccomp filter the Linux plan describes: it denies the SysV IPC and POSIX message queue calls, setsid and setpgid, bounds fork to thread creation and allows only stream INET sockets and no AF_UNIX socket.
-inner.py installs it on the tool process after Landlock, and the committed numbers are checked by the harness against the live kernel.
+"""Builds and installs the classic BPF seccomp filter the Linux plan describes: it denies the listed syscalls, bounds fork to thread creation and lets socket create only the listed domain and type pairs.
+inner.py installs it on the tool process after Landlock, the harness checks its behavior on aarch64 and in-process tests run the program for x86_64.
 """
 
 from __future__ import annotations
@@ -8,8 +8,6 @@ import ctypes
 import platform
 import struct
 from typing import Callable
-
-from .constants import DENIED_SYSCALLS, FORK_SYSCALLS
 
 AUDIT_ARCH = {"x86_64": 0xC000003E, "aarch64": 0xC00000B7}
 _COMMON = {
@@ -33,7 +31,11 @@ _COMMON = {
     "mq_timedreceive": {"x86_64": 243, "aarch64": 183},
     "mq_notify": {"x86_64": 244, "aarch64": 184},
     "mq_getsetattr": {"x86_64": 245, "aarch64": 185},
+    "io_uring_setup": {"x86_64": 425, "aarch64": 425},
+    "io_uring_enter": {"x86_64": 426, "aarch64": 426},
+    "io_uring_register": {"x86_64": 427, "aarch64": 427},
     "socket": {"x86_64": 41, "aarch64": 198},
+    "socketpair": {"x86_64": 53, "aarch64": 199},
     "clone": {"x86_64": 56, "aarch64": 220},
     "clone3": {"x86_64": 435, "aarch64": 435},
     "fork": {"x86_64": 57},
@@ -51,9 +53,10 @@ NR_OFFSET = 0
 ARG0_LOW = 16
 ARG1_LOW = 24
 X32_BIT = 0x40000000
-AF_UNIX, AF_INET, AF_INET6 = 1, 2, 10
-SOCK_STREAM = 1
-SOCK_TYPE_MASK = 0xF
+DOMAINS = {"AF_INET": 2, "AF_INET6": 10}
+SOCK_TYPES = {"SOCK_STREAM": 1}
+SOCK_FLAGS = 0x800 | 0x80000
+SOCK_TYPE_MASK = 0xFFFFFFFF & ~SOCK_FLAGS
 CLONE_THREAD = 0x00010000
 PR_SET_NO_NEW_PRIVS = 38
 PR_SET_SECCOMP = 22
@@ -118,8 +121,37 @@ class _Assembler:
         return distance
 
 
-def build(machine: str, deny_fork: bool, inet_stream_sockets: bool) -> bytes:
+def _number(nr: dict[str, int], name: object) -> int:
+    if not isinstance(name, str) or name not in nr:
+        raise OSError(f"no syscall number for {name!r} on this machine")
+    return nr[name]
+
+
+def _known(nr: dict[str, int], name: object) -> int | None:
+    if not isinstance(name, str) or name not in _COMMON:
+        raise OSError(f"no syscall number for {name!r}")
+    return nr.get(name)
+
+
+def _socket_pairs(rules: object) -> list[tuple[int, int]]:
+    if not isinstance(rules, list):
+        raise OSError("socket_allow must be a list")
+    pairs = []
+    for rule in rules:
+        domain = rule.get("domain") if isinstance(rule, dict) else None
+        kind = rule.get("type") if isinstance(rule, dict) else None
+        if domain not in DOMAINS or kind not in SOCK_TYPES:
+            raise OSError(f"the filter cannot express the socket rule {rule!r}")
+        pairs.append((DOMAINS[domain], SOCK_TYPES[kind]))
+    return pairs
+
+
+def build(machine: str, plan: dict[str, object]) -> bytes:
     nr = numbers(machine)
+    denied = [_number(nr, name) for name in plan["deny_syscalls"]]
+    forks = [(name, _known(nr, name)) for name in plan["fork_syscalls"]]
+    pairs = _socket_pairs(plan["socket_allow"])
+    deny_fork = bool(plan["deny_fork"])
     asm = _Assembler()
     asm.ld(ARCH_OFFSET)
     asm.jeq(AUDIT_ARCH[machine], "arch_ok")
@@ -128,12 +160,14 @@ def build(machine: str, deny_fork: bool, inet_stream_sockets: bool) -> bytes:
     asm.ld(NR_OFFSET)
     if machine == "x86_64":
         asm.jge(X32_BIT, "kill")
-    for name in DENIED_SYSCALLS:
-        asm.jeq(nr[name], "eperm")
+    for number in denied:
+        asm.jeq(number, "eperm")
+    if not plan["allow_socketpair"]:
+        asm.jeq(nr["socketpair"], "eperm")
     if deny_fork:
-        for name in FORK_SYSCALLS:
-            if name in nr:
-                asm.jeq(nr[name], "enosys" if name == "clone3" else "eperm")
+        for name, number in forks:
+            if number is not None:
+                asm.jeq(number, "enosys" if name == "clone3" else "eperm")
         asm.jeq(nr["clone"], "clone_check")
     asm.jeq(nr["socket"], "socket_check")
     asm.ja("allow")
@@ -144,16 +178,17 @@ def build(machine: str, deny_fork: bool, inet_stream_sockets: bool) -> bytes:
         asm.jeq(0, "eperm")
         asm.ja("allow")
     asm.label("socket_check")
-    asm.ld(ARG0_LOW)
-    asm.jeq(AF_UNIX, "eperm")
-    asm.jeq(AF_INET, "inet_check")
-    asm.jeq(AF_INET6, "inet_check")
-    asm.ja("allow")
-    asm.label("inet_check")
-    if inet_stream_sockets:
+    for index, (domain, kind) in enumerate(pairs):
+        asm.label(f"pair_{index}")
+        asm.ld(ARG0_LOW)
+        asm.jeq(domain, f"pair_{index}_type")
+        asm.ja(f"pair_{index + 1}")
+        asm.label(f"pair_{index}_type")
         asm.ld(ARG1_LOW)
         asm.andk(SOCK_TYPE_MASK)
-        asm.jeq(SOCK_STREAM, "allow")
+        asm.jeq(kind, "allow")
+        asm.ja(f"pair_{index + 1}")
+    asm.label(f"pair_{len(pairs)}")
     asm.ja("eperm")
     asm.label("allow")
     asm.ret(RET_ALLOW)
@@ -189,9 +224,7 @@ def install(
     prctl: Callable[[int, int, int], int] = _real_prctl,
 ) -> None:
     machine = machine or platform.machine()
-    program = build(
-        machine, bool(plan["deny_fork"]), bool(plan["inet_stream_sockets"])
-    )
+    program = build(machine, plan)
     prctl(PR_SET_NO_NEW_PRIVS, 1, 0)
     buffer = ctypes.create_string_buffer(program, len(program))
     fprog = ctypes.create_string_buffer(
