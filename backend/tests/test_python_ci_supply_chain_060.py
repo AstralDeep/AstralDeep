@@ -92,7 +92,7 @@ REVIEWED_PUBLIC_LOCAL_MESH_FINGERPRINTS = {
     f"generic-api-key:{line}"
     for line in (78, 101, 124, 147, 170, 193, 216, 239, 468, 484, 497, 510)
 }
-REVIEWED_SHARE_VECTOR_BASELINE_SHA256 = '347f5641d45777a00c24ed3d9f0a2cac92a8ba199e159aaf14be26ec6241ee29'
+REVIEWED_SHARE_VECTOR_BASELINE_SHA256 = '541a7b2d97e32f3bf575c15f2bc325d8e6420f2dec45ff1c7b11903e6e0d119b'
 REVIEWED_PUBLIC_MESH_BASELINE_SHA256 = '3dae639f3d4261b5a0fef550bb0645bbd39bc143e6a85eb6f2e464881c8e3ea0'
 WINDOWS_CANDIDATE = REPO_ROOT / ".github" / "workflows" / "build-windows-candidate.yml"
 WINDOWS_RELEASE_BRIDGE = REPO_ROOT / ".github" / "workflows" / "release-windows.yml"
@@ -254,7 +254,7 @@ def test_gitleaks_history_baseline_is_exact_fingerprint_only() -> None:
     assert hashlib.sha256("\n".join(sorted(public_mesh)).encode()).hexdigest() == REVIEWED_PUBLIC_MESH_BASELINE_SHA256
     share = {fingerprint for fingerprint in fingerprints
              if ":specs/106-sign-in-free-clients/contracts/vectors/share-v1.json:" in fingerprint}
-    assert len(share) == 374
+    assert len(share) == 381
     assert hashlib.sha256("\n".join(sorted(share)).encode()).hexdigest() == REVIEWED_SHARE_VECTOR_BASELINE_SHA256
     assert REVIEWED_PUBLIC_LOCAL_MESH_FINGERPRINTS <= set(fingerprints)
     assert len(fingerprints) == 28 + len(public_mesh) + len(share) + 15
