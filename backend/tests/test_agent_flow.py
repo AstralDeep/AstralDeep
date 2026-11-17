@@ -1,6 +1,6 @@
 """Live-system WS smoke test: registers against the orchestrator's real /ws endpoint
-with the dev-mode mock token and asserts the handshake completes; also a manual
-long-form multi-agent flow runner.
+with an operator-supplied access token (TEST_UI_TOKEN) and asserts the handshake
+completes; also a manual long-form multi-agent flow runner.
 """
 
 import asyncio
@@ -19,31 +19,29 @@ QUERY = (
     "stats (cpu, memory, storage, all of it)"
 )
 URI = f"ws://localhost:{os.getenv('ORCHESTRATOR_PORT', '8001')}/ws"
-DEV_TOKEN = os.getenv("TEST_UI_TOKEN", "dev-token")
-
-REGISTER_MSG = {
-    "type": "register_ui",
-    "token": DEV_TOKEN,
-    "capabilities": ["text", "images"],
-    "session_id": "test_agent_flow",
-}
+ACCESS_TOKEN = os.getenv("TEST_UI_TOKEN", "")
 
 
-class _RealAuthActive(Exception):
-    pass
+def _register_message() -> dict:
+    return {
+        "type": "register_ui",
+        "token": ACCESS_TOKEN,
+        "capabilities": ["text", "images"],
+        "session_id": "test_agent_flow",
+    }
 
 
 async def _register(websocket) -> None:
-    await websocket.send(json.dumps(REGISTER_MSG))
+    await websocket.send(json.dumps(_register_message()))
     while True:
         resp = json.loads(await asyncio.wait_for(websocket.recv(), timeout=30))
         msg_type = resp.get("type")
         if msg_type == "system_config":
             return
         if msg_type == "auth_required":
-            raise _RealAuthActive(
-                "register_ui was refused (auth_required): the live stack runs "
-                "real Keycloak auth, so the mock dev-token cannot register."
+            raise AssertionError(
+                "register_ui was refused (auth_required): TEST_UI_TOKEN is not a "
+                "valid access token for this orchestrator"
             )
         if msg_type == "error":
             raise AssertionError(f"register_ui error: {resp.get('message')}")
@@ -59,14 +57,14 @@ async def test_ws_register_handshake():
         await asyncio.to_thread(_socket.create_connection, (host, int(port or 8001)), 2)
     except OSError:
         pytest.skip(f"live orchestrator not listening at {URI}")
+    if not ACCESS_TOKEN:
+        pytest.skip("TEST_UI_TOKEN is not set")
     last_exc: Exception | None = None
     for _attempt in range(3):
         try:
             async with websockets.connect(URI) as websocket:
                 await _register(websocket)
             return
-        except _RealAuthActive as exc:
-            pytest.skip(str(exc))
         except (OSError, websockets.exceptions.WebSocketException) as exc:
             last_exc = exc
             await asyncio.sleep(2)
@@ -76,6 +74,8 @@ async def test_ws_register_handshake():
 
 
 async def run_full_flow() -> None:
+    if not ACCESS_TOKEN:
+        raise SystemExit("Set TEST_UI_TOKEN to an access token for this orchestrator.")
     print(f"Connecting to {URI}...")
     async with websockets.connect(URI) as websocket:
         await _register(websocket)

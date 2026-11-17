@@ -38,8 +38,7 @@ class _CaptureSocket:
 
 
 @pytest.fixture
-async def orch(monkeypatch):
-    monkeypatch.setenv("USE_MOCK_AUTH", "true")
+async def orch():
     from orchestrator.orchestrator import Orchestrator
 
     try:

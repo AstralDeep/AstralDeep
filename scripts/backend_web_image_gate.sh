@@ -66,7 +66,7 @@ import sys
 from pathlib import Path
 name, path = sys.argv[1:]
 values = {
-    "ASTRAL_ENV": "production", "USE_MOCK_AUTH": "false",
+    "ASTRAL_ENV": "production",
     "PYTHON_DOTENV_DISABLED": "1", "LETS_MODE": "off",
     "WEB_SESSION_ENC_KEY": base64.urlsafe_b64encode(os.urandom(32)).decode(),
     "CREDENTIAL_ENCRYPTION_KEY": base64.urlsafe_b64encode(os.urandom(32)).decode(),
@@ -117,7 +117,7 @@ docker stop "$namespace-app" >/dev/null
 
 docker run -d --init --name "$namespace-dev" --network "$namespace" --cpus=2 --memory=2g \
   --label "org.astraldeep.qualification.namespace=$namespace" \
-  --env ASTRAL_ENV=development --env USE_MOCK_AUTH=true --env PYTHON_DOTENV_DISABLED=1 \
+  --env ASTRAL_ENV=development --env PYTHON_DOTENV_DISABLED=1 \
   --env DATABASE_URL="postgresql://astral:isolated_ci_only@$namespace-pg:5432/ad_gate_development" \
   --env ATTACHMENT_UPLOAD_ROOT=/tmp/development-blobs \
   --env PERSONAL_AGENT_ARTIFACT_ROOT=/tmp/development-agents "$image" >/dev/null

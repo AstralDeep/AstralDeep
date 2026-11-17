@@ -1,3 +1,5 @@
+> Wraps of a chat's content keys to a contact's device are defined by [share.md](../../106-sign-in-free-clients/contracts/share.md) and [contacts.md](../../106-sign-in-free-clients/contracts/contacts.md). The keys a device holds here are unchanged.
+
 # Key contract, `astral.keys/v1`
 
 This contract fixes the keys a device holds, key groups and epochs, content keys, the wrapping format `astral.wrap/v1`, the recovery key with its 24-word encoding, and the encrypted backup file.
@@ -16,6 +18,8 @@ Reference code: `reference/astral_mesh_ref/keys.py` and `crypto.py`. Vectors: `k
 Signing rules are in `event.md` section 3. The certificate that ties the four keys together is in `roster.md` section 1.
 
 ## 2. Key groups and epochs
+
+> The `phi` group is now defined by [phi-destinations.md](../../106-sign-in-free-clients/contracts/phi-destinations.md), and its chat PHI key rule lives there too.
 
 A **key group** is a set of devices that share encryption keys. There are two in version 1.
 

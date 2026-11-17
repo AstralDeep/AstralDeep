@@ -264,7 +264,6 @@ class IngressIdentity:
 @pytest.fixture
 def ingress_identity(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("ASTRAL_ENV", "development")
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
     monkeypatch.setenv("PYTHON_DOTENV_DISABLED", "1")
     monkeypatch.setenv(
         "VOICE_UI_BINDING_SECRET", "ingress-fixture-only-binding-secret-0001"
@@ -563,8 +562,6 @@ class IngressRig:
         orch.tool_permissions.register_tool_scopes(
             self.agent_id, {TOOL_NAME: "tools:read"}
         )
-        # Delegation mints locally in the development posture; ingress auth stays real
-        orch.delegation.mock_auth = True
 
 
 async def _build_rig(

@@ -438,7 +438,7 @@ def _delegation_parent(scenario: ReplayScenario) -> dict[str, object]:
         "sub": scenario.owner_id,
         "act": {"sub": f"agent:{scenario.agent_id}"},
         "scope": "tools:read tool:clinical.search_v2",
-        "iss": "mock-astral-delegation",
+        "iss": "astral-delegation",
         "aud": "agent-service",
         "iat": _DELEGATION_FAKE_NOW,
         "exp": _DELEGATION_FAKE_NOW + _DELEGATION_TTL_SECONDS,

@@ -18,8 +18,16 @@ SHELL = template_path("shell.html")
 
 
 @pytest.fixture
-def client(monkeypatch):
-    monkeypatch.setenv("USE_MOCK_AUTH", "true")
+def session_access_token(server_identity):
+    return server_identity.token("shell-user")
+
+
+@pytest.fixture
+def client(session_access_token, monkeypatch):
+    from orchestrator import web_auth
+
+    monkeypatch.setattr(
+        web_auth, "get_session", lambda request: {"access_token": session_access_token})
     from orchestrator.orchestrator import _apply_asset_versions
     from orchestrator.web_auth import session_token
 
@@ -35,7 +43,7 @@ def client(monkeypatch):
     return TestClient(app)
 
 
-def test_shell_served_with_token(client):
+def test_shell_served_with_token(client, session_access_token):
     resp = client.get("/")
     assert resp.status_code == 200
     body = resp.text
@@ -48,7 +56,15 @@ def test_shell_served_with_token(client):
     assert re.search(r'/static/astral\.css\?v=[0-9a-f]{12}', body)
     assert "%%ASTRAL_V:" not in body
     assert "%%ASTRAL_TOKEN%%" not in body
-    assert 'window.__ASTRAL_TOKEN__ = "dev-token"' in body
+    assert f'window.__ASTRAL_TOKEN__ = "{session_access_token}"' in body
+
+
+def test_shell_without_a_session_carries_no_token(client, monkeypatch):
+    from orchestrator import web_auth
+
+    monkeypatch.setattr(web_auth, "get_session", lambda request: None)
+    body = client.get("/").text
+    assert 'window.__ASTRAL_TOKEN__ = ""' in body
 
 
 def test_brand_image_assets_served(client):

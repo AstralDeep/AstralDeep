@@ -67,7 +67,7 @@ def _issuer():
         _deny(503)
     if (not _text(authority, 2048) or parsed.scheme != "https" or not parsed.hostname
             or parsed.username or parsed.password or parsed.query or parsed.fragment
-            or authority.endswith("/") or web_auth._is_mock()):
+            or authority.endswith("/")):
         _deny(503)
     return authority
 

@@ -1,9 +1,9 @@
 site_name: AstralVessel
 site_description: The AstralDeep base with command-line tools, a personal node and a ticket-checking sandbox executor.
 site_url: https://astraldeep.github.io/AstralVessel/
-repo_url: https://github.com/AstralDeep/AstralVessel
-repo_name: AstralDeep/AstralVessel
-edit_uri: edit/main/docs/
+repo_url: https://github.com/AstralDeep/AstralDeep
+repo_name: AstralDeep/AstralDeep
+edit_uri: edit/main/vessel/docs/
 copyright: AstralVessel is licensed under Apache 2.0.
 
 docs_dir: docs

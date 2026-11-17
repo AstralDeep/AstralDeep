@@ -33,7 +33,7 @@ def forbid_iam(host, monkeypatch):
 def verify_actual_principal(node):
     proof = node.kernel.mesh_principal()
     assert proof.mesh_id == node.kernel.roster().mesh_id
-    assert proof.mesh_id == node_identity.bound_owner()
+    assert node_identity.owner_id_for_mesh(proof.mesh_id) == node_identity.bound_owner()
     assert not hasattr(proof, "identities")
 
 
@@ -80,15 +80,19 @@ async def pending_for(node, laptop, device):
     return request
 
 
-async def test_an_environment_owner_without_the_real_principal_is_refused(turn_host, tmp_path, monkeypatch):  # noqa: F811
+@pytest.mark.parametrize("owner,code", [
+    ("oidc.abc.owner", "node.legacy_owner"), ("sha256:" + "7" * 64, "node.owner_mismatch"),
+    ("mesh." + "7" * 64, "node.owner_mismatch"),
+])
+async def test_an_environment_owner_without_the_real_principal_is_refused(turn_host, tmp_path, monkeypatch, owner, code):  # noqa: F811
     host = turn_host
     forbid_iam(host, monkeypatch)
     async with bridge_for(host, tmp_path, monkeypatch) as (node, laptop, device, bridge):
         verify_actual_principal(node)
-        monkeypatch.setenv("ASTRAL_NODE_OWNER", "oidc.abc.owner")
+        monkeypatch.setenv("ASTRAL_NODE_OWNER", owner)
         request = await pending_for(node, laptop, device)
         await bridge.scan()
-        assert (await node.status())["owner_binding"] == {"state": "refused", "code": "node.owner_mismatch"}
+        assert (await node.status())["owner_binding"] == {"state": "refused", "code": code}
         assert node.kernel.request(request).state == ak.RequestState.PENDING
         assert node.personal_owner_id() is None
     assert not any(host.dispatched.values())

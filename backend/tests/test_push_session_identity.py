@@ -49,8 +49,6 @@ def harness(runtime, signing_key, monkeypatch):
     monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", KEY)
     monkeypatch.setenv("WEB_SESSION_ENC_KEY", KEY)
     monkeypatch.setenv("WEB_SESSION_SECRET", "synthetic-push-session-cookie")
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
-    monkeypatch.setenv("MOCK_AUTH", "false")
     monkeypatch.setenv("KEYCLOAK_AUTHORITY", ISSUER)
     monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-web")
     monkeypatch.setenv("KEYCLOAK_ALLOWED_AZP", CLIENT + "," + OTHER_CLIENT)
@@ -166,7 +164,7 @@ def test_signed_cookie_denials_leave_no_destination(harness, fault):
 
 @pytest.mark.parametrize("setting,value", [("KEYCLOAK_AUTHORITY", OLD_ISSUER),
     ("KEYCLOAK_ALLOWED_AZP", OTHER_CLIENT), ("KEYCLOAK_AUTHORITY", ""),
-    ("KEYCLOAK_CLIENT_ID", ""), ("USE_MOCK_AUTH", "true")])
+    ("KEYCLOAK_CLIENT_ID", "")])
 async def test_current_iam_change_denies_existing_target_dispatch_and_ack(harness, monkeypatch, setting, value):
     h = harness
     row = h.session()

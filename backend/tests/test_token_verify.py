@@ -1,4 +1,4 @@
-"""Covers shared/token_verify.py and the three verification paths that use it: accepted issuer, required azp, canonical owner ids and the personal-node owner binding."""
+"""Covers shared/token_verify.py and the three verification paths that use it: accepted issuer, required azp, canonical owner ids, and the personal node refusing every token without binding an owner."""
 
 from __future__ import annotations
 
@@ -13,20 +13,8 @@ SECOND = "https://other-idp.example/realms/astral"
 
 
 @pytest.fixture
-def idp(monkeypatch, tmp_path):
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
-    monkeypatch.setenv("KEYCLOAK_AUTHORITY", AUTHORITY)
-    monkeypatch.setenv("KEYCLOAK_CLIENT_ID", CLIENT_ID)
-    monkeypatch.delenv("KEYCLOAK_ALLOWED_AZP", raising=False)
-    monkeypatch.delenv("AGENT_SERVICE_CLIENT_ID", raising=False)
-    monkeypatch.delenv(ni.ISSUERS_ENV, raising=False)
-    monkeypatch.delenv(ni.PROFILE_ENV, raising=False)
-    monkeypatch.delenv(ni.OWNER_ENV, raising=False)
-    monkeypatch.setenv(ni.DATA_DIR_ENV, str(tmp_path / "node"))
-    ni.reset_cache()
-    issuer = FakeIssuer()
-    serve(monkeypatch, issuer)
-    return issuer
+def idp(server_identity):
+    return server_identity.issuer
 
 
 async def refusal(token, **kwargs):
@@ -109,29 +97,25 @@ async def test_same_subject_from_two_issuers_is_two_owners(idp, monkeypatch):
     assert first_owner != second_owner
 
 
-async def test_a_personal_node_bound_to_one_issuer_refuses_the_others_subject(idp, monkeypatch):
+async def test_a_personal_node_refuses_every_issuers_token_and_keeps_its_configured_owner(idp, monkeypatch):
     second = FakeIssuer(SECOND)
+    configured = ni.canonical_owner_id(AUTHORITY, "owner-sub")
     monkeypatch.setenv(ni.PROFILE_ENV, "personal")
     monkeypatch.setenv(ni.ISSUERS_ENV, SECOND)
-    monkeypatch.setenv(ni.OWNER_ENV, ni.canonical_owner_id(AUTHORITY, "owner-sub"))
+    monkeypatch.setenv(ni.OWNER_ENV, configured)
     serve(monkeypatch, idp, second)
-    assert (await verify_idp_token(idp.token("owner-sub")))["sub"] == ni.canonical_owner_id(AUTHORITY, "owner-sub")
-    assert await refusal(second.token("owner-sub")) == "owner_mismatch"
-    assert await refusal(idp.token("someone-else")) == "owner_mismatch"
+    for token in (idp.token("owner-sub"), second.token("owner-sub"), idp.token("someone-else")):
+        assert await refusal(token) == "node_bearer_refused"
+    assert ni.bound_owner() == configured
 
 
-async def test_first_verified_token_binds_a_personal_node(idp, monkeypatch):
+async def test_a_personal_node_never_binds_an_owner_from_a_token(idp, monkeypatch, tmp_path):
     monkeypatch.setenv(ni.PROFILE_ENV, "personal")
-    await verify_idp_token(idp.token("first"))
-    assert ni.bound_owner() == ni.canonical_owner_id(AUTHORITY, "first")
-    assert await refusal(idp.token("second")) == "owner_mismatch"
-
-
-async def test_an_unreadable_owner_binding_refuses_instead_of_failing_open(idp, monkeypatch, tmp_path):
-    monkeypatch.setenv(ni.PROFILE_ENV, "personal")
+    assert await refusal(idp.token("first")) == "node_bearer_refused"
+    assert ni.bound_owner() is None
     (tmp_path / "blocker").write_text("x")
     monkeypatch.setenv(ni.DATA_DIR_ENV, str(tmp_path / "blocker" / "node"))
-    assert await refusal(idp.token("first")) == "owner_binding_unavailable"
+    assert await refusal(idp.token("first")) == "node_bearer_refused"
 
 
 async def test_a_token_whose_keys_belong_to_another_issuer_is_refused(idp, monkeypatch):
@@ -188,16 +172,7 @@ async def test_a2a_agent_posture_accepts_the_agent_service_client(idp, monkeypat
     assert claims is not None
 
 
-async def test_mock_auth_keeps_the_bare_test_user(monkeypatch):
-    monkeypatch.setenv("USE_MOCK_AUTH", "true")
-    from orchestrator.orchestrator import Orchestrator
-    from shared.a2a_security import A2ASecurityValidator
-
-    assert (await Orchestrator.validate_token(object(), "dev-token"))["sub"] == "test_user"
-    assert (await A2ASecurityValidator().validate_token("dev-token"))["sub"] == "test_user"
-
-
-async def test_mcp_tokens_map_to_the_same_owner_and_respect_the_node_binding(idp, monkeypatch):
+async def test_mcp_tokens_map_to_the_same_owner_and_a_node_refuses_them(idp, monkeypatch):
     from jose import jwt as jose_jwt
 
     from orchestrator import mcp_authz
@@ -211,8 +186,9 @@ async def test_mcp_tokens_map_to_the_same_owner_and_respect_the_node_binding(idp
     assert claims["sub"] == ni.canonical_owner_id(AUTHORITY, "mcp-user")
     monkeypatch.setenv(ni.PROFILE_ENV, "personal")
     monkeypatch.setenv(ni.OWNER_ENV, ni.canonical_owner_id(AUTHORITY, "someone-else"))
-    with pytest.raises(ni.OwnerMismatch):
+    with pytest.raises(mcp_authz.MCPAuthError) as refused:
         await mcp_authz.decode_mcp_token("opaque")
+    assert refused.value.error == "node.bearer_refused"
 
 
 async def _verify_path(path, token):
@@ -257,11 +233,3 @@ async def test_agent_service_audience_does_not_open_human_entry_paths(idp):
     assert await A2ASecurityValidator().validate_token(token) is not None
     for path in ("rest", "websocket", "a2a"):
         assert await _verify_path(path, token) is None
-
-
-@pytest.mark.parametrize("audience", [None, "unrelated-service"])
-async def test_a2a_mock_audience_policy_remains_fail_closed(idp, monkeypatch, audience):
-    from shared.a2a_security import A2ASecurityValidator
-
-    monkeypatch.setenv("USE_MOCK_AUTH", "true")
-    assert await A2ASecurityValidator(require_first_party_user=True).validate_token(idp.token(aud=audience)) is None

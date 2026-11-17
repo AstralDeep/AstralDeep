@@ -97,7 +97,7 @@ def orch():
 def _parent(scope="tools:read tool:peer_tool"):
     now = int(time.time())
     return {"sub": "u1", "act": {"sub": "agent:initiator-1"}, "scope": scope,
-            "iss": "mock-astral-delegation", "aud": "agent-svc",
+            "iss": "astral-delegation", "aud": "agent-svc",
             "iat": now, "exp": now + 300, "delegation": True}
 
 

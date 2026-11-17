@@ -1,5 +1,5 @@
 """Delivers content-free node wakes to an explicitly configured HTTPS publisher through approved external HTTP.
-Only current native owner/principal and signed device routes can supply a bounded opaque capability."""
+Only a signed device route of the verified mesh whose stored owner id (shared/node_identity.py) is the waking owner can supply a bounded opaque capability, and orchestrator/node_mesh.py refuses a development mesh outside development."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import time
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
+from orchestrator import node_mesh
 from orchestrator.push_wake import FAILED, NO_DESTINATION, RATE_LIMITED, SENT, WakeLimiter, WakeOutcome
 from shared import external_http, node_identity
 
@@ -49,20 +50,30 @@ class MeshWakeSender:
         self._gateway = gateway
         self._mesh = mesh
 
-    def _snapshot(self, kernel: Any, owner: str, target: str) -> tuple[str, str, int] | None:
-        if not self._mesh.started or self._mesh.kernel is not kernel or not _ID.fullmatch(target):
+    def _serves(self, kernel: Any, owner: str) -> str | None:
+        if not self._mesh.started or self._mesh.kernel is not kernel:
             return None
         principal = getattr(kernel, "mesh_principal", None)
+        roster = getattr(kernel, "roster", None)
+        if not callable(principal) or not callable(roster):
+            return None
+        mesh_id = principal().mesh_id
+        try:
+            current = roster()
+            node_mesh.refuse_development_mesh(current)
+            if (current.mesh_id != mesh_id or owner != node_identity.owner_id_for_mesh(mesh_id)
+                    or owner != node_identity.bound_mesh_owner()):
+                return None
+        except (node_mesh.NodeMeshError, node_identity.NodeIdentityError):
+            return None
+        return mesh_id
+
+    def _snapshot(self, kernel: Any, owner: str, target: str) -> tuple[str, str, int] | None:
         routes = getattr(kernel, "wake_routes", None)
-        if not callable(principal) or not callable(routes):
+        if not _ID.fullmatch(target) or not callable(routes):
             return None
-        proof = principal()
-        mesh_id = proof.mesh_id
-        if not hasattr(proof, "identities"):
-            return None
-        if not _ID.fullmatch(mesh_id):
-            return None
-        if owner not in {node_identity.canonical_owner_id(identity.issuer, identity.subject) for identity in proof.identities}:
+        mesh_id = self._serves(kernel, owner)
+        if mesh_id is None:
             return None
         matches = [row.route for row in routes() if row.mesh_id == mesh_id and row.device_id == target]
         if len(matches) != 1:
@@ -74,13 +85,9 @@ class MeshWakeSender:
                 or not _CAPABILITY.fullmatch(cap) or type(expiry) is not int or type(now) is not int
                 or not now < expiry <= min(now + 86_400_000, 9_007_199_254_740_991)):
             return None
-        captured = (mesh_id, cap, expiry)
-        proof = principal()
-        if (proof.mesh_id != mesh_id or owner not in {
-                node_identity.canonical_owner_id(identity.issuer, identity.subject) for identity in proof.identities}
-                or not self._mesh.started or self._mesh.kernel is not kernel):
+        if self._serves(kernel, owner) != mesh_id:
             return None
-        return captured
+        return mesh_id, cap, expiry
 
     async def wake(self, owner_id: str, mesh_device_id: str) -> WakeOutcome:
         try:

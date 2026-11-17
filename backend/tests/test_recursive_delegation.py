@@ -35,7 +35,7 @@ def base_token(sub="human:U1", agent="A", scopes=None, exp_in=300, now=None) -> 
         "sub": sub,
         "act": {"sub": f"agent:{agent}"},
         "scope": " ".join(scopes),
-        "iss": "mock-astral-delegation",
+        "iss": "astral-delegation",
         "aud": "astral-agent-service",
         "iat": now,
         "exp": now + exp_in,

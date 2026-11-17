@@ -60,7 +60,6 @@ def _env(monkeypatch):
     monkeypatch.setenv("WEB_SESSION_ENC_KEY", Fernet.generate_key().decode())
     monkeypatch.setenv("AUDIT_HMAC_SECRET", "synthetic-framework-conformance-audit-key")
     monkeypatch.setenv("ASTRAL_ENV", "development")
-    monkeypatch.setenv("USE_MOCK_AUTH", "true")
     monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://idp.test/realms/astral")
 
 

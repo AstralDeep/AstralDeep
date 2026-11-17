@@ -88,7 +88,6 @@ async def test_actual_ingress_waits_for_final_readiness_before_one_human_turn(
     monkeypatch.setenv("KEYCLOAK_AUTHORITY", authority)
     monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-web")
     monkeypatch.setenv("KEYCLOAK_ALLOWED_AZP", "astral-web")
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
     subject = "__bench__readiness-" + uuid4().hex
     owner = canonical_owner_id(authority, subject)
     token = jwt.encode({"sub": subject, "iss": authority, "azp": "astral-web",

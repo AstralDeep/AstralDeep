@@ -1,5 +1,5 @@
-# Loads deployment.toml: the personal node to run, its owner's issuer, and the agents whose tools the executor runs.
-# The agent package says what it needs; this file is what the operator grants, and the only place grants come from.
+# Loads deployment.toml: the personal node to run and the agents whose tools the executor runs. The agent package says
+# what it needs; this file is what the operator grants, and the only place grants come from.
 
 from __future__ import annotations
 
@@ -28,9 +28,11 @@ NODE_PORT = 8001
 # Names the generated Compose file sets itself; the operator's [node.environment] may not override them.
 OWNED_ENVIRONMENT = frozenset({
     "ASTRAL_NODE_PROFILE", "ASTRAL_NODE_DATA_DIR", "DATABASE_URL", "KEYCLOAK_AUTHORITY", "KEYCLOAK_CLIENT_ID",
-    "KEYCLOAK_ALLOWED_AZP", "ASTRAL_NODE_OWNER", "ORCHESTRATOR_PORT", "ATTACHMENT_UPLOAD_ROOT",
-    "PERSONAL_AGENT_ARTIFACT_ROOT", "ASTRAL_MAILBOX_BIN", "ASTRAL_NODE_MAILBOX_BIND", "PYTHON_DOTENV_DISABLED",
-    "FF_A2A_SERVER", "PUBLIC_BASE_URL", "BACKEND_PUBLIC_URL"})
+    "KEYCLOAK_ALLOWED_AZP", "ASTRAL_ACCEPTED_ISSUERS", "ASTRAL_NODE_OWNER", "ORCHESTRATOR_PORT",
+    "ATTACHMENT_UPLOAD_ROOT", "PERSONAL_AGENT_ARTIFACT_ROOT", "ASTRAL_MAILBOX_BIN", "ASTRAL_NODE_MAILBOX_BIND",
+    "PYTHON_DOTENV_DISABLED", "FF_A2A_SERVER", "PUBLIC_BASE_URL", "BACKEND_PUBLIC_URL"})
+LEGACY_OWNER_NOTICE = ("this deployment file has an [owner] section. Nodes no longer sign in through an identity "
+                       "provider, so it is ignored and the file is left as it is; delete the section when you like")
 SECRET_SHAPED = re.compile(r"KEY|SECRET|TOKEN|PASSWORD|CREDENTIAL", re.IGNORECASE)
 
 
@@ -73,30 +75,6 @@ class NodeSection(Strict):
         # Containers that join front get addresses only from the upper half, so none can take the executor's
         # fixed address while it is stopped.
         return list(ipaddress.ip_network(self.front_subnet, strict=True).subnets(new_prefix=None))[-1]
-
-
-class OwnerSection(Strict):
-    # The identity provider the node trusts, and the one owner it serves. The subject binds the node to its owner
-    # now; without it the first owner whose token the node verifies binds it.
-    issuer: str
-    client_id: str = Field(min_length=1)
-    subject: str | None = Field(default=None, min_length=1)
-    allowed_azp: list[str] = []
-    accepted_issuers: list[str] = []
-
-    @model_validator(mode="after")
-    def urls(self) -> OwnerSection:
-        for url in (self.issuer, *self.accepted_issuers):
-            parts = urlsplit(url)
-            if parts.scheme not in ("http", "https") or not parts.hostname or re.search(r"[\s,]", url):
-                raise ValueError(f"issuer {url!r} must be an http(s) URL with a host and no commas")
-        return self
-
-    @property
-    def owner_id(self) -> str | None:
-        if self.subject is None:
-            return None
-        return f"oidc.{hashlib.sha256(self.issuer.rstrip('/').encode()).hexdigest()[:16]}.{self.subject}"
 
 
 class ExecutorSection(Strict):
@@ -173,7 +151,7 @@ class AgentEntry(Strict):
 
 class DeploymentFile(Strict):
     node: NodeSection = NodeSection()
-    owner: OwnerSection
+    owner: dict | None = None
     egress: EgressSection = EgressSection()
     executor: ExecutorSection = ExecutorSection()
     agents: list[AgentEntry] = []
@@ -209,10 +187,10 @@ class Deployment(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
     path: Path
     node: NodeSection
-    owner: OwnerSection
     egress: EgressSection
     executor: ExecutorSection
     agents: dict[str, Agent]
+    notices: tuple[str, ...] = ()
 
 
 def load_deployment(path: str | Path, packages_root: str | None = None) -> Deployment:
@@ -225,8 +203,9 @@ def load_deployment(path: str | Path, packages_root: str | None = None) -> Deplo
         package = load_package(Path(packages_root) / entry.id if packages_root else host)
         _check_grants(entry, package)
         agents[entry.id] = Agent(id=entry.id, package=package, host_package=host, profile=entry.sandbox)
-    return Deployment(path=path, node=raw.node, owner=raw.owner, egress=raw.egress, executor=raw.executor,
-                      agents=agents)
+    notices = (LEGACY_OWNER_NOTICE,) if raw.owner is not None else ()
+    return Deployment(path=path, node=raw.node, egress=raw.egress, executor=raw.executor, agents=agents,
+                      notices=notices)
 
 
 def _check_grants(entry: AgentEntry, package: AgentPackage) -> None:

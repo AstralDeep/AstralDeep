@@ -1,12 +1,18 @@
 """Tests for orchestrator/web_auth.py's server-side OIDC session helpers: signed-cookie
-tamper detection, PKCE pair generation, the mock-auth dev token, the 365-day session
+tamper detection, PKCE pair generation, the 365-day session
 cap, and session lookup.
 """
 
 import time
 
+import pytest
 
 from orchestrator import web_auth
+
+
+@pytest.fixture(autouse=True)
+def _server_profile(server_identity):
+    return server_identity
 
 
 class _FakeRequest:
@@ -33,13 +39,7 @@ def test_hard_cap_is_365_days():
     assert web_auth.HARD_MAX_SECONDS == 365 * 24 * 60 * 60
 
 
-def test_mock_mode_returns_dev_token(monkeypatch):
-    monkeypatch.setenv("USE_MOCK_AUTH", "true")
-    assert web_auth.session_token(_FakeRequest()) == "dev-token"
-
-
-def test_session_lookup_and_365_day_cap(monkeypatch):
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
+def test_session_lookup_and_365_day_cap():
     sid = "sess-1"
     web_auth._SESSIONS[sid] = {"access_token": "tok-123", "refresh_token": "r", "sub": "u1", "created_at": time.time()}
     cookie = web_auth._sign(sid)
@@ -54,8 +54,7 @@ def test_session_lookup_and_365_day_cap(monkeypatch):
     web_auth._SESSIONS.pop(sid, None)
 
 
-def test_no_cookie_no_session(monkeypatch):
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
+def test_no_cookie_no_session():
     assert web_auth.get_session(_FakeRequest()) is None
     assert web_auth.session_token(_FakeRequest()) == ""
 

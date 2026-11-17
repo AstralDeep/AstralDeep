@@ -120,15 +120,6 @@ def test_original_operation_expiry_caps_observation(fixture, runtime):
     assert result.observation.valid_until.isoformat() == record.operation["authority"]["expires_at"]
 
 
-@pytest.mark.parametrize("mode", ["true", "1", "yes", " TRUE "])
-def test_mock_mode_never_resolves_continuation(fixture, runtime, monkeypatch, mode):
-    record = create_operation(fixture, runtime)
-    monkeypatch.setenv("USE_MOCK_AUTH", mode)
-    with pytest.raises(sa.SessionAuthorityUnavailable, match="session_authority_unavailable"):
-        refresh(fixture, runtime, record)
-    assert fixture[-1] == []
-
-
 def set_operation(runtime, record, operation):
     runtime.execute("UPDATE persistent_assignment SET data=jsonb_set(data,'{operation}',%s::jsonb) WHERE id=%s",
                     (json.dumps(operation), record.assignment_id))

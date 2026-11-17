@@ -166,18 +166,16 @@ async def test_other_host_and_closed_boundary_refuse(human, bound, fixture):
         await caller.verify_delivery()
 
 
-@pytest.mark.parametrize("loss", ["monotonic", "absolute", "jwt", "mock"])
+@pytest.mark.parametrize("loss", ["monotonic", "absolute", "jwt"])
 async def test_original_expiry_and_auth_posture_remain_current(human, bound, fixture, monkeypatch, loss):
     caller = await selected(human, bound, fixture)
     if loss == "monotonic":
         caller = replace(caller, _deadline=time.monotonic() - 1)
     elif loss == "absolute":
         caller = replace(caller, _until=datetime.now(timezone.utc) - timedelta(seconds=1))
-    elif loss == "jwt":
+    else:
         caller = replace(caller, context=replace(caller.context,
             principal_expires_at=datetime.now(timezone.utc) - timedelta(seconds=1)))
-    else:
-        monkeypatch.setenv("USE_MOCK_AUTH", "true")
     with pytest.raises(AssignmentError, match="human_authentication_required"):
         await caller.transaction(lambda tx, _: None, expected_orchestrator=human[2])
 

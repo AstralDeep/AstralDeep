@@ -161,6 +161,8 @@ Privacy. The token holds whatever claims the realm issues. Every member sees the
 
 ## 7. PHI approval attestation
 
+> Superseded by [phi-destinations.md](../../106-sign-in-free-clients/contracts/phi-destinations.md): the owner's devices are the only approvers, with the wire format unchanged.
+
 An institution signs, with its P-256 key, a statement that one device, node or model endpoint is approved for its PHI. It is an object with exactly: `kind` (`phi`), `institution` (the key, base64url), `subject_kind` (`device`, `node` or `endpoint`), `subject` (a device id, a node id or an endpoint URL), `issued_s`, `not_after_s` and `sig`. The signature uses the attestation context.
 
 Verification: exact fields (`attestation.malformed`), a valid subject kind and `not_after_s` above `issued_s` (`attestation.malformed`), the institution is an authority of this mesh (`attestation.unknown_authority`), the signature verifies (`attestation.bad_signature`), and the time is inside the window when one is given (`attestation.expired`).
