@@ -7,8 +7,10 @@ import argparse
 import os
 import runpy
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 
+DEFAULT_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
 PACK_ROOT = Path(__file__).resolve().parent.parent
 LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
 
@@ -27,6 +29,22 @@ def parse_env_file(path: Path) -> dict[str, str]:
     return values
 
 
+def native_environment(root: Path = PACK_ROOT, base: Mapping[str, str] | None = None) -> dict[str, str]:
+    base = os.environ if base is None else base
+    values: dict[str, str] = {}
+    if (root / "bin").is_dir():
+        values["PATH"] = os.pathsep.join([str(root / "bin"), base.get("PATH") or DEFAULT_PATH])
+    if (root / "lib" / "libmagic.dylib").exists():
+        values["DYLD_FALLBACK_LIBRARY_PATH"] = os.pathsep.join([str(root / "lib"), "/usr/lib", "/lib"])
+    database = root / "share" / "magic" / "magic.mgc"
+    if database.is_file():
+        values["MAGIC"] = str(database)
+    fonts = root / "share" / "fontconfig" / "fonts.conf"
+    if fonts.is_file():
+        values["FONTCONFIG_FILE"] = str(fonts)
+    return values
+
+
 def configure(arguments: argparse.Namespace, root: Path = PACK_ROOT) -> dict[str, str]:
     if arguments.host not in LOOPBACK_HOSTS and not arguments.allow_remote:
         raise SystemExit(f"refusing to bind {arguments.host}: pass --allow-remote to serve other machines")
@@ -36,6 +54,8 @@ def configure(arguments: argparse.Namespace, root: Path = PACK_ROOT) -> dict[str
     values["ORCHESTRATOR_PORT"] = str(arguments.port)
     values["PYTHONDONTWRITEBYTECODE"] = "1"
     values["PYTHONUNBUFFERED"] = "1"
+    for key, value in native_environment(root).items():
+        values.setdefault(key, value)
     mailbox = root / "bin" / "astral-mailbox"
     if "ASTRAL_MAILBOX_BIN" not in values and mailbox.is_file():
         values["ASTRAL_MAILBOX_BIN"] = str(mailbox)

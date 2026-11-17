@@ -85,3 +85,30 @@ def test_main_starts_the_orchestrator_with_logging_and_a_pinned_host(tmp_path, m
     assert calls["host"] == "127.0.0.1" and calls["run_name"] == "__main__"
     assert calls["path"].endswith("orchestrator/orchestrator.py")
     assert calls["secrets"] == ["abcdef123456"] and calls["log"] == tmp_path / "logs"
+
+
+def test_native_environment_puts_the_pack_tools_first_and_names_the_library_and_database(tmp_path):
+    (tmp_path / "bin").mkdir()
+    (tmp_path / "lib").mkdir()
+    (tmp_path / "lib" / "libmagic.dylib").write_text("x")
+    (tmp_path / "share" / "magic").mkdir(parents=True)
+    (tmp_path / "share" / "magic" / "magic.mgc").write_text("x")
+    values = launch.native_environment(tmp_path, {"PATH": "/opt/tools"})
+    assert values["PATH"] == f"{tmp_path / 'bin'}:/opt/tools"
+    assert values["DYLD_FALLBACK_LIBRARY_PATH"] == f"{tmp_path / 'lib'}:/usr/lib:/lib"
+    assert values["MAGIC"] == str(tmp_path / "share" / "magic" / "magic.mgc")
+    assert "FONTCONFIG_FILE" not in values
+    (tmp_path / "share" / "fontconfig").mkdir()
+    (tmp_path / "share" / "fontconfig" / "fonts.conf").write_text("x")
+    assert launch.native_environment(tmp_path, {})["FONTCONFIG_FILE"] == str(
+        tmp_path / "share" / "fontconfig" / "fonts.conf")
+    assert launch.native_environment(tmp_path, {})["PATH"].endswith(launch.DEFAULT_PATH)
+
+
+def test_a_pack_without_natives_adds_nothing_and_the_env_file_wins(tmp_path):
+    assert launch.native_environment(tmp_path, {"PATH": "/x"}) == {}
+    (tmp_path / "bin").mkdir()
+    values = launch.configure(arguments(write_env(tmp_path, "ASTRAL_NODE_PROFILE=personal\nPATH=/mine\n")), root=tmp_path)
+    assert values["PATH"] == "/mine"
+    values = launch.configure(arguments(write_env(tmp_path, "ASTRAL_NODE_PROFILE=personal\n")), root=tmp_path)
+    assert values["PATH"].startswith(str(tmp_path / "bin"))

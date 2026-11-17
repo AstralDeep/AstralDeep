@@ -22,6 +22,9 @@
         "target": "aarch64-apple-darwin",
         "manifest": "macos-build-manifest.json",
         "wheel_pattern": "astral_kernel-*-macosx_*_arm64.whl"
+      },
+      "natives": {
+        "sources_lock": "natives/sources.lock.json"
       }
     }
   },
@@ -101,30 +104,6 @@
       "reason": "Medical imaging reader. The tool reports itself unavailable."
     },
     {
-      "name": "presidio-analyzer",
-      "reason": "PHI detection needs a 400 MB language model. The PHI gate fails closed, so writes that need PHI screening are refused."
-    },
-    {
-      "name": "presidio-anonymizer",
-      "reason": "Part of PHI detection."
-    },
-    {
-      "name": "spacy",
-      "reason": "Part of PHI detection."
-    },
-    {
-      "name": "preshed",
-      "reason": "Part of PHI detection."
-    },
-    {
-      "name": "python-magic",
-      "reason": "Needs the libmagic library that macOS does not ship. Upload sniffing falls back to a generic type."
-    },
-    {
-      "name": "pdf2image",
-      "reason": "Needs the poppler tools that macOS does not ship. PDF page OCR is unavailable."
-    },
-    {
       "name": "plotly",
       "reason": "Nothing imports it."
     },
@@ -150,5 +129,16 @@
       "name": "psycopg2-binary",
       "reason": "Plane imports the PostgreSQL client library at import time. It is a client only, and the node runs on SQLite with no database server."
     }
+  ],
+  "spacy_model": {
+    "name": "en_core_web_lg",
+    "version": "3.8.0",
+    "requires_spacy": ">=3.8.0,<3.9.0",
+    "url": "https://github.com/explosion/spacy-models/releases/download/en_core_web_lg-3.8.0/en_core_web_lg-3.8.0-py3-none-any.whl",
+    "size": 400658291,
+    "sha256": "293e9547a655b25499198ab15a525b05b9407a75f10255e405e8c3854329ab63"
+  },
+  "known_limits": [
+    "Non-embedded CJK text renders without glyphs: poppler-data cannot be relocated, because poppler reads its data directory from a compiled-in path."
   ]
 }
