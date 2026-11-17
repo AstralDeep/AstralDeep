@@ -6,13 +6,16 @@ import argparse
 import csv
 import json
 import os
+import platform as platform_module
 import re
 import shutil
 import subprocess
 import sys
 import tarfile
+import tempfile
 import urllib.parse
 import urllib.request
+import zipfile
 from pathlib import Path
 
 import manifest as pack_manifest
@@ -21,6 +24,7 @@ from pack_error import PackError
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
 PINS = HERE / "pins.json"
+BINDING = "config/astral-kernel-binding.json"
 PYTHON_HOST_PREFIX = "https://github.com/astral-sh/python-build-standalone/releases/download/"
 COMPONENT_BUILD_ORDER = ("astral-primitives", "astral-kernel", "astral-projection", "astral-plane", "lets")
 PRUNED_SITE_PACKAGES = ("pip", "setuptools", "wheel", "pkg_resources", "_distutils_hack", "distutils-precedence.pth")
@@ -96,13 +100,37 @@ def fetch_pinned(pin: dict, cache: Path) -> Path:
     return target
 
 
+def member_is_contained(member: tarfile.TarInfo, destination: Path) -> bool:
+    target = Path(os.path.normpath(destination / member.name))
+    if os.path.isabs(member.name) or not (target == destination or destination in target.parents):
+        return False
+    if member.issym() or member.islnk():
+        link = os.path.normpath((target.parent / member.linkname) if member.issym() else (destination / member.linkname))
+        return not os.path.isabs(member.linkname) and (Path(link) == destination or destination in Path(link).parents)
+    return member.isfile() or member.isdir()
+
+
+def extract_members(bundle: tarfile.TarFile, destination: Path) -> None:
+    if hasattr(tarfile, "data_filter"):
+        bundle.extractall(destination, filter="data")
+        return
+    destination = Path(os.path.normpath(destination.resolve()))
+    members = bundle.getmembers()
+    for member in members:
+        if not member_is_contained(member, destination):
+            raise PackError(f"archive member {member.name} is not a contained file, directory or link")
+        member.mode = 0o755 if member.isdir() or member.mode & 0o100 else 0o644
+    bundle.extractall(destination, members=members)
+
+
 def extract_archive(repository: Path, commit: str, destination: Path) -> None:
     destination.mkdir(parents=True, exist_ok=True)
-    archive = subprocess.Popen(["git", "-C", str(repository), "archive", commit], stdout=subprocess.PIPE)
-    with tarfile.open(fileobj=archive.stdout, mode="r|") as bundle:
-        bundle.extractall(destination, filter="data")
-    if archive.wait() != 0:
-        raise PackError(f"git archive failed for {repository}")
+    with tempfile.TemporaryFile() as archive:
+        if subprocess.run(["git", "-C", str(repository), "archive", commit], stdout=archive, check=False).returncode != 0:
+            raise PackError(f"git archive failed for {repository}")
+        archive.seek(0)
+        with tarfile.open(fileobj=archive, mode="r:") as bundle:
+            extract_members(bundle, destination)
 
 
 def export_deep(repo: Path, destination: Path) -> str:
@@ -248,6 +276,11 @@ def installed_distributions(python: Path) -> list[dict]:
     return [{"name": name, "version": version} for name, version in json.loads(output.stdout)]
 
 
+def effective_exclusions(pins: dict, target: dict) -> list[dict]:
+    allowed = set(target.get("allowed_packages", []))
+    return [entry for entry in pins["excluded_packages"] if entry["name"] not in allowed]
+
+
 def verify_exclusions(distributions: list[dict], excluded: list[dict]) -> None:
     names = {entry["name"].lower().replace("_", "-") for entry in distributions}
     present = [entry["name"] for entry in excluded if entry["name"].lower().replace("_", "-") in names]
@@ -283,13 +316,21 @@ def verify_model_requirement(distributions: list[dict], model: dict) -> None:
         raise PackError(f"{model['name']} {model['version']} needs spaCy {model['requires_spacy']}, found {spacy[0]}")
 
 
-def read_kernel_artifacts(directory: Path, pins: dict, spec: dict) -> dict:
+def kernel_source(components_root: Path, pins: dict, spec: dict) -> tuple[str, dict | None]:
+    if "binding" not in spec:
+        return pins["kernel"]["commit"], None
+    binding = json.loads((components_root / BINDING).read_text())
+    entries = binding["artifacts"][spec["binding"]]
+    return binding["source"]["commit"], entries
+
+
+def read_kernel_artifacts(directory: Path, pins: dict, spec: dict, commit: str | None = None) -> dict:
     manifest_path = directory / spec["manifest"]
     try:
         receipt = json.loads(manifest_path.read_text())
     except (OSError, ValueError) as error:
         raise PackError(f"{directory} has no readable {spec['manifest']}: {error}") from error
-    commit = pins["kernel"]["commit"]
+    commit = commit or pins["kernel"]["commit"]
     if receipt.get("format") != KERNEL_ARTIFACTS_FORMAT or receipt.get("kind") != spec["kind"]:
         raise PackError(f"{manifest_path} is not a {spec['kind']} kernel artifact receipt")
     if receipt.get("source_commit") != commit:
@@ -302,7 +343,57 @@ def read_kernel_artifacts(directory: Path, pins: dict, spec: dict) -> dict:
     wheel = directory / wheels[0]["path"]
     if not wheel.is_file() or pack_manifest.sha256_file(wheel) != wheels[0]["sha256"]:
         raise PackError(f"{wheel.name} does not match the kernel receipt")
-    return {"wheel": wheel, "version": receipt["version"]}
+    found = {"wheel": wheel, "version": receipt["version"]}
+    mailboxes = [entry for entry in receipt["artifacts"] if entry["path"] != wheels[0]["path"]]
+    if len(mailboxes) == 1:
+        found["mailbox"] = directory / mailboxes[0]["path"]
+    return found
+
+
+def check_binding(kernel: dict, entries: dict, mailbox: Path | None) -> Path:
+    mailbox = mailbox or kernel.get("mailbox")
+    if mailbox is None:
+        raise PackError("a Linux pack needs the Kernel mailbox")
+    for label, path in (("wheel", kernel["wheel"]), ("mailbox", mailbox)):
+        if path.name != entries[label]["file"] or pack_manifest.sha256_file(path) != entries[label]["sha256"]:
+            raise PackError(f"the Kernel {label} {path.name} does not match {BINDING}")
+    return mailbox
+
+
+KERNEL_FILES = ("bin/astral-mailbox", "python/lib/python3.11/site-packages/astral_kernel/libastral_kernel_ffi.so")
+
+
+KERNEL_LIBRARY = "astral_kernel/libastral_kernel_ffi.so"
+
+
+def bound_kernel_digests(wheel: Path, mailbox: Path) -> dict[str, str]:
+    with zipfile.ZipFile(wheel) as archive:
+        library = pack_manifest.sha256_bytes(archive.read(KERNEL_LIBRARY))
+    return {KERNEL_FILES[0]: pack_manifest.sha256_file(mailbox), KERNEL_FILES[1]: library}
+
+
+def seal_linux(stage: Path, spec: dict, bound: dict[str, str]) -> dict:
+    sys.path.insert(0, str(HERE / "linux"))
+    import debian_natives
+    import elfaudit
+
+    received = {name: pack_manifest.sha256_file(stage / name) for name in KERNEL_FILES if (stage / name).is_file()}
+    if received != bound:
+        raise PackError("the Kernel files staged in the pack are not the bytes of the bound wheel and mailbox")
+    bundled = debian_natives.bundle(stage, spec["natives"], platform_module.machine())
+    floor = tuple(int(part) for part in spec["glibc_floor"].split("."))
+    problems, newest = elfaudit.audit_tree(stage, floor)
+    if problems:
+        raise PackError("ELF audit failed: " + "; ".join(problems[:10]))
+    return {
+        "glibc_floor": spec["glibc_floor"],
+        "glibc_required": ".".join(map(str, newest)),
+        "natives": {**bundled, "source_image": spec["natives"]["source_image"]},
+        "kernel_search_path_patch": {
+            name: {"bound_sha256": digest, "shipped_sha256": pack_manifest.sha256_file(stage / name)}
+            for name, digest in received.items()
+        },
+    }
 
 
 def build_environment(epoch: str) -> dict:
@@ -352,11 +443,15 @@ def assemble(platform: str, output: Path, kernel_dir: Path, work: Path, mailbox:
     if platform not in pins["platforms"]:
         raise PackError(f"{platform} packs are not built yet")
     target = pins["platforms"][platform]
-    require_full_pin(pins["kernel"]["commit"])
-    kernel = read_kernel_artifacts(kernel_dir, pins, target["kernel_artifacts"])
+    kernel_commit, binding_entries = kernel_source(components_root, pins, target["kernel_artifacts"])
+    require_full_pin(kernel_commit)
+    kernel = read_kernel_artifacts(kernel_dir, pins, target["kernel_artifacts"], kernel_commit)
+    if binding_entries is not None:
+        mailbox = check_binding(kernel, binding_entries, mailbox)
     natives_dir = resolve_natives(target, recipe, work, natives)
     if mailbox is not None and not mailbox.is_file():
         raise PackError(f"{mailbox} is not a file")
+    exclusions = effective_exclusions(pins, target)
     environment = build_environment(git(repo, "log", "-1", "--format=%ct", deep_commit))
     composition = json.loads((components_root / "config" / "astral-composition.json").read_text())
     component_inputs = {}
@@ -369,7 +464,7 @@ def assemble(platform: str, output: Path, kernel_dir: Path, work: Path, mailbox:
 
     python_archive = download_python(target["python"], work / "downloads")
     with tarfile.open(python_archive) as bundle:
-        bundle.extractall(stage, filter="data")
+        extract_members(bundle, stage)
     python_root = stage / "python"
     python = python_root / "bin" / "python3.11"
 
@@ -404,7 +499,7 @@ def assemble(platform: str, output: Path, kernel_dir: Path, work: Path, mailbox:
     strip_install_origins(site_packages)
     prune_records(site_packages)
     distributions = installed_distributions(python)
-    verify_exclusions(distributions, pins["excluded_packages"])
+    verify_exclusions(distributions, exclusions)
     if "spacy_model" in pins:
         verify_model_requirement(distributions, pins["spacy_model"])
 
@@ -424,11 +519,14 @@ def assemble(platform: str, output: Path, kernel_dir: Path, work: Path, mailbox:
         shutil.copy2(mailbox, stage / "bin" / "astral-mailbox")
         (stage / "bin" / "astral-mailbox").chmod(0o755)
     copy_launcher(stage, components_root / "scripts" / "node_bundle" / "launcher")
+    native_inputs = {}
+    if "linux" in target:
+        native_inputs = seal_linux(stage, target["linux"], bound_kernel_digests(kernel["wheel"], mailbox))
     bake_bytecode(python, stage)
     scan_for_leaks(stage, [work, repo, components_root])
 
     python_pin = target["python"]
-    version = f"{python_pin['version']}-{deep_commit[:8]}-{pins['kernel']['commit'][:7]}"
+    version = f"{python_pin['version']}-{deep_commit[:8]}-{kernel_commit[:7]}"
     inputs = {
         "version": version,
         "platform": platform,
@@ -439,7 +537,7 @@ def assemble(platform: str, output: Path, kernel_dir: Path, work: Path, mailbox:
         "component_wheels": json.loads(lock.read_text()),
         "kernel": {
             "repository": pins["kernel"]["repository"],
-            "commit": pins["kernel"]["commit"],
+            "commit": kernel_commit,
             "wheel": {"file": kernel["wheel"].name, "sha256": pack_manifest.sha256_file(kernel["wheel"])},
             "mailbox": (
                 {"file": mailbox.name, "sha256": pack_manifest.sha256_file(mailbox)} if mailbox is not None else None
@@ -452,7 +550,8 @@ def assemble(platform: str, output: Path, kernel_dir: Path, work: Path, mailbox:
         "spacy_model": pins.get("spacy_model"),
         "natives": None if natives_dir is None else natives_module().summary(natives_dir),
         "installed_distributions": distributions,
-        "excluded_packages": pins["excluded_packages"],
+        "excluded_packages": exclusions,
+        **native_inputs,
         "kept_server_parts": pins["kept_server_parts"],
         "excluded_backend_paths": pins["backend_exclusions"],
     }
