@@ -1,0 +1,116 @@
+{
+  "schemaVersion": "astralplane.repository-slice/v1",
+  "slice": "attachment-parser-and-durable-materialization",
+  "status": "plane_verified_deep_cutover_pending",
+  "schemaRevision": "074.004",
+  "migrationRequired": true,
+  "migrationRegistryDigest": "31495e9b916301e5d9d5011f256224e62e0a0822e25fdf3b9c339beb695eff50",
+  "currentSchemaStructureDigest": "2e95879e293dbac3018a5c3fea92662b2939390bb12195f5a9f8d1eca03d6ec3",
+  "baseline": "066.001",
+  "publicFactories": [
+    "create_attachment_materialization_coordinator",
+    "create_attachment_parser_repository",
+    "create_durable_purge_executor",
+    "create_purge_store",
+    "create_streaming_blob_store"
+  ],
+  "sourceSurfaces": [
+    "backend/orchestrator/agentic_creation.py",
+    "backend/orchestrator/attachment_autoparse.py",
+    "backend/orchestrator/attachments/account_lifecycle.py",
+    "backend/orchestrator/attachments/blob_access.py",
+    "backend/orchestrator/attachments/parser_repo.py",
+    "backend/orchestrator/attachments/repository.py",
+    "backend/orchestrator/attachments/router.py",
+    "backend/shared/attachment_materializer.py",
+    "backend/orchestrator/parser_registry.py",
+    "backend/orchestrator/projection_surfaces/attachments.py"
+  ],
+  "tables": [
+    "astralplane_blob_owner_state",
+    "astralplane_purge_tombstone",
+    "attachment_parser",
+    "message_attachment",
+    "user_attachments"
+  ],
+  "invariants": [
+    "caller-owned parser and purge-scheduling transactions",
+    "redacted global parser coverage separated from owner-scoped provenance",
+    "secure local-drive/absolute root admission and link/reparse rejection",
+    "bounded owner and storage-key identities with a narrowly reserved __verif__ owner namespace",
+    "canonical attachment identity is exactly owner_id/attachment_id/filename",
+    "new physical creation requires a committed pending intent and exact DB-clock lease/version fence",
+    "filesystem owner reservation is acquired before the short stage-open database transaction",
+    "deterministic O_EXCL/CREATE_NEW staging sentinel binds the durable lease and excludes parallel stages",
+    "bytes stream only to an unpublished descriptor through a bounded staging capability",
+    "all final metadata is validated before atomic rename",
+    "atomic rename and READY metadata finalization occur while the pending row lock is held in one transaction",
+    "pending or deleted attachments are absent from ordinary metadata and message-link reads",
+    "expired pending recovery locks the same row and atomically schedules typed prefix cleanup",
+    "owner retirement establishes a durable admission fence before namespace purge",
+    "public direct writes, physical deletes, DB-only locator relocation, metadata-only deletion, and terminal purge mutation are absent",
+    "capability-bound typed attachment-prefix and owner-namespace deletion requires positive absence evidence",
+    "legacy unfenced exact-key tombstones remain manual review until exact evidence-bound operator resolution",
+    "one aggregate snapshot covers every non-purged tombstone and every expired live pending materialization",
+    "cross-process owner exclusion and bounded Plane-owned async lanes prevent publication/deletion and executor-starvation races",
+    "bounded pathless readers are the default consumption surface",
+    "normal close and EOF preserve requested digest verification while async early abandonment promptly releases its descriptor and owner exclusion without an unbounded control-lane drain",
+    "descriptor-bound size and SHA-256 parser fences precede path-only parser access",
+    "Windows local-drive long paths, sharing denial, and held-handle identity preserve root confinement",
+    "no parser execution, authorization, upload/content, account-retirement trigger, retention, or audit policy in Plane"
+  ],
+  "implementationSha256": "7157123d40f4172e7255fe905c2d494385723e70048fce1f7d48fa1afda06d00",
+  "materializationImplementationSha256": "145d62e69bd06472390bb941f2d1b18a308daf927b7a64d88b1af8441d6a420f",
+  "durablePurgeImplementationSha256": "aad4b058662dbb3756df6dc53dbf8e4e4cff62bda550f75ef6e1b29f10be6a0e",
+  "focusedTestSha256": "32b3470388a477849fc7fe04427803d93e5194e97f16e184688e3ff9ef1852ca",
+  "materializationTestSha256": "20b6f065cdecb4419e1727dffa4ec9e886f7c1adb39361ddeed95b7fb5d9a342",
+  "durablePurgeTestSha256": "f2dd14d42a30823f620dc3f468e0ca4438a12103e08cabdca44598508febfa0c",
+  "apiTestSha256": "5bc67de311bbc819a69e31281dff0d9cf49ad5b309414dadc01b2da0aacb4806",
+  "durablePurgePostgresTestSha256": "fc64ece061fe58157c20ae62ba2049314847f84407c3a2498ab40c44195ed8e9",
+  "focusedVerification": {
+    "command": "python -m pytest -q tests/test_blob_store.py tests/test_purge.py tests/test_api.py tests/repositories/test_artifacts.py",
+    "status": "passed",
+    "passed": 236,
+    "failed": 0
+  },
+  "crossPlatformVerification": {
+    "windows": {
+      "command": "python -m pytest -q tests/test_blob_store.py",
+      "passed": 112,
+      "skipped": 0
+    },
+    "linux": {
+      "command": "docker run --rm -v ${PWD}:/workspace -w /workspace -e PYTHONPATH=/workspace/src --entrypoint python astraldeep:latest -m pytest -q tests/test_blob_store.py",
+      "passed": 107,
+      "skipped": 5,
+      "skipReason": "Windows sharing, local-drive root, and legacy MAX_PATH contracts"
+    }
+  },
+  "focusedCoverage": {
+    "windowsCommand": "python -m pytest -q tests/test_blob_store.py tests/test_purge.py tests/test_api.py tests/repositories/test_artifacts.py --cov=astralplane.blob_store --cov-branch --cov-report=json:.coverage-blob-win.json",
+    "linuxCommand": "docker run --rm -v ${PWD}:/workspace -w /workspace -e PYTHONPATH=/workspace/src --entrypoint sh astraldeep:latest -c 'python -m pip install -q coverage pytest-cov && python -m pytest -q tests/test_blob_store.py --cov=astralplane.blob_store --cov-branch --cov-report=json:.coverage-blob-linux.json'",
+    "status": "passed",
+    "combinationMethod": "set union of executed_lines and executed_branches from Windows and Linux Coverage.py JSON over identical source bytes",
+    "coveredStatementLines": 1446,
+    "totalStatementLines": 1606,
+    "statementLineCoverage": "90.04%",
+    "coveredBranches": 404,
+    "totalBranches": 494,
+    "branchCoverage": "81.78%",
+    "branchAwareCombinedCoverage": "88.10%"
+  },
+  "livePostgresVerification": {
+    "command": "python -m pytest -q tests/integration/test_streaming_purge.py",
+    "status": "passed_serial_isolated_postgresql",
+    "passed": 4,
+    "failed": 0,
+    "coverage": "case-fold identity exclusion, caller rollback, attachment-prefix two-executor convergence, whole-owner retirement and orphan cleanup"
+  },
+  "migrationEvidence": {
+    "path": "provenance/checks.json",
+    "status": "passed",
+    "cases": 8,
+    "fixtureDigest": "c016d8dd30f2bdf932ba8e855bbc586826f5b0f4137b6413c61a82293ef41c1d"
+  },
+  "deepCutover": "held_pending_final_074_004_composition_pin_and_publisher_integration"
+}

@@ -826,3 +826,8 @@ def test_fold_tables_hold_no_runtime_unicode_data() -> None:
     assert not set(table["decompose"]) & set(table["fold"])
     assert table["decompose"]["1F80"] == "\u03b1\u0313\u0345"
     assert "1F80" not in table["fold"] and table["fold"]["0345"] == "\u03b9"
+
+
+def test_agent_server_reasons_have_messages() -> None:
+    assert DOC["constants"]["agent_server_reasons"] == list(exec_policy.AGENT_SERVER_REASONS)
+    assert all(reason in exec_policy.MESSAGES for reason in exec_policy.AGENT_SERVER_REASONS)

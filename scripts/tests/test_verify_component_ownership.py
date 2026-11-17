@@ -1267,3 +1267,68 @@ def test_inventory_rejects_invalid_object_identity_and_tree_records(
     responses["records"] = b"160000 commit " + b"c" * 40 + b" -\tsubmodule\0"
     inventory = ownership_tool.inventory_repository("fixture", repository)
     assert inventory.blobs == {}
+
+
+def _in_tree_repository(tmp_path: Path) -> Path:
+    return _init_repository(
+        tmp_path / "composition",
+        {"backend/app.py": "app\n", "plane/src/astralplane/store.py": "store\n",
+         "plane/README.md": "plane\n"},
+    )
+
+
+def test_an_in_tree_component_is_inventoried_from_its_subtree(tmp_path: Path) -> None:
+    repository = _in_tree_repository(tmp_path)
+    inventory = ownership_tool.inventory_repository(
+        "astralplane", repository / "plane", subdirectory="plane"
+    )
+    assert set(inventory.blobs) == {"src/astralplane/store.py", "README.md"}
+    assert inventory.root == repository.resolve()
+    assert inventory.tree == _git(repository, "rev-parse", "HEAD:plane")
+
+
+def test_an_in_tree_component_root_must_be_exactly_its_folder(tmp_path: Path) -> None:
+    repository = _in_tree_repository(tmp_path)
+    with pytest.raises(ownership_tool.OwnershipError, match="exact-root mismatch"):
+        ownership_tool.inventory_repository(
+            "astralplane", repository / "backend", subdirectory="plane"
+        )
+    with pytest.raises(ownership_tool.OwnershipError, match="cannot be inspected"):
+        ownership_tool.inventory_repository(
+            "astralplane", tmp_path / "missing", subdirectory="plane"
+        )
+
+
+def test_an_in_tree_component_must_be_a_tracked_directory(tmp_path: Path) -> None:
+    repository = _in_tree_repository(tmp_path)
+    (repository / "plane.txt").write_text("file\n")
+    _commit_files(repository, {"plane.txt": "file\n"}, "A file named like the folder")
+    with pytest.raises(ownership_tool.OwnershipError, match="not a tracked directory|failed"):
+        ownership_tool.inventory_repository(
+            "astralplane", repository / "plane.txt", subdirectory="plane.txt"
+        )
+
+
+def test_audit_reads_the_in_tree_plane_from_the_composition_repository(tmp_path: Path) -> None:
+    repository = _init_repository(
+        tmp_path / "composition",
+        {"adapters/host.py": "def host():\n    return 1\n",
+         "plane/src/astralplane/store.py": "def store():\n    return 2\n"},
+    )
+    document = _map_document()
+    del document["repositories"]["projection"]
+    document["repositories"]["plane"] = {
+        "canonicalUrl": "https://github.com/AstralDeep/AstralPlane.git",
+        "compositionPath": "plane",
+        "role": "durable state",
+        "mutableRoots": ["src/"],
+    }
+    document["ownershipDomains"] = [
+        document["ownershipDomains"][0],
+        {"id": "durable-state", "owner": "plane", "ownedPaths": ["src/astralplane/**"],
+         "forbiddenCopies": [], "scanExactDuplicates": True},
+    ]
+    document["compatibilityAdapters"][0]["upstreamOwner"] = "plane"
+    report = _audit(_load_map(tmp_path, document),
+                    {"deep": repository, "plane": repository / "plane"})
+    assert report["ok"] is True, report["violations"]

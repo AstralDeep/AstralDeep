@@ -1,6 +1,6 @@
 """Tests for the offline composition verifier: exact pins, canonical URLs/contracts,
 floating-branch and dirty-component rejection, and deterministic CLI/JSON reporting
-across the five repositories.
+across the four pinned repositories and the in-tree Plane.
 """
 
 from __future__ import annotations
@@ -20,10 +20,7 @@ import pytest
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPOSITORY_ROOT / "scripts" / "verify_composition.py"
-SCHEMA = (
-    REPOSITORY_ROOT
-    / "specs/074-multirepo-lets-integration/contracts/composition-manifest.schema.json"
-)
+SCHEMA = REPOSITORY_ROOT / "contracts/composition-manifest-v2.schema.json"
 
 spec = importlib.util.spec_from_file_location("verify_composition_074", SCRIPT)
 assert spec and spec.loader
@@ -35,21 +32,19 @@ spec.loader.exec_module(composition)
 CANONICAL_REPOSITORIES = {
     "astral-projection": "https://github.com/AstralDeep/AstralProjection.git",
     "astral-kernel": "https://github.com/AstralDeep/AstralKernel.git",
-    "astral-plane": "https://github.com/AstralDeep/AstralPlane.git",
     "astral-primitives": "https://github.com/AstralDeep/AstralPrimitives.git",
     "lets": "https://github.com/AstralDeep/LETS.git",
 }
 COMPONENT_PATHS = {
     "astral-projection": "components/AstralProjection",
     "astral-kernel": "components/AstralKernel",
-    "astral-plane": "components/AstralPlane",
+    "astral-plane": "plane",
     "astral-primitives": "components/AstralPrimitives",
     "lets": "components/LETS",
 }
 MODULE_NAMES = {
     "astral-projection": "AstralProjection",
     "astral-kernel": "AstralKernel",
-    "astral-plane": "AstralPlane",
     "astral-primitives": "AstralPrimitives",
     "lets": "LETS",
 }
@@ -218,7 +213,7 @@ def _manifest(root: Path, commits: dict[str, str]) -> dict[str, Any]:
     )
     lets_openapi = root / COMPONENT_PATHS["lets"] / "protocol/openapi.yaml"
     return {
-        "format": "astral.composition/v1",
+        "format": "astral.composition/v2",
         "astraldeep_contract_version": "astraldeep.composition/v1",
         "components": {
             "astral-projection": {
@@ -233,12 +228,6 @@ def _manifest(root: Path, commits: dict[str, str]) -> dict[str, Any]:
                 "commit": commits["astral-kernel"],
                 "contract_version": "0.1.0",
             },
-            "astral-plane": {
-                "repository": CANONICAL_REPOSITORIES["astral-plane"],
-                "path": COMPONENT_PATHS["astral-plane"],
-                "commit": commits["astral-plane"],
-                "contract_version": "astralplane.contract/v1",
-            },
             "astral-primitives": {
                 "repository": CANONICAL_REPOSITORIES["astral-primitives"],
                 "path": COMPONENT_PATHS["astral-primitives"],
@@ -252,6 +241,12 @@ def _manifest(root: Path, commits: dict[str, str]) -> dict[str, Any]:
                 "ref": "v1.1.2",
                 "contract_version": "1.1.2",
             },
+        },
+        "in_tree": {
+            "astral-plane": {
+                "path": COMPONENT_PATHS["astral-plane"],
+                "contract_version": "astralplane.contract/v1",
+            }
         },
         "availability": {
             "astral-projection": "required-embedded",
@@ -314,7 +309,7 @@ def checkout(tmp_path: Path) -> Path:
         json.dumps(manifest, indent=2) + "\n",
     )
     lines: list[str] = []
-    for name in composition.COMPONENT_ORDER:
+    for name in CANONICAL_REPOSITORIES:
         lines.extend(
             [
                 f'[submodule "{MODULE_NAMES[name]}"]',
@@ -324,7 +319,7 @@ def checkout(tmp_path: Path) -> Path:
         )
     _write(root / ".gitmodules", "\n".join(lines) + "\n")
     _git(root, "init", "--quiet")
-    for name in composition.COMPONENT_ORDER:
+    for name in CANONICAL_REPOSITORIES:
         _git(
             root,
             "update-index",
@@ -355,6 +350,8 @@ def _rewrite_manifest(root: Path, mutate: Any) -> None:
 
 
 def _repin_component(root: Path, component: str) -> str:
+    if component not in CANONICAL_REPOSITORIES:
+        return ""
     component_root = root / COMPONENT_PATHS[component]
     _git(component_root, "add", "-A")
     _git(component_root, "commit", "--quiet", "-m", "updated fixture")
@@ -476,13 +473,13 @@ def test_stale_gitlink_is_attributed_separately(checkout: Path) -> None:
         "update-index",
         "--add",
         "--cacheinfo",
-        f"160000,{'1' * 40},{COMPONENT_PATHS['astral-plane']}",
+        f"160000,{'1' * 40},{COMPONENT_PATHS['astral-primitives']}",
     )
 
     report = _verify(checkout)
 
-    assert "E_STALE_GITLINK" in _codes(report, "astral-plane")
-    assert "E_WRONG_SHA" not in _codes(report, "astral-plane")
+    assert "E_STALE_GITLINK" in _codes(report, "astral-primitives")
+    assert "E_WRONG_SHA" not in _codes(report, "astral-primitives")
 
 
 def test_clean_component_at_wrong_sha_is_rejected(checkout: Path) -> None:
@@ -573,6 +570,7 @@ def test_unreadable_manifest_and_gitmodules_fail_with_local_diagnostics(
                 {
                     name: _git(checkout / path, "rev-parse", "HEAD")
                     for name, path in COMPONENT_PATHS.items()
+                    if name in CANONICAL_REPOSITORIES
                 },
             ),
             indent=2,
@@ -1457,7 +1455,7 @@ def test_component_contract_specific_malformed_inputs_are_fail_closed(
     composition._verify_component_contract(
         "astral-plane",
         plane,
-        manifest["components"]["astral-plane"],
+        manifest["in_tree"]["astral-plane"],
         manifest["compatibility"],
         diagnostics,
     )
@@ -1523,13 +1521,13 @@ def test_missing_origin_and_status_failure_fail_closed(
     original_output = composition._git_output
 
     def status_fails(cwd: Path, *arguments: str) -> str:
-        if cwd.name == "AstralPlane" and arguments and arguments[0] == "status":
+        if cwd.name == "AstralPrimitives" and arguments and arguments[0] == "status":
             raise composition.CompositionError("status unavailable")
         return original_output(cwd, *arguments)
 
     monkeypatch.setattr(composition, "_git_output", status_fails)
     failed_status = _verify(checkout)
-    assert "E_DIRTY_COMPONENT" in _codes(failed_status, "astral-plane")
+    assert "E_DIRTY_COMPONENT" in _codes(failed_status, "astral-primitives")
 
 
 def test_non_directory_component_and_false_git_worktree_are_unavailable(
@@ -1544,13 +1542,13 @@ def test_non_directory_component_and_false_git_worktree_are_unavailable(
     original_output = composition._git_output
 
     def not_worktree(cwd: Path, *arguments: str) -> str:
-        if cwd.name == "AstralPlane" and arguments[-1:] == ("--is-inside-work-tree",):
+        if cwd.name == "AstralProjection" and arguments[-1:] == ("--is-inside-work-tree",):
             return "false"
         return original_output(cwd, *arguments)
 
     monkeypatch.setattr(composition, "_git_output", not_worktree)
     false_worktree = _verify(checkout)
-    assert "E_PRIVATE_ACCESS" in _codes(false_worktree, "astral-plane")
+    assert "E_PRIVATE_ACCESS" in _codes(false_worktree, "astral-projection")
 
 
 def test_real_checkout_verification_executes_only_local_git_commands(
@@ -1571,3 +1569,46 @@ def test_real_checkout_verification_executes_only_local_git_commands(
     assert all(command[0] == "git" for command in commands)
     forbidden = {"clone", "fetch", "ls-remote", "pull", "push", "remote-ext"}
     assert all(not forbidden.intersection(command) for command in commands)
+
+
+def test_in_tree_plane_is_verified_without_a_pin_or_submodule(checkout: Path) -> None:
+    report = _verify(checkout)
+    assert report.ok, report.to_dict()
+    assert not (checkout / COMPONENT_PATHS["astral-plane"] / ".git").exists()
+    assert "plane" not in (checkout / ".gitmodules").read_text(encoding="utf-8")
+
+
+def test_missing_in_tree_plane_folder_is_reported(checkout: Path) -> None:
+    import shutil
+
+    shutil.rmtree(checkout / COMPONENT_PATHS["astral-plane"])
+    report = _verify(checkout)
+    assert "E_COMPONENT_MISSING" in _codes(report, "astral-plane")
+
+
+def test_in_tree_plane_digest_must_agree_with_the_folder(checkout: Path) -> None:
+    _write(
+        checkout / COMPONENT_PATHS["astral-plane"] / "src/astralplane/database/migrations.py",
+        'PLANE_SCHEMA_067_STATEMENTS = ("SELECT 1", "SELECT 3")\n'
+        "PLANE_SCHEMA_067_MIGRATION = Migration(\n"
+        '    name="astralplane-067-test",\n'
+        '    source_revisions=("066.001",),\n'
+        '    target_revision="067.001",\n'
+        "    checksum=_statements_checksum(PLANE_SCHEMA_067_STATEMENTS),\n"
+        "    operation=_apply,\n"
+        ")\n"
+        "MIGRATION_REGISTRY = MigrationRegistry((PLANE_SCHEMA_067_MIGRATION,))\n",
+    )
+    assert "E_INCOMPATIBLE_CONTRACT" in _codes(_verify(checkout), "astral-plane")
+
+
+def test_a_v1_manifest_is_refused_with_a_format_diagnostic(checkout: Path) -> None:
+    _rewrite_manifest(checkout, lambda document: document.update(format="astral.composition/v1"))
+    report = _verify(checkout)
+    assert _codes(report) == {"E_COMPOSITION_FORMAT"}
+    assert "astral.composition/v2" in report.diagnostics[0].message
+
+
+def test_a_manifest_without_a_format_is_refused(checkout: Path) -> None:
+    _rewrite_manifest(checkout, lambda document: document.pop("format"))
+    assert _codes(_verify(checkout)) == {"E_COMPOSITION_FORMAT"}

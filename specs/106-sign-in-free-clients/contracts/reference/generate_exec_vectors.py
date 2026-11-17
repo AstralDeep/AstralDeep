@@ -980,6 +980,7 @@ def generate() -> dict[str, Any]:
             "proxy_port": exec_policy.PROXY_PORT,
             "egress_socket": exec_policy.EGRESS_SOCKET,
             "validation_codes": list(exec_policy.VALIDATION_CODES),
+            "agent_server_reasons": list(exec_policy.AGENT_SERVER_REASONS),
             "backend_reasons": list(exec_policy.BACKEND_REASONS),
             "messages": exec_policy.MESSAGES,
         },

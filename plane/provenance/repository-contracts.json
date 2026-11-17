@@ -1,0 +1,43 @@
+{
+  "schemaVersion": "astralplane.repository-contract-evidence/v1",
+  "task": "T096",
+  "status": "passed",
+  "schemaRevision": "074.004",
+  "catalogMemberCount": 36,
+  "invariants": [
+    "exact coverage of every public RepositoryCatalog member",
+    "ordinary owner scope or an explicit bounded administrative/shared-content designation",
+    "attribution appears in the executed native PostgreSQL parameters",
+    "caller-owned commit and rollback authority",
+    "behavioral replay/idempotency or an explicit non-applicability reason",
+    "behavioral compare-and-set/concurrency or an explicit non-applicability reason",
+    "persistence and corrupt-row failures remain visible"
+  ],
+  "behavioralVerification": {
+    "command": "python -m pytest -q tests/repositories tests/contract",
+    "status": "passed",
+    "passed": 898,
+    "skipped": 1,
+    "skipReason": "the audit live-PostgreSQL node is executed in the separate serial command"
+  },
+  "postgresVerification": {
+    "command": "python -m pytest -q -rA tests/integration/test_catalog_caller_rollback.py tests/repositories/test_audit.py::test_real_postgresql_append_normalizes_detached_json tests/integration/test_empty_database_startup.py::test_work_admission_real_postgresql_owner_replay_fence_and_rollback tests/integration/test_empty_database_startup.py::test_concurrent_quality_reviews_serialize_chain_and_case_transition tests/integration/test_empty_database_startup.py::test_user_agent_policy_reconciliation_is_concurrent_idempotent_and_rollback_safe tests/authority/test_postgresql_conformance.py::test_concurrent_nonterminal_binding_insert_has_one_typed_winner tests/authority/test_postgresql_conformance.py::test_claim_and_outbox_failure_roll_back_to_the_savepoint",
+    "status": "passed",
+    "passed": 42,
+    "failed": 0,
+    "maxWorkers": 1
+  },
+  "callerRollbackVerification": {
+    "command": "python -m pytest -q -rA tests/integration/test_catalog_caller_rollback.py",
+    "status": "passed",
+    "passed": 36,
+    "failed": 0,
+    "maxWorkers": 1,
+    "writeCapableCatalogMembers": 35,
+    "inapplicableCatalogMembers": {
+      "agent_management": "read-only get_list_context/get_detail_context projections expose no mutation"
+    },
+    "evidence": "each write succeeds and is visible in the caller transaction; a forced caller abort is followed by a fresh persistence re-read proving the mutation did not survive"
+  },
+  "migrationRequired": false
+}

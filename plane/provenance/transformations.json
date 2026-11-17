@@ -1,0 +1,906 @@
+{
+  "format": "astral.extraction-transformations/v1",
+  "sourceManifestSha256": "faf3e958601379954875cbc928423bc95d4b1786b59d6d3992241c8f69ee91ba",
+  "entries": [
+    {
+      "sourcePath": "backend/audit/recorder.py",
+      "sourceBlob": "4b12bde46bbf9510b0d20ef71c5456d8227194c5",
+      "sourceMode": "100644",
+      "destinationPath": "src/astralplane/_legacy_import/audit/recorder.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "src/astralplane/audit_delivery.py",
+          "sha256": "859d5f8e1141f0dfb867c551de74280cb7999482adecf1a9bc0d32d1398f41c3"
+        },
+        {
+          "path": "src/astralplane/outbox.py",
+          "sha256": "d446f4c32983cd080d0599cb05baaf0545f5f442859a900ffc13bc37613cde2a"
+        }
+      ],
+      "task": "T088/T090",
+      "reason": "Replaced the lossy recorder retry path with durable outbox-backed audit delivery."
+    },
+    {
+      "sourcePath": "backend/audit/repository.py",
+      "sourceBlob": "01dbe1b9e9d47a173e410e3c94e4036f31964cdd",
+      "sourceMode": "100644",
+      "destinationPath": "src/astralplane/_legacy_import/audit/repository.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "src/astralplane/audit_retention.py",
+          "sha256": "0864476196235362c739c2ba48fe040089f35d514299b5de77452b75379eaaf2"
+        },
+        {
+          "path": "src/astralplane/repositories/audit.py",
+          "sha256": "36ff9f9c2c998f5f08d8bd84a161fec03078839c19bdf6402458c3376e4896a8"
+        }
+      ],
+      "task": "T085/T086",
+      "reason": "Separated append-only chain persistence from authenticated retention-boundary mechanics."
+    },
+    {
+      "sourcePath": "backend/audit/schemas.py",
+      "sourceBlob": "963116f37d017f8b994bac1ecf54f8e6ba21b214",
+      "sourceMode": "100644",
+      "destinationPath": "src/astralplane/_legacy_import/audit/schemas.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "src/astralplane/repositories/audit.py",
+          "sha256": "36ff9f9c2c998f5f08d8bd84a161fec03078839c19bdf6402458c3376e4896a8"
+        }
+      ],
+      "task": "T085",
+      "reason": "Converted product audit schemas into neutral immutable persistence records."
+    },
+    {
+      "sourcePath": "backend/audit/tests/test_append_only_trigger.py",
+      "sourceBlob": "a25c6d2ce1fa3813021eab3a650d3300c76efb1b",
+      "sourceMode": "100644",
+      "destinationPath": "tests/_legacy_import/audit/tests/test_append_only_trigger.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "tests/repositories/test_audit.py",
+          "sha256": "95bf4fe0a18b6014beff4ce5b8a095d725f98311a2f7b32393b9c34b4c9c2a92"
+        },
+        {
+          "path": "tests/test_revision.py",
+          "sha256": "b1c22890887ba1961155d549ff0ea1d12c0fc28107eb7378277f81daffc1b605"
+        }
+      ],
+      "task": "T075/T085",
+      "reason": "Preserved append-only and chain invariants through migration and repository regressions. The 088 assignment foundation extends registry lineage regression coverage through schema 088.001. The 088.002 session-incarnation increment preserves imported behavior with database-issued session identity, exact incarnation fencing and updated lineage tests."
+    },
+    {
+      "sourcePath": "backend/audit/tests/test_repository_filters.py",
+      "sourceBlob": "5738486bb85b484f972eb076cd6ab4cba4fedca6",
+      "sourceMode": "100644",
+      "destinationPath": "tests/_legacy_import/audit/tests/test_repository_filters.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "tests/repositories/test_audit.py",
+          "sha256": "95bf4fe0a18b6014beff4ce5b8a095d725f98311a2f7b32393b9c34b4c9c2a92"
+        }
+      ],
+      "task": "T085",
+      "reason": "Replaced legacy filter coverage with owner-scoped Plane audit repository tests."
+    },
+    {
+      "sourcePath": "backend/audit/tests/test_repository_hash_chain.py",
+      "sourceBlob": "53a460dd85ed3e3bd7c078db76ed508df5ece35b",
+      "sourceMode": "100644",
+      "destinationPath": "tests/_legacy_import/audit/tests/test_repository_hash_chain.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "tests/repositories/test_audit.py",
+          "sha256": "95bf4fe0a18b6014beff4ce5b8a095d725f98311a2f7b32393b9c34b4c9c2a92"
+        },
+        {
+          "path": "tests/test_audit_retention.py",
+          "sha256": "b37a9ed1656b2326a368397ddba198aa4a5deb02ac5f4cfdddb2e651be9cb634"
+        }
+      ],
+      "task": "T085/T087",
+      "reason": "Preserved genesis, mixed-version chain, tamper, and retained-prefix verification coverage."
+    },
+    {
+      "sourcePath": "backend/audit/ws_publisher.py",
+      "sourceBlob": "70414cd5aaf01873c9a0c0be4cd77634b4186ace",
+      "sourceMode": "100644",
+      "destinationPath": "src/astralplane/_legacy_import/audit/ws_publisher.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "src/astralplane/audit_delivery.py",
+          "sha256": "859d5f8e1141f0dfb867c551de74280cb7999482adecf1a9bc0d32d1398f41c3"
+        },
+        {
+          "path": "tests/test_audit_delivery.py",
+          "sha256": "55d8f6b185abd70214a68d47753b14f85c0ce795ba231e26488e0434b8e66f93"
+        }
+      ],
+      "task": "T090/T091",
+      "reason": "Replaced WebSocket-coupled publishing with a neutral durable sink-delivery boundary."
+    },
+    {
+      "sourcePath": "backend/feedback/repository.py",
+      "sourceBlob": "a0e26fff215bb1379e79485091b10b456f01595d",
+      "sourceMode": "100644",
+      "destinationPath": "src/astralplane/_legacy_import/feedback/repository.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "src/astralplane/repositories/knowledge.py",
+          "sha256": "c3e5ca27e1c1886c0f89e2996258b7fafa9dbd7fdf35e125fb7cabfa0f09d43e"
+        },
+        {
+          "path": "src/astralplane/repositories/preferences.py",
+          "sha256": "9157d449047c7ae713d2090d884cb74a4f2d72e7f80e2d89189c9bf74e371850"
+        },
+        {
+          "path": "tests/repositories/test_knowledge.py",
+          "sha256": "b406224f394ef33cf0e07030bc906dbf7c1384ce4b8a851bf12fa505fb2f44bf"
+        },
+        {
+          "path": "tests/repositories/test_knowledge_proposals_postgres.py",
+          "sha256": "3ac41f0db7fc3abc918f80ef007f59938df54f4febe4566894142d86ad0d80c0"
+        },
+        {
+          "path": "tests/repositories/test_preferences.py",
+          "sha256": "33ace5d889e873ff9fad5c7e547d0676e91273c4ede77eeccfb544eb664c2c17"
+        }
+      ],
+      "task": "T081",
+      "reason": "Absorbed feedback persistence into neutral owner-scoped preferences and administrative knowledge repositories."
+    },
+    {
+      "sourcePath": "backend/llm_config/tests/test_user_store.py",
+      "sourceBlob": "13fcf24e90cb49d6c188326ff0af1abda759114c",
+      "sourceMode": "100644",
+      "destinationPath": "tests/_legacy_import/llm_config/tests/test_user_store.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "tests/repositories/test_secrets.py",
+          "sha256": "249c06b9278d027de5b37960f79ad8c5688970f99e77d1f5ed0f72fd0a44b376"
+        },
+        {
+          "path": "tests/repositories/test_secrets_lock_postgres.py",
+          "sha256": "d4289077cbca54d1700494fc43e9d045cd10d45170c8a5818a224c8657ee9e40"
+        }
+      ],
+      "task": "T081",
+      "reason": "Replaced provider-store tests with ciphertext-only owner/system configuration tests and actual PostgreSQL row-lock exclusion, commit/rollback release, and distinct-owner independence."
+    },
+    {
+      "sourcePath": "backend/llm_config/user_store.py",
+      "sourceBlob": "276252aa7ea344f2d4e2b778a5adf94ea8e7c691",
+      "sourceMode": "100644",
+      "destinationPath": "src/astralplane/_legacy_import/llm_config/user_store.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "src/astralplane/repositories/secrets.py",
+          "sha256": "fa7f59d82ffb9d7ca94a56c0a6056dd77f60df89e74be07dda0c19d189d12d69"
+        }
+      ],
+      "task": "T081",
+      "reason": "Extracted ciphertext-only provider configuration persistence without product policy. The explicit owner-scoped locked getter holds the existing opaque selection through a caller-owned dependent transaction; ordinary reads and writes remain unchanged."
+    },
+    {
+      "sourcePath": "backend/onboarding/repository.py",
+      "sourceBlob": "a59662db08011b81247f0dfc7b39a1a547d85aa5",
+      "sourceMode": "100644",
+      "destinationPath": "src/astralplane/_legacy_import/onboarding/repository.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "src/astralplane/repositories/preferences.py",
+          "sha256": "9157d449047c7ae713d2090d884cb74a4f2d72e7f80e2d89189c9bf74e371850"
+        }
+      ],
+      "task": "T081",
+      "reason": "Absorbed onboarding persistence into the neutral owner-scoped preferences repository."
+    },
+    {
+      "sourcePath": "backend/onboarding/tests/test_repository.py",
+      "sourceBlob": "2c3254b0424fd81a82e5c4e02af974c68bca8b8e",
+      "sourceMode": "100644",
+      "destinationPath": "tests/_legacy_import/onboarding/tests/test_repository.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "tests/repositories/test_preferences.py",
+          "sha256": "33ace5d889e873ff9fad5c7e547d0676e91273c4ede77eeccfb544eb664c2c17"
+        }
+      ],
+      "task": "T081",
+      "reason": "Preserved onboarding owner isolation, replay, and failure visibility in focused tests."
+    },
+    {
+      "sourcePath": "backend/orchestrator/artifact_share.py",
+      "sourceBlob": "fab236247fe14148fad3270c45f974e4fa556a91",
+      "sourceMode": "100644",
+      "destinationPath": "src/astralplane/_legacy_import/orchestrator/artifact_share.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "src/astralplane/repositories/artifacts.py",
+          "sha256": "e4f1ecdcb4336131b727d961ba754af99ccdab990fc2ceb921594997ecdc0ccd"
+        }
+      ],
+      "task": "T080",
+      "reason": "Separated durable artifact sharing metadata from orchestration and authorization policy."
+    },
+    {
+      "sourcePath": "backend/orchestrator/artifact_versions.py",
+      "sourceBlob": "a66d9403390c5bc1e6ab30fecca8e814996bc326",
+      "sourceMode": "100644",
+      "destinationPath": "src/astralplane/_legacy_import/orchestrator/artifact_versions.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "src/astralplane/repositories/artifacts.py",
+          "sha256": "e4f1ecdcb4336131b727d961ba754af99ccdab990fc2ceb921594997ecdc0ccd"
+        }
+      ],
+      "task": "T080",
+      "reason": "Absorbed versioned artifact persistence into the neutral artifact repository."
+    },
+    {
+      "sourcePath": "backend/orchestrator/async_tasks.py",
+      "sourceBlob": "99875b7efedb4c63b06df9b21c13ce954a495cb0",
+      "sourceMode": "100644",
+      "destinationPath": "src/astralplane/_legacy_import/orchestrator/async_tasks.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "src/astralplane/outbox.py",
+          "sha256": "d446f4c32983cd080d0599cb05baaf0545f5f442859a900ffc13bc37613cde2a"
+        },
+        {
+          "path": "src/astralplane/repositories/background_tasks.py",
+          "sha256": "0f7a170eb60554c485328d7121edafc16ed91abc7c0004614f5ba326ba99f9cf"
+        }
+      ],
+      "task": "T082/T088",
+      "reason": "Split durable asynchronous operation state from product execution and delivery policy."
+    },
+    {
+      "sourcePath": "backend/orchestrator/attachments/account_lifecycle.py",
+      "sourceBlob": "059670e2c40eafcc364dcfb73c317212b760e6aa",
+      "sourceMode": "100644",
+      "destinationPath": "src/astralplane/_legacy_import/orchestrator/attachments/account_lifecycle.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "src/astralplane/purge.py",
+          "sha256": "c98281bf7332e50280f16e1bdc6f904391b34e14f7d7594ec9f9c87e9c3d106e"
+        },
+        {
+          "path": "src/astralplane/repositories/artifacts.py",
+          "sha256": "e4f1ecdcb4336131b727d961ba754af99ccdab990fc2ceb921594997ecdc0ccd"
+        }
+      ],
+      "task": "T080/T092",
+      "reason": "Separated attachment metadata and recoverable purge tombstones from account policy."
+    },
+    {
+      "sourcePath": "backend/orchestrator/attachments/message_attachment_repo.py",
+      "sourceBlob": "ad04e347e29c4b864ef64a3786df5a34b6db0cbc",
+      "sourceMode": "100644",
+      "destinationPath": "src/astralplane/_legacy_import/orchestrator/attachments/message_attachment_repo.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "src/astralplane/repositories/artifacts.py",
+          "sha256": "e4f1ecdcb4336131b727d961ba754af99ccdab990fc2ceb921594997ecdc0ccd"
+        }
+      ],
+      "task": "T080",
+      "reason": "Absorbed message-attachment persistence into the owner-scoped artifact repository."
+    },
+    {
+      "sourcePath": "backend/orchestrator/attachments/models.py",
+      "sourceBlob": "55c917b081a2b5abed6d461641f352a0bc455fba",
+      "sourceMode": "100644",
+      "destinationPath": "src/astralplane/_legacy_import/orchestrator/attachments/models.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "src/astralplane/repositories/artifacts.py",
+          "sha256": "e4f1ecdcb4336131b727d961ba754af99ccdab990fc2ceb921594997ecdc0ccd"
+        }
+      ],
+      "task": "T080",
+      "reason": "Converted attachment models into neutral immutable Plane records."
+    },
+    {
+      "sourcePath": "backend/orchestrator/attachments/parser_repo.py",
+      "sourceBlob": "267cd05bb80785e9ad550f0657f5819d63989c3c",
+      "sourceMode": "100644",
+      "destinationPath": "src/astralplane/_legacy_import/orchestrator/attachments/parser_repo.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "src/astralplane/repositories/artifacts.py",
+          "sha256": "e4f1ecdcb4336131b727d961ba754af99ccdab990fc2ceb921594997ecdc0ccd"
+        }
+      ],
+      "task": "T080",
+      "reason": "Absorbed parser-result persistence without importing parser or agent runtime logic."
+    },
+    {
+      "sourcePath": "backend/orchestrator/attachments/repository.py",
+      "sourceBlob": "e0b8689cb7bfdcece8e6feface98d43a2e19bbd1",
+      "sourceMode": "100644",
+      "destinationPath": "src/astralplane/_legacy_import/orchestrator/attachments/repository.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "src/astralplane/repositories/artifacts.py",
+          "sha256": "e4f1ecdcb4336131b727d961ba754af99ccdab990fc2ceb921594997ecdc0ccd"
+        }
+      ],
+      "task": "T080",
+      "reason": "Consolidated attachment persistence behind the neutral artifact repository."
+    },
+    {
+      "sourcePath": "backend/orchestrator/attachments/store.py",
+      "sourceBlob": "5fdcf30d12553473034ad4106364747d78b9fa90",
+      "sourceMode": "100644",
+      "destinationPath": "src/astralplane/_legacy_import/orchestrator/attachments/store.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "src/astralplane/purge.py",
+          "sha256": "c98281bf7332e50280f16e1bdc6f904391b34e14f7d7594ec9f9c87e9c3d106e"
+        },
+        {
+          "path": "src/astralplane/repositories/artifacts.py",
+          "sha256": "e4f1ecdcb4336131b727d961ba754af99ccdab990fc2ceb921594997ecdc0ccd"
+        }
+      ],
+      "task": "T080/T092",
+      "reason": "Separated blob metadata and explicit-root purge mechanics from orchestration."
+    },
+    {
+      "sourcePath": "backend/orchestrator/history.py",
+      "sourceBlob": "4e94ba509f51d58824e19ce14362686a18c415de",
+      "sourceMode": "100644",
+      "destinationPath": "src/astralplane/_legacy_import/orchestrator/history.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "src/astralplane/repositories/_issuing_identity.py",
+          "sha256": "962b74fff567d1eb2652c252636528f27db76a45d1e452a5c5a7408959b14704"
+        },
+        {
+          "path": "src/astralplane/repositories/history.py",
+          "sha256": "eff5280feeb0ab39dd5673dd96ca90aa0282ad7676c163041e67661df068774d"
+        }
+      ],
+      "task": "T078",
+      "reason": "Extracted owner-isolated history and encrypted session persistence with exact refresh CAS, bounded SQL waits and database-time guards. Revision088.002 provides immutable incarnations and separate consent observations. Revision088.003 binds exact issuer/client metadata while retaining legacy-null fence bytes; its shared validator serves deferred revocations. Imported source identities and historical migration bytes remain unchanged."
+    },
+    {
+      "sourcePath": "backend/orchestrator/knowledge_synthesis.py",
+      "sourceBlob": "790507fbafe1e9d877d9c411b2a7ddbe2e08b0e2",
+      "sourceMode": "100644",
+      "destinationPath": "src/astralplane/_legacy_import/orchestrator/knowledge_synthesis.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "src/astralplane/purge.py",
+          "sha256": "c98281bf7332e50280f16e1bdc6f904391b34e14f7d7594ec9f9c87e9c3d106e"
+        },
+        {
+          "path": "src/astralplane/repositories/artifacts.py",
+          "sha256": "e4f1ecdcb4336131b727d961ba754af99ccdab990fc2ceb921594997ecdc0ccd"
+        }
+      ],
+      "task": "T080/T092",
+      "reason": "Retained only durable generated-knowledge metadata and recoverable deletion mechanics."
+    },
+    {
+      "sourcePath": "backend/orchestrator/remote_jobs.py",
+      "sourceBlob": "f8e26f063e8171be8afb4b6ea3755c287794983b",
+      "sourceMode": "100644",
+      "destinationPath": "src/astralplane/_legacy_import/orchestrator/remote_jobs.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "src/astralplane/repositories/remote.py",
+          "sha256": "4ca285fef04f530f482c10135851f5778273f4462ebd97ffb44e0bb126fdf3e6"
+        }
+      ],
+      "task": "T084",
+      "reason": "Extracted remote execution metadata without SSH, polling, or transport behavior."
+    },
+    {
+      "sourcePath": "backend/orchestrator/remote_machines.py",
+      "sourceBlob": "49ddf72b1a4a65033276c77f1662ae11d5e21a1d",
+      "sourceMode": "100644",
+      "destinationPath": "src/astralplane/_legacy_import/orchestrator/remote_machines.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "src/astralplane/repositories/remote.py",
+          "sha256": "4ca285fef04f530f482c10135851f5778273f4462ebd97ffb44e0bb126fdf3e6"
+        }
+      ],
+      "task": "T084",
+      "reason": "Extracted remote machine inventory without probing, SSH, or presentation behavior."
+    },
+    {
+      "sourcePath": "backend/orchestrator/scheduled_publication.py",
+      "sourceBlob": "380d57e0d6d583489bd872168f757677151cff16",
+      "sourceMode": "100644",
+      "destinationPath": "src/astralplane/_legacy_import/orchestrator/scheduled_publication.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "src/astralplane/repositories/scheduler.py",
+          "sha256": "b3a153e979089fed97214380adbcb07f59849b06e21718cde5b28a46ad5a4eb7"
+        }
+      ],
+      "task": "T082",
+      "reason": "Absorbed scheduled publication state into the fenced scheduler repository."
+    },
+    {
+      "sourcePath": "backend/orchestrator/session_store.py",
+      "sourceBlob": "5da0d1a0fb9e63d058e0e006636d2e9aefbaacd5",
+      "sourceMode": "100644",
+      "destinationPath": "src/astralplane/_legacy_import/orchestrator/session_store.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "src/astralplane/repositories/_issuing_identity.py",
+          "sha256": "962b74fff567d1eb2652c252636528f27db76a45d1e452a5c5a7408959b14704"
+        },
+        {
+          "path": "src/astralplane/repositories/history.py",
+          "sha256": "eff5280feeb0ab39dd5673dd96ca90aa0282ad7676c163041e67661df068774d"
+        },
+        {
+          "path": "src/astralplane/repositories/revocations.py",
+          "sha256": "91667e05e8c951e32ea16972ee838a097d6b9c132921e80ab3fc997ec8136a4a"
+        }
+      ],
+      "task": "T078",
+      "reason": "Extracted owner-isolated session persistence and ciphertext-only revocations. Exact refresh CAS and bounded database-time guards retain immutable 088.002 incarnations and 088.003 issuer/client metadata with legacy-null fence bytes. The neutral revocation repository adds finite-cycle administrative pages while preserving owner mutation fences. Imported source identities and historical migration bytes remain unchanged."
+    },
+    {
+      "sourcePath": "backend/orchestrator/voice_sessions.py",
+      "sourceBlob": "34383048d8142621f6a07ecb216edeb3879169f0",
+      "sourceMode": "100644",
+      "destinationPath": "src/astralplane/_legacy_import/orchestrator/voice_sessions.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "src/astralplane/repositories/voice.py",
+          "sha256": "3dc0e42ffaa781ff0202894c5ea89e2406f01ab4573f45b18d605e596029fb67"
+        }
+      ],
+      "task": "T083",
+      "reason": "Extracted durable voice session and turn metadata without media runtime logic."
+    },
+    {
+      "sourcePath": "backend/orchestrator/work_admission.py",
+      "sourceBlob": "27abb39c2543cac1198b14e4e0aa0651c2700a80",
+      "sourceMode": "100644",
+      "destinationPath": "src/astralplane/_legacy_import/orchestrator/work_admission.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "src/astralplane/repositories/work_admission.py",
+          "sha256": "6cd3270a408418cffcecef6127f1e0c6e2183262c70b117afa8976f81c3a47ff"
+        }
+      ],
+      "task": "T082",
+      "reason": "Extracted hierarchical admission and operation lease state without dispatcher policy."
+    },
+    {
+      "sourcePath": "backend/orchestrator/workspace.py",
+      "sourceBlob": "ee5650a5e4b5d3d474c9117cf29b1a74f34aab5d",
+      "sourceMode": "100644",
+      "destinationPath": "src/astralplane/_legacy_import/orchestrator/workspace.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "src/astralplane/repositories/workspaces.py",
+          "sha256": "93f52569fa0faf52b60a8bf24f78cd955e8c430dd5178416ccb6b7fea54807df"
+        }
+      ],
+      "task": "T079",
+      "reason": "Extracted canvas, layout, snapshot, and publication persistence without rendering."
+    },
+    {
+      "sourcePath": "backend/personalization/repository.py",
+      "sourceBlob": "86df957b36fe25a64d273155322ca864e74853de",
+      "sourceMode": "100644",
+      "destinationPath": "src/astralplane/_legacy_import/personalization/repository.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "src/astralplane/repositories/preferences.py",
+          "sha256": "9157d449047c7ae713d2090d884cb74a4f2d72e7f80e2d89189c9bf74e371850"
+        },
+        {
+          "path": "tests/repositories/test_memory_envelope_page.py",
+          "sha256": "c2803c591275665823c549f5688f69c11511ebbdc38f7bba2c94b105cf03b122"
+        }
+      ],
+      "task": "T081",
+      "reason": "Absorbed personalization persistence into the neutral owner-scoped preferences repository."
+    },
+    {
+      "sourcePath": "backend/scheduler/store.py",
+      "sourceBlob": "09a4ab7ddf73822bf9917768b2c399bd92cb5aed",
+      "sourceMode": "100644",
+      "destinationPath": "src/astralplane/_legacy_import/scheduler/store.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "src/astralplane/repositories/scheduler.py",
+          "sha256": "b3a153e979089fed97214380adbcb07f59849b06e21718cde5b28a46ad5a4eb7"
+        }
+      ],
+      "task": "T082",
+      "reason": "Extracted scheduled definitions, occurrences, claims, attempts, effects, and atomic chat publication while keeping WorkAdmission as a separate authority."
+    },
+    {
+      "sourcePath": "backend/scheduler/tests/test_atomic_chat_publication_060.py",
+      "sourceBlob": "d4ddfd9207a447989a50fbe0cc44291f9047d9af",
+      "sourceMode": "100644",
+      "destinationPath": "tests/_legacy_import/scheduler/tests/test_atomic_chat_publication_060.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "tests/repositories/test_history.py",
+          "sha256": "0cf38ac458a5b5612af1867a32e22f8660e2ecadcc0b782037406ec6d4363f4c"
+        },
+        {
+          "path": "tests/repositories/test_scheduler.py",
+          "sha256": "32bcd86f0e69548b911bd10e75321e6903aba723e9910a4d6306634c701e8d9c"
+        },
+        {
+          "path": "tests/repositories/test_workspaces.py",
+          "sha256": "3508fc28cf71b58f9a9a1ed5e964c5c3a1a77204aaa959e9273da201da7d4b9e"
+        }
+      ],
+      "task": "T078/T079/T082",
+      "reason": "Preserved zero-based atomic publication and fenced scheduler behavior across focused tests. The 088.002 session-incarnation increment preserves imported behavior with database-issued session identity, exact incarnation fencing and updated lineage tests."
+    },
+    {
+      "sourcePath": "backend/scheduler/tests/test_occurrence_claims_060.py",
+      "sourceBlob": "8d37a91a2d494117823956dbd3994240c88ee4fc",
+      "sourceMode": "100644",
+      "destinationPath": "tests/_legacy_import/scheduler/tests/test_occurrence_claims_060.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "tests/repositories/test_scheduler.py",
+          "sha256": "32bcd86f0e69548b911bd10e75321e6903aba723e9910a4d6306634c701e8d9c"
+        }
+      ],
+      "task": "T082",
+      "reason": "Preserved occurrence claim, expiry, recovery, and operation-binding coverage."
+    },
+    {
+      "sourcePath": "backend/shared/attachment_materializer.py",
+      "sourceBlob": "886fd904962487abe964bad4812f374d728da8c0",
+      "sourceMode": "100644",
+      "destinationPath": "src/astralplane/_legacy_import/shared/attachment_materializer.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "src/astralplane/purge.py",
+          "sha256": "c98281bf7332e50280f16e1bdc6f904391b34e14f7d7594ec9f9c87e9c3d106e"
+        },
+        {
+          "path": "src/astralplane/repositories/artifacts.py",
+          "sha256": "e4f1ecdcb4336131b727d961ba754af99ccdab990fc2ceb921594997ecdc0ccd"
+        }
+      ],
+      "task": "T080/T092",
+      "reason": "Retained neutral blob metadata and explicit-root deletion mechanics without filesystem discovery."
+    },
+    {
+      "sourcePath": "backend/shared/attachment_resolver.py",
+      "sourceBlob": "dea4c74401da6f66bd17b7c4262acec2564fe8cd",
+      "sourceMode": "100644",
+      "destinationPath": "src/astralplane/_legacy_import/shared/attachment_resolver.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "src/astralplane/repositories/artifacts.py",
+          "sha256": "e4f1ecdcb4336131b727d961ba754af99ccdab990fc2ceb921594997ecdc0ccd"
+        }
+      ],
+      "task": "T080",
+      "reason": "Retained owner-scoped attachment resolution metadata without product response shaping."
+    },
+    {
+      "sourcePath": "backend/shared/database.py",
+      "sourceBlob": "39cdc1d328f17840305b88158a892f5fd09c96dd",
+      "sourceMode": "100644",
+      "destinationPath": "src/astralplane/_legacy_import/shared/database.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "src/astralplane/contracts/__init__.py",
+          "sha256": "7dc8891d2f2bf787ac2a0de7a4ac86f875f427093df5ba992a86c9eb8eac971b"
+        },
+        {
+          "path": "src/astralplane/database/legacy_baseline_066.py",
+          "sha256": "3127d3445fca7b8239dc7956d92cefe92e0df54b0af03187529d58929fe8dafb"
+        },
+        {
+          "path": "src/astralplane/database/migrations.py",
+          "sha256": "323aef3ccbcfa65f6288d439c15e6e20a6ea50f0885cb2f266438137ca1d162a"
+        },
+        {
+          "path": "src/astralplane/database/pool.py",
+          "sha256": "a6fc6b70613a6d7af4ce6482320836df8d76d0c6f6a683a20462241576b9ad0c"
+        },
+        {
+          "path": "src/astralplane/database/transaction.py",
+          "sha256": "424a75a796b611107c57fffbd8116c470e12753db51871d318c6562dca55eaae"
+        }
+      ],
+      "task": "T068/T069/T075",
+      "reason": "Sliced the monolithic database into neutral contracts, scoped pooling, transactions, and guarded migration state. The 088 assignment foundation adds the guarded 079.001-to-088.001 operation-schema migration while preserving predecessor digests. The 088.002 session-incarnation increment preserves imported behavior with database-issued session identity, exact incarnation fencing and updated lineage tests."
+    },
+    {
+      "sourcePath": "backend/tests/attachments/test_account_deletion.py",
+      "sourceBlob": "83a1a44c6d040802baa903fcda7b76557be17b56",
+      "sourceMode": "100644",
+      "destinationPath": "tests/_legacy_import/tests/attachments/test_account_deletion.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "tests/repositories/test_artifacts.py",
+          "sha256": "e9055f2c9a2cfa42757d47b95e808d8454fc6eff710f8797e3f3630754bff221"
+        },
+        {
+          "path": "tests/test_purge.py",
+          "sha256": "0ebc50a6ff7687230f699767f69091986dbc50078e5c1f0aefd8309f0c8b1d8b"
+        }
+      ],
+      "task": "T080/T093",
+      "reason": "Preserved recoverable account-attachment deletion and owner-isolation coverage."
+    },
+    {
+      "sourcePath": "backend/tests/attachments/test_message_attachment_repo.py",
+      "sourceBlob": "ff0acaf0627901b0d2de639a3971d3dff4b535da",
+      "sourceMode": "100644",
+      "destinationPath": "tests/_legacy_import/tests/attachments/test_message_attachment_repo.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "tests/repositories/test_artifacts.py",
+          "sha256": "e9055f2c9a2cfa42757d47b95e808d8454fc6eff710f8797e3f3630754bff221"
+        }
+      ],
+      "task": "T080",
+      "reason": "Preserved message-attachment owner scope, replay, and conflict coverage."
+    },
+    {
+      "sourcePath": "backend/tests/attachments/test_repository.py",
+      "sourceBlob": "e85ac873af23481b3f634a9c82de22d270dd3f80",
+      "sourceMode": "100644",
+      "destinationPath": "tests/_legacy_import/tests/attachments/test_repository.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "tests/repositories/test_artifacts.py",
+          "sha256": "e9055f2c9a2cfa42757d47b95e808d8454fc6eff710f8797e3f3630754bff221"
+        }
+      ],
+      "task": "T080",
+      "reason": "Replaced legacy attachment repository coverage with neutral artifact contract tests."
+    },
+    {
+      "sourcePath": "backend/tests/attachments/test_store.py",
+      "sourceBlob": "9944037aa880bf0965e73be9c2bf8d641435ba5a",
+      "sourceMode": "100644",
+      "destinationPath": "tests/_legacy_import/tests/attachments/test_store.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "tests/repositories/test_artifacts.py",
+          "sha256": "e9055f2c9a2cfa42757d47b95e808d8454fc6eff710f8797e3f3630754bff221"
+        },
+        {
+          "path": "tests/test_purge.py",
+          "sha256": "0ebc50a6ff7687230f699767f69091986dbc50078e5c1f0aefd8309f0c8b1d8b"
+        }
+      ],
+      "task": "T080/T093",
+      "reason": "Preserved blob metadata and partial physical-deletion recovery coverage."
+    },
+    {
+      "sourcePath": "backend/tests/test_artifact_share.py",
+      "sourceBlob": "6158e78c84c09a82c7e9d9ad5df8970cf77a8e5c",
+      "sourceMode": "100644",
+      "destinationPath": "tests/_legacy_import/tests/test_artifact_share.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "tests/repositories/test_artifacts.py",
+          "sha256": "e9055f2c9a2cfa42757d47b95e808d8454fc6eff710f8797e3f3630754bff221"
+        }
+      ],
+      "task": "T080",
+      "reason": "Preserved artifact sharing metadata isolation and idempotency coverage."
+    },
+    {
+      "sourcePath": "backend/tests/test_artifact_versions.py",
+      "sourceBlob": "8c93b154e2faa40470074fa9a164ca5dfc38f704",
+      "sourceMode": "100644",
+      "destinationPath": "tests/_legacy_import/tests/test_artifact_versions.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "tests/repositories/test_artifacts.py",
+          "sha256": "e9055f2c9a2cfa42757d47b95e808d8454fc6eff710f8797e3f3630754bff221"
+        }
+      ],
+      "task": "T080",
+      "reason": "Preserved versioned artifact compare-and-set and conflict coverage."
+    },
+    {
+      "sourcePath": "backend/tests/test_chain_audit.py",
+      "sourceBlob": "62155817bebd411e51aff4b95f0322b4de70394b",
+      "sourceMode": "100644",
+      "destinationPath": "tests/_legacy_import/tests/test_chain_audit.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "tests/repositories/test_audit.py",
+          "sha256": "95bf4fe0a18b6014beff4ce5b8a095d725f98311a2f7b32393b9c34b4c9c2a92"
+        },
+        {
+          "path": "tests/test_audit_retention.py",
+          "sha256": "b37a9ed1656b2326a368397ddba198aa4a5deb02ac5f4cfdddb2e651be9cb634"
+        }
+      ],
+      "task": "T085/T087",
+      "reason": "Preserved audit-chain tamper, ordering, and retained-prefix verification coverage."
+    },
+    {
+      "sourcePath": "backend/tests/test_database.py",
+      "sourceBlob": "69a4a5ef7b8b0bd4326e66d8c6192ebdb0ebb6f4",
+      "sourceMode": "100644",
+      "destinationPath": "tests/_legacy_import/tests/test_database.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "tests/test_pool_transaction.py",
+          "sha256": "0501f3602ab2bdeab317e150d51e00722cfb79d730469cd8fb68a87ceb6be61e"
+        },
+        {
+          "path": "tests/test_schema_migrations.py",
+          "sha256": "fa8c5580666c9ff8ae3263e6fcaf4b0f869dd52d68ff25b933802f7efbc97bc9"
+        },
+        {
+          "path": "tests/test_sql_parameters.py",
+          "sha256": "896ef27c1fb9eb7ee3f93d4b7c312577e64a527bcc93091a21e8f27fba4fd18f"
+        }
+      ],
+      "task": "T069/T072/T077",
+      "reason": "Replaced monolithic database tests with scoped pool, native SQL, and migration suites."
+    },
+    {
+      "sourcePath": "backend/tests/test_history_previews.py",
+      "sourceBlob": "1117e5b41074bd903823b54c02aa6f2179715389",
+      "sourceMode": "100644",
+      "destinationPath": "tests/_legacy_import/tests/test_history_previews.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "tests/repositories/test_history.py",
+          "sha256": "0cf38ac458a5b5612af1867a32e22f8660e2ecadcc0b782037406ec6d4363f4c"
+        }
+      ],
+      "task": "T078",
+      "reason": "Retained owner-scoped history persistence tests while leaving preview shaping outside Plane. The 088.002 session-incarnation increment preserves imported behavior with database-issued session identity, exact incarnation fencing and updated lineage tests."
+    },
+    {
+      "sourcePath": "backend/tests/test_remote_jobs_063.py",
+      "sourceBlob": "d5b15301f86fe373a044c47404db03171e611824",
+      "sourceMode": "100644",
+      "destinationPath": "tests/_legacy_import/tests/test_remote_jobs_063.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "tests/repositories/test_remote.py",
+          "sha256": "c3f306ba8d8ecf73a9f2621c9099e4a8d4c0582b63d3fb8e6e23ab1e8573f0e0"
+        }
+      ],
+      "task": "T084",
+      "reason": "Preserved remote job metadata fencing without transport or polling execution."
+    },
+    {
+      "sourcePath": "backend/tests/test_session_store_refresh.py",
+      "sourceBlob": "073b0e138e4b9a85ae19e9ea986a6fe2a1008e16",
+      "sourceMode": "100644",
+      "destinationPath": "tests/_legacy_import/tests/test_session_store_refresh.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "tests/repositories/test_history.py",
+          "sha256": "0cf38ac458a5b5612af1867a32e22f8660e2ecadcc0b782037406ec6d4363f4c"
+        }
+      ],
+      "task": "T078",
+      "reason": "Preserved owner-scoped session refresh, replay, and conflict coverage. The 088.002 session-incarnation increment preserves imported behavior with database-issued session identity, exact incarnation fencing and updated lineage tests."
+    },
+    {
+      "sourcePath": "backend/tests/test_voice_session_api_065.py",
+      "sourceBlob": "45119ab77a692a567aed68092deb56e9eba56db8",
+      "sourceMode": "100644",
+      "destinationPath": "tests/_legacy_import/tests/test_voice_session_api_065.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "tests/repositories/test_voice.py",
+          "sha256": "8bf36982e08b76e6a22b0993d0647042444655f7032f699d86dd13e6e2551f6e"
+        }
+      ],
+      "task": "T083",
+      "reason": "Preserved durable voice identity, generation, replay, and terminal-state coverage."
+    },
+    {
+      "sourcePath": "backend/tests/test_work_admission_repository.py",
+      "sourceBlob": "df67e9ff60e1bd8f757683aaeb9790ee4f1c15dd",
+      "sourceMode": "100644",
+      "destinationPath": "tests/_legacy_import/tests/test_work_admission_repository.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "tests/repositories/test_work_admission.py",
+          "sha256": "535cee08b204417ed76fa1e1101a63c14a70894f7b4d4a9ecfdf6dfff748c4d8"
+        }
+      ],
+      "task": "T082",
+      "reason": "Preserved hierarchical admission, capacity, lease, and stale-generation denials."
+    },
+    {
+      "sourcePath": "backend/tests/test_workspace_layout.py",
+      "sourceBlob": "74a650abea0f1082f14a9c85746a202861ce77b9",
+      "sourceMode": "100644",
+      "destinationPath": "tests/_legacy_import/tests/test_workspace_layout.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "tests/repositories/test_workspaces.py",
+          "sha256": "3508fc28cf71b58f9a9a1ed5e964c5c3a1a77204aaa959e9273da201da7d4b9e"
+        }
+      ],
+      "task": "T079",
+      "reason": "Preserved zero-based layout and owner-scoped publication-state coverage."
+    },
+    {
+      "sourcePath": "backend/tests/test_workspace_snapshots.py",
+      "sourceBlob": "c175a3a107571e1014f207dd16ba3fefb776b9e7",
+      "sourceMode": "100644",
+      "destinationPath": "tests/_legacy_import/tests/test_workspace_snapshots.py",
+      "resultStatus": "absorbed",
+      "resultPaths": [
+        {
+          "path": "tests/repositories/test_workspaces.py",
+          "sha256": "3508fc28cf71b58f9a9a1ed5e964c5c3a1a77204aaa959e9273da201da7d4b9e"
+        }
+      ],
+      "task": "T079",
+      "reason": "Preserved workspace snapshot identity, replay, and compare-and-set coverage."
+    }
+  ]
+}

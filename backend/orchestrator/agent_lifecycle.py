@@ -54,6 +54,7 @@ from orchestrator.lets_lifecycle import (
     LifecycleConvergence,
     LetsLifecycleError,
 )
+from orchestrator.phi_node_policy import refuse_on_phi_node
 from orchestrator.user_agents import (
     PersonalAgentRuntimeRepository,
     StaleRuntimeGenerationError,
@@ -5149,6 +5150,8 @@ class AgentLifecycleManager:
         if not draft:
             raise ValueError(f"Draft {draft_id} not found")
 
+        await refuse_on_phi_node()
+
         # Refused structurally — no legitimate path starts BYO code here
         if draft.get("origin") == BYO_ORIGIN:
             raise ValueError(
@@ -5319,6 +5322,12 @@ class AgentLifecycleManager:
             finally:
                 self._draft_processes.pop(draft_id, None)
             logger.info(f"Stopped draft agent process for {draft_id}")
+
+    async def stop_running_drafts(self) -> List[str]:
+        running = list(self._draft_processes)
+        for draft_id in running:
+            await self.stop_draft_agent(draft_id)
+        return running
 
     async def refine_agent(self, draft_id: str, user_message: str,
                             websocket=None) -> Dict[str, Any]:

@@ -1,4 +1,4 @@
-"""Opens the seeded development mesh devices on the real kernel binding with the published keys of shared/dev_mesh_keys.py, so a developer or a test can create a mesh, pair a node with full history, send it requests and call it with caller tickets and holder proofs.
+"""Opens the seeded development mesh devices on the real kernel binding with the published keys of shared/dev_mesh_keys.py, so a developer or a test can create a mesh, pair a node with full history, adopt the PHI group, approve destinations, exclude devices, send it requests and call it with caller tickets and holder proofs.
 It refuses to build a device, and a device refuses to create, start, offer, approve, send, mint or sign, unless ASTRAL_ENV is exactly development. tests/helpers/dev_mesh.py builds on it and no orchestrator or shared module imports it."""
 
 from __future__ import annotations
@@ -258,3 +258,28 @@ class DevOwner(DevDevice):
     def remove_connection(self, connection_id: str) -> None:
         require_development()
         self.kernel.remove_connection(connection_id)
+
+    def phi_markers_synced(self) -> bool:
+        return all(member.upgraded for member in self.kernel.phi_group().members)
+
+    def adopt_phi_group(self) -> ak.PhiGroupInfo:
+        require_development()
+        return self.kernel.adopt_phi_group()
+
+    def exclude_phi_device(self, device_id: str) -> ak.PhiGroupInfo:
+        require_development()
+        return self.kernel.exclude_phi_device(device_id)
+
+    def include_phi_device(self, device_id: str) -> ak.PhiGroupInfo:
+        require_development()
+        return self.kernel.include_phi_device(device_id)
+
+    def approve_provider_destination(self, name: str) -> ak.PhiDestinationProposal:
+        require_development()
+        proposal = self.kernel.propose_provider_phi_destination(name)
+        self.kernel.approve_phi_destination(proposal)
+        return proposal
+
+    def revoke_destination(self, subject: str) -> None:
+        require_development()
+        self.kernel.revoke_phi_destination(subject)

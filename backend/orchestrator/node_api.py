@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from orchestrator import institution_api
 from orchestrator import node_connection_api
 from orchestrator import node_mesh
+from orchestrator import phi_node_policy
 from shared import node_identity
 
 node_router = APIRouter(tags=["Node"])
@@ -112,6 +113,17 @@ def _no_store(response: Response) -> None:
 async def get_descriptor(response: Response):
     _no_store(response)
     return await mesh_descriptor_fields(descriptor())
+
+
+@node_router.get("/api/node/agent-servers", include_in_schema=False)
+async def get_agent_server_policy(request: Request, response: Response):
+    node_connection_api.require_loopback(request)
+    _no_store(response)
+    try:
+        await phi_node_policy.refuse_on_phi_node()
+    except phi_node_policy.AgentServerUnsupported as refused:
+        return {"allowed": False, **refused.detail()}
+    return {"allowed": True}
 
 
 @node_router.get("/.well-known/astral-node/jwks.json", include_in_schema=False)

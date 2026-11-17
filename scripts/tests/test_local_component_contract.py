@@ -66,7 +66,7 @@ EXPECTED: dict[str, dict[str, Any]] = {
     "astral-plane": {
         "distribution": "astralplane",
         "version": version("astralplane"),
-        "path": "components/AstralPlane",
+        "path": "plane",
         "contract": "astralplane.contract/v1",
         "availability": "required-embedded",
         "import": "astralplane",
@@ -184,17 +184,19 @@ def test_local_component_contract_matches_manifest_and_package_metadata() -> Non
         }
     }
     assert entries == EXPECTED
-    assert set(manifest["components"]) == set(EXPECTED)
+    assert set(manifest["components"]) | set(manifest["in_tree"]) == set(EXPECTED)
+    assert set(manifest["in_tree"]) == {"astral-plane"}
     assert set(manifest["availability"]) == set(EXPECTED)
 
     for key, expected in EXPECTED.items():
-        declared = manifest["components"][key]
+        declared = (manifest["in_tree"] if key in manifest["in_tree"] else manifest["components"])[key]
         assert declared["path"] == expected["path"]
         assert declared["contract_version"] == expected["contract"]
         assert manifest["availability"][key] == expected["availability"]
 
         component_root = (REPOSITORY_ROOT / expected["path"]).resolve(strict=True)
-        assert component_root.parent == (REPOSITORY_ROOT / "components").resolve()
+        parent = REPOSITORY_ROOT if key in manifest["in_tree"] else REPOSITORY_ROOT / "components"
+        assert component_root.parent == parent.resolve()
         package_root = component_root / expected.get("package-root", "")
         project = _toml(package_root / "pyproject.toml")["project"]
         assert project["name"] == expected["distribution"]

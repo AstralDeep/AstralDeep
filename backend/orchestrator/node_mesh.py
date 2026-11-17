@@ -121,6 +121,17 @@ def _code_of(exc: BaseException) -> str:
     return str(getattr(exc, "code", "") or "kernel_error")
 
 
+PHI_CODES = ("phi.group_not_ready", "phi.device_excluded")
+
+
+def _code_with_phi(exc: BaseException) -> str:
+    code = _code_of(exc)
+    if code == "engine.sink":
+        text = str(getattr(exc, "message", "") or exc)
+        return next((phi for phi in PHI_CODES if phi in text), code)
+    return code
+
+
 def _development_allowed() -> bool:
     return os.environ.get(ENVIRONMENT_ENV) == DEVELOPMENT
 
@@ -850,7 +861,7 @@ class NodeMesh:
         try:
             return await kernel.answer_request(request_id)
         except self._binding.KernelError as exc:
-            raise NodeMeshError(_code_of(exc)) from exc
+            raise NodeMeshError(_code_with_phi(exc)) from exc
 
     async def interrupt_request(self, request_id: str, kernel: Any) -> bool:
         if self.kernel is not kernel:

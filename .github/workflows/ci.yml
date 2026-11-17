@@ -423,7 +423,7 @@ jobs:
         with:
           version: "0.11.26"
           python-version: "3.11"
-      - name: Bind Plane upgrade source to the previous immutable consumer pin
+      - name: Bind Plane upgrade source to the previous immutable consumer source
         env:
           MANUAL_BASE_SHA: ${{ inputs.base_sha }}
           CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -437,16 +437,16 @@ jobs:
             --candidate-sha "$CANDIDATE_SHA" \
             --baseline-root "$RUNNER_TEMP/plane-consumer-baseline.git" \
             --github-env "$GITHUB_ENV" \
-            --output components/AstralPlane/build/backend-web/consumer-baseline.json
-      - name: Run the full Plane suite only when the Plane pin moved
+            --output plane/build/backend-web/consumer-baseline.json
+      - name: Run the full Plane suite only when the Plane tree changed
         id: lane
         env:
           CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
-          base_sha="$(jq -er .base_deep_sha components/AstralPlane/build/backend-web/consumer-baseline.json)"
+          base_sha="$(jq -er .base_deep_sha plane/build/backend-web/consumer-baseline.json)"
           python scripts/ci_plane_lane.py --base "$base_sha" --head "$CANDIDATE_SHA" --github-output "$GITHUB_OUTPUT"
-      - working-directory: components/AstralPlane
+      - working-directory: plane
         env:
           PLANE_LANE: ${{ steps.lane.outputs.lane }}
         run: |
@@ -467,26 +467,24 @@ jobs:
               --cov-report=xml:build/backend-web/plane-python.xml \
               --junitxml=build/backend-web/plane-tests.xml --cov-fail-under=88.75
           fi
-      - name: Enforce changed Plane Python against the baseline component
+      - name: Enforce changed Plane Python against the base Deep commit
         run: |
           set -euo pipefail
-          base_component="$PLANE_BASE_COMPONENT_SHA"
-          [[ "$base_component" =~ ^[a-f0-9]{40}$ ]]
-          candidate_component="$(git -C components/AstralPlane rev-parse HEAD)"
-          if [[ "$base_component" == "$candidate_component" ]]; then
-            printf '{"status":"not-applicable","reason":"identical-component-commit","base_sha":"%s","candidate_sha":"%s"}\n' \
-              "$base_component" "$candidate_component" \
-              > components/AstralPlane/build/backend-web/changed-coverage.json
+          [[ "$PLANE_BASE_DEEP_SHA" =~ ^[a-f0-9]{40}$ ]]
+          if [[ "$PLANE_BASE_TREE" == "$PLANE_CANDIDATE_TREE" ]]; then
+            printf '{"status":"not-applicable","reason":"identical-plane-tree","base_sha":"%s","candidate_tree":"%s"}\n' \
+              "$PLANE_BASE_DEEP_SHA" "$PLANE_CANDIDATE_TREE" \
+              > plane/build/backend-web/changed-coverage.json
             exit 0
           fi
-          cd components/AstralPlane
+          cd plane
           uv run --frozen --group ci diff-cover build/backend-web/plane-python.xml \
-            --compare-branch "$base_component" --diff-range-notation '..' --fail-under=90
+            --compare-branch "$PLANE_BASE_DEEP_SHA" --diff-range-notation '..' --fail-under=90
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: plane-postgres-evidence
-          path: components/AstralPlane/build/backend-web
+          path: plane/build/backend-web
           if-no-files-found: error
           retention-days: 14
 
@@ -755,7 +753,7 @@ jobs:
       ASTRAL_ENV: development
       PYTHON_DOTENV_DISABLED: "1"
       PYTHONDONTWRITEBYTECODE: "1"
-      PYTHONPATH: backend:components/AstralProjection/src:components/AstralProjection/backend:components/AstralProjection:components/AstralPlane/src:components/AstralPrimitives/src:components/LETS/src:components/AstralKernel/python/rote/src
+      PYTHONPATH: backend:components/AstralProjection/src:components/AstralProjection/backend:components/AstralProjection:plane/src:components/AstralPrimitives/src:components/LETS/src:components/AstralKernel/python/rote/src
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
@@ -1009,25 +1007,24 @@ jobs:
           cache-dependency-path: tooling/python-ci/requirements.lock.txt
       - name: Install hash-locked CI-only Python tooling
         run: python -m pip install --require-hashes -r tooling/python-ci/requirements.lock.txt
-      - name: Prove exactly five uninitialized component gitlinks
+      - name: Prove exactly four uninitialized component gitlinks
         shell: bash
         run: |
           set -euo pipefail
           mapfile -t COMPONENT_GITLINKS < <(
             git ls-files --stage -- \
               components/AstralKernel \
-              components/AstralPlane \
               components/AstralPrimitives \
               components/AstralProjection \
               components/LETS
           )
-          test "${#COMPONENT_GITLINKS[@]}" -eq 5
+          test "${#COMPONENT_GITLINKS[@]}" -eq 4
           printf '%s\n' "${COMPONENT_GITLINKS[@]}" \
-            | awk '$1 != "160000" { exit 1 } END { if (NR != 5) exit 1 }'
+            | awk '$1 != "160000" { exit 1 } END { if (NR != 4) exit 1 }'
           mapfile -t COMPONENT_STATUS < <(git submodule status --recursive)
-          test "${#COMPONENT_STATUS[@]}" -eq 5
+          test "${#COMPONENT_STATUS[@]}" -eq 4
           if printf '%s\n' "${COMPONENT_STATUS[@]}" \
-            | grep -Ev '^-([0-9a-f]{40}) components/(AstralKernel|AstralPlane|AstralPrimitives|AstralProjection|LETS)( |$)'; then
+            | grep -Ev '^-([0-9a-f]{40}) components/(AstralKernel|AstralPrimitives|AstralProjection|LETS)( |$)'; then
             exit 1
           fi
       - name: Validate exact public composition declarations

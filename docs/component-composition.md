@@ -2,7 +2,8 @@
 
 AstralDeep is the composition and orchestration repository. The four projects under
 `components/` remain independent Git repositories; the parent commit records exact gitlinks and
-`config/astral-composition.json` records the compatible public contracts. Default branches are not
+`config/astral-composition.json` records the compatible public contracts. AstralPlane lives in the
+`plane/` folder of this repository and is named under `in_tree` in the manifest, so it has no gitlink. Default branches are not
 runtime pins.
 
 This runbook is for local development and a future authorized deployment. The current production
@@ -23,7 +24,7 @@ git submodule update --init --recursive
 python scripts/verify_composition.py
 ```
 
-`AstralPlane`, `AstralProjection` and `AstralKernel` are private. An authentication failure is different from a
+`AstralProjection` and `AstralKernel` are private. An authentication failure is different from a
 missing gitlink or incompatible component and must be reported as such. Fix repository access, then
 rerun `git submodule sync --recursive` and `git submodule update --init --recursive`; do not delete a
 partially initialized component or overwrite a dirty component worktree.
@@ -52,8 +53,9 @@ Re-pinning is a reviewed parent-repository change, never a branch-following upda
 
 1. Verify the candidate component commit in its owning repository and finish that repository's
    required tests and provenance checkpoint.
-2. For Plane, prove that the candidate's `read_compatible_from` includes the currently deployed
-   schema or attach an executable database-and-blob migration/recovery plan.
+2. For a Plane change under `plane/`, prove that the candidate's `read_compatible_from` includes
+   the currently deployed schema or attach an executable database-and-blob migration/recovery plan,
+   and update `compatibility.data_plane*` in the same commit. There is no gitlink to re-pin.
 3. Check out the exact commit in the component worktree with `git checkout --detach <sha>`.
 4. Update the matching commit and compatibility fields in `config/astral-composition.json`.
 5. Stage only the exact gitlink, manifest, and directly related evidence paths.
@@ -101,6 +103,6 @@ verification.
 - Wrong component commit: inspect the parent gitlink and manifest. Check out the exact declared
   commit only when the component worktree is clean.
 - Incompatible Plane revision: keep readiness closed and follow
-  `components/AstralPlane/docs/migration-and-recovery.md`; do not bless or rewrite schema metadata.
+  `plane/docs/migration-and-recovery.md`; do not bless or rewrite schema metadata.
 - Failed or uncertain protected effect: reconcile durable Plane and LETS evidence before retry.
   Never fabricate success or reuse a claimed receipt.

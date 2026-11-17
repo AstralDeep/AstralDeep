@@ -559,7 +559,7 @@ jobs:
           mkdir -p build/060/backend-replays
           docker run --rm --network host \
             -v "$PWD/backend:/app/backend" \
-            -v "$PWD/components/AstralPlane:/app/components/AstralPlane:ro" \
+            -v "$PWD/plane:/app/plane:ro" \
             -v "$PWD/scripts:/app/scripts:ro" \
             -v "$PWD/specs:/app/specs:ro" \
             -v "$PWD/tooling/python-ci:/ci/python:ro" \
@@ -646,7 +646,7 @@ jobs:
           mkdir -p build/060/release-evidence
           docker run --rm --network host \
             -v "$PWD/backend:/app/backend" \
-            -v "$PWD/components/AstralPlane:/app/components/AstralPlane:ro" \
+            -v "$PWD/plane:/app/plane:ro" \
             -v "$PWD/scripts:/app/scripts:ro" \
             -v "$PWD/specs:/app/specs:ro" \
             -v "$PWD/tooling/python-ci:/ci/python:ro" \

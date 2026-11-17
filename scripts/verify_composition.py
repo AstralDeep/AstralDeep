@@ -21,9 +21,9 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 CONTRACT = "astral.composition-verification/v1"
-SCHEMA_RELATIVE_PATH = Path(
-    "specs/074-multirepo-lets-integration/contracts/composition-manifest.schema.json"
-)
+SCHEMA_RELATIVE_PATH = Path("contracts/composition-manifest-v2.schema.json")
+COMPOSITION_FORMAT = "astral.composition/v2"
+IN_TREE_COMPONENTS = frozenset({"astral-plane"})
 
 COMPONENT_ORDER = (
     "astral-projection",
@@ -32,11 +32,10 @@ COMPONENT_ORDER = (
     "astral-primitives",
     "lets",
 )
-PRIVATE_COMPONENTS = frozenset({"astral-projection", "astral-kernel", "astral-plane"})
+PRIVATE_COMPONENTS = frozenset({"astral-projection", "astral-kernel"})
 EXPECTED_MODULE_NAMES = {
     "astral-projection": "AstralProjection",
     "astral-kernel": "AstralKernel",
-    "astral-plane": "AstralPlane",
     "astral-primitives": "AstralPrimitives",
     "lets": "LETS",
 }
@@ -1317,6 +1316,16 @@ def verify_composition(
         manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
         manifest = _read_json(manifest_path)
         schema = _read_json(schema_path)
+        declared_format = manifest.get("format") if isinstance(manifest, dict) else None
+        if declared_format != COMPOSITION_FORMAT:
+            _diagnostic(
+                diagnostics,
+                "E_COMPOSITION_FORMAT",
+                f"composition format {declared_format!r} is not supported; "
+                f"this verifier reads {COMPOSITION_FORMAT!r} only",
+                "Regenerate the manifest in the v2 format with the Plane package under in_tree.",
+            )
+            return VerificationReport(manifest_sha256, tuple(diagnostics))
         schema_errors = _validate_manifest_schema(manifest, schema)
     except (OSError, CompositionError) as exc:
         _diagnostic(
@@ -1368,8 +1377,13 @@ def verify_composition(
             )
 
     components = manifest["components"]
+    in_tree = manifest["in_tree"]
     compatibility = manifest["compatibility"]
-    if not isinstance(components, dict) or not isinstance(compatibility, dict):
+    if (
+        not isinstance(components, dict)
+        or not isinstance(in_tree, dict)
+        or not isinstance(compatibility, dict)
+    ):
         raise AssertionError("schema admitted malformed composition sections")
     expected_paths = {
         str(component["path"])
@@ -1386,6 +1400,22 @@ def verify_composition(
 
     initialized: dict[str, Path] = {}
     for component_name in COMPONENT_ORDER:
+        if component_name in IN_TREE_COMPONENTS:
+            in_tree_component = in_tree[component_name]
+            if not isinstance(in_tree_component, dict):
+                raise AssertionError("schema admitted a malformed in-tree component")
+            in_tree_root = root / str(in_tree_component["path"])
+            if not (in_tree_root / "pyproject.toml").is_file():
+                _diagnostic(
+                    diagnostics,
+                    "E_COMPONENT_MISSING",
+                    "in-tree component folder is missing or empty",
+                    "Restore the committed folder; it is part of this repository.",
+                    component=component_name,
+                )
+                continue
+            initialized[component_name] = in_tree_root
+            continue
         component = components[component_name]
         if not isinstance(component, dict):
             raise AssertionError("schema admitted a malformed component")
@@ -1522,7 +1552,11 @@ def verify_composition(
         component_root = initialized.get(component_name)
         if component_root is None:
             continue
-        component = components[component_name]
+        component = (
+            in_tree[component_name]
+            if component_name in IN_TREE_COMPONENTS
+            else components[component_name]
+        )
         if isinstance(component, dict):
             _verify_component_contract(
                 component_name,
@@ -1563,7 +1597,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(report.to_dict(), sort_keys=True, separators=(",", ":")))
     elif report.ok:
         print(
-            "composition verified: five exact clean component pins and compatibility "
+            "composition verified: four exact clean component pins, the in-tree Plane and compatibility "
             f"contracts ({report.manifest_sha256})"
         )
     else:

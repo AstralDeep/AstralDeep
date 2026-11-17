@@ -55,6 +55,7 @@ from orchestrator.work_admission import (
     OwnerScope,
     SafeOperationProjection,
 )
+from orchestrator.phi_node_policy import AgentServerUnsupported
 from orchestrator.voice_api import router as _voice_control_router
 from orchestrator.workspace_export import workspace_export_router
 
@@ -2203,6 +2204,8 @@ async def test_draft(
     try:
         result = await lifecycle.start_draft_agent(draft_id, websocket=ws)
         return _draft_to_response(result, orch)
+    except AgentServerUnsupported as e:
+        raise HTTPException(status_code=409, detail=e.detail())
     except (ValueError, FileNotFoundError) as e:
         raise HTTPException(status_code=400, detail=str(e))
 

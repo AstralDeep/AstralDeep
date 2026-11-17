@@ -1,4 +1,4 @@
-"""Pairs a personal node with a seeded development owner device on the real kernel binding over loopback with no mailbox, so personal-profile tests authenticate with real signatures.
+"""Pairs a personal node with a seeded development owner device on the real kernel binding over loopback with no mailbox, so personal-profile tests authenticate with real signatures, and the node is a PHI member unless a test opts out.
 It builds on devtools/dev_mesh.py and orchestrator/node_mesh.py, and test_dev_mesh.py proves it before node tests use it for mesh requests, caller tickets and holder proofs."""
 
 from __future__ import annotations
@@ -55,7 +55,7 @@ async def _enrolled(node: node_mesh.NodeMesh) -> bool:
 
 
 @asynccontextmanager
-async def dev_node(tmp_path: Path, monkeypatch: Any, *, name: str = "owner", bind: bool = True) -> AsyncIterator[DevMesh]:
+async def dev_node(tmp_path: Path, monkeypatch: Any, *, name: str = "owner", bind: bool = True, adopt: bool = True) -> AsyncIterator[DevMesh]:
     monkeypatch.setenv(dev_mesh.ENV, dev_mesh.DEVELOPMENT)
     monkeypatch.setenv(node_identity.PROFILE_ENV, node_identity.PERSONAL)
     monkeypatch.setenv(node_identity.DATA_DIR_ENV, str(tmp_path / "node"))
@@ -74,6 +74,10 @@ async def dev_node(tmp_path: Path, monkeypatch: Any, *, name: str = "owner", bin
         await owner.approve_offer(offer["payload"])
         await until(lambda: _enrolled(node), "the node to join the development mesh")
         node_device = (await node.status())["member_id"]
+        if adopt:
+            await until(owner.phi_markers_synced, "the PHI markers to sync")
+            owner.adopt_phi_group()
+            await until(node.phi_member, "the node to join the PHI group")
         if bind and await node.refresh_personal_owner() is None:
             raise AssertionError(f"the node refused the development mesh: {(await node.status())['owner_binding']}")
         yield DevMesh(node, owner, node_device, opened)
