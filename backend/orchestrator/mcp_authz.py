@@ -1,6 +1,6 @@
 """MCP-only OAuth resource-server boundary, kept separate from the web/native bearer
 dependency since MCP tokens carry a distinct audience and scope set; the inbound
-bearer is discarded after validation and refused unread on a personal node. Used by mcp_server_endpoint.py.
+bearer is discarded after validation, and a personal node refuses it unread and names no identity server. Used by mcp_server_endpoint.py.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from jose import jwt as jose_jwt
 
-from orchestrator.auth import NODE_BEARER_REFUSED
+from orchestrator.auth import NODE_BEARER_REFUSED, node_caller_challenge
 from shared import node_identity
 from shared.jwks_cache import get_jwks
 
@@ -75,6 +75,12 @@ def resource_metadata_url(public_base_url: str) -> str:
 
 
 def protected_resource_metadata(public_base_url: str) -> dict[str, Any]:
+    if node_identity.is_personal():
+        return {
+            "resource": resource_identifier(public_base_url),
+            "scopes_supported": list(MCP_SCOPES),
+            "bearer_methods_supported": [],
+        }
     authority = os.getenv("KEYCLOAK_AUTHORITY", "").strip().rstrip("/")
     if not authority:
         raise RuntimeError("KEYCLOAK_AUTHORITY is required when FF_MCP_SERVER is enabled")
@@ -124,6 +130,8 @@ def challenge_header(
     error: str,
     required_scopes: Iterable[str],
 ) -> str:
+    if node_identity.is_personal():
+        return node_caller_challenge("astral-mcp", error)
     scopes = " ".join(dict.fromkeys(required_scopes))
     return (
         f'Bearer resource_metadata="{resource_metadata_url(public_base_url)}", '

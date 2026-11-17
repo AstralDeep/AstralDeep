@@ -1,7 +1,7 @@
 """Postgres-backed durable store for web_auth's signed-cookie sessions: encrypts tokens
-at rest, fails closed in production when unconfigured, and owns the
-auth_revocation_queue. Used across orchestrator/*_authority.py and
-persistent_agents/runner.py.
+at rest, fails closed in production when unconfigured (a personal node needs no
+Keycloak setting), and owns the auth_revocation_queue. Used across
+orchestrator/*_authority.py and persistent_agents/runner.py.
 """
 
 from __future__ import annotations
@@ -88,11 +88,10 @@ def assert_production_posture() -> None:
     mock_on = os.getenv("USE_MOCK_AUTH", "").strip().lower() in ("1", "true", "yes")
     if is_dev_mode():
         if node_identity.is_personal():
-            try:
-                node_identity.load_node_identity()
-            except node_identity.NodeIdentityError as exc:
-                logger.error("Personal node signing key is unusable: %s", exc)
-                raise SystemExit(78) from exc
+            problems = _personal_node_problems(node_identity)
+            if problems:
+                logger.error("Personal node refuses to start:\n%s", "\n".join(f"  {p}" for p in problems))
+                raise SystemExit(78)
         warn_on_typesafe_environment()
         return
     problems = []
@@ -133,15 +132,9 @@ def assert_production_posture() -> None:
             "the audit hash chain would be forgeable. Set a high-entropy value."
         )
     personal = node_identity.is_personal()
-    if not mock_on:
-        required = [
-            ("KEYCLOAK_AUTHORITY", ("KEYCLOAK_AUTHORITY",)),
-            ("KEYCLOAK_CLIENT_ID", ("KEYCLOAK_CLIENT_ID",)),
-        ]
-        if not personal:
-            required.append(("KEYCLOAK_CLIENT_SECRET", ()))
-        for var, aliases in required:
-            if not any(os.getenv(name, "").strip() for name in (var, *aliases)):
+    if not mock_on and not personal:
+        for var in ("KEYCLOAK_AUTHORITY", "KEYCLOAK_CLIENT_ID", "KEYCLOAK_CLIENT_SECRET"):
+            if not os.getenv(var, "").strip():
                 problems.append(f"{var} is unset — the OIDC flow cannot operate.")
     if personal:
         problems.extend(_personal_node_problems(node_identity))
@@ -175,11 +168,6 @@ def assert_production_posture() -> None:
 
 def _personal_node_problems(node_identity) -> list:
     problems = []
-    if not node_identity.accepted_issuers():
-        problems.append(
-            "No accepted issuer is configured — set KEYCLOAK_AUTHORITY or "
-            "ASTRAL_ACCEPTED_ISSUERS so the personal node knows whom to trust."
-        )
     try:
         node_identity.load_node_identity()
     except node_identity.NodeIdentityError as exc:
@@ -189,10 +177,10 @@ def _personal_node_problems(node_identity) -> list:
             f"file is mode 0600."
         )
     owner = os.getenv(node_identity.OWNER_ENV, "").strip()
-    if owner and not owner.startswith("oidc."):
+    if owner and not node_identity.is_mesh_owner(owner):
         problems.append(
-            f"{node_identity.OWNER_ENV} must be an owner id of the form "
-            f"oidc.<issuer hash>.<subject>."
+            f"{node_identity.OWNER_ENV} must be the owner's mesh id, sha256:<64 hex> "
+            f"or mesh.<64 hex>. Unset it to let the node bind the mesh it joins."
         )
     return problems
 

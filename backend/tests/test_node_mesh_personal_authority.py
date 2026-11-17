@@ -19,7 +19,8 @@ from shared import node_identity
 from tests import fake_astral_kernel as fake
 from tests.test_machine_scope_enforcement import _mesh_orchestrator
 
-OWNER = "sha256:" + "a" * 64
+MESH = "sha256:" + "a" * 64
+OWNER = node_identity.owner_id_for_mesh(MESH)
 
 
 @pytest.fixture
@@ -43,7 +44,7 @@ def personal(monkeypatch):
     )
     state = SimpleNamespace(
         owner=OWNER, stopped=False, own=True, source=True, enrolled=True, proof_calls=0, on_proof=None,
-        principal=SimpleNamespace(mesh_id=OWNER),
+        principal=SimpleNamespace(mesh_id=MESH),
         request=request,
     )
 
@@ -60,13 +61,13 @@ def personal(monkeypatch):
 
         async def mesh_status(self):
             return SimpleNamespace(state=SimpleNamespace(name="ENROLLED" if state.enrolled else "NOT_ENROLLED"),
-                                   mesh_id=OWNER, device_id="node")
+                                   mesh_id=MESH, device_id="node")
 
         def roster(self):
             members = [SimpleNamespace(device_id="node", is_local=True)] if state.own else []
             if state.source:
                 members.append(SimpleNamespace(device_id="phone", is_local=False))
-            return SimpleNamespace(mesh_id=OWNER, stopped=state.stopped, members=members, removed=[])
+            return SimpleNamespace(mesh_id=MESH, stopped=state.stopped, members=members, removed=[])
 
         def request(self, request_id):
             assert request_id == "request-1"
@@ -104,12 +105,12 @@ async def test_active_mesh_authority_mints_a_node_only_credential_without_iam(pe
     assert claims["aud"] == [host.identity.node_id]
     assert claims["sub"] == OWNER and claims["exp"] - claims["iat"] <= 300
     assert claims["mesh_authority"] == {
-        "mesh": OWNER, "member": "node", "request": "request-1", "chat": "mesh-chat",
+        "mesh": MESH, "member": "node", "request": "request-1", "chat": "mesh-chat",
         "local_chat": "local-chat", "source": "phone", "tools": [["agent", "read", host.definition]],
     }
     assert authority.allowed_scopes == ["tools:read"]
     assert authority.allowed_tools == ((("agent", "read", host.definition),) if kind == "turn" else None)
-    assert authority.consent_ref == f"mesh:{OWNER}/request:request-1"
+    assert authority.consent_ref == f"mesh:{MESH}/request:request-1"
     host.orch.derive_machine_authority.assert_not_awaited()
     host.orch.delegation.exchange_token_for_agent.assert_not_awaited()
     if kind == "call":

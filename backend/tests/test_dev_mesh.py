@@ -29,6 +29,7 @@ BACKEND = Path(__file__).resolve().parents[1]
 REFERENCE = BACKEND.parent / "specs/105-decentralized-personal-mesh/contracts/reference"
 OUTSIDE_DEVELOPMENT = [None, "production", "Development", "DEVELOPMENT", "dev", " development", "development "]
 MESH = "sha256:" + "c" * 64
+STORED = node_identity.owner_id_for_mesh(MESH)
 ECHO = {
     "name": "echo", "description": "echoes text on the node", "effect": "mesh_read", "annotations": {},
     "input_schema": {"type": "object", "properties": {"text": {"type": "string"}}},
@@ -188,7 +189,7 @@ async def test_a_development_node_binds_and_serves_the_dev_mesh_until_it_leaves_
         node, owner = mesh.node, mesh.owner
         assert (await node.status())["owner_binding"] == {"state": "ready", "code": None}
         bound = node_identity.bound_owner()
-        assert bound == node.personal_owner_id() and bound.endswith(owner.mesh_id.removeprefix("sha256:"))
+        assert bound == node.personal_owner_id() == node_identity.owner_id_for_mesh(owner.mesh_id)
         stored = owner_file().read_bytes()
         _, request_id = owner.send_request(mesh.node_device, "what is on my calendar?")
         await until(lambda: pending_on_node(node, request_id), "the request to reach the node")
@@ -372,7 +373,7 @@ async def test_a_production_node_with_a_real_store_binds_its_owner_and_holds_one
             await laptop.approve_pairing((await node.pairing_offer())["payload"], ak.HistoryGrant.ALL)
             await until(lambda: kernel_enrolled(node.kernel), "the node to join the laptop's mesh")
             owner = await node.refresh_personal_owner()
-            assert owner is not None and owner.endswith(mesh_id.removeprefix("sha256:"))
+            assert owner == node_identity.owner_id_for_mesh(mesh_id)
         finally:
             await node.stop()
         store = str(tmp_path / "node" / node_mesh.KERNEL_DIR)
@@ -529,7 +530,7 @@ async def test_a_dev_device_anywhere_on_the_roster_is_refused_outside_developmen
     assert (await fake_node.mesh.status())["owner_binding"] == {"state": "refused", "code": "node.development_mesh"}
     assert node_identity.bound_owner() is None and not owner_file().exists()
     with pytest.raises(node_mesh.NodeMeshError) as refused:
-        await fake_node.mesh.personal_authority_context(fake_node.request, MESH, fake_node.kernel)
+        await fake_node.mesh.personal_authority_context(fake_node.request, STORED, fake_node.kernel)
     assert refused.value.code == "node.development_mesh"
     assert fake_node.kernel.network is False and fake_node.mailbox.running is False
 
@@ -538,8 +539,8 @@ async def test_a_dev_device_anywhere_on_the_roster_is_refused_outside_developmen
 async def test_development_accepts_a_roster_that_lists_dev_devices(fake_node, monkeypatch, where):
     monkeypatch.setenv("ASTRAL_ENV", "development")
     getattr(fake_node.state, where).append(dev_mesh_keys.device_ids()["phone"])
-    assert await fake_node.mesh.refresh_personal_owner() == MESH == node_identity.bound_owner()
-    context = await fake_node.mesh.personal_authority_context(fake_node.request, MESH, fake_node.kernel)
+    assert await fake_node.mesh.refresh_personal_owner() == STORED == node_identity.bound_owner()
+    context = await fake_node.mesh.personal_authority_context(fake_node.request, STORED, fake_node.kernel)
     assert context.mesh_id == MESH
     assert fake_node.kernel.network is True and fake_node.mailbox.running is True
 
@@ -548,9 +549,9 @@ async def test_development_accepts_a_roster_that_lists_dev_devices(fake_node, mo
 async def test_a_roster_without_dev_devices_binds_in_every_environment(fake_node, monkeypatch, value):
     set_env(monkeypatch, value)
     fake_node.state.removed.append("sha256:" + "2" * 64)
-    assert await fake_node.mesh.refresh_personal_owner() == MESH
+    assert await fake_node.mesh.refresh_personal_owner() == STORED
     assert (await fake_node.mesh.status())["owner_binding"] == {"state": "ready", "code": None}
-    context = await fake_node.mesh.personal_authority_context(fake_node.request, MESH, fake_node.kernel)
+    context = await fake_node.mesh.personal_authority_context(fake_node.request, STORED, fake_node.kernel)
     assert context.member_id == fake_node.kernel.device_id
     assert fake_node.kernel.network is True and fake_node.mailbox.running is True
 
@@ -730,14 +731,14 @@ MALFORMED = {
 @pytest.mark.parametrize("value", [None, "production"])
 async def test_a_malformed_roster_outside_development_clears_a_bound_owner_and_refuses(fake_node, monkeypatch, value, shape):
     set_env(monkeypatch, value)
-    assert await fake_node.mesh.refresh_personal_owner() == MESH == fake_node.mesh.personal_owner_id()
+    assert await fake_node.mesh.refresh_personal_owner() == STORED == fake_node.mesh.personal_owner_id()
     stored = owner_file().read_bytes()
     fake_node.state.malformed = MALFORMED[shape]
     assert await fake_node.mesh.refresh_personal_owner() is None
     assert fake_node.mesh.personal_owner_id() is None
     assert (await fake_node.mesh.status())["owner_binding"] == {"state": "refused", "code": "node.development_mesh"}
     with pytest.raises(node_mesh.NodeMeshError) as refused:
-        await fake_node.mesh.personal_authority_context(fake_node.request, MESH, fake_node.kernel)
+        await fake_node.mesh.personal_authority_context(fake_node.request, STORED, fake_node.kernel)
     assert refused.value.code == "node.development_mesh"
     assert owner_file().read_bytes() == stored
     assert fake_node.kernel.network is False and fake_node.mailbox.stops == 1
@@ -748,7 +749,7 @@ async def test_serving_a_dev_mesh_outside_development_stops_sync_once(fake_node,
     fake_node.state.members.append(dev_mesh_keys.device_ids()["owner"])
     for _ in range(2):
         with pytest.raises(node_mesh.NodeMeshError) as refused:
-            await fake_node.mesh.personal_authority_context(fake_node.request, MESH, fake_node.kernel)
+            await fake_node.mesh.personal_authority_context(fake_node.request, STORED, fake_node.kernel)
         assert refused.value.code == "node.development_mesh"
     assert fake_node.kernel.network is False and fake_node.mailbox.stops == 1
     with pytest.raises(node_mesh.NodeMeshError) as refused:

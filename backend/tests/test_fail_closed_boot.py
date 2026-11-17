@@ -204,3 +204,72 @@ def test_is_dev_mode_false_values(monkeypatch):
 def test_is_dev_mode_unset_is_production(monkeypatch):
     monkeypatch.delenv("ASTRAL_ENV", raising=False)
     assert is_dev_mode() is False
+
+
+def _personal_node(monkeypatch, tmp_path):
+    from shared import node_identity
+
+    monkeypatch.setenv(node_identity.PROFILE_ENV, "personal")
+    monkeypatch.setenv(node_identity.DATA_DIR_ENV, str(tmp_path / "node"))
+    monkeypatch.delenv(node_identity.OWNER_ENV, raising=False)
+    monkeypatch.delenv(node_identity.ISSUERS_ENV, raising=False)
+    monkeypatch.setenv("USE_MOCK_AUTH", "false")
+    monkeypatch.delenv("AGENT_API_KEY", raising=False)
+    _configure_production_secrets(monkeypatch)
+    for name in ("KEYCLOAK_AUTHORITY", "KEYCLOAK_CLIENT_ID", "KEYCLOAK_CLIENT_SECRET"):
+        monkeypatch.delenv(name, raising=False)
+    node_identity.reset_cache()
+    return node_identity
+
+
+def _entrypoint_refuses(monkeypatch):
+    from orchestrator import orchestrator as entrypoint
+
+    def forbidden_runtime():
+        pytest.fail("production refusal must precede durable runtime construction")
+
+    monkeypatch.setattr(entrypoint, "Orchestrator", forbidden_runtime)
+    with pytest.raises(SystemExit) as exc:
+        entrypoint.main()
+    assert exc.value.code == 78
+
+
+@pytest.mark.parametrize("posture", [None, "production"])
+def test_a_personal_node_with_no_keycloak_setting_starts_in_production(monkeypatch, tmp_path, posture):
+    from orchestrator import orchestrator as entrypoint
+
+    _personal_node(monkeypatch, tmp_path)
+    if posture is None:
+        monkeypatch.delenv("ASTRAL_ENV", raising=False)
+    else:
+        monkeypatch.setenv("ASTRAL_ENV", posture)
+    observed = []
+
+    class Runtime:
+        def __init__(self):
+            observed.append("constructed")
+
+        async def start(self):
+            observed.append("started")
+
+    monkeypatch.setattr(entrypoint, "Orchestrator", Runtime)
+    entrypoint.main()
+    assert observed == ["constructed", "started"]
+
+
+@pytest.mark.parametrize("change", ["placeholder_audit", "missing_session_key", "missing_credential_key", "legacy_owner", "malformed_owner"])
+def test_a_personal_node_with_env_unset_still_refuses_before_durable_construction(monkeypatch, tmp_path, change):
+    node_identity = _personal_node(monkeypatch, tmp_path)
+    monkeypatch.delenv("ASTRAL_ENV", raising=False)
+    if change == "placeholder_audit":
+        monkeypatch.setenv("AUDIT_HMAC_SECRET", "dev-audit-hmac-secret-change-me-in-prod")
+    elif change == "missing_session_key":
+        monkeypatch.delenv("WEB_SESSION_ENC_KEY")
+    elif change == "missing_credential_key":
+        monkeypatch.delenv("CREDENTIAL_ENCRYPTION_KEY")
+    elif change == "legacy_owner":
+        monkeypatch.setenv(node_identity.OWNER_ENV, "oidc.0123456789abcdef.owner")
+    else:
+        monkeypatch.setenv(node_identity.OWNER_ENV, "sha256:" + "a" * 63)
+    _entrypoint_refuses(monkeypatch)
+    assert not (tmp_path / "node" / node_identity.OWNER_FILE).exists()

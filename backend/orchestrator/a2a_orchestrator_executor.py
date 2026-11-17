@@ -43,7 +43,7 @@ from shared.a2a_publication import A2APublicationRegistry
 from shared import node_identity
 from shared.a2a_security import A2ASecurityValidator
 from orchestrator import a2a_publication_signing as publication_signing
-from orchestrator.auth import NODE_BEARER_REFUSED
+from orchestrator.auth import NODE_BEARER_REFUSED, node_caller_challenge
 from orchestrator.a2a_publication_policy import A2APublicationPolicy
 from orchestrator.a2a_publication_wiring import attach_publication_registry, owner_lookup
 from orchestrator.local_agents import FIRST_PARTY_PUBLIC_AGENT_IDS
@@ -470,7 +470,7 @@ def build_orchestrator_a2a_card(orchestrator) -> A2AAgentCard:
 
     security_schemes = {}
     security_requirements: List[SecurityRequirement] = []
-    if authority:
+    if authority and not node_identity.is_personal():
         security_schemes["keycloak_oidc"] = SecurityScheme(
             open_id_connect_security_scheme=OpenIdConnectSecurityScheme(
                 open_id_connect_url=f"{authority}/.well-known/openid-configuration",
@@ -528,7 +528,8 @@ def _unauthenticated_response(message="Authentication required"):
             "error": {"code": -32001, "message": message},
         },
         status_code=401,
-        headers={"WWW-Authenticate": 'Bearer realm="astral-a2a"'},
+        headers={"WWW-Authenticate": node_caller_challenge("astral-a2a") if node_identity.is_personal()
+                 else 'Bearer realm="astral-a2a"'},
     )
 
 

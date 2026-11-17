@@ -25,6 +25,11 @@ logger = logging.getLogger("AuthProxy")
 
 NODE_BEARER_REFUSED = "node.bearer_refused"
 NODE_SIGN_IN_UNAVAILABLE = "node.sign_in_unavailable"
+NODE_CALLER_SCHEME = "AstralCaller"
+
+
+def node_caller_challenge(realm: str, error: str = NODE_BEARER_REFUSED) -> str:
+    return f'{NODE_CALLER_SCHEME} realm="{realm}", error="{error}"'
 
 if os.getenv("USE_MOCK_AUTH", "").lower() == "true":
     logger.info("Mock auth ENABLED — all tokens accepted as test_user with roles [admin, user]")
