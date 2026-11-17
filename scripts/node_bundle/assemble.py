@@ -83,6 +83,22 @@ def download_python(pin: dict, cache: Path) -> Path:
     return target
 
 
+def fetch_pinned(pin: dict, cache: Path) -> Path:
+    if not pin["url"].startswith("https://"):
+        raise PackError(f"{pin['url']} is not an https address")
+    target = cache / urllib.parse.unquote(pin["url"].rsplit("/", 1)[1])
+    if not target.is_file():
+        cache.mkdir(parents=True, exist_ok=True)
+        partial = target.with_suffix(target.suffix + ".part")
+        with urllib.request.urlopen(pin["url"], timeout=120) as response, partial.open("wb") as handle:
+            shutil.copyfileobj(response, handle)
+        partial.replace(target)
+    if target.stat().st_size != pin["size"] or pack_manifest.sha256_file(target) != pin["sha256"]:
+        target.unlink()
+        raise PackError(f"{target.name} does not match its pinned size and SHA-256")
+    return target
+
+
 def extract_archive(repository: Path, commit: str, destination: Path) -> None:
     destination.mkdir(parents=True, exist_ok=True)
     archive = subprocess.Popen(["git", "-C", str(repository), "archive", commit], stdout=subprocess.PIPE)
@@ -270,8 +286,35 @@ def build_environment(epoch: str) -> dict:
     return environment
 
 
+def natives_module():
+    from natives import build_macos
+
+    return build_macos
+
+
+def resolve_natives(target: dict, recipe: Path, work: Path, natives: Path | None) -> Path | None:
+    if "natives" not in target:
+        return None
+
+    lock = recipe / target["natives"]["sources_lock"]
+    if natives is None:
+        return natives_module().build(lock, work / "natives", work / "downloads", work / "natives-build")
+    natives_module().require_receipt_for(natives, lock)
+    return natives
+
+
+def stage_natives(stage: Path, natives: Path) -> None:
+    shutil.copytree(natives, stage, dirs_exist_ok=True, symlinks=True)
+
+
+def install_spacy_model(python: Path, pin: dict, downloads: Path, environment: dict) -> None:
+    wheel = fetch_pinned(pin, downloads)
+    run([python, "-m", "pip", "install", "--quiet", "--no-index", "--no-deps", "--no-compile", wheel],
+        env=environment)
+
+
 def assemble(platform: str, output: Path, kernel_dir: Path, work: Path, mailbox: Path | None = None,
-             repo: Path = REPO) -> Path:
+             repo: Path = REPO, natives: Path | None = None) -> Path:
     stage = work / "stage"
     shutil.rmtree(stage, ignore_errors=True)
     app = stage / "app"
@@ -286,6 +329,7 @@ def assemble(platform: str, output: Path, kernel_dir: Path, work: Path, mailbox:
     target = pins["platforms"][platform]
     require_full_pin(pins["kernel"]["commit"])
     kernel = read_kernel_artifacts(kernel_dir, pins, target["kernel_artifacts"])
+    natives_dir = resolve_natives(target, recipe, work, natives)
     if mailbox is not None and not mailbox.is_file():
         raise PackError(f"{mailbox} is not a file")
     environment = build_environment(git(repo, "log", "-1", "--format=%ct", deep_commit))
@@ -326,6 +370,8 @@ def assemble(platform: str, output: Path, kernel_dir: Path, work: Path, mailbox:
     run([python, "-m", "ensurepip", "--default-pip"], stdout=subprocess.DEVNULL, env=environment)
     run([python, "-m", "pip", "install", "--quiet", "--no-index", "--no-deps", "--no-compile",
          *sorted(wheelhouse.glob("*.whl")), kernel["wheel"]], env=environment)
+    if "spacy_model" in pins:
+        install_spacy_model(python, pins["spacy_model"], work / "downloads", environment)
     run([python, installer, "install", "--root", components_root, "--lock", lock], env=environment)
     run([python, installer, "verify", "--root", components_root, "--lock", lock], env=environment)
     prune_python(python_root)
@@ -344,8 +390,10 @@ def assemble(platform: str, output: Path, kernel_dir: Path, work: Path, mailbox:
             shutil.copy2(source, app / relative)
     prune_backend(app / "backend", pins["backend_exclusions"])
 
+    if natives_dir is not None:
+        stage_natives(stage, natives_dir)
     if mailbox is not None:
-        (stage / "bin").mkdir()
+        (stage / "bin").mkdir(exist_ok=True)
         shutil.copy2(mailbox, stage / "bin" / "astral-mailbox")
         (stage / "bin" / "astral-mailbox").chmod(0o755)
     copy_launcher(stage, components_root / "scripts" / "node_bundle" / "launcher")
@@ -374,6 +422,8 @@ def assemble(platform: str, output: Path, kernel_dir: Path, work: Path, mailbox:
             "node_lock_sha256": pack_manifest.sha256_file(node_lock),
             "build_lock_sha256": pack_manifest.sha256_file(build_lock),
         },
+        "spacy_model": pins.get("spacy_model"),
+        "natives": None if natives_dir is None else natives_module().summary(natives_dir),
         "installed_distributions": distributions,
         "excluded_packages": pins["excluded_packages"],
         "kept_server_parts": pins["kept_server_parts"],
@@ -400,12 +450,13 @@ def main(argv: list[str] | None = None) -> None:
                         default=Path(os.environ[KERNEL_ARTIFACTS_ENV]) if KERNEL_ARTIFACTS_ENV in os.environ else None,
                         help=f"verified Kernel artifacts folder, or set {KERNEL_ARTIFACTS_ENV}")
     parser.add_argument("--mailbox", type=Path, help="astral-mailbox binary to ship in bin/")
+    parser.add_argument("--natives", type=Path, help="folder built by natives/build_macos.py to reuse")
     arguments = parser.parse_args(argv)
     if arguments.kernel_dir is None:
         sys.exit(f"node pack: pass --kernel-dir or set {KERNEL_ARTIFACTS_ENV}")
     try:
         descriptor = assemble(arguments.platform, arguments.out, arguments.kernel_dir, arguments.work,
-                              arguments.mailbox)
+                              arguments.mailbox, natives=arguments.natives)
     except (PackError, subprocess.CalledProcessError, OSError) as error:
         sys.exit(f"node pack: {error}")
     summary = json.loads(descriptor.read_text())

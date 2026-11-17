@@ -1,0 +1,76 @@
+{
+ "format": "astral.nodepack-natives-sources/v1",
+ "deployment_target": "14.0",
+ "prefix": "/astral-node-pack",
+ "source_date_epoch": "1700000000",
+ "sources": [
+  {
+   "name": "freetype",
+   "version": "2.15.0",
+   "kind": "source",
+   "url": "https://downloads.sourceforge.net/project/freetype/freetype2/2.15.0/freetype-2.15.0.tar.xz",
+   "size": 2716928,
+   "sha256": "93cd47eb719c325107f2d3cf087d06299e944c3b48a40b55537302304dea1dd5",
+   "top": "freetype-2.15.0",
+   "license": "FTL OR GPL-2.0-only",
+   "license_files": [
+    "docs/FTL.TXT",
+    "docs/GPLv2.TXT"
+   ],
+   "cross_check": "Homebrew formula freetype 2.15.0 sha256"
+  },
+  {
+   "name": "libmagic",
+   "version": "5.48",
+   "kind": "source",
+   "url": "https://astron.com/pub/file/file-5.48.tar.gz",
+   "size": 2693209,
+   "sha256": "ed14656883b23a364b4057c05595d93252da9bc473d30106519519d0da141283",
+   "top": "file-5.48",
+   "license": "BSD-2-Clause",
+   "license_files": [
+    "COPYING"
+   ],
+   "cross_check": "Homebrew formula libmagic 5.48 sha256"
+  },
+  {
+   "name": "poppler",
+   "version": "26.11.0",
+   "kind": "source",
+   "url": "https://poppler.freedesktop.org/poppler-26.11.0.tar.xz",
+   "size": 2059960,
+   "sha256": "41c32680160addf5a8dd7a830e4869c01e9f6bee1abb91e44fabd1ba9d7828fb",
+   "top": "poppler-26.11.0",
+   "license": "GPL-2.0-or-later OR GPL-3.0-or-later",
+   "license_files": [
+    "COPYING",
+    "COPYING3"
+   ],
+   "cross_check": "Homebrew formula poppler 26.11.0 sha256"
+  },
+  {
+   "name": "ripgrep",
+   "version": "15.2.0",
+   "kind": "binary",
+   "url": "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-aarch64-apple-darwin.tar.gz",
+   "size": 1764284,
+   "sha256": "3750b2e93f37e0c692657da574d7019a101c0084da05a790c83fd335bad973e4",
+   "top": "ripgrep-15.2.0-aarch64-apple-darwin",
+   "license": "Unlicense OR MIT",
+   "license_files": [
+    "COPYING",
+    "LICENSE-MIT",
+    "UNLICENSE"
+   ],
+   "cross_check": "the release's published .sha256 file"
+  }
+ ],
+ "shipped": [
+  "bin/pdfinfo",
+  "bin/pdftoppm",
+  "bin/rg",
+  "lib/libmagic.1.dylib",
+  "lib/libmagic.dylib",
+  "share/magic/magic.mgc"
+ ]
+}
