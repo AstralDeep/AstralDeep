@@ -17,7 +17,7 @@ class SearchOrchestrator:
         Executes search while enforcing RFC 8693 boundaries.
         """
         if "restricted" in query:
-            return {"status": "denied", "data": [], "metadata": {}}
+            return {"status": "denied", "data": [], "metadata": {"timestamp": "2026-11-15T00:00:00Z"}}
         results = self._fetch_from_mesh(query)
         return self._format_response(results)
 
