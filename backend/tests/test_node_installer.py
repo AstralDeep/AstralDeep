@@ -135,7 +135,8 @@ def test_an_existing_legacy_owner_env_file_is_left_byte_identical(tmp_path):
     result = run(home)
     assert result.returncode == 0, result.stderr
     assert env.read_bytes() == complete.encode()
-    assert "legacy owner" in result.stdout
+    assert "old sign-in owner will be retired when the node starts" in result.stdout
+    assert "refuses" not in result.stdout
     assert "oidc.0123456789abcdef" not in result.stdout
 
 
@@ -147,7 +148,8 @@ def test_a_legacy_owner_file_gets_the_missing_settings_added_and_the_owner_line_
     assert result.returncode == 0
     assert (home / "node.env").read_text().startswith(LEGACY_OWNER)
     assert env_values(home / "node.env")["ASTRAL_NODE_PROFILE"] == "personal"
-    assert "legacy owner" in result.stdout
+    assert "old sign-in owner will be retired when the node starts" in result.stdout
+    assert "refuses" not in result.stdout
 
 
 def test_a_mesh_owner_line_is_not_reported_as_legacy(tmp_path):

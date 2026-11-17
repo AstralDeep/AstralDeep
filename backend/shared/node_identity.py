@@ -15,6 +15,7 @@ import tempfile
 import stat
 import threading
 import time
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
@@ -41,6 +42,7 @@ INSTITUTION = "institution"
 
 KEY_FILE = "node-ed25519.pem"
 OWNER_FILE = "owner"
+LEGACY_OWNER_RETIRED = "node.legacy_owner_retired"
 NODE_ID_PREFIX = "astral-node:"
 MAX_TOKEN_SECONDS = 300
 CLOCK_SKEW_SECONDS = 30
@@ -68,10 +70,6 @@ class NodeTokenError(NodeIdentityError):
 
 
 class OwnerMismatch(NodeIdentityError):
-    pass
-
-
-class LegacyOwner(OwnerMismatch):
     pass
 
 
@@ -347,8 +345,10 @@ def load_node_identity(*, create: bool = True) -> NodeIdentity:
 
 
 def reset_cache() -> None:
+    global _env_retirement_logged
     with _lock:
         _cached.clear()
+    _env_retirement_logged = False
 
 
 def _owner_file() -> Optional[str]:
@@ -363,16 +363,84 @@ def _owner_file() -> Optional[str]:
     return value
 
 
+_retire_lock = threading.Lock()
+_env_retirement_logged = False
+
+
+def _is_legacy(value: str) -> bool:
+    return MESH_OWNER_ID.fullmatch(_stored_owner(value)) is None
+
+
+def _move_aside(path: Path) -> Optional[Path]:
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    for attempt in range(100):
+        suffix = "" if attempt == 0 else f"-{attempt}"
+        target = path.with_name(f"{path.name}.legacy-{stamp}{suffix}")
+        try:
+            os.link(path, target)
+        except FileExistsError:
+            continue
+        except FileNotFoundError:
+            return None
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        directory_descriptor = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_descriptor)
+        finally:
+            os.close(directory_descriptor)
+        return target
+    raise NodeIdentityError("legacy owner binding cannot be retired")
+
+
+def retire_legacy_owner() -> bool:
+    global _env_retirement_logged
+    if not is_personal():
+        return False
+    retired = False
+    with _retire_lock:
+        configured = os.getenv(OWNER_ENV, "").strip()
+        if configured and _is_legacy(configured) and not _env_retirement_logged:
+            _env_retirement_logged = True
+            logger.warning("%s: ignoring a legacy %s value", LEGACY_OWNER_RETIRED, OWNER_ENV)
+        path = data_dir() / OWNER_FILE
+        try:
+            value = path.read_text(encoding="utf-8").strip()
+        except FileNotFoundError:
+            return False
+        except OSError as exc:
+            raise NodeIdentityError("owner binding is unreadable") from exc
+        if value and _is_legacy(value):
+            try:
+                target = _move_aside(path)
+            except OSError as exc:
+                raise NodeIdentityError("legacy owner binding cannot be retired") from exc
+            if target is not None:
+                retired = True
+                logger.warning("%s: moved the legacy owner binding to %s", LEGACY_OWNER_RETIRED, target.name)
+    return retired
+
+
+def _configured_owner() -> str:
+    configured = os.getenv(OWNER_ENV, "").strip()
+    if is_personal():
+        retire_legacy_owner()
+        return "" if configured and _is_legacy(configured) else configured
+    return configured
+
+
 def bound_owner() -> Optional[str]:
-    value = os.getenv(OWNER_ENV, "").strip() or _owner_file()
+    value = _configured_owner() or _owner_file()
     return None if value is None else _stored_owner(value)
 
 
 def bound_mesh_owner() -> Optional[str]:
-    configured = os.getenv(OWNER_ENV, "").strip()
+    configured = _configured_owner()
     owners = {_stored_owner(value) for value in (configured, _owner_file()) if value}
     if any(MESH_OWNER_ID.fullmatch(owner) is None for owner in owners):
-        raise LegacyOwner("this node holds a legacy owner binding")
+        raise OwnerMismatch("the owner binding is not a mesh owner")
     if len(owners) > 1:
         raise OwnerMismatch("the configured owner and the owner binding differ")
     return next(iter(owners), None)
@@ -416,8 +484,6 @@ def _require_owner(owner_id: str, current: str) -> None:
     current = _stored_owner(current)
     if current == owner_id:
         return
-    if MESH_OWNER_ID.fullmatch(current) is None:
-        raise LegacyOwner("this node holds a legacy owner binding")
     raise OwnerMismatch("existing owner binding belongs to another principal")
 
 
@@ -425,7 +491,7 @@ def bind_mesh_owner(mesh_id: str) -> str:
     if not is_personal():
         raise NodeIdentityError("verified personal mesh principal required")
     owner_id = owner_id_for_mesh(mesh_id)
-    configured = os.getenv(OWNER_ENV, "").strip()
+    configured = _configured_owner()
     if configured:
         _require_owner(owner_id, configured)
     _require_owner(owner_id, _bind_owner_file(owner_id))

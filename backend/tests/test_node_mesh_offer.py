@@ -138,22 +138,23 @@ async def test_a_deleted_secret_is_written_again_while_not_enrolled(node):
 
 
 @pytest.mark.parametrize("source", ["file", "env"])
-async def test_a_node_with_a_legacy_owner_is_refused_and_keeps_its_owner(node, monkeypatch, source):
+async def test_a_node_with_a_legacy_owner_retires_it_and_accepts_the_offer(node, monkeypatch, source):
     if source == "file":
         before = seed_owner(LEGACY)
     else:
         monkeypatch.setenv(ni.OWNER_ENV, LEGACY)
     secret = _secret(node.home)
     response = await _post(node.app, secret)
-    assert (response.status_code, response.json()["detail"]) == (409, "node.legacy_owner")
-    assert _secret(node.home) == secret and node.kernel.offers == 0
-    assert ni.bound_owner() == LEGACY
+    assert response.status_code == 200
+    assert ni.bound_owner() is None
     if source == "file":
-        assert (node.home / ni.OWNER_FILE).read_bytes() == before
+        assert not (node.home / ni.OWNER_FILE).exists()
+        (kept,) = node.home.glob(ni.OWNER_FILE + ".legacy-*")
+        assert kept.read_bytes() == before
 
 
 @pytest.mark.parametrize("configured", [MESH, "mesh." + "e" * 64])
-@pytest.mark.parametrize("stored,code", [(LEGACY, "node.legacy_owner"), ("mesh." + "f" * 64, "node.owner_mismatch")])
+@pytest.mark.parametrize("stored,code", [("mesh." + "f" * 64, "node.owner_mismatch")])
 async def test_a_configured_mesh_owner_cannot_hide_a_different_owner_file_from_the_offer(node, monkeypatch, configured, stored, code):
     before = seed_owner(stored)
     monkeypatch.setenv(ni.OWNER_ENV, configured)

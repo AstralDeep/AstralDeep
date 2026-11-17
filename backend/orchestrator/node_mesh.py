@@ -664,8 +664,6 @@ class NodeMesh:
             if self._enrollment(status) not in ENROLLED_STATES:
                 try:
                     await asyncio.to_thread(node_identity.bound_mesh_owner)
-                except node_identity.LegacyOwner:
-                    raise NodeMeshError("node.legacy_owner") from None
                 except node_identity.OwnerMismatch:
                     raise NodeMeshError("node.owner_mismatch") from None
                 except node_identity.NodeIdentityError:
@@ -695,8 +693,6 @@ class NodeMesh:
                     raise NodeMeshError("node.mesh_admission_unavailable")
                 try:
                     return node_identity.bind_mesh_owner(mesh_id)
-                except node_identity.LegacyOwner:
-                    raise NodeMeshError("node.legacy_owner") from None
                 except node_identity.OwnerMismatch:
                     raise NodeMeshError("node.owner_mismatch") from None
                 except node_identity.NodeIdentityError:
@@ -777,8 +773,6 @@ class NodeMesh:
                     raise NodeMeshError("node.pairing_secret_required", 401)
             try:
                 node_identity.bound_mesh_owner()
-            except node_identity.LegacyOwner:
-                raise NodeMeshError("node.legacy_owner", 409) from None
             except node_identity.OwnerMismatch:
                 raise NodeMeshError("node.owner_mismatch", 409) from None
             except node_identity.NodeIdentityError:
