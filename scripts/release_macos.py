@@ -63,6 +63,10 @@ NODE_PACK_RELEASE_PATHS = {
 }
 
 
+PACK_PLATFORMS = ("macos-arm64", "linux-aarch64", "linux-x86_64")
+NODE_BUNDLE_DIR = Path(__file__).resolve().parent / "node_bundle"
+
+
 class ReleaseError(RuntimeError):
     pass
 
@@ -198,6 +202,7 @@ class Release:
         self.deep_sha = PLACEHOLDER_SHA
         self.latest: dict[str, object] | None = None
         self.live_appcast: Path | None = None
+        self.pack_sources: list[tuple[Path, str, str]] = []
 
     @property
     def edkey(self) -> list[str]:
@@ -244,7 +249,9 @@ class Release:
             raise ReleaseError("Release notes exceed 64 KiB")
         if self.args.publish_staged and not (self.args.publish and self.args.staging_dir):
             raise ReleaseError("--publish-staged needs --publish and the --staging-dir of a finished build")
-        if self.args.node_pack_dir is None:
+        if self.args.node_pack_dir is not None and self.args.node_bundle_dir is not None:
+            raise ReleaseError("Use either --node-pack-dir or --node-bundle-dir, not both")
+        if self.args.node_pack_dir is None and self.args.node_bundle_dir is None:
             raise ReleaseError("--node-pack-dir is required for a Mac release with a node offer")
 
     def preflight(self) -> None:
@@ -266,7 +273,7 @@ class Release:
             raise ReleaseError("Deep's Projection pin, the Projection checkout and --projection-commit must be the same commit")
         if not COMMIT.fullmatch(self.deep_sha):
             raise ReleaseError("Deep HEAD is not a commit")
-        self.node_pack = self.verify_node_pack()
+        self.node_pack = self.verify_node_bundle() if self.args.node_bundle_dir else self.verify_node_pack()
         self.latest = self.latest_release()
         if self.latest and self.build <= int(self.latest["build"]):
             raise ReleaseError(
@@ -279,48 +286,134 @@ class Release:
 
     def verify_node_pack(self) -> dict[str, object]:
         folder = Path(self.args.node_pack_dir)
-        descriptor_path = folder / "node-pack.json"
-        manifest_path = folder / "node-pack-manifest.json"
         if self.dry:
-            return {"archive_name": "astral-node-pack-3.11.18-dry-dry-macos-arm64.tar.gz",
-                    "descriptor_sha256": "0" * 64, "archive_sha256": "0" * 64,
-                    "manifest_sha256": "0" * 64}
-        try:
-            if not folder.is_dir() or folder.is_symlink() or any(path.is_symlink() for path in folder.iterdir()):
-                raise ReleaseError("Node pack assets must be regular files in one directory")
-            raw = descriptor_path.read_bytes()
-            descriptor = json.loads(raw)
-            archive_info = descriptor["archive"]
-            archive_name = archive_info["file"]
-            manifest = json.loads(manifest_path.read_bytes())
-            archive_path = folder / archive_name
-        except (OSError, ValueError, KeyError, TypeError) as error:
-            raise ReleaseError(f"Node pack is incomplete or malformed: {error}") from error
-        if not isinstance(archive_name, str) or not re.fullmatch(r"astral-node-pack-[A-Za-z0-9.-]+-macos-arm64\.tar\.gz", archive_name):
-            raise ReleaseError("Node pack archive name is invalid")
-        if {path.name for path in folder.iterdir()} != {"node-pack.json", "node-pack-manifest.json", archive_name}:
-            raise ReleaseError("Node pack folder must hold exactly its descriptor, manifest and archive")
-        if not all(path.is_file() for path in (descriptor_path, manifest_path, archive_path)):
-            raise ReleaseError("Node pack assets must be regular files")
-        if descriptor.get("format") != "astral.nodepack-descriptor/v1" or descriptor.get("platform") != "macos-arm64":
-            raise ReleaseError("Node pack descriptor format or platform is invalid")
-        if manifest.get("format") != "astral.nodepack-manifest/v1" or manifest.get("platform") != "macos-arm64":
-            raise ReleaseError("Node pack manifest format or platform is invalid")
+            return self.dry_node_pack(folder)
+        raw, descriptor, manifest, archive_path = self.read_pack(folder, "macos-arm64")
         pins = json.loads((self.projection / "apple-clients/NodePack/pins.json").read_text(encoding="utf-8"))
         if manifest.get("deep", {}).get("commit") != pins["deep"]["commit"] \
                 or manifest.get("kernel", {}).get("commit") != pins["kernel"]["commit"] \
                 or descriptor.get("version") != manifest.get("version"):
             raise ReleaseError("Node pack source pins or version do not match Projection")
         source_proof = self.verify_node_pack_sources(manifest, pins)
+        found = self.pack_digests(folder, raw, descriptor, manifest, archive_path)
+        found["source_equivalence"] = source_proof
+        self.pack_sources = [(folder / "node-pack.json", "node-pack.json", found["descriptor_sha256"]),
+                             (folder / "node-pack-manifest.json", "node-pack-manifest.json", found["manifest_sha256"]),
+                             (archive_path, found["archive_name"], found["archive_sha256"])]
+        return found
+
+    def read_pack(self, folder: Path, platform: str) -> tuple[bytes, dict, dict, Path]:
+        descriptor_path = folder / "node-pack.json"
+        manifest_path = folder / "node-pack-manifest.json"
+        try:
+            if not folder.is_dir() or folder.is_symlink() or any(path.is_symlink() for path in folder.iterdir()):
+                raise ReleaseError("Node pack assets must be regular files in one directory")
+            raw = descriptor_path.read_bytes()
+            descriptor = json.loads(raw)
+            archive_name = descriptor["archive"]["file"]
+            manifest = json.loads(manifest_path.read_bytes())
+            archive_path = folder / archive_name
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            raise ReleaseError(f"Node pack is incomplete or malformed: {error}") from error
+        if not isinstance(archive_name, str) \
+                or not re.fullmatch(rf"astral-node-pack-[A-Za-z0-9.-]+-{re.escape(platform)}\.tar\.gz", archive_name):
+            raise ReleaseError("Node pack archive name is invalid")
+        if {path.name for path in folder.iterdir()} != {"node-pack.json", "node-pack-manifest.json", archive_name}:
+            raise ReleaseError("Node pack folder must hold exactly its descriptor, manifest and archive")
+        if not all(path.is_file() for path in (descriptor_path, manifest_path, archive_path)):
+            raise ReleaseError("Node pack assets must be regular files")
+        if descriptor.get("format") != "astral.nodepack-descriptor/v1" or descriptor.get("platform") != platform:
+            raise ReleaseError("Node pack descriptor format or platform is invalid")
+        if manifest.get("format") != "astral.nodepack-manifest/v1" or manifest.get("platform") != platform:
+            raise ReleaseError("Node pack manifest format or platform is invalid")
+        return raw, descriptor, manifest, archive_path
+
+    def pack_digests(
+        self, folder: Path, raw: bytes, descriptor: dict, manifest: dict, archive_path: Path,
+    ) -> dict[str, object]:
+        archive_info = descriptor["archive"]
         digest = sha256_file(archive_path)
-        manifest_digest = sha256_file(manifest_path)
+        manifest_digest = sha256_file(folder / "node-pack-manifest.json")
         if archive_info.get("sha256") != digest or archive_info.get("size") != archive_path.stat().st_size \
                 or descriptor.get("manifest_sha256") != manifest_digest \
-                or descriptor.get("installed_bytes") != manifest.get("installed_bytes"):
+                or descriptor.get("installed_bytes") != manifest.get("installed_bytes") \
+                or descriptor.get("version") != manifest.get("version"):
             raise ReleaseError("Node pack descriptor, manifest and archive disagree")
-        return {"archive_name": archive_name, "descriptor_sha256": hashlib.sha256(raw).hexdigest(),
-                "archive_sha256": digest, "manifest_sha256": manifest_digest,
-                "source_equivalence": source_proof}
+        return {"archive_name": archive_path.name, "descriptor_sha256": hashlib.sha256(raw).hexdigest(),
+                "archive_sha256": digest, "manifest_sha256": manifest_digest}
+
+    def verify_node_bundle(self) -> dict[str, object]:
+        root = Path(self.args.node_bundle_dir)
+        if self.dry:
+            return self.dry_node_pack(root)
+        if not root.is_dir() or root.is_symlink() or {path.name for path in root.iterdir()} != set(PACK_PLATFORMS):
+            raise ReleaseError("Node bundle folder must hold exactly the macos-arm64, linux-aarch64 and linux-x86_64 packs")
+        composition = json.loads((self.deep / "config/astral-composition.json").read_text(encoding="utf-8"))
+        for name, entry in composition["components"].items():
+            tree = self.git(self.deep, "ls-tree", "HEAD", entry["path"]).stdout.split()
+            if len(tree) < 3 or tree[:3] != ["160000", "commit", entry["commit"]]:
+                raise ReleaseError(f"Release {name} gitlink differs from composition")
+        found: dict[str, dict[str, object]] = {}
+        manifests: dict[str, dict] = {}
+        for target in PACK_PLATFORMS:
+            folder = root / target
+            raw, descriptor, manifest, archive_path = self.read_pack(folder, target)
+            self.verify_bundle_sources(manifest, composition, target)
+            found[target] = self.pack_digests(folder, raw, descriptor, manifest, archive_path)
+            manifests[target] = manifest
+        record = manifests["macos-arm64"].get("signing")
+        if not isinstance(record, dict) or not record.get("files") \
+                or record.get("sealed_from_manifest_sha256") in (None, found["macos-arm64"]["manifest_sha256"]):
+            raise ReleaseError("The macOS node pack manifest predates signing")
+        signing = self.signing_module()
+        try:
+            checked = signing.verify_signed_pack(root / "macos-arm64" / "node-pack.json")
+        except (signing.PackError, OSError, ValueError) as error:
+            raise ReleaseError(f"The macOS node pack signature does not verify: {error}") from error
+        self.pack_sources = []
+        extras: dict[str, object] = {}
+        for target in PACK_PLATFORMS:
+            folder, entry = root / target, found[target]
+            if target == "macos-arm64":
+                names = ("node-pack.json", "node-pack-manifest.json")
+            else:
+                names = (f"node-pack-{target}.json", f"node-pack-{target}-manifest.json")
+                extras[target] = {"descriptor": names[0], "manifest": names[1], **entry}
+            self.pack_sources += [(folder / "node-pack.json", names[0], entry["descriptor_sha256"]),
+                                  (folder / "node-pack-manifest.json", names[1], entry["manifest_sha256"]),
+                                  (folder / entry["archive_name"], entry["archive_name"], entry["archive_sha256"])]
+        mac = found["macos-arm64"]
+        return {**mac, "source_equivalence": {
+                    "releaseDeep": self.deep_sha, "kernel": composition["components"]["astral-kernel"]["commit"],
+                    "verified": "release-commit-and-composition-gitlinks"},
+                "signing": {"identity": record.get("identity"), "signedFiles": checked["files"]},
+                "linux": extras}
+
+    def dry_node_pack(self, folder: Path) -> dict[str, object]:
+        archive_name = "astral-node-pack-3.11.18-dry-dry-macos-arm64.tar.gz"
+        self.pack_sources = [(folder / name, name, "0" * 64) for name in
+                             ("node-pack.json", "node-pack-manifest.json", archive_name)]
+        return {"archive_name": archive_name, "descriptor_sha256": "0" * 64, "archive_sha256": "0" * 64,
+                "manifest_sha256": "0" * 64}
+
+    def verify_bundle_sources(self, manifest: dict, composition: dict, platform: str) -> None:
+        if manifest.get("deep", {}).get("commit") != self.deep_sha:
+            raise ReleaseError(f"Node pack {platform} was built from a source commit other than the release commit")
+        components = composition["components"]
+        if set(manifest.get("components", {})) != set(components):
+            raise ReleaseError(f"Node pack {platform} component inventory differs from the release composition")
+        for name, entry in components.items():
+            if manifest["components"][name] != {"repository": entry["repository"], "commit": entry["commit"]}:
+                raise ReleaseError(f"Node pack {platform} {name} differs from the release composition")
+        if manifest.get("kernel", {}).get("commit") != components["astral-kernel"]["commit"]:
+            raise ReleaseError(f"Node pack {platform} kernel differs from the release composition")
+
+    def signing_module(self):
+        if str(NODE_BUNDLE_DIR) not in sys.path:
+            sys.path.insert(0, str(NODE_BUNDLE_DIR))
+        import sign_macos
+
+        return sign_macos
 
     def verify_node_pack_sources(self, manifest: dict[str, object], pins: dict[str, object]) -> dict[str, object]:
         packed_deep = pins["deep"]["commit"]
@@ -747,10 +840,16 @@ class Release:
         if self.dry:
             self.out(f"write {self.staging}/release-provenance.json, downloads.json, {STATE_FILE}")
             return
-        for name in ("node-pack.json", "node-pack-manifest.json", self.node_pack["archive_name"]):
-            shutil.copy2(Path(self.args.node_pack_dir) / name, self.staging / name)
+        self.stage_node_pack()
         for name, data in (("release-provenance.json", provenance), ("downloads.json", downloads), (STATE_FILE, self.state)):
             (self.staging / name).write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+    def stage_node_pack(self) -> None:
+        for source, name, _ in self.pack_sources:
+            target = self.staging / name
+            if target.exists():
+                raise ReleaseError(f"Staged asset {name} already exists; release assets are never overwritten")
+            shutil.copy2(source, target)
 
     def load_staged(self) -> None:
         self.state = json.loads((self.staging / STATE_FILE).read_text(encoding="utf-8")) if not self.dry else {}
@@ -770,9 +869,7 @@ class Release:
             raise ReleaseError("Deep moved since the build; rebuild instead of publishing a stale archive")
         if self.state.get("nodePack") != self.node_pack:
             raise ReleaseError("The node pack changed since staging")
-        for name, digest in (("node-pack.json", self.node_pack["descriptor_sha256"]),
-                             ("node-pack-manifest.json", self.node_pack["manifest_sha256"]),
-                             (self.node_pack["archive_name"], self.node_pack["archive_sha256"])):
+        for _, name, digest in self.pack_sources:
             if sha256_file(self.staging / name) != digest:
                 raise ReleaseError(f"Staged node pack asset {name} changed")
         live = self.work / "live" / "appcast-now.xml"
@@ -795,7 +892,7 @@ class Release:
         names = [
             self.archive_name, "SHA256SUMS", "release-provenance.json", f"{self.stem}.md", "downloads.json",
             "appcast.xml", "mac-update-policy.json", "mac-update-policy.json.sig",
-            "node-pack.json", "node-pack-manifest.json", self.node_pack["archive_name"],
+            *(name for _, name, _ in self.pack_sources),
         ]
         return [self.staging / name for name in names]
 
@@ -892,6 +989,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--projection", type=Path)
     parser.add_argument("--sparkle-bin", type=Path)
     parser.add_argument("--node-pack-dir", type=Path)
+    parser.add_argument("--node-bundle-dir", type=Path)
     return parser
 
 

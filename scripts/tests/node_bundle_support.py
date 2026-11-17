@@ -15,7 +15,8 @@ import macho  # noqa: E402
 import manifest  # noqa: E402
 import node_logging  # noqa: E402
 import relocation_check  # noqa: E402
+import sign_macos  # noqa: E402
 import verify  # noqa: E402
 
 __all__ = ["assemble", "astral_node_launch", "build_macos", "macho", "manifest", "node_logging", "relocation_check",
-           "verify"]
+           "sign_macos", "verify"]
