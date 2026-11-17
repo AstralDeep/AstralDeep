@@ -259,7 +259,6 @@ async def test_gate_a_legacy_owner_is_retired_and_pairing_binds_the_mesh_while_i
         before = history.get_chat(chat, LEGACY_OWNER)
         assert [m["content"] for m in before["messages"]] == ["a question from before the cut", "an answer from before the cut"]
         stored = seed_owner(LEGACY_OWNER)
-        ticket = door.mint(["read_value"])
         mesh_owner = node_identity.owner_id_for_mesh(door.mesh.owner.mesh_id)
         assert await door.mesh.node.refresh_personal_owner() == mesh_owner
         assert (await door.mesh.node.status())["owner_binding"] == {"state": "ready", "code": None}
