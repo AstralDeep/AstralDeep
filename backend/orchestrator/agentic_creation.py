@@ -477,6 +477,7 @@ async def _create_capability(orch, args: Dict[str, Any], *, user_id: str,
                            ui_components=[card])
 
     draft = await lifecycle.start_draft_agent(draft_id, websocket=websocket)
+    launch_notice = (draft.get("confinement") or {}).get("notice", "")
     self_test = await run_generation(_maybe_skip_self_test, orch, draft) \
         or await _self_test_draft(orch, draft, user_request, user_id)
 
@@ -492,6 +493,7 @@ async def _create_capability(orch, args: Dict[str, Any], *, user_id: str,
         if draft.get("status") == "error":
             break
         draft = await lifecycle.start_draft_agent(draft_id, websocket=websocket)
+        launch_notice = (draft.get("confinement") or {}).get("notice", "") or launch_notice
         self_test = await run_generation(_maybe_skip_self_test, orch, draft) \
             or await _self_test_draft(orch, draft, user_request, user_id)
 
@@ -520,6 +522,7 @@ async def _create_capability(orch, args: Dict[str, Any], *, user_id: str,
     card = creation_card(
         await run_generation(draft_store.get_draft_agent, draft_id) or draft,
         self_test,
+        note=launch_notice,
     )
     return MCPResponse(
         result={"status": "created", "draft_id": draft_id,
