@@ -4,7 +4,7 @@
 FROM scratch AS kernel-artifacts
 
 FROM python:3.15-slim
-LABEL org.opencontainers.image.source="https://github.com/AstralDeep/AstralVessel"
+LABEL org.opencontainers.image.source="https://github.com/AstralDeep/AstralDeep"
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ripgrep ca-certificates \

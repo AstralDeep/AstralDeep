@@ -50,14 +50,8 @@ MOVED_PACKAGES = (
         command="astralvessel",
         github_files=frozenset(
             {
-                "ISSUE_TEMPLATE/bug.yml",
-                "ISSUE_TEMPLATE/config.yml",
-                "ISSUE_TEMPLATE/feature.yml",
                 "dependabot.yml",
-                "pull_request_template.md",
                 "workflows/ci.yml",
-                "workflows/docs.yml",
-                "workflows/release.yml",
             }
         ),
     ),
