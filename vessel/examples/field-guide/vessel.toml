@@ -1,0 +1,17 @@
+[agent]
+name = "field-guide"
+description = "Answers questions about the birds in a small sample field guide, with file and shell tools."
+version = "0.1.0"
+
+[tools]
+builtin = ["read", "grep", "glob", "list", "bash"]
+declared = ["tools/species.toml"]
+
+[sandbox]
+workdir = "/data"
+mounts = [{ source = "guide", target = "/data", read_only = true }]
+deadline_seconds = 300
+tool_timeout_seconds = 30
+
+[output]
+files = ["png", "csv"]

@@ -65,6 +65,7 @@ BACKEND_REASONS = (
     "landlock_abi",
     "bwrap_missing",
     "userns_denied",
+    "root_node",
     "sandbox_exec_missing",
     "app_sandboxed",
     "platform_unsupported",
@@ -82,11 +83,15 @@ MESSAGES = {
     "landlock_abi": "This Linux kernel offers Landlock ABI {observed} and untrusted tools need ABI {required} or newer.",
     "bwrap_missing": "bubblewrap (bwrap) is not installed, and untrusted tools need it.",
     "userns_denied": "Unprivileged user namespaces are disabled, and bubblewrap needs them to confine untrusted tools.",
+    "root_node": "This node runs as root, and bubblewrap would map root to root inside the sandbox. Run the node as an unprivileged user.",
     "sandbox_exec_missing": "/usr/bin/sandbox-exec is missing, and untrusted tools need it on macOS.",
     "app_sandboxed": "The App Sandboxed build cannot confine child processes, so it cannot host untrusted tools. Use the direct-download build.",
     "platform_unsupported": "No confinement backend exists for {platform}.",
 }
 DENIED_SYSCALLS = (
+    "io_uring_enter",
+    "io_uring_register",
+    "io_uring_setup",
     "msgctl",
     "msgget",
     "msgrcv",
@@ -137,6 +142,7 @@ FACT_KEYS = (
     "landlock_abi",
     "bwrap",
     "userns",
+    "euid",
     "sandbox_exec",
     "app_sandboxed",
 )
@@ -451,9 +457,12 @@ def linux_plan(policy: dict[str, Any], egress_socket: str | None) -> dict[str, A
             "deny_syscalls": list(DENIED_SYSCALLS),
             "deny_fork": limits["processes"] == 1,
             "fork_syscalls": list(FORK_SYSCALLS),
-            "inet_stream_sockets": hosted,
-            "deny_socket_types": ["SOCK_DGRAM", "SOCK_RAW"],
-            "deny_socket_domains": ["AF_UNIX"],
+            "socket_allow": [
+                {"domain": "AF_INET", "type": "SOCK_STREAM"},
+                {"domain": "AF_INET6", "type": "SOCK_STREAM"},
+            ]
+            if hosted
+            else [],
             "allow_socketpair": True,
         },
         "rlimits": {
@@ -482,6 +491,8 @@ def _facts(facts: Any) -> dict[str, Any]:
         raise ContextError("facts.mode must be enforce or shadow")
     if not _is_int(out.get("landlock_abi")) or out["landlock_abi"] < 0:
         raise ContextError("facts.landlock_abi must be a non-negative integer")
+    if not _is_int(out.get("euid")) or out["euid"] < 0:
+        raise ContextError("facts.euid must be a non-negative integer")
     for key in ("bwrap", "userns", "sandbox_exec", "app_sandboxed"):
         if not isinstance(out.get(key), bool):
             raise ContextError(f"facts.{key} must be a boolean")
@@ -532,6 +543,8 @@ def select(
             return _refuse("exec.backend_unavailable", "bwrap_missing")
         if not facts["userns"]:
             return _refuse("exec.backend_unavailable", "userns_denied")
+        if facts["euid"] == 0:
+            return _refuse("exec.backend_unavailable", "root_node")
         return {"ok": True, "backend": "linux"}
     if platform == "darwin":
         if not facts["sandbox_exec"]:

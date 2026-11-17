@@ -185,6 +185,9 @@ EXPECTED_SELECTION = {
     "linux_abi_0": ("exec.backend_unavailable", "landlock_abi"),
     "linux_no_bwrap": ("exec.backend_unavailable", "bwrap_missing"),
     "linux_userns_denied": ("exec.backend_unavailable", "userns_denied"),
+    "linux_root_node": ("exec.backend_unavailable", "root_node"),
+    "linux_userns_beats_root": ("exec.backend_unavailable", "userns_denied"),
+    "darwin_root_ok": ("ok", "seatbelt"),
     "linux_abi_beats_bwrap": ("exec.backend_unavailable", "landlock_abi"),
     "linux_bwrap_beats_userns": ("exec.backend_unavailable", "bwrap_missing"),
     "darwin_no_sandbox_exec": ("exec.backend_unavailable", "sandbox_exec_missing"),
@@ -511,7 +514,7 @@ def test_exec_scope_is_base_reads_and_bin_sbin_only() -> None:
 def test_workspace_is_never_executable_on_either_backend() -> None:
     for case in PROFILES.values():
         assert case["linux"]["workspace_noexec"] is True
-        assert case["linux"]["seccomp"]["deny_socket_domains"] == ["AF_UNIX"]
+        assert "inet_stream_sockets" not in case["linux"]["seccomp"]
         assert case["linux"]["seccomp"]["allow_socketpair"] is True
         grants = case["linux"]["landlock"]["workspace_rights"]
         assert grants == "all_except_execute_and_make_sock"
@@ -529,6 +532,7 @@ def test_context_errors_are_refused(name: str) -> None:
 def test_context_error_vectors_cover_unknown_keys_and_probe_errors() -> None:
     names = {c["name"] for c in DOC["context_errors"]}
     assert {"facts_unknown_key", "facts_probe_error_null", "facts_missing_key"} <= names
+    assert {"facts_euid_null", "facts_euid_negative"} <= names
 
 
 def test_processes_one_has_no_fork_and_two_has_fork() -> None:
@@ -548,7 +552,8 @@ def test_empty_hosts_means_no_network_and_nonempty_means_proxy_port_only() -> No
     assert "(allow network" not in quiet["seatbelt"]
     assert quiet["linux"]["egress"] is None
     assert quiet["linux"]["landlock"]["tcp_connect"] == []
-    assert quiet["linux"]["seccomp"]["inet_stream_sockets"] is False
+    assert quiet["linux"]["seccomp"]["socket_allow"] == []
+    assert quiet["linux"]["seccomp"]["allow_socketpair"] is True
     port = hosted["context"]["proxy_port"]
     lines = [
         line for line in hosted["seatbelt"].splitlines() if "(allow network" in line
@@ -559,7 +564,10 @@ def test_empty_hosts_means_no_network_and_nonempty_means_proxy_port_only() -> No
         "listen": "127.0.0.1:3128",
         "socket": "/run/astral/egress.sock",
     }
-    assert hosted["linux"]["seccomp"]["inet_stream_sockets"] is True
+    assert hosted["linux"]["seccomp"]["socket_allow"] == [
+        {"domain": "AF_INET", "type": "SOCK_STREAM"},
+        {"domain": "AF_INET6", "type": "SOCK_STREAM"},
+    ]
     args = hosted["linux"]["bwrap"]
     at = args.index("--bind", args.index("--proc"))
     assert args[at : at + 3] == [
@@ -617,7 +625,9 @@ def test_linux_plan_shape() -> None:
     )
     assert "shmget" in plan["seccomp"]["deny_syscalls"]
     assert "setsid" in plan["seccomp"]["deny_syscalls"]
-    assert plan["seccomp"]["deny_socket_types"] == ["SOCK_DGRAM", "SOCK_RAW"]
+    for call in ("io_uring_setup", "io_uring_enter", "io_uring_register"):
+        assert call in plan["seccomp"]["deny_syscalls"]
+        assert call in PROFILES["minimal"]["linux"]["seccomp"]["deny_syscalls"]
 
 
 @pytest.mark.parametrize("name", sorted(EXPECTED_SELECTION))

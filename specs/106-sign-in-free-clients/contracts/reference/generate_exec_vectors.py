@@ -585,6 +585,7 @@ def facts(platform: str, **changes: Any) -> dict[str, Any]:
         "landlock_abi": 6 if platform == "linux" else 0,
         "bwrap": platform == "linux",
         "userns": platform == "linux",
+        "euid": 1000,
         "sandbox_exec": platform == "darwin",
         "app_sandboxed": False,
     }
@@ -611,6 +612,14 @@ def selection_cases() -> list[dict[str, Any]]:
         ("linux_abi_0", MINIMAL, facts("linux", landlock_abi=0), DATA_DIR_LINUX),
         ("linux_no_bwrap", MINIMAL, facts("linux", bwrap=False), DATA_DIR_LINUX),
         ("linux_userns_denied", MINIMAL, facts("linux", userns=False), DATA_DIR_LINUX),
+        ("linux_root_node", MINIMAL, facts("linux", euid=0), DATA_DIR_LINUX),
+        (
+            "linux_userns_beats_root",
+            MINIMAL,
+            facts("linux", userns=False, euid=0),
+            DATA_DIR_LINUX,
+        ),
+        ("darwin_root_ok", MINIMAL, facts("darwin", euid=0), DATA_DIR_DARWIN),
         (
             "linux_abi_beats_bwrap",
             MINIMAL,
@@ -885,6 +894,8 @@ CONTEXT_ERRORS = [
         DATA_DIR_LINUX,
     ),
     ("facts_probe_error_text", {**facts("linux"), "bwrap": "error"}, DATA_DIR_LINUX),
+    ("facts_euid_null", {**facts("linux"), "euid": None}, DATA_DIR_LINUX),
+    ("facts_euid_negative", {**facts("linux"), "euid": -1}, DATA_DIR_LINUX),
     ("facts_abi_bool", {**facts("linux"), "landlock_abi": True}, DATA_DIR_LINUX),
     ("facts_abi_negative", {**facts("linux"), "landlock_abi": -1}, DATA_DIR_LINUX),
     ("facts_bad_mode", {**facts("linux"), "mode": "audit"}, DATA_DIR_LINUX),
