@@ -1,5 +1,6 @@
 import httpx
 from typing import Any, Dict
+import os
 
 class ClaudeNativeAdapter:
     """Native adapter for Anthropic Messages API with Fence egress compliance."""
@@ -11,6 +12,7 @@ class ClaudeNativeAdapter:
     def _get_client(self) -> httpx.Client:
         # Enforce strict egress control via Fence firewall requirements
         # Disable environment trust to prevent credential leakage
+        # Explicitly set proxy to None to ensure block-mode compliance
         return httpx.Client(
             timeout=self.timeout,
             headers={
@@ -19,7 +21,8 @@ class ClaudeNativeAdapter:
                 "content-type": "application/json"
             },
             trust_env=False,
-            verify=True
+            verify=True,
+            proxies=None
         )
 
     def send_message(self, payload: Dict[str, Any]) -> Dict[str, Any]:
