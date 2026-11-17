@@ -263,17 +263,23 @@ CTX = {
 }
 
 
-def forge(flags: set[str], *, env_key: str | None = None, grant: str = GA, device: Any = None, seq: int = 50, type_: str = "chat.assistant_message", body: dict[str, Any] | None = None, key: str = CK_P, labels: dict[str, str] | None = None) -> dict[str, Any]:
+def forge(flags: set[str], *, env_key: str | None = None, grant: str = GA, device: Any = None, seq: int = 50, type_: str = "chat.assistant_message", body: dict[str, Any] | None = None, key: str = CK_P, labels: dict[str, str] | None = None, raw: bytes | None = None) -> dict[str, Any]:
     device = MALLORY if "feed" in flags else (device or OA)
     scope = crypto.sha256_id(b"elsewhere") if "scope" in flags else CHAT
     type_ = "chat.model_request" if "type" in flags else type_
     labels = {"confidentiality": "classified", "integrity": "owner"} if "label" in flags else (labels or PRIVATE)
     body = {"turn": crypto.sha256_id(b"t"), "text": "hello"} if body is None else body
+    plain = cj.canonical(body)
     if "fields" in flags:
         body = {**body, "agent_note": "x"}
+        plain = cj.canonical(body)
+    if "bodyparse" in flags:
+        plain = raw if raw is not None else b'{"text":'
     body_key = K_X if "bodydec" in flags else KEYS[key]
     nonce = DetRng(f"share-v1/forge/{sorted(flags)}/body").bytes(24)
-    body_ct = mesh_event.seal_body(body_key, {"feed": device.feed, "key": key, "scope": scope, "seq": seq}, cj.canonical(body), nonce)
+    body_ct = mesh_event.seal_body(body_key, {"feed": device.feed, "key": key, "scope": scope, "seq": seq}, plain, nonce)
+    if "bodyshort" in flags:
+        body_ct = bytes(10)
     hashed = crypto.sha256_id(b"other") if "bodyhash" in flags else crypto.sha256_id(body_ct)
     header_seq = seq + 1 if "mismatch" in flags else seq
     header = mesh_event.build_header(device.ops_seed, seq=header_seq, prev=crypto.sha256_id(b"prev"), after=[], clock=hlc(T0 + 99), scope=scope, type=type_, labels=labels, key=key, body_hash=hashed)
@@ -448,6 +454,10 @@ def frame_cases(add: Any) -> None:
     add("unframe_not_json", "share_unframe", {"hex": (3).to_bytes(4, "big").hex() + b"abc".hex()})
     raw = b'{"t":"bye","t":"bye"}'
     add("unframe_duplicate_key", "share_unframe", {"hex": len(raw).to_bytes(4, "big").hex() + raw.hex()})
+    spaced = b'{"grants": ["' + GA.encode() + b'"], "t": "revoked"}'
+    add("unframe_not_canonical_spacing", "share_unframe", {"hex": len(spaced).to_bytes(4, "big").hex() + spaced.hex()})
+    reordered = b'{"t":"revoked","grants":["' + GA.encode() + b'"]}'
+    add("unframe_not_canonical_key_order", "share_unframe", {"hex": len(reordered).to_bytes(4, "big").hex() + reordered.hex()})
     raw = b'{"t":"mailbox"}'
     add("unframe_unknown_kind", "share_unframe", {"hex": len(raw).to_bytes(4, "big").hex() + raw.hex()})
     for kind in share.SESSION_KINDS:
@@ -589,6 +599,9 @@ def key_cases(add: Any) -> None:
         kid, kb = ck(f"many/{i}")
         many.append(lean([c.event(f"many/{i}", T0 + 20000 + i, "mesh", "key.content", {"id": kid, "key": b64(kb), "scope": CHAT}, key=EK_P)])[0])
     case("keys_cap_keeps_the_newest_64", False, many)
+    broken = copy.deepcopy(key_events)
+    del broken[1]["body"]["key"]
+    case("keys_malformed_key_content_body", False, broken)
     case("keys_exactly_64_withhold_none", False, many[:64])
     case("keys_cap_counts_only_keys_of_a_served_group", False, many + [key_events[2]])
     case("keys_cap_with_phi_counts_the_phi_key", True, many[:64] + [key_events[2]])
@@ -610,6 +623,7 @@ def grants_cases(add: Any) -> None:
     case("grants_only_the_readers_mesh", reader, [grant, {**grant, "id": GB, "contact": crypto.sha256_id(b"someone")}])
     case("grants_a_superseding_grant_names_the_old_one", {**reader, "phi": True}, [{**grant, "id": GB, "phi": True, "supersedes": GA}])
     case("grants_none_in_effect", reader, [])
+    case("grants_a_bad_title_is_cleaned_not_fatal", reader, [grant], chats={CHAT: {**chat_data, "title": "Lab\u202e res\x00ults " + "x" * 300}})
     many = lean(FIX["key_events"][:1]) + key_events_many()
     case("grants_key_cap_reports_withheld_keys", reader, [grant], chats={CHAT: {**chat_data, "key_events": many}})
 
@@ -639,6 +653,7 @@ def receive_cases(add: Any) -> None:
         ("label", "share.label_unknown"),
         ("bodyhash", "event.body_mismatch"),
         ("bodydec", "event.decrypt_failed"),
+        ("bodyparse", "event.malformed"),
         ("fields", "share.body_field_refused"),
     )
     add("receive_valid_assistant_message", "share_receive", forge(set()))
@@ -661,6 +676,9 @@ def receive_cases(add: Any) -> None:
     add("receive_tool_result_any_fields", "share_receive", forge(set(), type_="chat.tool_result", body={"turn": "x", "extra": [1, 2]}))
     add("receive_turn_start_naming_a_request", "share_receive", forge(set(), type_="chat.turn_start", body={"continues": None, "message": None, "request": "r"}))
     add("receive_header_resealed_under_another_grant", "share_receive", forge({"wrong_salt"}, grant=GB))
+    add("receive_body_shorter_than_nonce_and_tag", "share_receive", forge({"bodyshort"}))
+    add("receive_body_duplicate_key", "share_receive", forge({"bodyparse"}, raw=b'{"text":"a","text":"b"}'))
+    add("receive_body_not_json", "share_receive", forge({"bodyparse"}, raw=b"not json"))
     add("receive_body_not_an_object", "share_receive", forge(set(), body=[1]))
     reseal = forge(set())
     reseal["envelope"] = {**reseal["envelope"], "grant": GB}
@@ -696,13 +714,14 @@ def other_cases(add: Any) -> None:
     add("wrap_wrong_recipient", "share_open_wrap", {**base, "recipient": DAVE.id})
     add("wrap_wrong_device_key", "share_open_wrap", {**base, "wrap_private_hex": DAVE.wrap_private.hex()})
     add("wrap_purpose_epoch_not_share", "share_open_wrap", {**base, "wrap": gpd.crypto.wrap_key(BOB.wrap_public, K_P, {"group": "personal", "purpose": "epoch", "recipient": BOB.id}, bytes(32), bytes(24))})
+    eff = {"in_effect": [{"id": GA, "contact": MB.mesh}], "contact": MB.mesh, "grant": GA}
     held = [{"feed": OA.feed, "seq": s, "id": crypto.sha256_id(f"held{s}".encode())} for s in (1, 2, 4, 7)] + [{"feed": ON.feed, "seq": 3, "id": crypto.sha256_id(b"node3")}]
-    add("want_sparse_range_returns_only_held", "share_want", {"held": held, "ranges": [{"feed": OA.feed, "from": 1, "to": 5}]})
-    add("want_two_feeds", "share_want", {"held": held, "ranges": sorted([{"feed": OA.feed, "from": 4, "to": 9}, {"feed": ON.feed, "from": 1, "to": 3}], key=lambda r: r["feed"])})
-    add("want_unknown_feed", "share_want", {"held": held, "ranges": [{"feed": MALLORY.feed, "from": 1, "to": 3}]})
+    add("want_sparse_range_returns_only_held", "share_want", {"held": held, "ranges": [{"feed": OA.feed, "from": 1, "to": 5}], **eff})
+    add("want_two_feeds", "share_want", {"held": held, "ranges": sorted([{"feed": OA.feed, "from": 4, "to": 9}, {"feed": ON.feed, "from": 1, "to": 3}], key=lambda r: r["feed"]), **eff})
+    add("want_unknown_feed", "share_want", {"held": held, "ranges": [{"feed": MALLORY.feed, "from": 1, "to": 3}], **eff})
     big = [{"feed": OA.feed, "seq": s, "id": crypto.sha256_id(f"b{s}".encode())} for s in range(1, 301)]
-    add("want_caps_at_256_and_says_more", "share_want", {"held": big, "ranges": [{"feed": OA.feed, "from": 1, "to": 400}][:0] + [{"feed": OA.feed, "from": 1, "to": 512}]})
-    add("want_range_too_long", "share_want", {"held": held, "ranges": [{"feed": OA.feed, "from": 1, "to": 513}]})
+    add("want_caps_at_256_and_says_more", "share_want", {"held": big, "ranges": [{"feed": OA.feed, "from": 1, "to": 400}][:0] + [{"feed": OA.feed, "from": 1, "to": 512}], **eff})
+    add("want_range_too_long", "share_want", {"held": held, "ranges": [{"feed": OA.feed, "from": 1, "to": 513}], **eff})
     fold = {"revoked": [GA]}
     add("revoked_names_only_revoked", "share_revoked", {"named": sorted([GA, GB]), "fold": fold})
     add("revoked_none_named", "share_revoked", {"named": [], "fold": fold})
@@ -712,15 +731,46 @@ def other_cases(add: Any) -> None:
     }
     phi_att = {eid(EV["phi_attachment"]): {"labels": PHI, "chunks": [CHUNKS["p"][1]]}}
     req = sorted([CHUNKS["a"][1], CHUNKS["b"][1], CHUNKS["p"][1], crypto.sha256_id(b"stray")])
-    add("chunks_named_by_a_served_attachment", "share_chunks", {"attachments": served_att, "requested": req, "phi": False})
-    add("chunks_phi_attachment_without_phi", "share_chunks", {"attachments": {**served_att, **phi_att}, "requested": req, "phi": False})
-    add("chunks_phi_attachment_with_phi", "share_chunks", {"attachments": {**served_att, **phi_att}, "requested": req, "phi": True})
-    add("chunks_unserved_attachment_names_nothing", "share_chunks", {"attachments": {}, "requested": req, "phi": True})
-    add("chunks_257_hashes", "share_chunks", {"attachments": served_att, "requested": sorted(crypto.sha256_id(str(i).encode()) for i in range(257)), "phi": False})
+    add("chunks_named_by_a_served_attachment", "share_chunks", {"attachments": served_att, "requested": req, "phi": False, **eff})
+    add("chunks_phi_attachment_without_phi", "share_chunks", {"attachments": {**served_att, **phi_att}, "requested": req, "phi": False, **eff})
+    add("chunks_phi_attachment_with_phi", "share_chunks", {"attachments": {**served_att, **phi_att}, "requested": req, "phi": True, **eff})
+    add("chunks_unserved_attachment_names_nothing", "share_chunks", {"attachments": {}, "requested": req, "phi": True, **eff})
+    add("chunks_257_hashes", "share_chunks", {"attachments": served_att, "requested": sorted(crypto.sha256_id(str(i).encode()) for i in range(257)), "phi": False, **eff})
+    for name, listed in (
+        ("unknown", []),
+        ("revoked", [{"id": GB, "contact": MB.mesh}]),
+        ("expired", [{"id": GC, "contact": MB.mesh}]),
+        ("another_contacts", [{"id": GA, "contact": crypto.sha256_id(b"someone")}]),
+    ):
+        stranger = {**eff, "in_effect": listed}
+        add(f"want_grant_{name}", "share_want", {"held": held, "ranges": [{"feed": OA.feed, "from": 1, "to": 5}], **stranger})
+        add(f"chunks_grant_{name}", "share_chunks", {"attachments": served_att, "requested": [CHUNKS["a"][1]], "phi": False, **stranger})
+    add("want_grant_checked_before_the_ranges", "share_want", {"held": held, "ranges": [{"feed": OA.feed, "from": 1, "to": 513}], **{**eff, "in_effect": []}})
+    members = {OA.id: {"feeds": [OA.feed]}}
+    entries = {
+        "r1": {"type": "remove", "body": {"device": OD.id, "cutoff": {OD.feed: 9}}},
+        "r2": {"type": "remove", "body": {"device": OD.id, "cutoff": {OD.feed: 5}}},
+    }
+    fold = {"members": members, "removed": {OD.id: {}}}
+    add("granter_roster_smallest_cutoff_wins", "share_granter_roster", {"roster": {"entries": entries, "fold": fold}})
+    add("granter_roster_smallest_cutoff_wins_in_either_order", "share_granter_roster", {"roster": {"entries": {"r1": entries["r2"], "r2": entries["r1"]}, "fold": fold}})
+    add("granter_roster_single_removal", "share_granter_roster", {"roster": {"entries": {"r1": entries["r1"]}, "fold": fold}})
+    long_title = "a" * 255 + "\U0001f600" + "b" * 10
+    for name, title in (
+        ("plain", "Lab results"),
+        ("drops_refused_characters", "Lab\u202e res\x00ults\u200b"),
+        ("keeps_a_whole_character_at_the_limit", "a" * 255 + "\U0001f600" + "b" * 10),
+        ("cuts_before_a_character_past_the_limit", "a" * 256 + "\U0001f600" + "b" * 10),
+        ("truncates_after_dropping", "\x00" * 5 + long_title),
+        ("not_text", None),
+    ):
+        add("title_" + name, "share_title", {"title": title})
     named = [CHUNKS["a"][1], CHUNKS["b"][1]]
     message = {"t": "chunks", "grant": GA, "chunks": [{"hash": CHUNKS["a"][1], "ct": b64(CHUNKS["a"][0])}], "withheld": [{"hash": CHUNKS["b"][1], "reason": "unknown"}]}
     add("chunks_receive_named_chunk", "share_chunks_receive", {"message": message, "named": named, "requested": named})
     add("chunks_receive_unnamed_chunk", "share_chunks_receive", {"message": message, "named": [CHUNKS["b"][1]], "requested": named})
+    withheld_only = {**message, "chunks": [], "withheld": [{"hash": CHUNKS["b"][1], "reason": "unknown"}]}
+    add("chunks_receive_withheld_hash_not_requested", "share_chunks_receive", {"message": withheld_only, "named": named, "requested": [CHUNKS["a"][1]]})
     add("chunks_receive_unrequested_chunk", "share_chunks_receive", {"message": message, "named": named, "requested": [CHUNKS["b"][1]]})
     add("chunks_receive_edited_bytes", "share_chunks_receive", {"message": {**message, "chunks": [{"hash": CHUNKS["a"][1], "ct": b64(CHUNKS["b"][0])}]}, "named": named, "requested": named})
 

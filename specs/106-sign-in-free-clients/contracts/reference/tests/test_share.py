@@ -173,6 +173,10 @@ RECEIVE = {
     "receive_defect_label": "share.label_unknown",
     "receive_defect_bodyhash": "event.body_mismatch",
     "receive_defect_bodydec": "event.decrypt_failed",
+    "receive_defect_bodyparse": "event.malformed",
+    "receive_body_shorter_than_nonce_and_tag": "event.malformed",
+    "receive_body_duplicate_key": "event.malformed",
+    "receive_body_not_json": "event.malformed",
     "receive_defect_fields": "share.body_field_refused",
     "receive_secret_label": "share.secret_refused",
     "receive_unknown_integrity": "share.label_unknown",
@@ -197,7 +201,7 @@ RECEIVE = {
 }
 STEP_FLAGS = (
     "shape", "grant", "key", "wrong_salt", "parse", "mismatch", "badsig", "feed", "scope",
-    "type", "label", "bodyhash", "bodydec", "fields",
+    "type", "label", "bodyhash", "bodydec", "bodyparse", "fields",
 )
 for _a, _b in zip(STEP_FLAGS, STEP_FLAGS[1:]):
     RECEIVE[f"receive_defects_{_a}_and_{_b}"] = RECEIVE[f"receive_defect_{_a}"]
@@ -211,6 +215,9 @@ OTHER = {
     "want_range_too_long": "share.too_large",
     "revoked_bad_id": "share.malformed",
     "chunks_257_hashes": "share.too_large",
+    "keys_malformed_key_content_body": "event.malformed",
+    "chunks_receive_withheld_hash_not_requested": "share.malformed",
+    "want_grant_checked_before_the_ranges": "share.grant_unknown",
     "chunks_receive_unnamed_chunk": "share.chunk_not_named",
     "chunks_receive_unrequested_chunk": "share.chunk_not_named",
     "chunks_receive_edited_bytes": "attachment.chunk_hash",
@@ -228,6 +235,8 @@ KINDS = {
 
 def expected_code(name: str) -> str:
     kind = CASES[name]["kind"]
+    if re.fullmatch(r"(want|chunks)_grant_(unknown|revoked|expired|another_contacts)", name):
+        return "share.grant_unknown"
     if kind in KINDS:
         return KINDS[kind](name)
     return OTHER.get(name, "ok")
@@ -597,3 +606,35 @@ def test_the_text_obeys_the_house_style() -> None:
     assert "—" not in TEXT and ";" not in TEXT
     for word in ("delve", "leverage", "robust", "seamless", "comprehensive", "crucial", "utilize", "streamline"):
         assert word not in TEXT.lower()
+
+
+def test_a_grant_not_in_effect_for_the_contact_serves_nothing_and_does_not_say_why() -> None:
+    for kind in ("want", "chunks"):
+        outcomes = {
+            case: result(f"{kind}_grant_{case}") for case in ("unknown", "revoked", "expired", "another_contacts")
+        }
+        assert set(map(str, outcomes.values())) == {str({"error": "share.grant_unknown"})}
+
+
+def test_the_smallest_cutoff_wins_whatever_the_entry_order() -> None:
+    first = result("granter_roster_smallest_cutoff_wins")["ok"]["removed"]
+    second = result("granter_roster_smallest_cutoff_wins_in_either_order")["ok"]["removed"]
+    assert first == second
+    assert list(first.values())[0]["cutoff"] == {generator.OD.feed: 5}
+    assert list(result("granter_roster_single_removal")["ok"]["removed"].values())[0]["cutoff"] == {generator.OD.feed: 9}
+
+
+def test_a_title_is_cleaned_per_grant_and_never_fails_the_message() -> None:
+    assert result("title_drops_refused_characters")["ok"]["title"] == "Lab results"
+    kept = result("title_keeps_a_whole_character_at_the_limit")["ok"]["title"]
+    assert len(kept) == share.MAX_TITLE and kept.endswith("\U0001f600")
+    assert result("title_cuts_before_a_character_past_the_limit")["ok"]["title"] == "a" * 256
+    assert result("title_truncates_after_dropping")["ok"]["title"] == "a" * 255 + "\U0001f600"
+    assert result("title_not_text")["ok"]["title"] == ""
+    cleaned = result("grants_a_bad_title_is_cleaned_not_fatal")["ok"]["message"]["grants"][0]["title"]
+    assert cleaned.startswith("Lab results x") and len(cleaned) == share.MAX_TITLE
+
+
+def test_frame_text_that_is_not_canonical_is_malformed() -> None:
+    for name in ("unframe_not_canonical_spacing", "unframe_not_canonical_key_order"):
+        assert result(name) == {"error": "share.malformed"}

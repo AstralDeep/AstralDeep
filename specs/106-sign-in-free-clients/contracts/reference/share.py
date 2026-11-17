@@ -149,6 +149,7 @@ RECEIVER_STEPS = (
     "share.label_unknown",
     "event.body_mismatch",
     "event.decrypt_failed",
+    "event.malformed",
     "share.body_field_refused",
 )
 CODES = tuple(
@@ -193,6 +194,13 @@ def _sorted_unique(items: Any, limit: int, check: Any) -> bool:
         and all(a < b for a, b in zip(items, items[1:]))
         and len(items) <= limit
     )
+
+
+def derive_title(title: Any) -> str:
+    if not isinstance(title, str):
+        return ""
+    kept = "".join(c for c in title if not contacts.caller_ticket.refused_in_label(c))
+    return kept[:MAX_TITLE]
 
 
 def _title_ok(title: Any) -> bool:
@@ -465,8 +473,11 @@ def unframe(data: bytes) -> dict[str, Any]:
         raise _fail("share.malformed", "frame length")
     try:
         message = strict_loads(data[4:])
+        canonical_text = canonical(message)
     except MeshError as error:
         raise _fail("share.malformed", error.code) from error
+    if canonical_text != data[4:]:
+        raise _fail("share.malformed", "not canonical")
     check_message(message)
     return message
 
@@ -571,6 +582,11 @@ def chat_keys(chat: str, create: dict[str, Any], key_events: list[dict[str, Any]
         match = EK.fullmatch(header["key"])
         if header["type"] != "key.content" or match is None:
             continue
+        if not (
+            isinstance(body, dict)
+            and all(isinstance(body.get(f), str) for f in ("id", "key", "scope"))
+        ):
+            raise _fail("event.malformed", "key.content body")
         if body["scope"] == chat or (body["scope"] == "new" and body["id"] == create["header"]["key"]):
             held[body["id"]] = {
                 "ref": body["id"],
@@ -812,7 +828,9 @@ def granter_roster(roster: dict[str, Any]) -> dict[str, Any]:
     cut: dict[str, dict[str, int]] = {}
     for entry in roster["entries"].values():
         if entry["type"] == "remove" and entry["body"]["device"] in state["removed"]:
-            cut[entry["body"]["device"]] = entry["body"]["cutoff"]
+            seen = cut.setdefault(entry["body"]["device"], {})
+            for feed, seq in entry["body"]["cutoff"].items():
+                seen[feed] = min(seq, seen.get(feed, seq))
     return {
         "members": {d: {"feeds": list(m["feeds"])} for d, m in sorted(state["members"].items())},
         "removed": {d: {"feeds": sorted(c), "cutoff": dict(sorted(c.items()))} for d, c in sorted(cut.items())},
@@ -871,7 +889,10 @@ def receive(envelope: Any, context: dict[str, Any]) -> dict[str, Any]:
     if labels["confidentiality"] == "secret":
         raise _fail("share.secret_refused")
     body = mesh_event.open_body(content_key, header, b64url_decode(envelope["body_ct"]))
-    value = strict_loads(body)
+    try:
+        value = strict_loads(body)
+    except MeshError as error:
+        raise _fail("event.malformed", error.code) from error
     allowed = SERVED_FIELDS[header["type"]]
     if allowed is not None and (not isinstance(value, dict) or not set(value) <= allowed):
         raise _fail("share.body_field_refused")
@@ -887,7 +908,19 @@ def receive(envelope: Any, context: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def answer_want(held: list[dict[str, Any]], ranges: list[dict[str, Any]]) -> dict[str, Any]:
+def require_in_effect(in_effect: list[dict[str, Any]], contact: str, grant: str) -> None:
+    if not any(g["id"] == grant and g["contact"] == contact for g in in_effect):
+        raise _fail("share.grant_unknown", grant)
+
+
+def answer_want(
+    held: list[dict[str, Any]],
+    ranges: list[dict[str, Any]],
+    in_effect: list[dict[str, Any]],
+    contact: str,
+    grant: str,
+) -> dict[str, Any]:
+    require_in_effect(in_effect, contact, grant)
     _check_range_list(ranges)
     by_feed: dict[str, list[dict[str, Any]]] = {}
     for item in held:
@@ -906,8 +939,14 @@ def answer_revoked(named: list[str], folded: dict[str, Any]) -> dict[str, Any]:
 
 
 def serve_chunks(
-    attachments_served: dict[str, dict[str, Any]], requested: list[str], phi: bool
+    attachments_served: dict[str, dict[str, Any]],
+    requested: list[str],
+    phi: bool,
+    in_effect: list[dict[str, Any]],
+    contact: str,
+    grant: str,
 ) -> dict[str, Any]:
+    require_in_effect(in_effect, contact, grant)
     if len(requested) > MAX_HASHES:
         raise _fail("share.too_large", "hashes")
     return attachments.chunks_for_peer(attachments_served, requested, peer_in_phi_group=phi)
@@ -917,6 +956,9 @@ def receive_chunks(message: dict[str, Any], named: list[str], requested: list[st
     check_message(message)
     held = set(named)
     asked = set(requested)
+    for item in message["withheld"]:
+        if item["hash"] not in asked:
+            raise _fail("share.malformed", "withheld hash not requested")
     kept: list[str] = []
     for chunk in message["chunks"]:
         if chunk["hash"] not in held or chunk["hash"] not in asked:
@@ -949,7 +991,7 @@ def grants_message(given: dict[str, Any], rng: Any) -> dict[str, Any]:
             {
                 "id": grant["id"],
                 "chat": grant["chat"],
-                "title": chat["title"],
+                "title": derive_title(chat["title"]),
                 "phi": phi,
                 "withheld_phi": picked["withheld_phi"],
                 "withheld_fields": picked["withheld_fields"],
@@ -1005,9 +1047,20 @@ def run(kind: str, given: dict[str, Any]) -> dict[str, Any]:
             ).hex()
         },
         "share_header_key": lambda: {"key": header_key(bytes.fromhex(given["content_key_hex"]), given["grant"]).hex()},
-        "share_want": lambda: answer_want(given["held"], given["ranges"]),
+        "share_want": lambda: answer_want(
+            given["held"], given["ranges"], given["in_effect"], given["contact"], given["grant"]
+        ),
+        "share_granter_roster": lambda: granter_roster(given["roster"]),
+        "share_title": lambda: {"title": derive_title(given["title"])},
         "share_revoked": lambda: answer_revoked(given["named"], given["fold"]),
-        "share_chunks": lambda: serve_chunks(given["attachments"], given["requested"], given["phi"]),
+        "share_chunks": lambda: serve_chunks(
+            given["attachments"],
+            given["requested"],
+            given["phi"],
+            given["in_effect"],
+            given["contact"],
+            given["grant"],
+        ),
         "share_chunks_receive": lambda: receive_chunks(given["message"], given["named"], given["requested"]),
     }
     return _guard(calls[kind])

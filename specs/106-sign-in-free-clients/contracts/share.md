@@ -8,7 +8,7 @@ Reference code: `reference/share.py`. Generator: `reference/generate_share_vecto
 
 ## 1. Transport
 
-The ALPN is `astral/share/1`. A device that offers `astral/sync/1` offers it too, and a deployed kernel refuses it with `net.unknown_alpn`. iroh authenticates the peer's operations key. Each message is a frame, a 4-byte big-endian length followed by the canonical JSON of the message, as in the 105 sync contract. A frame over 8388608 bytes (8 MiB) is `share.too_large`. A length that does not match the data, text that does not parse, a duplicate key or a message that fails section 3 is `share.malformed`. A length field above the limit is `share.too_large` before any data is read.
+The ALPN is `astral/share/1`. A device that offers `astral/sync/1` offers it too, and a deployed kernel refuses it with `net.unknown_alpn`. iroh authenticates the peer's operations key. Each message is a frame, a 4-byte big-endian length followed by the canonical JSON of the message, as in the 105 sync contract. A frame over 8388608 bytes (8 MiB) is `share.too_large`. A length that does not match the data, text that does not parse, a duplicate key, text that is not the canonical JSON of the message (spacing, key order or escapes the canonical form does not use) or a message that fails section 3 is `share.malformed`. The 105 sync contract does not settle non-canonical frame text, so this contract refuses it. A length field above the limit is `share.too_large` before any data is read.
 
 A session has one kind, named in the first `hello`. The kinds are `contact`, `read`, `verify` and `nudge`. A `kind` field is never added to `astral/sync/1`, because deployed kernels reject an unknown `hello` field and it would put contact admission inside member sync.
 
@@ -50,7 +50,7 @@ The fields of `hello` are `t`, `v` (1), `kind`, `mesh`, `device`, `roster`, `non
 
 A grant entry has exactly `id`, `chat`, `title`, `phi`, `withheld_phi`, `withheld_fields`, `withheld_keys`, `supersedes`, `heads` and `wraps`.
 
-- `id` is the grant id and `chat` the granted chat id. `title` is the chat title, at most 256 characters and not containing characters the name rule refuses. It is display text from the owner's chat and untrusted.
+- `id` is the grant id and `chat` the granted chat id. `title` is derived per grant from the chat title: the server drops every character the name rule refuses, then keeps the first 256 code points, cutting only at a code point boundary. A title that is not text becomes the empty string. One bad chat title never fails the whole `grants` message. It is display text from the owner's chat and untrusted.
 - `phi` says whether this session serves PHI under this grant. It is true only when the grant has `phi`, the reader's `hello.phi` was confirmed and the destination answer of section 9 is true.
 - `withheld_phi` counts events not served because they are PHI. `withheld_fields` counts events not served because of section 4.2. `withheld_keys` counts keys not wrapped because of section 5.
 - `supersedes` is null or the id of the grant this one replaced. A reader that holds the older grant moves that item to the new id.
@@ -113,7 +113,7 @@ The body of a served event is its original sealed bytes, so the author's signed 
 
 ## 5. Keys and wraps
 
-A chat's key set is the key the `chat.create` event names, introduced by a `key.content` whose body `scope` is `new` and whose id is that key, together with every `key.content` whose body `scope` is the chat id. The group of a key, `personal` or `phi`, is the group in the `ek:` key reference of the introducing event's header. The server holds only keys it can open. It wraps the keys it holds, never more.
+A chat's key set is the key the `chat.create` event names, introduced by a `key.content` whose body `scope` is `new` and whose id is that key, together with every `key.content` whose body `scope` is the chat id. The group of a key, `personal` or `phi`, is the group in the `ek:` key reference of the introducing event's header. A `key.content` event whose body lacks a text `id`, `key` or `scope` is `event.malformed` and no key set is built from it. The server holds only keys it can open. It wraps the keys it holds, never more.
 
 A session wraps keys of the `personal` group, and keys of the `phi` group only when the grant entry has `phi` true. More than 64 eligible keys are cut to the 64 latest by `(clock.ms, clock.n, feed, seq)` of the introducing event, ties by key reference. The rest are counted in `withheld_keys`. An event whose key is not wrapped is not served, so the reader never meets `share.key_unknown` for it. A phi key left out for a session that serves no PHI is not counted in `withheld_keys`, because the events under it are counted in `withheld_phi`.
 
@@ -142,12 +142,13 @@ A reader takes these steps in order, and the first failure wins. The reader's co
 | 5 | The header parses strictly: exactly the header fields, with values of the right type and the `prev` rule | `event.malformed` |
 | 6 | The header's `key`, `feed` and `seq` equal the envelope's | `share.envelope_mismatch` |
 | 7 | The signature verifies under `astral.event/v1` with the feed key | `share.bad_signature` |
-| 8 | The feed is an operations key of a member of the granting roster, or of a removed member with `seq` at or below the cutoff for that feed. A feed with no cutoff entry has none | `share.feed_unknown` |
+| 8 | The feed is an operations key of a member of the granting roster, or of a removed member with `seq` at or below the cutoff for that feed. A feed with no cutoff entry has none. When a device has more than one `remove` entry, the smallest cutoff for each feed wins, whatever the order of the entries | `share.feed_unknown` |
 | 9 | Scope is the granted chat, except the `chat.create` of that chat | `share.scope_mismatch` |
 | 10 | The type is in the served list | `share.type_not_allowed` |
 | 11 | The labels are known and the confidentiality is not `secret` | `share.label_unknown`, `share.secret_refused` |
-| 12 | The body hashes to the header's `body` | `event.body_mismatch` |
+| 12 | The body is at least a nonce and a tag long, then hashes to the header's `body` | `event.malformed`, `event.body_mismatch` |
 | 13 | The body decrypts under `event.md` section 6 | `event.decrypt_failed` |
+| 13b | The decrypted body parses as strict canonical JSON, with no duplicate key, float or other form `cj` refuses | `event.malformed` |
 | 14 | The body has no field outside the list of section 4 | `share.body_field_refused` |
 
 Step 5 leaves an unknown type and unknown label values to steps 10 and 11, so those codes can be reached. The reader checks that the label values are known and does not check the header with the full 105 shape check.
@@ -156,7 +157,9 @@ Accepted events are ordered by `(clock, feed, seq)` and folded with the 105 chat
 
 ## 8. Chunks
 
-A chunk is served only for a hash named by an attachment event that this session served, and never eagerly. The server answers `chunks_want` with the 105 attachment rule applied to the served attachment events only. A hash no served attachment names is withheld with reason `unknown`. A chunk of a `phi` attachment is sent only when the session serves PHI and is otherwise withheld with reason `phi`. A reader that receives a chunk it did not ask for, or whose hash no stored served attachment names, refuses it with `share.chunk_not_named`. A chunk whose bytes do not hash to its address is `attachment.chunk_hash`.
+A `want` or a `chunks_want` names a grant. The server checks first that the grant is in effect for the authenticated contact mesh, taking the in-effect grants from the fold of `contacts.md`. A grant that is unknown, revoked, expired or another contact's gets `share.grant_unknown` and no data, and the answer does not say which case applies. The check comes before any range or hash check.
+
+A chunk is served only for a hash named by an attachment event that this session served, and never eagerly. The server answers `chunks_want` with the 105 attachment rule applied to the served attachment events only. A hash no served attachment names is withheld with reason `unknown`. A chunk of a `phi` attachment is sent only when the session serves PHI and is otherwise withheld with reason `phi`. A reader that receives a chunk it did not ask for, or whose hash no stored served attachment names, refuses it with `share.chunk_not_named`. A `withheld` hash the reader did not ask for is `share.malformed`. A chunk whose bytes do not hash to its address is `attachment.chunk_hash`.
 
 ## 9. PHI
 
@@ -172,7 +175,7 @@ When any gate fails, `phi` in the grant entry is false, no PHI event is served, 
 
 A reader pulls when the item view opens, then every 60 seconds while the app is in the foreground. A server sends a `nudge` session to reachable reader devices at most once per grant per 10 seconds after a served event is added. Both are best effort. There is no mailbox path in version 1.
 
-At its next session the reader names its grant ids in `grants_want`. The server answers `revoked` with the named ids that are revoked and `grants` with the ones in effect. The reader deletes a revoked item's events, chunks and wraps. A grant that was superseded is neither revoked nor deleted. A reader offline at revocation keeps its copy until then.
+The server answers a `want` or a `chunks_want` for a grant that is not in effect with `share.grant_unknown` as section 8 says. At its next session the reader names its grant ids in `grants_want`. The server answers `revoked` with the named ids that are revoked and `grants` with the ones in effect. The reader deletes a revoked item's events, chunks and wraps. A grant that was superseded is neither revoked nor deleted. A reader offline at revocation keeps its copy until then.
 
 ## 11. Existing data and mixed versions
 
@@ -211,12 +214,14 @@ The codes of the grants and revocation records belong to `contacts.md`. This tab
 | `share_admit` | `kind`, `hello`, `peer_feed`, `view` | `admitted`, `device`, `member_kind`, `phi` or a code |
 | `share_select` | `chat`, `events`, `phi`, `wrapped` | `served`, `refused`, `withheld_phi`, `withheld_fields`, `heads` |
 | `share_keys` | `chat`, `create`, `key_events`, `phi` | `keys`, `wrapped`, `withheld_keys` |
-| `share_grants` | `reader`, `grants`, `chats`, `destination_allowed`, `rng` | `message`, `served`, `refused` |
+| `share_grants` | `reader`, `grants` (only grants in effect, as the fold of `contacts.md` returns them, and the function keeps those of the reader's mesh), `chats`, `destination_allowed`, `rng` | `message`, `served`, `refused` |
 | `share_receive` | `envelope`, `context` | The accepted event or a code |
+| `share_granter_roster` | `roster`: `entries` and `fold` | `members` and `removed` with each removed device's feeds and cutoff |
+| `share_title` | `title` | `title` |
 | `share_header_key` | `content_key_hex`, `grant` | `key` |
 | `share_open_wrap` | `grant`, `key`, `recipient`, `wrap_private_hex`, `wrap` | `secret` or a code |
-| `share_want`, `share_revoked` | `held` and `ranges`, or `named` and `fold` | `ids` and `more`, or `revoked` |
-| `share_chunks`, `share_chunks_receive` | `attachments`, `requested`, `phi`, or `message`, `named`, `requested` | `send` and `withheld`, or `kept` and `withheld`, or a code |
+| `share_want`, `share_revoked` | `held`, `ranges`, `in_effect`, `contact` and `grant`, or `named` and `fold` | `ids` and `more`, or `revoked` |
+| `share_chunks`, `share_chunks_receive` | `attachments`, `requested`, `phi`, `in_effect`, `contact` and `grant`, or `message`, `named`, `requested` | `send` and `withheld`, or `kept` and `withheld`, or a code |
 
 | Group | Cases |
 |---|---|
@@ -225,7 +230,8 @@ The codes of the grants and revocation records belong to `contacts.md`. This tab
 | Selection | `select_*`, every event type, tool results with and without a binding, scope, labels, body fields, wrapped keys and PHI |
 | Keys and grants | `keys_*`, `grants_*`, the cap, the phi key and the withdrawn destination |
 | Envelope | `receive_*`, one case for each step and one for each adjacent pair of steps, the cutoff of a removed device, a PHI event read by a PHI member and the other grant's key |
-| Wraps, ranges, chunks | `wrap_*`, `header_key_*`, `want_*`, `revoked_*`, `chunks_*` |
+| Wraps, ranges, chunks | `wrap_*`, `header_key_*`, `want_*`, `revoked_*`, `chunks_*`, with a grant that is unknown, revoked, expired or another contact's for each of `want` and `chunks_want` |
+| Roster cutoffs and titles | `granter_roster_*`, `title_*`, `grants_a_bad_title_*` |
 
 The limits that need many elements, 257 envelopes, grant entries or chunks and a frame over 8 MiB, are checked in `reference/tests/test_share.py` instead of the vectors.
 
