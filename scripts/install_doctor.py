@@ -866,7 +866,10 @@ def _keycloak_findings(
     http_probe: Callable[[str, float], HttpResult],
     http_timeout: float,
 ) -> list[Finding]:
-    if str(values.get("ASTRAL_NODE_PROFILE", "") or "").strip().lower() == "personal":
+    profile = str(values.get("ASTRAL_NODE_PROFILE", "") or "").strip().lower()
+    if profile == "personal":
+        return []
+    if str(values.get("ASTRAL_ENV", "") or "").strip().lower() in DEV_VALUES and profile != "institution":
         return []
     authority = str(values.get("KEYCLOAK_AUTHORITY", "") or "").strip()
     if not authority:

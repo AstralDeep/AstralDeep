@@ -582,7 +582,7 @@ def test_keycloak_discovery_failures_are_repair(tmp_path):
     assert "services.keycloak-discovery-invalid" in problem_codes(report)
 
 
-def test_server_profile_without_authority_is_problem_even_in_development(tmp_path):
+def test_institution_profile_without_authority_is_problem_in_development(tmp_path):
     env = dict(DEV_ENV)
     env["ASTRAL_NODE_PROFILE"] = "institution"
     env.pop("KEYCLOAK_AUTHORITY", None)
@@ -590,6 +590,28 @@ def test_server_profile_without_authority_is_problem_even_in_development(tmp_pat
     report = collect(root, env=env, runner=running_services()[0])
     assert "services.keycloak-unconfigured" in problem_codes(report)
     assert report.outcome == "repair"
+
+
+def test_development_without_profile_or_authority_needs_no_keycloak(tmp_path):
+    env = dict(DEV_ENV)
+    env.pop("ASTRAL_NODE_PROFILE")
+    env.pop("KEYCLOAK_AUTHORITY", None)
+    root = make_checkout(tmp_path, env=env)
+    report = collect(root, env=env, runner=running_services()[0])
+    assert "services.keycloak-unconfigured" not in problem_codes(report)
+
+
+def test_shipped_env_example_reports_no_keycloak_problem(tmp_path):
+    values = {}
+    for line in (Path(__file__).resolve().parents[2] / ".env.example").read_text(encoding="utf-8").splitlines():
+        key, separator, value = line.partition("=")
+        if separator and not line.lstrip().startswith("#"):
+            values[key.strip()] = value.split(" #")[0].strip()
+    assert values.get("ASTRAL_ENV") == "development"
+    assert not values.get("KEYCLOAK_AUTHORITY")
+    root = make_checkout(tmp_path, env=values)
+    report = collect(root, env=values, runner=running_services()[0])
+    assert "services.keycloak-unconfigured" not in problem_codes(report)
 
 
 def test_personal_profile_skips_keycloak_probe(tmp_path):

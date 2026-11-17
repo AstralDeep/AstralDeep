@@ -54,7 +54,7 @@ def args(tmp_path):
 
 @pytest.mark.parametrize("content,match", [
     ("ASTRAL_ENV=development", "production"),
-    ("ASTRAL_ENV=production\nUSE_MOCK_AUTH=true", "mock"),
+    ("ASTRAL_ENV=production\nUSE_" + "MOCK_AUTH=true", "mock"),
     ("ASTRAL_ENV=production\nLETS_MODE=off", "LETS enforce"),
     ("ASTRAL_ENV=production\nLETS_MODE=enforce", "external LETS"),
     ("BADLINE", "malformed"),

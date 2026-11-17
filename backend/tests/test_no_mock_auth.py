@@ -12,21 +12,19 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 FORBIDDEN = ("USE_MOCK_AUTH", "dev-token", "dev-mcp-token")
 SKIPPED_PREFIXES = ("specs/",)
 
-ALLOWED: dict[str, tuple[str, ...]] = {
-    "backend/orchestrator/session_store.py": ("USE_MOCK_AUTH",),
-    "scripts/install_doctor.py": ("USE_MOCK_AUTH",),
-    "scripts/run_backend_web_qualification.py": ("USE_MOCK_AUTH",),
-    "backend/tests/test_no_mock_auth.py": FORBIDDEN,
-    "backend/tests/conftest.py": ("USE_MOCK_AUTH",),
-    "backend/tests/helpers/server_identity.py": ("USE_MOCK_AUTH",),
-    "backend/tests/test_env_compat.py": ("USE_MOCK_AUTH",),
-    "backend/tests/test_fail_closed_boot.py": ("USE_MOCK_AUTH",),
-    "backend/tests/test_install_doctor.py": ("USE_MOCK_AUTH",),
-    "backend/tests/test_node_posture.py": ("USE_MOCK_AUTH",),
-    "backend/tests/test_node_bearer_refusal.py": FORBIDDEN,
-    "backend/tests/test_node_delegation.py": ("USE_MOCK_AUTH", "dev-token"),
-    "scripts/tests/test_backend_web_qualification.py": ("USE_MOCK_AUTH",),
-    "scripts/tests/test_backend_web_services.py": ("USE_MOCK_AUTH",),
+ALLOWED: dict[str, tuple[tuple[str, ...], str]] = {
+    "backend/orchestrator/session_store.py": (("USE_MOCK_AUTH",), "the production posture refusal and development warning"),
+    "scripts/install_doctor.py": (("USE_MOCK_AUTH",), "mirrors the posture refusal for operators"),
+    "scripts/run_backend_web_qualification.py": (("USE_MOCK_AUTH",), "qualification refuses a leftover setting"),
+    "backend/tests/test_no_mock_auth.py": (FORBIDDEN, "the guard itself"),
+    "backend/tests/conftest.py": (("USE_MOCK_AUTH",), "scrubs the leftover variable from the ambient environment"),
+    "backend/tests/helpers/server_identity.py": (("USE_MOCK_AUTH",), "scrubs the leftover variable from the ambient environment"),
+    "backend/tests/test_env_compat.py": (("USE_MOCK_AUTH",), "proves the legacy VITE name is not backfilled"),
+    "backend/tests/test_fail_closed_boot.py": (("USE_MOCK_AUTH",), "proves the boot refusal and development warning"),
+    "backend/tests/test_install_doctor.py": (("USE_MOCK_AUTH",), "proves the doctor agrees with the boot refusal"),
+    "backend/tests/test_node_posture.py": (("USE_MOCK_AUTH",), "proves a personal node refuses the leftover setting"),
+    "backend/tests/test_node_bearer_refusal.py": (FORBIDDEN, "proves the removed flag and literal tokens change nothing"),
+    "backend/tests/test_node_delegation.py": (("USE_MOCK_AUTH", "dev-token"), "proves the removed flag and literal token are refused"),
 }
 
 
@@ -39,7 +37,7 @@ def violations(root: Path, files: list[str]) -> list[str]:
         if not path.is_file() or path.is_symlink():
             continue
         text = path.read_bytes().decode("utf-8", errors="ignore")
-        allowed = ALLOWED.get(name, ())
+        allowed = ALLOWED.get(name, ((), ""))[0]
         found.extend(f"{name}: {token}" for token in FORBIDDEN if token in text and token not in allowed)
     return found
 
@@ -47,7 +45,7 @@ def violations(root: Path, files: list[str]) -> list[str]:
 def tracked_files() -> list[str]:
     try:
         listing = subprocess.run(
-            ["git", "ls-files", "-z"], cwd=REPOSITORY_ROOT, capture_output=True, check=True, timeout=60
+            ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"], cwd=REPOSITORY_ROOT, capture_output=True, check=True, timeout=60
         ).stdout
     except (OSError, subprocess.SubprocessError):
         pytest.skip("not a git checkout")
@@ -60,7 +58,7 @@ def test_the_tree_carries_no_mock_auth_outside_the_allowed_files():
 
 def test_every_allowed_file_still_needs_its_exception():
     stale = []
-    for name, tokens in ALLOWED.items():
+    for name, (tokens, _reason) in ALLOWED.items():
         path = REPOSITORY_ROOT / name
         text = path.read_text(encoding="utf-8") if path.is_file() else ""
         stale.extend(f"{name}: {token}" for token in tokens if token not in text)

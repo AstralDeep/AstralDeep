@@ -19,7 +19,7 @@ serve (exit code 78, one consolidated operator checklist in the log) unless:
 
 | Requirement | Why |
 |---|---|
-| No mock-auth setting | Mock auth was removed; a leftover setting refuses to boot. |
+| No mock-auth setting | Mock auth was removed. A leftover setting refuses to boot. |
 | `WEB_SESSION_ENC_KEY` (or `OFFLINE_GRANT_ENC_KEY`) set | Durable web sessions are Fernet-encrypted at rest; refused unencrypted. |
 | `AUDIT_HMAC_SECRET` set to a real value | The audit hash chain is forgeable under the shipped placeholder. |
 | `KEYCLOAK_AUTHORITY` / `KEYCLOAK_CLIENT_ID` / `KEYCLOAK_CLIENT_SECRET` set | The OIDC flow cannot operate without them. |
@@ -412,7 +412,7 @@ satisfy:
 
 | Key | Value | Why the Apple clients need it |
 |---|---|---|
-| `ASTRAL_ENV` | unset (== production) | Fail-closed; missing or placeholder secrets refuse to boot. |
+| `ASTRAL_ENV` | unset (== production) | Fail-closed. Missing or placeholder secrets refuse to boot. |
 | `KEYCLOAK_AUTHORITY` | `https://iam.ai.uky.edu/realms/Astral` | Must match the authority the Release build ships with. |
 | `KEYCLOAK_ALLOWED_AZP` | includes `astral-mobile`, `astral-desktop`, **and** `astral-watch` | iOS→`astral-mobile`, macOS→`astral-desktop`, watch→`astral-watch`; a token whose `azp` is not listed is rejected. |
 | `KEYCLOAK_DEVICE_CLIENTS` | `astral-watch` | Only the watch may use the backend-brokered device grant. |
