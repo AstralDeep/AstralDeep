@@ -121,6 +121,17 @@ def _code_of(exc: BaseException) -> str:
     return str(getattr(exc, "code", "") or "kernel_error")
 
 
+PHI_CODES = ("phi.group_not_ready", "phi.device_excluded")
+
+
+def _code_with_phi(exc: BaseException) -> str:
+    code = _code_of(exc)
+    if code == "engine.sink":
+        text = str(getattr(exc, "message", "") or exc)
+        return next((phi for phi in PHI_CODES if phi in text), code)
+    return code
+
+
 def _development_allowed() -> bool:
     return os.environ.get(ENVIRONMENT_ENV) == DEVELOPMENT
 
@@ -813,6 +824,12 @@ class NodeMesh:
         roster = await asyncio.to_thread(self.kernel.roster)
         return any(device.is_local and device.phi for device in roster.members)
 
+    async def phi_refusal(self) -> Optional[str]:
+        if await self.phi_member():
+            return None
+        group = await asyncio.to_thread(self.kernel.phi_group)
+        return group.local_code or "phi.group_not_ready"
+
     async def peer_standing(self, device_id: str) -> Optional[PeerStanding]:
         roster = await asyncio.to_thread(self.kernel.roster)
         for device in roster.members:
@@ -850,7 +867,7 @@ class NodeMesh:
         try:
             return await kernel.answer_request(request_id)
         except self._binding.KernelError as exc:
-            raise NodeMeshError(_code_of(exc)) from exc
+            raise NodeMeshError(_code_with_phi(exc)) from exc
 
     async def interrupt_request(self, request_id: str, kernel: Any) -> bool:
         if self.kernel is not kernel:
