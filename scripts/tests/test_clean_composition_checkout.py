@@ -13,7 +13,6 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 COMPONENT_PATHS = (
     "components/AstralProjection",
     "components/AstralKernel",
-    "components/AstralPlane",
     "components/AstralPrimitives",
     "components/LETS",
 )

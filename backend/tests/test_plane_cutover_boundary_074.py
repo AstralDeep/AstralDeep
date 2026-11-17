@@ -18,7 +18,7 @@ import unicodedata
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-PLANE_SOURCE = ROOT / "components" / "AstralPlane" / "src"
+PLANE_SOURCE = ROOT / "plane" / "src"
 if str(PLANE_SOURCE) not in sys.path:
     sys.path.insert(0, str(PLANE_SOURCE))
 
@@ -80,36 +80,41 @@ def _gaps() -> dict[str, object]:
     return value
 
 
-def _declared_plane_commit() -> str:
+def _declared_plane_path() -> str:
     composition = json.loads(
         (ROOT / "config" / "astral-composition.json").read_text(encoding="utf-8")
     )
-    commit = composition["components"]["astral-plane"]["commit"]
-    assert isinstance(commit, str)
-    return commit
+    assert "astral-plane" not in composition["components"]
+    path = composition["in_tree"]["astral-plane"]["path"]
+    assert isinstance(path, str)
+    return path
 
 
-def _embedded_plane_gitlink() -> str:
+def _imported_plane_tip() -> str:
     completed = subprocess.run(
-        ["git", "ls-files", "--stage", "--", "components/AstralPlane"],
+        ["git", "log", "--merges", "--grep=^git-subtree-dir: plane$", "--format=%B%x00"],
         cwd=ROOT,
         check=False,
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=60,
     )
     assert completed.returncode == 0, completed.stderr
-    fields = completed.stdout.split()
-    assert fields[0] == "160000"
-    assert fields[2:] == ["0", "components/AstralPlane"]
-    assert len(fields[1]) == 40
-    return fields[1]
+    tips = [
+        line.removeprefix("git-subtree-split:").strip()
+        for body in completed.stdout.split("\0")
+        if "git-subtree-dir: plane" in body.splitlines()
+        for line in body.splitlines()
+        if line.startswith("git-subtree-split:")
+    ]
+    assert len(tips) == 1 and len(tips[0]) == 40
+    return tips[0]
 
 
 def _embedded_plane_parents(commit: str) -> tuple[str, ...]:
     completed = subprocess.run(
         ["git", "rev-list", "--parents", "-n", "1", commit],
-        cwd=ROOT / "components" / "AstralPlane",
+        cwd=ROOT,
         check=False,
         capture_output=True,
         text=True,
@@ -125,7 +130,7 @@ def _embedded_plane_parents(commit: str) -> tuple[str, ...]:
 def _embedded_plane_is_ancestor(ancestor: str, descendant: str) -> bool:
     completed = subprocess.run(
         ["git", "merge-base", "--is-ancestor", ancestor, descendant],
-        cwd=ROOT / "components" / "AstralPlane",
+        cwd=ROOT,
         check=False,
         capture_output=True,
         text=True,
@@ -138,7 +143,7 @@ def _embedded_plane_is_ancestor(ancestor: str, descendant: str) -> bool:
 def _embedded_plane_changed_paths(source: str, evidence: str) -> tuple[str, ...]:
     completed = subprocess.run(
         ["git", "diff", "--name-only", f"{source}..{evidence}", "--"],
-        cwd=ROOT / "components" / "AstralPlane",
+        cwd=ROOT,
         check=False,
         capture_output=True,
         text=True,
@@ -151,7 +156,7 @@ def _embedded_plane_changed_paths(source: str, evidence: str) -> tuple[str, ...]
 def _embedded_plane_file(commit: str, path: str) -> bytes:
     completed = subprocess.run(
         ["git", "show", f"{commit}:{path}"],
-        cwd=ROOT / "components" / "AstralPlane",
+        cwd=ROOT,
         check=False,
         capture_output=True,
         timeout=30,
@@ -308,9 +313,8 @@ def test_gap_inventory_is_exact_for_the_observed_deep_tree() -> None:
     composition_pins = gaps["blockingCompositionPins"]
     assert gaps["blockingCompositionPinCount"] == len(composition_pins) == 0
     observed = gaps["observedPlanePublicSurface"]
-    declared_commit = _declared_plane_commit()
-    embedded_commit = _embedded_plane_gitlink()
-    assert declared_commit == embedded_commit
+    assert _declared_plane_path() == "plane" and (ROOT / "plane" / "pyproject.toml").is_file()
+    embedded_commit = _imported_plane_tip()
     source_commit = observed["sourceCommit"]
     evidence_commit = observed["evidenceCommit"]
     qualification_commit = FEATURE_074_QUALIFICATION_PLANE_COMMIT

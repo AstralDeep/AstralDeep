@@ -30,7 +30,7 @@ def args(tmp_path, monkeypatch):
     monkeypatch.setattr(producer, "observer_user", lambda: "1000:1000")
     source = tmp_path / "source"
     (source / "config").mkdir(parents=True)
-    (source / "config/astral-composition.json").write_text(json.dumps({"components": {"astral-plane": {"commit": "e" * 40}}}))
+    (source / "config/astral-composition.json").write_text(json.dumps({"components": {}, "in_tree": {"astral-plane": {"path": "plane"}}}))
     return argparse.Namespace(phase="all", group=None, receipts=None,
                               policy_commit="a" * 40, candidate_sha="b" * 40,
                               candidate_image="sha256:" + "c" * 64, lets_image="sha256:" + "d" * 64,
@@ -286,10 +286,21 @@ def test_service_deployment_requests_the_reviewed_current_plane_fixture(args, mo
     receipt = producer.produce(args)
     deployment = next(arguments for kind, arguments, *_ in calls if kind == "deploy")
     assert deployment.fixture_sha256 == "c016d8dd30f2bdf932ba8e855bbc586826f5b0f4137b6413c61a82293ef41c1d"
-    assert deployment.plane_source == args.source / "components/AstralPlane"
-    assert deployment.plane_commit == "e" * 40
+    assert deployment.plane_source == args.source / "plane"
+    assert deployment.plane_commit == args.candidate_sha
     assert deployment.baseline_deep_image == "ghcr.io/astraldeep/astraldeep:sha-ca822e68d5477fb60fa9076107a4dab4138eeda6@sha256:802244a5eb1a715dff4fa587a0e7d447b9eb425f1b674fc48cf0e685ced18aa2"
     assert receipt["release_authorized"] is False
+
+
+def test_service_deployment_keeps_a_pinned_plane_commit_for_a_pre_move_composition(args, monkeypatch):
+    (args.source / "config/astral-composition.json").write_text(
+        json.dumps({"components": {"astral-plane": {"commit": "e" * 40}}})
+    )
+    calls = stub_phases(args, monkeypatch)
+    args.phase = "services"
+    producer.produce(args)
+    deployment = next(arguments for kind, arguments, *_ in calls if kind == "deploy")
+    assert deployment.plane_commit == "e" * 40
 
 
 @pytest.mark.parametrize("failure", [None, "gates", "gate-modules", "services", "deployment", "auth", "auth-record"])

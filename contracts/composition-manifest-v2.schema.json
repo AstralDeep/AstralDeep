@@ -1,20 +1,21 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/AstralDeep/AstralDeep/contracts/system-composition.schema.json",
+  "$id": "https://github.com/AstralDeep/AstralDeep/contracts/composition-manifest-v2.schema.json",
   "title": "Astral System Composition Manifest",
-  "description": "Pins the five independent component revisions and their compatibility contracts. The containing AstralDeep commit is joined externally with the canonical manifest digest to avoid a self-reference.",
+  "description": "Pins the four independent component revisions, names the in-tree Plane package and records their compatibility contracts. The containing AstralDeep commit is joined externally with the canonical manifest digest to avoid a self-reference.",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "format",
     "astraldeep_contract_version",
     "components",
+    "in_tree",
     "availability",
     "compatibility"
   ],
   "properties": {
     "format": {
-      "const": "astral.composition/v1"
+      "const": "astral.composition/v2"
     },
     "astraldeep_contract_version": {
       "const": "astraldeep.composition/v1"
@@ -25,7 +26,6 @@
       "required": [
         "astral-projection",
         "astral-kernel",
-        "astral-plane",
         "astral-primitives",
         "lets"
       ],
@@ -36,14 +36,23 @@
         "astral-kernel": {
           "$ref": "#/$defs/kernelComponent"
         },
-        "astral-plane": {
-          "$ref": "#/$defs/planeComponent"
-        },
         "astral-primitives": {
           "$ref": "#/$defs/primitivesComponent"
         },
         "lets": {
           "$ref": "#/$defs/letsComponent"
+        }
+      }
+    },
+    "in_tree": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "astral-plane"
+      ],
+      "properties": {
+        "astral-plane": {
+          "$ref": "#/$defs/planeInTree"
         }
       }
     },
@@ -303,26 +312,21 @@
         }
       ]
     },
-    "planeComponent": {
-      "allOf": [
-        {
-          "$ref": "#/$defs/baseComponent"
+    "planeInTree": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "contract_version"
+      ],
+      "properties": {
+        "path": {
+          "const": "plane"
         },
-        {
-          "type": "object",
-          "properties": {
-            "repository": {
-              "const": "https://github.com/AstralDeep/AstralPlane.git"
-            },
-            "path": {
-              "const": "components/AstralPlane"
-            },
-            "contract_version": {
-              "const": "astralplane.contract/v1"
-            }
-          }
+        "contract_version": {
+          "const": "astralplane.contract/v1"
         }
-      ]
+      }
     },
     "primitivesComponent": {
       "allOf": [

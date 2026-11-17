@@ -120,7 +120,7 @@ def test_real_initialized_sources_match_the_declarations() -> None:
         for relative in (
             "components/AstralProjection",
             "components/AstralKernel/python/rote",
-            "components/AstralPlane",
+            "plane",
             "components/AstralPrimitives",
             "components/LETS",
         )
@@ -661,3 +661,68 @@ def test_component_selection_validates_only_selected_sources(tmp_path, monkeypat
     selected = installer.select_components(contract, [contract.components[0].key], require_sources=True)
     assert observed == [selected]
     assert len(contract.components) > len(selected.components)
+
+
+def _real_manifest() -> dict[str, Any]:
+    return json.loads((REPOSITORY_ROOT / "config/astral-composition.json").read_text("utf-8"))
+
+
+def _real_contract() -> Any:
+    return installer.load_contract(REPOSITORY_ROOT, require_sources=False)
+
+
+def test_plane_is_declared_in_tree_and_builds_from_the_plane_folder() -> None:
+    plane = next(item for item in _real_contract().components if item.key == "astral-plane")
+    assert plane.in_tree is True
+    assert plane.relative_path == "plane"
+    assert plane.source_root(REPOSITORY_ROOT) == REPOSITORY_ROOT / "plane"
+    assert all(not item.in_tree for item in _real_contract().components if item.key != "astral-plane")
+
+
+def test_manifest_key_set_counts_the_in_tree_keys() -> None:
+    contract = _real_contract()
+    manifest = _real_manifest()
+    installer._validate_manifest(contract, manifest)
+    for mutate in (
+        lambda document: document["components"].update({"astral-plane": document["in_tree"]["astral-plane"]}),
+        lambda document: document["in_tree"].clear(),
+        lambda document: document["in_tree"].update({"extra": {}}),
+        lambda document: document["components"].pop("lets"),
+    ):
+        broken = json.loads(json.dumps(manifest))
+        mutate(broken)
+        with pytest.raises(installer.ComponentInstallError):
+            installer._validate_manifest(contract, broken)
+
+
+def test_in_tree_identity_must_name_exactly_the_folder_and_contract() -> None:
+    contract = _real_contract()
+    manifest = _real_manifest()
+    for field, value in (("path", "elsewhere"), ("contract_version", "astralplane.contract/v2"), ("commit", "a" * 40)):
+        broken = json.loads(json.dumps(manifest))
+        broken["in_tree"]["astral-plane"][field] = value
+        with pytest.raises(installer.ComponentInstallError):
+            installer._validate_manifest(contract, broken)
+
+
+@pytest.mark.parametrize("format_value", ["astral.composition/v1", "astral.composition/v3", None])
+def test_earlier_manifest_formats_are_refused_with_a_format_error(format_value: Any) -> None:
+    broken = _real_manifest()
+    broken["format"] = format_value
+    with pytest.raises(installer.ComponentInstallError, match="no longer supported"):
+        installer._validate_manifest(_real_contract(), broken)
+
+
+def test_in_tree_plane_must_keep_its_folder_name(tmp_path: Path) -> None:
+    with pytest.raises(installer.ComponentInstallError, match="repository folder"):
+        installer._component_spec("astral-plane", {
+            "distribution": "astralplane", "version": "0.1.12", "path": "components/AstralPlane",
+            "contract": "c", "availability": "required-embedded", "import": "astralplane",
+            "extras": [], "build-inputs": ["pyproject.toml"], "required-wheel-paths": ["a"],
+        })
+
+
+def test_declarations_check_covers_only_the_pinned_gitlinks() -> None:
+    contract = _real_contract()
+    installer._validate_git_declarations(contract, _real_manifest(), require_gitlinks=False)
+    assert "plane" not in installer._parse_gitmodules(REPOSITORY_ROOT / ".gitmodules")
