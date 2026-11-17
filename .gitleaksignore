@@ -584,3 +584,8 @@ a2dad76472aa81ccb6874e9fe30d8ecf44c63fa3:specs/106-sign-in-free-clients/contract
 a2dad76472aa81ccb6874e9fe30d8ecf44c63fa3:specs/106-sign-in-free-clients/contracts/vectors/share-v1.json:generic-api-key:48284
 a2dad76472aa81ccb6874e9fe30d8ecf44c63fa3:specs/106-sign-in-free-clients/contracts/vectors/share-v1.json:generic-api-key:48311
 a2dad76472aa81ccb6874e9fe30d8ecf44c63fa3:specs/106-sign-in-free-clients/contracts/vectors/share-v1.json:generic-api-key:48338
+# Node pack log-redaction tests: fake secret values, a dummy unsigned JWT and placeholder assignments the redactor must strip. They hold no credential.
+48c74313e88f26649ea4ddc3197441f8c9e27e61:scripts/tests/test_node_bundle_launcher.py:generic-api-key:82
+48c74313e88f26649ea4ddc3197441f8c9e27e61:scripts/tests/test_node_bundle_logging.py:generic-api-key:11
+48c74313e88f26649ea4ddc3197441f8c9e27e61:scripts/tests/test_node_bundle_logging.py:generic-api-key:12
+48c74313e88f26649ea4ddc3197441f8c9e27e61:scripts/tests/test_node_bundle_logging.py:jwt:17
