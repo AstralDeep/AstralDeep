@@ -171,6 +171,31 @@ def test_a_seatbelt_call_with_hosts_gets_the_proxy_port_and_it_is_closed_after(
     assert closed == [1]
 
 
+@pytest.mark.parametrize("platform", ["darwin", "linux"])
+def test_a_stop_signal_while_building_the_call_still_closes_the_proxy(
+    monkeypatch, platform
+):
+    closed = []
+    real_close = launch.Proxy.close
+    monkeypatch.setattr(
+        launch.Proxy, "close", lambda self: (closed.append(1), real_close(self))
+    )
+
+    def stop(*args, **kwargs):
+        raise launch._Stopped(signal.SIGTERM)
+
+    monkeypatch.setattr(launch, f"_{'seatbelt' if platform == 'darwin' else 'linux'}_call", stop)
+    policy = (
+        darwin_policy(hosts=HOSTED)
+        if platform == "darwin"
+        else loaded(minimal_policy(hosts=HOSTED))
+    )
+    facts = darwin_facts() if platform == "darwin" else good_facts()
+    with pytest.raises(launch._Stopped):
+        launch._run(policy, ["/bin/echo"], {}, None, facts=facts)
+    assert closed == [1]
+
+
 def test_a_linux_call_with_hosts_binds_the_proxy_socket_and_closes_it_after(
     monkeypatch,
 ):

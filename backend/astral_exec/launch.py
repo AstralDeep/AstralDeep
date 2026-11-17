@@ -722,37 +722,37 @@ def _launch(
     log = _log(digest)
     proxy = None
     try:
-        if not isinstance(policy, Policy) or policy.loaded_for is None:
-            raise ContextError("run needs a policy loaded with Policy.load")
-        chosen = select(
-            policy, probe() if facts is None else facts, policy.loaded_for[1]
-        )
-        if isinstance(chosen, Refusal):
-            log.info("exec refused code=%s", chosen.code)
-            return Outcome(chosen.code, None, refusal=chosen)
-        data = _checked_stdin(stdin)
-        hosts = policy.document["hosts"]
-        if chosen == Backend("seatbelt"):
-            if hosts:
-                proxy = Proxy(hosts, "tcp", **(proxy_options or {}))
-                proxy.start()
-            call = _seatbelt_call(
-                policy, argv, env, proxy.address if proxy is not None else None
+        try:
+            if not isinstance(policy, Policy) or policy.loaded_for is None:
+                raise ContextError("run needs a policy loaded with Policy.load")
+            chosen = select(
+                policy, probe() if facts is None else facts, policy.loaded_for[1]
             )
-        elif chosen.name == "linux":
-            if hosts and egress_socket is None:
-                proxy = Proxy(hosts, "unix", **(proxy_options or {}))
-                proxy.start()
-                egress_socket = str(proxy.address)
-            linux_call = _linux_call(policy, argv, env, chosen, egress_socket)
-        else:
-            raise ContextError(f"this launcher cannot start the {chosen.name} backend")
-    except Exception as error:
-        if proxy is not None:
-            proxy.close()
-        log.warning("exec launch failed before start: %s", type(error).__name__)
-        return Outcome("exec.launch_failed", None)
-    try:
+            if isinstance(chosen, Refusal):
+                log.info("exec refused code=%s", chosen.code)
+                return Outcome(chosen.code, None, refusal=chosen)
+            data = _checked_stdin(stdin)
+            hosts = policy.document["hosts"]
+            if chosen == Backend("seatbelt"):
+                if hosts:
+                    proxy = Proxy(hosts, "tcp", **(proxy_options or {}))
+                    proxy.start()
+                call = _seatbelt_call(
+                    policy, argv, env, proxy.address if proxy is not None else None
+                )
+            elif chosen.name == "linux":
+                if hosts and egress_socket is None:
+                    proxy = Proxy(hosts, "unix", **(proxy_options or {}))
+                    proxy.start()
+                    egress_socket = str(proxy.address)
+                linux_call = _linux_call(policy, argv, env, chosen, egress_socket)
+            else:
+                raise ContextError(
+                    f"this launcher cannot start the {chosen.name} backend"
+                )
+        except Exception as error:
+            log.warning("exec launch failed before start: %s", type(error).__name__)
+            return Outcome("exec.launch_failed", None)
         if chosen.name == "linux":
             return _launch_linux(linux_call, capture, data, log)
         return _launch_seatbelt(policy, call, capture, data, log)

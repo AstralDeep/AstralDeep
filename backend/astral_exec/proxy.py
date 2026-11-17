@@ -23,6 +23,7 @@ MAX_HEAD_BYTES = 8192
 MAX_HEADER_LINES = 64
 HANDSHAKE_SECONDS = 10.0
 CONNECT_SECONDS = 10.0
+TUNNEL_DEADLINE_SECONDS = 20.0
 BACKLOG = 64
 ACCEPT_POLL_SECONDS = 0.05
 BIND_ATTEMPTS = 32
@@ -39,12 +40,14 @@ _NON_PUBLIC = tuple(
         "169.254.0.0/16",
         "172.16.0.0/12",
         "192.0.0.0/24",
+        "192.88.99.0/24",
         "192.168.0.0/16",
         "198.18.0.0/15",
         "224.0.0.0/3",
         "::/128",
         "::1/128",
         "64:ff9b::/96",
+        "64:ff9b:1::/48",
         "100::/64",
         "2001::/23",
         "2002::/16",
@@ -61,6 +64,7 @@ _REASONS = {
     408: "Request Timeout",
     431: "Request Header Fields Too Large",
     502: "Bad Gateway",
+    504: "Gateway Timeout",
     503: "Service Unavailable",
 }
 _LOG = logging.getLogger("astral_exec.proxy")
@@ -144,6 +148,7 @@ class Proxy:
         resolver: Resolver | None = None,
         connector: Connector | None = None,
         handshake_seconds: float = HANDSHAKE_SECONDS,
+        deadline_seconds: float = TUNNEL_DEADLINE_SECONDS,
         max_tunnels: int = MAX_TUNNELS,
     ) -> None:
         if family not in ("tcp", "unix"):
@@ -156,6 +161,7 @@ class Proxy:
         self._resolver = resolver or _system_resolver
         self._connector = connector or _system_connector
         self._handshake = handshake_seconds
+        self._deadline = deadline_seconds
         self._slots = threading.BoundedSemaphore(max_tunnels)
         self._lock = threading.Lock()
         self._active: set[socket.socket] = set()
@@ -219,16 +225,18 @@ class Proxy:
 
     def _listen_tcp(self) -> int:
         for _attempt in range(BIND_ATTEMPTS):
-            first = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            second = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+            first = second = None
             try:
+                first = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                second = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
                 second.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
                 first.bind(("127.0.0.1", 0))
                 port = first.getsockname()[1]
                 second.bind(("::1", port))
             except OSError:
-                first.close()
-                second.close()
+                for each in (first, second):
+                    if each is not None:
+                        each.close()
                 continue
             for each in (first, second):
                 each.listen(BACKLOG)
@@ -276,7 +284,7 @@ class Proxy:
             client.settimeout(None)
             relay(client, upstream)
         except _Deny as denied:
-            _LOG.info("proxy decision code=%s target=%s", denied.code, denied.target)
+            _LOG.info("proxy decision code=%s target=%r", denied.code, denied.target)
             self._reply(client, denied.status)
         except OSError:
             _LOG.info("proxy decision code=proxy.error.io target=-")
@@ -308,17 +316,40 @@ class Proxy:
         if (host, port) not in self._allowed:
             code = "proxy.deny.port" if host in self._names else "proxy.deny.host"
             raise _Deny(403, code, target)
+        deadline = time.monotonic() + self._deadline
         try:
-            answers = resolve_public(host, port, self._resolver)
+            answers = self._resolve(host, port, deadline)
         except _Deny as denied:
             denied.target = target
             raise
         for address in answers:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise _Deny(504, "proxy.error.timeout", target)
             try:
-                return self._connector(address, port, CONNECT_SECONDS), leftover, target
-            except OSError:
+                upstream = self._connector(address, port, min(CONNECT_SECONDS, left))
+            except (OSError, ValueError):
                 continue
+            return upstream, leftover, target
         raise _Deny(502, "proxy.error.connect", target)
+
+    def _resolve(self, host: str, port: int, deadline: float) -> list[str]:
+        outcome: list[Any] = []
+
+        def work() -> None:
+            try:
+                outcome.append(resolve_public(host, port, self._resolver))
+            except BaseException as error:  # noqa: BLE001
+                outcome.append(error)
+
+        worker = threading.Thread(target=work, daemon=True)
+        worker.start()
+        worker.join(max(deadline - time.monotonic(), 0))
+        if not outcome:
+            raise _Deny(504, "proxy.error.timeout")
+        if isinstance(outcome[0], BaseException):
+            raise outcome[0]
+        return outcome[0]
 
     def _read_head(self, client: socket.socket) -> tuple[bytes, bytes]:
         deadline = time.monotonic() + self._handshake
@@ -349,6 +380,8 @@ class Proxy:
         for line in lines[1:]:
             if b":" not in line or line[:1] in (b" ", b"\t") or any(b < 32 and b != 9 or b == 127 for b in line):
                 raise _Deny(400, "proxy.deny.malformed")
+        if any(b < 32 or b == 127 for b in lines[0]):
+            raise _Deny(400, "proxy.deny.malformed")
         parts = lines[0].split(b" ")
         if len(parts) != 3 or parts[2] not in _ALLOWED_VERSIONS:
             raise _Deny(400, "proxy.deny.malformed")
@@ -365,7 +398,7 @@ class Proxy:
         except UnicodeDecodeError as error:
             raise _Deny(400, "proxy.deny.malformed") from error
         host, colon, digits = text.rpartition(":")
-        if not colon or not host or not digits.isascii() or not digits.isdigit() or len(digits) > 5:
+        if not colon or not host or not digits.isascii() or not digits.isdigit() or len(digits) > 5 or digits[0] == "0":
             raise _Deny(400, "proxy.deny.malformed")
         port = int(digits)
         if not 1 <= port <= 65535 or any(c in host for c in "/?#@ \t"):

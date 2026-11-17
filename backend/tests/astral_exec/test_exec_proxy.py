@@ -8,6 +8,7 @@ import logging
 import os
 import socket
 import threading
+import time
 
 import pytest
 from astral_exec import proxy as proxy_module
@@ -159,6 +160,7 @@ def test_early_client_bytes_after_the_head_reach_the_upstream(running, fixture):
         ("2130706433:443", 403, "proxy.deny.literal"),
         ("0x7f.1:443", 403, "proxy.deny.literal"),
         ("api.example.com:0", 400, "proxy.deny.malformed"),
+        ("api.example.com:0443", 400, "proxy.deny.malformed"),
         ("api.example.com:65536", 400, "proxy.deny.malformed"),
         ("api.example.com:44x", 400, "proxy.deny.malformed"),
         ("api.example.com", 400, "proxy.deny.malformed"),
@@ -206,6 +208,77 @@ def test_other_methods_and_malformed_requests_are_refused(
     assert fixture.calls == []
 
 
+def test_control_bytes_in_the_request_line_are_refused_and_never_logged_raw(running, caplog):
+    proxy = running()
+    with caplog.at_level(logging.INFO, logger="astral_exec.proxy"):
+        for line in (
+            b"CONNECT evil.example.com:443\nproxy.allow target=x HTTP/1.1",
+            b"CONNECT evil.example.com:443\rproxy.allow HTTP/1.1",
+            b"CONNECT evil.example.com:443 HTTP/1.1\x7f",
+        ):
+            assert _status(proxy, line + b"\r\n\r\n") == 400
+        assert _status(proxy, _connect("evil\x01.example.com:443")) == 400
+    assert all("\n" not in r.getMessage() and "\r" not in r.getMessage() for r in caplog.records)
+    assert [r.getMessage().count("code=") for r in caplog.records] == [1] * 4
+    assert "proxy.allow" not in caplog.text
+
+
+def test_a_denied_target_is_logged_in_a_quoted_form(running, caplog):
+    proxy = running()
+    with caplog.at_level(logging.INFO, logger="astral_exec.proxy"):
+        _status(proxy, _connect("other.example.com:443"))
+    assert "target='other.example.com:443'" in caplog.text
+
+
+def test_a_resolver_that_never_answers_hits_the_tunnel_deadline(running, caplog):
+    release = threading.Event()
+    proxy = running(resolver=lambda h, p: release.wait(30) or [PUBLIC], deadline_seconds=0.2)
+    try:
+        with caplog.at_level(logging.INFO, logger="astral_exec.proxy"):
+            assert _status(proxy, _connect("api.example.com:443")) == 504
+        assert "proxy.error.timeout" in caplog.text
+    finally:
+        release.set()
+
+
+def test_an_exhausted_deadline_stops_before_the_next_address(running, fixture):
+    fixture.answers["api.example.com"] = ["93.184.216.34", "93.184.216.35"]
+    seen = []
+
+    def connector(address, port, timeout):
+        seen.append(address)
+        time.sleep(0.3)
+        raise OSError("slow")
+
+    proxy = running(connector=connector, deadline_seconds=0.2)
+    assert _status(proxy, _connect("api.example.com:443")) == 504
+    assert seen == ["93.184.216.34"]
+
+
+def test_a_connector_that_raises_value_error_counts_as_a_failed_address(running):
+    def connector(address, port, timeout):
+        raise ValueError("bad address")
+
+    proxy = running(connector=connector)
+    assert _status(proxy, _connect("api.example.com:443")) == 502
+
+
+def test_a_failed_ipv6_socket_closes_the_first_listener(monkeypatch):
+    made = []
+    real = socket.socket
+
+    def factory(family=socket.AF_INET, *args, **kwargs):
+        if family == socket.AF_INET6:
+            raise OSError("no ipv6")
+        made.append(real(family, *args, **kwargs))
+        return made[-1]
+
+    monkeypatch.setattr(proxy_module.socket, "socket", factory)
+    with pytest.raises(OSError):
+        Proxy(HOSTS, "tcp").start()
+    assert made and all(each.fileno() == -1 for each in made)
+
+
 def test_a_peer_that_closes_before_the_head_is_malformed(running, caplog):
     proxy = running()
     with caplog.at_level(logging.INFO, logger="astral_exec.proxy"):
@@ -224,6 +297,8 @@ def test_a_peer_that_closes_before_the_head_is_malformed(running, caplog):
         ["169.254.169.254"],
         ["::1"],
         ["100.64.0.1"],
+        ["192.88.99.1"],
+        ["64:ff9b:1::1"],
         ["fd00:ec2::254"],
         ["::ffff:10.0.0.1"],
         ["fe80::1%en0"],
