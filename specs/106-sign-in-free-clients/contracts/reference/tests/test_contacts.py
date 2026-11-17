@@ -76,6 +76,9 @@ INVITE_OUTCOMES = {
     "invite_make_lifetime_60_valid": "ok",
     "invite_make_lifetime_86400_valid": "ok",
     "invite_make_lifetime_59": "contact.invite_lifetime",
+    "invite_make_for_the_far_future": "ok",
+    "invite_expiry_more_than_a_day_away": "contact.invite_lifetime",
+    "invite_expiry_exactly_a_day_away": "ok",
     "invite_make_lifetime_86401": "contact.invite_lifetime",
     "invite_valid_text": "ok",
     "invite_valid_link": "ok",
@@ -133,6 +136,12 @@ CODE_OUTCOMES = {
     "code_nonce_15_bytes": "contact.malformed",
     "code_nonce_not_base64": "contact.malformed",
     "code_three_nonces": "contact.malformed",
+    "code_side_missing_heads": "contact.malformed",
+    "code_side_not_an_object": "contact.malformed",
+    "code_side_bad_mesh": "contact.malformed",
+    "code_side_count_negative": "contact.malformed",
+    "code_sides_not_a_list": "contact.malformed",
+    "code_nonces_not_a_list": "contact.malformed",
 }
 ROSTER_OUTCOMES = {"roster_digest_no_genesis": "roster.no_genesis"}
 
@@ -188,6 +197,10 @@ CONTACT_OUTCOMES = {
     "fold_contact_cap_keeps_the_earliest": folded(
         [V, "verified:Cy"], ["contact.too_many"]
     ),
+    "fold_contact_cap_ignores_later_updates": folded([V, "verified:Cy again"], ["contact.too_many"]),
+    "fold_removed_device_events_past_its_cutoff_are_ignored": folded(["unverified:Dave4"], ["contact.writer_not_member"]),
+    "fold_without_a_mesh_id": "contact.malformed",
+    "fold_with_a_bad_mesh_id": "contact.malformed",
     "fold_scope_not_mesh": folded([], ["contact.malformed"]),
     "fold_labels_not_private_owner": folded([], ["contact.malformed"]),
     "fold_labels_public": folded([], ["contact.malformed"]),
@@ -241,6 +254,7 @@ FOLLOW_OUTCOMES = {
     "follow_concurrent_adds_of_one_key_are_not_rejected": followed(True, notices=["device_added"] * 2),
     "follow_honest_rejection_after_a_voided_ancestor": followed(True, notices=["device_removed"]),
     "follow_trigger_with_later_valid_entries": followed(False, REJECTED, triggers=["roster.already_member"]),
+    "follow_roster_with_more_heads_than_a_mark_holds": followed(False, "contact.roster_too_large"),
     "follow_heads_missing_from_cache": followed(False, "contact.heads_missing"),
     "follow_no_genesis_in_cache": followed(False, "roster.no_genesis"),
     "follow_empty_cache": followed(False, "roster.no_genesis"),
@@ -332,6 +346,7 @@ SHARE_OUTCOMES = {
     "share_superseder_without_consent_leaves_the_older_standing": shared(["g0"], ignored=["share.consent_missing"]),
     "share_supersedes_grant_for_other_contact": shared(["g0"], ignored=["share.supersedes_unknown"]),
     "share_supersedes_grant_for_other_chat": shared(["g0"], ignored=["share.supersedes_unknown"]),
+    "share_second_superseder_of_one_target_is_refused": shared(["g1"], superseded={"g0": "g1"}, ignored=["share.supersedes_unknown"]),
     "share_supersedes_unknown_grant": shared(ignored=["share.supersedes_unknown"]),
     "share_supersedes_a_grant_ordered_after_it": shared(["g0"], ignored=["share.supersedes_unknown"]),
     "share_supersedes_itself": shared(ignored=MALFORMED),
@@ -607,6 +622,26 @@ def test_a_removal_built_on_a_stranger_entry_still_refuses_the_removed_device() 
     with pytest.raises(MeshError) as error:
         contacts.reader_check(ok["mark"], reader)
     assert error.value.code == "share.device_removed"
+
+
+def test_a_roster_with_too_many_removals_is_too_large(monkeypatch: pytest.MonkeyPatch) -> None:
+    case = CASES["follow_valid_removal_marks_removed"]
+    monkeypatch.setattr(contacts, "MAX_MARK_REMOVED", 0)
+    result = contacts.run("contact_follow", case["input"])["ok"]
+    assert (result["follows"], result["reason"], result["mark"]) == (False, "contact.roster_too_large", None)
+
+
+def test_cap_position_comes_from_the_first_accepted_event() -> None:
+    case = CASES["fold_contact_cap_ignores_later_updates"]
+    names = [c["record"]["name"] for c in case["expect"]["ok"]["contacts"]]
+    assert "Cy again" in names and "Di" not in names
+
+
+def test_a_removed_device_writes_only_up_to_its_cutoff() -> None:
+    case = CASES["fold_removed_device_events_past_its_cutoff_are_ignored"]
+    cutoff = case["input"]["removed"][DOC["test_devices"]["dave"]["id"]]["cutoff"]
+    assert list(cutoff.values()) == [5]
+    assert len(case["expect"]["ok"]["ignored"]) == 1
 
 
 def test_a_grant_id_is_written_once() -> None:

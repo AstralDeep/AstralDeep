@@ -131,7 +131,12 @@ INVITE_CODES = (
     "contact.invite_expired",
     "contact.invite_lifetime",
 )
-FOLLOW_CODES = ("contact.roster_rejected", "contact.heads_missing", "roster.no_genesis")
+FOLLOW_CODES = (
+    "contact.roster_rejected",
+    "contact.heads_missing",
+    "contact.roster_too_large",
+    "roster.no_genesis",
+)
 STATE_CODES = ("contact.unverified", "share.contact_unverified")
 READER_CODES = ("share.reader_kind", "share.device_removed", "share.roster_stale")
 CODES = tuple(
@@ -344,6 +349,10 @@ class _Roster:
         owner = self.any_owner.get(event["feed"])
         if owner is None:
             raise _fail(prefix + ".writer_not_member", event["feed"])
+        if owner in self.removed and owner not in self.members:
+            cutoff = self.removed[owner].get("cutoff", {}).get(event["feed"], 0)
+            if event["seq"] > cutoff:
+                raise _fail(prefix + ".writer_not_member", event["feed"])
         return owner
 
     def mark_writer(self, event: dict[str, Any]) -> str:
@@ -393,9 +402,17 @@ def _check_contact_event(
     return {"form": "put", "id": key["id"], "consent": consent}
 
 
-def fold_contacts(state: dict[str, Any]) -> dict[str, Any]:
-    roster = _Roster(state)
+def _own_mesh(state: dict[str, Any]) -> str:
     own = state.get("mesh")
+    if not crypto.is_id(own):
+        raise _fail("contact.malformed", "mesh")
+    return own
+
+
+def fold_contacts(state: dict[str, Any]) -> dict[str, Any]:
+    own = _own_mesh(state)
+    roster = _Roster(state)
+    first: dict[str, Any] = {}
     cap = state.get("limits", {}).get("contacts", MAX_CONTACTS)
     heads: dict[str, tuple[Any, dict[str, Any], dict[str, Any]]] = {}
     marks: dict[str, list[tuple[Any, dict[str, Any]]]] = {}
@@ -416,9 +433,14 @@ def fold_contacts(state: dict[str, Any]) -> dict[str, Any]:
             continue
         if checked.get("consent") is not None:
             used.add(connection._consent_key(checked["consent"]))
+        first.setdefault(checked["id"], rank)
         heads[checked["id"]] = (rank, event, checked)
     live = sorted(
-        ((rank, event, checked) for rank, event, checked in heads.values() if checked["form"] == "put"),
+        (
+            (first[key], event, checked)
+            for key, (_, event, checked) in heads.items()
+            if checked["form"] == "put"
+        ),
         key=lambda item: item[0],
     )
     for _, event, _ in live[cap:]:
@@ -467,6 +489,7 @@ def _check_share_event(
 
 
 def fold_shares(state: dict[str, Any]) -> dict[str, Any]:
+    _own_mesh(state)
     roster = _Roster(state)
     cap = state.get("limits", {}).get("grants", MAX_GRANTS)
     contacts = {c["mesh"]: c for c in fold_contacts(state)["contacts"]}
@@ -504,6 +527,7 @@ def fold_shares(state: dict[str, Any]) -> dict[str, Any]:
             target is None
             or target["contact"] != grant["contact"]
             or target["item"] != grant["item"]
+            or target["id"] in superseded
         ):
             ignored[grant["event"]] = "share.supersedes_unknown"
             continue
@@ -691,6 +715,13 @@ def follow(mesh: str, record: dict[str, Any], entries: list[Any]) -> dict[str, A
     if triggers:
         result["reason"] = result["downgrade"] = "contact.roster_rejected"
         return result
+    if (
+        len(roster["heads"]) > MAX_MARK_HEADS
+        or len(roster["fold"]["removed"]) > MAX_MARK_REMOVED
+    ):
+        result["reason"] = "contact.roster_too_large"
+        result["mark"] = None
+        return result
     if not all(h in roster["usable"] for h in record["heads"]):
         result["reason"] = "contact.heads_missing"
         return result
@@ -805,6 +836,8 @@ def check_invite(invite: dict[str, Any], now_s: int, own_mesh: str) -> dict[str,
         raise _fail("contact.self")
     if now_s >= invite["expires_s"]:
         raise _fail("contact.invite_expired")
+    if invite["expires_s"] - now_s > MAX_LIFETIME_S:
+        raise _fail("contact.invite_lifetime")
     return invite
 
 
@@ -818,8 +851,26 @@ def _nonce_bytes(nonce: Any) -> bytes:
     return raw
 
 
+def _side_ok(side: Any) -> bool:
+    return (
+        isinstance(side, dict)
+        and set(side) == {"mesh", "heads", "count"}
+        and crypto.is_id(side["mesh"])
+        and isinstance(side["heads"], list)
+        and all(crypto.is_id(h) for h in side["heads"])
+        and _int(side["count"])
+        and side["count"] >= 0
+    )
+
+
 def comparison_code(nonces: list[str], sides: list[dict[str, Any]]) -> dict[str, Any]:
-    if len(nonces) != 2 or len(sides) != 2:
+    if (
+        not isinstance(nonces, list)
+        or not isinstance(sides, list)
+        or len(nonces) != 2
+        or len(sides) != 2
+        or not all(_side_ok(s) for s in sides)
+    ):
         raise _fail("contact.malformed", "inputs")
     raw = sorted(_nonce_bytes(n) for n in nonces)
     if raw[0] == raw[1]:

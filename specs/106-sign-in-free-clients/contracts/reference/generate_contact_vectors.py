@@ -38,7 +38,8 @@ ALICE, BOB, CAROL, NODE, DAVE, MALLORY = (
     gcv.DAVE,
     gcv.MALLORY,
 )
-MEMBERS, REMOVED = gcv.MEMBERS, gcv.REMOVED
+MEMBERS = gcv.MEMBERS
+REMOVED = {DAVE.id: {**gcv.REMOVED[DAVE.id], "cutoff": {DAVE.feed: 5}}}
 OWN = crypto.sha256_id(b"contacts-v1/own-mesh")
 CM = [crypto.sha256_id(f"contacts-v1/contact/{i}".encode()) for i in range(4)]
 HEADS = sorted(crypto.sha256_id(f"contacts-v1/head/{i}".encode()) for i in range(3))
@@ -389,6 +390,12 @@ def invite_cases(add: Any) -> None:
     check("invite_expired_at_expiry", ok["text"], invite["expires_s"])
     check("invite_expired_later", ok["text"], invite["expires_s"] + 3600)
     check("invite_own_mesh", ok["text"], own=OWN)
+    long = add("invite_make_for_the_far_future", "contact_invite_make", {
+        "identity_scalar_hex": scalar, "mesh": OWN, "name": "Alex", "addr": ADDR,
+        "nonce": nonce, "now_s": NOW_S + 3600, "lifetime_s": 86400,
+    })["ok"]
+    check("invite_expiry_more_than_a_day_away", long["text"], NOW_S)
+    check("invite_expiry_exactly_a_day_away", long["text"], NOW_S + 3600)
     check("invite_own_mesh_after_expiry_is_self", ok["text"], invite["expires_s"] + 1, OWN)
     check("invite_tampered_name_bad_signature", tampered_text(invite, name="Eve"))
     raw = bytearray(cj.b64url_decode(invite["sig"]))
@@ -469,6 +476,12 @@ def code_cases(add: Any) -> None:
     code("code_nonce_15_bytes", [b64(bytes(15)), n2], [a, b])
     code("code_nonce_not_base64", ["***", n2], [a, b])
     code("code_three_nonces", [n1, n2, n1], [a, b])
+    code("code_side_missing_heads", [n1, n2], [{"mesh": CM[0], "count": 7}, b])
+    code("code_side_not_an_object", [n1, n2], ["x", b])
+    code("code_side_bad_mesh", [n1, n2], [a | {"mesh": "x"}, b])
+    code("code_side_count_negative", [n1, n2], [a | {"count": -1}, b])
+    code("code_sides_not_a_list", [n1, n2], {"a": 1})
+    code("code_nonces_not_a_list", "ab", [a, b])
 
     def zeros(pair: list[bytes], result: dict[str, Any]) -> bool:
         return result["ok"]["display"].startswith("0000 ") if "ok" in result else False
@@ -669,6 +682,19 @@ def contact_fold_cases(add: Any) -> None:
     cput(log, "c", ALICE, t + 2000, cvalue(2, name="Di", state="unverified"))
     fold("fold_three_contacts_sorted_by_mesh", log)
     fold("fold_contact_cap_keeps_the_earliest", log, limits={"contacts": 2})
+    cput(log, "reverify", ALICE, t + 3000, cvalue(1, name="Cy again", ms=t + 3000))
+    fold("fold_contact_cap_ignores_later_updates", log, limits={"contacts": 2})
+
+    log = Log("removed_cutoff")
+    cput(log, "put", ALICE, t, cvalue(0, state="unverified"))
+    for n in range(6):
+        cput(log, f"dave{n}", DAVE, t + (n + 1) * 1000, cvalue(0, name=f"Dave{n}", state="unverified"))
+    fold("fold_removed_device_events_past_its_cutoff_are_ignored", log)
+
+    log = Log("no_mesh")
+    cput(log, "put", ALICE, t, cvalue(0, state="unverified"))
+    add("fold_without_a_mesh_id", "contact_fold", {k: v for k, v in state(log).items() if k != "mesh"})
+    add("fold_with_a_bad_mesh_id", "contact_fold", state(log) | {"mesh": "x"})
 
     for name, change in (
         ("scope_not_mesh", {"scope": "personal"}),
@@ -989,6 +1015,13 @@ def follow_cases(add: Any) -> None:
     m.add(CAROL)
     follow("follow_trigger_with_later_valid_entries", m, rec)
 
+    m = _base("too_many_heads")
+    rec = _record(m)
+    heads = m.heads()
+    for n in range(65):
+        m.write(f"r{n}", "rename", ALICE, {"device": BOB.id, "label": f"n{n}"}, presence=True, follows=heads)
+    follow("follow_roster_with_more_heads_than_a_mark_holds", m, rec)
+
     m = _base("heads_missing")
     rec = _record(m)
     m.add(CAROL)
@@ -1150,6 +1183,12 @@ def share_cases(add: Any) -> None:
         gput(log, "old", ALICE, t, gvalue(g0))
         gput(log, "new", ALICE, t + MIN, gvalue(g1, supersedes=g0, ms=t + MIN, **change))
         fold("share_supersedes_grant_for_" + label, log)
+
+    log = base("supersede_fork")
+    gput(log, "old", ALICE, t, gvalue(g0))
+    gput(log, "a", ALICE, t + MIN, gvalue(g1, supersedes=g0, ms=t + MIN))
+    gput(log, "b", ALICE, t + 2 * MIN, gvalue(g2, supersedes=g0, ms=t + 2 * MIN))
+    fold("share_second_superseder_of_one_target_is_refused", log)
 
     log = base("supersede_unknown")
     gput(log, "new", ALICE, t, gvalue(g1, supersedes=g2))
