@@ -29,8 +29,8 @@ from orchestrator.orchestrator import Orchestrator
 from shared import node_identity
 from shared.a2a_publication import A2APublicationRegistry
 from shared.protocol import AgentCard, AgentSkill, MCPResponse
-from tests.helpers.dev_mesh import DevMesh, dev_node, node_settings, now_ms, publish_catalog, until, wait_for_caller_pause
-from tests.test_mcp_endpoint_064 import META, _Orchestrator
+from tests.helpers.dev_mesh import DevMesh, Door, dev_node, node_settings, now_ms, publish_catalog, until, wait_for_caller_pause
+from tests.test_mcp_endpoint_064 import _Orchestrator
 
 BASE = "http://mcp.test"
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "dev_mesh.py"
@@ -104,43 +104,6 @@ def audit(monkeypatch):
     recorder = Audit()
     monkeypatch.setattr(audit_hooks, "get_recorder", lambda: recorder)
     return recorder
-
-
-class Door:
-    def __init__(self, mesh: DevMesh, client: httpx.AsyncClient, host: Host):
-        self.mesh, self.client, self.host = mesh, client, host
-        self.holder = dev_mesh.CallerHolder.generate()
-
-    def mint(self, tools, *, label="Dev script", a2a=False, lifetime_s=dev_mesh.DEFAULT_LIFETIME_S, node=None):
-        return self.mesh.owner.mint_caller_ticket(
-            node or self.mesh.node_device, self.holder, tools, label=label, a2a=a2a, lifetime_s=lifetime_s)
-
-    async def post(self, path: str, body: bytes, ticket, extra: Optional[Dict[str, str]] = None, *,
-                   signed_body: Optional[bytes] = None, signed_target: Optional[str] = None, holder=None,
-                   headers: Optional[Dict[str, str]] = None) -> httpx.Response:
-        proof = headers if headers is not None else self.mesh.owner.caller_headers(
-            holder or self.holder, ticket, "POST", signed_target or path, body if signed_body is None else signed_body)
-        merged = {"Content-Type": "application/json", **(extra or {}), **proof}
-        return await self.client.post(path, content=body, headers=merged)
-
-    def mcp(self, method: str, params: Optional[dict] = None):
-        body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": {**(params or {}), "_meta": dict(META)}})
-        extra = {"MCP-Protocol-Version": "2026-07-28", "Mcp-Method": method}
-        if method == "tools/call":
-            extra["Mcp-Name"] = (params or {})["name"]
-        return body.encode(), extra
-
-    async def call_mcp(self, ticket, method: str, params: Optional[dict] = None, **options) -> httpx.Response:
-        body, extra = self.mcp(method, params)
-        return await self.post("/mcp", body, ticket, extra, **options)
-
-    async def call_tool(self, ticket, name: str, **options) -> httpx.Response:
-        return await self.call_mcp(ticket, "tools/call", {"name": name, "arguments": {"value": "v"}}, **options)
-
-    async def send_a2a(self, ticket, parts: Optional[list] = None, **options) -> httpx.Response:
-        message = {"message_id": "m1", "role": "ROLE_USER", "parts": parts or [{"text": ""}]}
-        body = json.dumps({"jsonrpc": "2.0", "id": "1", "method": "SendMessage", "params": {"message": message}})
-        return await self.post("/a2a", body.encode(), ticket, {"A2A-Version": "1.0"}, **options)
 
 
 def code_of(response: httpx.Response) -> str:
