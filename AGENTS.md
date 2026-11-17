@@ -79,12 +79,12 @@ The pinned `components/AstralPrimitives` repository owns primitive definitions a
 
 ## Security, identity, and data
 
-- Personal-mesh identity comes from verified mesh keys and signed membership, without an identity provider or identity attestations. Preserve Keycloak user IAM for separate server and institutional services. Mesh delegation uses offline-verifiable, attenuated tickets with exact action, actor-chain, roster, stop, expiry, receipt and consent bindings; RFC 8693 remains at the node edge. Preserve owner isolation, tool permission/policy gates, PHI gates, egress validation, confirmation gates and signed audit provenance, and never bypass the normal dispatch path.
+- Personal-mesh identity is the mesh keys. A personal node authenticates a caller only by a roster-listed device key with a mesh ticket, or by an owner-minted caller ticket, and refuses every bearer JWT. Preserve ticket-based attenuated delegation with exact action, actor-chain, roster, stop, expiry, receipt and consent bindings, owner isolation keyed on the mesh id, tool permission and policy gates, PHI gates, egress validation, confirmation gates and hash-chained audit provenance, and never bypass the normal dispatch path. Outside services authenticate through their own adapters. Separate server and institution services keep their own Keycloak user IAM and RFC 8693 exchange until both are removed.
 - Treat in-process first-party agents as trusted only for transport placement; runtime authorization and auditing still apply. Treat external and user-authored agents as untrusted at the server boundary.
 - Backend access to user-controlled URLs must use `backend/shared/external_http.py` and its allow/deny/size/TLS controls.
 - `.env` may be inspected when relevant to diagnosis, setup, or live verification; the user has explicitly authorized this. Never echo secret values or commit the file. Treat credentials, tokens, encryption keys, agent keys, user uploads, generated user code, `backend/data`, `backend/tmp`, and synthesized `backend/knowledge` as sensitive: access them only when the task requires it, redact sensitive output, and never stage them.
-- `ASTRAL_ENV` unset means production. Production configuration must fail closed; missing/placeholder secrets and mock auth must retain the documented exit-78 posture.
-- LLM credentials are configured in-product and encrypted. Do not reintroduce environment-backed provider keys, type user keys, or perform the user's Keycloak/provider sign-in.
+- `ASTRAL_ENV` unset means production. Production configuration must fail closed. Missing or placeholder secrets must retain the documented exit-78 posture. A leftover mock-auth setting is refused.
+- LLM credentials are configured in-product and encrypted. Do not reintroduce environment-backed provider keys, type user keys, or perform the owner's sign-in to any service.
 
 ## Database changes
 

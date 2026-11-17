@@ -15,7 +15,6 @@ from shared import node_identity as ni
 @pytest.fixture
 def production(tmp_path, monkeypatch):
     monkeypatch.setenv("ASTRAL_ENV", "production")
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
     monkeypatch.setenv("WEB_SESSION_ENC_KEY", "x" * 44)
     monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", "y" * 44)
     monkeypatch.setenv("AUDIT_HMAC_SECRET", f"high-entropy-{uuid.uuid4()}")

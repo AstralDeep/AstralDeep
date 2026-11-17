@@ -68,7 +68,7 @@ Point these at your deployment if different.
 
 ## 5. Dev builds
 
-There is no dev-token shortcut: the former debug-only `DevAuth.kt` path was
+There is no development sign-in shortcut: the former debug-only `DevAuth.kt` path was
 removed in feature 044. Debug and release builds both authenticate exclusively
 via Keycloak OIDC (Authorization Code + PKCE); debug builds differ only in
 their endpoints (`ws://10.0.2.2:8001` local orchestrator vs. the TLS

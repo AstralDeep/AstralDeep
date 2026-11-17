@@ -125,7 +125,7 @@ async def test_no_personal_path_derives_an_issuer_owner_from_pairing_to_wake(tmp
         assert document["mesh"]["owner_binding"] == {"state": "ready", "code": None}
         assert "idp.example" not in str(document)
         for name, value in (("WEB_SESSION_ENC_KEY", "x" * 44), ("CREDENTIAL_ENCRYPTION_KEY", "y" * 44),
-                            ("AUDIT_HMAC_SECRET", "high-entropy-" + "z" * 32), ("USE_MOCK_AUTH", "false")):
+                            ("AUDIT_HMAC_SECRET", "high-entropy-" + "z" * 32)):
             monkeypatch.setenv(name, value)
         for name in ("ASTRAL_ENV", "KEYCLOAK_AUTHORITY", "KEYCLOAK_CLIENT_ID", "KEYCLOAK_CLIENT_SECRET", "AGENT_API_KEY"):
             monkeypatch.delenv(name, raising=False)
