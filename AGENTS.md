@@ -87,7 +87,7 @@ The pinned `components/AstralPrimitives` repository owns primitive definitions a
 - Backend access to user-controlled URLs must use `backend/shared/external_http.py` and its allow/deny/size/TLS controls.
 - `.env` may be inspected when relevant to diagnosis, setup, or live verification; the user has explicitly authorized this. Never echo secret values or commit the file. Treat credentials, tokens, encryption keys, agent keys, user uploads, generated user code, `backend/data`, `backend/tmp`, and synthesized `backend/knowledge` as sensitive: access them only when the task requires it, redact sensitive output, and never stage them.
 - `ASTRAL_ENV` unset means production. Production configuration must fail closed. Missing or placeholder secrets must retain the documented exit-78 posture. A leftover mock-auth setting is refused.
-- LLM credentials are configured in-product and encrypted. Do not reintroduce environment-backed provider keys, type user keys, or perform the owner's sign-in to any service.
+- Every outside credential is entered in a native secure field and kept in the device keystore. A sign-in token never syncs. A pasted key syncs only sealed to the owner's devices. Do not reintroduce environment-backed provider keys, type user keys, or perform the owner's sign-in to any service.
 
 ## Database changes
 

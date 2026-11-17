@@ -110,7 +110,7 @@ async def test_the_operator_lists_connections_with_their_state(node):
     response = await node.op.send("GET", ROOT)
     assert response.status_code == 200 and response.headers["cache-control"] == "no-store"
     assert response.json() == {
-        "connections": [{"id": ID, "name": "fixture", "status": "ok", "state": "not_signed_in", "reason": None}],
+        "connections": [{"id": ID, "name": "fixture", "kind": "mcp", "status": "ok", "state": "not_signed_in", "reason": None}],
         "legacy_connectors": 0,
     }
 
@@ -466,11 +466,11 @@ async def test_a_server_node_writes_no_operator_secret(tmp_path, monkeypatch):
 
 
 def test_a_row_reports_unsupported_with_its_reason():
-    row = api._row({"id": ID, "name": "n", "unsupported": "connection.scheme_unsupported",
+    row = api._row({"id": ID, "name": "n", "kind": "a2a", "unsupported": "connection.scheme_unsupported",
                     "this_device": {"state": "not_signed_in", "reason": None}})
-    assert row == {"id": ID, "name": "n", "status": "unsupported", "state": "not_signed_in",
+    assert row == {"id": ID, "name": "n", "kind": "a2a", "status": "unsupported", "state": "not_signed_in",
                    "reason": "connection.scheme_unsupported"}
-    attention = api._row({"id": ID, "name": "n", "unsupported": None,
+    attention = api._row({"id": ID, "name": "n", "kind": "a2a", "unsupported": None,
                           "this_device": {"state": "needs_attention", "reason": "refresh_refused"}})
     assert attention["status"] == "ok" and attention["reason"] == "refresh_refused"
 
@@ -497,7 +497,7 @@ async def test_the_real_kernel_lists_a_connection_with_the_legacy_count(real):
     response = await real.op.send("GET", ROOT)
     assert response.status_code == 200
     assert response.json() == {
-        "connections": [{"id": real.id, "name": "fixture", "status": "ok", "state": "not_signed_in", "reason": None}],
+        "connections": [{"id": real.id, "name": "fixture", "kind": "mcp-http", "status": "ok", "state": "not_signed_in", "reason": None}],
         "legacy_connectors": 2,
     }
 
