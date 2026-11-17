@@ -887,6 +887,22 @@ class NodeMesh:
             raise MeshUnavailable("host_call_claim_unsupported")
         return await self._request_call(claim, request_id, current_definition, effect_kind)
 
+    async def verify_caller(self, request: Any) -> Any:
+        if self._quarantined:
+            raise NodeMeshError(DEVELOPMENT_MESH)
+        kernel = self.kernel
+
+        def check() -> Any:
+            refuse_development_mesh(kernel.roster())
+            return kernel.verify_caller_request(request)
+
+        try:
+            return await self._request_call(check)
+        except NodeMeshError as exc:
+            if exc.code == DEVELOPMENT_MESH:
+                await self._quarantine()
+            raise
+
     async def mint_ticket(
         self, request_id: str, *, call_id: str, tool: str, arguments_json: str,
         tool_def: str, effect_kind: str, labels: tuple, untrusted_arguments: bool,

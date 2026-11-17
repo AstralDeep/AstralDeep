@@ -20,7 +20,9 @@ from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
 from orchestrator.framework_work_reads import FrameworkWorkReader, read_scope
+from orchestrator import caller_tickets
 from orchestrator.mcp_authz import (
+    authorize_mcp_caller,
     MCPAuthError,
     authorize_mcp_request,
     canonical_public_base_url,
@@ -43,6 +45,7 @@ from orchestrator.mcp_work_resources import (
     resource_scope,
 )
 from orchestrator.work_admission import AdmissionClass, OperationState
+from shared import node_identity
 from shared.protocol import (
     MCP_HEADER_MISMATCH,
     MCP_INVALID_PARAMS,
@@ -734,15 +737,21 @@ def create_mcp_router(orchestrator: Any, *, public_base_url: str) -> APIRouter:
 
             required_scopes = _METHOD_SCOPE.get(method, ("mcp:discover",))
             try:
-                claims = await authorize_mcp_request(
-                    headers=request.headers,
-                    query_params=request.query_params,
-                    cookies=request.cookies,
-                    required_scopes=required_scopes,
-                    resolve_framework_bearer=_framework_bearer_resolver(orchestrator),
-                )
+                if node_identity.is_personal():
+                    claims = await authorize_mcp_caller(
+                        request, body, method=method, required_scopes=required_scopes,
+                        tool=payload.get("params", {}).get("name"),
+                    )
+                else:
+                    claims = await authorize_mcp_request(
+                        headers=request.headers,
+                        query_params=request.query_params,
+                        cookies=request.cookies,
+                        required_scopes=required_scopes,
+                        resolve_framework_bearer=_framework_bearer_resolver(orchestrator),
+                    )
             except MCPAuthError as exc:
-                result_code = exc.error
+                result_code = exc.error.replace(".", "_")
                 challenge = challenge_header(
                     base_url,
                     error=exc.error,
@@ -811,6 +820,9 @@ def create_mcp_router(orchestrator: Any, *, public_base_url: str) -> APIRouter:
                         tools = await asyncio.to_thread(
                             project_tools, orchestrator, user_id, claims
                         )
+                        listed = caller_tickets.covered(claims)
+                        if listed is not None:
+                            tools = [tool for tool in tools if tool.name in listed]
                         result = {
                             "resultType": "complete",
                             "tools": [tool.descriptor for tool in tools],
@@ -903,6 +915,19 @@ def create_mcp_router(orchestrator: Any, *, public_base_url: str) -> APIRouter:
                             params["name"],
                             claims,
                         )
+                        if projected is None and caller_tickets.covered(claims) is not None:
+                            result_code = caller_tickets.TOOL_UNAVAILABLE.replace(".", "_")
+                            return _with_origin(
+                                _json_error(
+                                    request_id, MCP_INVALID_REQUEST, "MCP authorization failed", 403,
+                                    headers={"WWW-Authenticate": challenge_header(
+                                        base_url, error=caller_tickets.TOOL_UNAVAILABLE,
+                                        required_scopes=required_scopes,
+                                    )},
+                                ),
+                                origin,
+                                base_url,
+                            )
                         if projected is None:
                             if await asyncio.to_thread(
                                 has_unsupported_mirrors,
