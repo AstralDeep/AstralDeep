@@ -1,10 +1,10 @@
 # Connection `astral.connection/v1`
 
-A connection lets the owner's devices reach an outside service, such as an MCP server that asks for an OAuth sign-in. The record says what the owner approved. Each device keeps its own credential and logs a small state event so the other devices can show "signed in on Mac". This version implements MCP over HTTP (kind `mcp-http`). Later kinds extend this document in place at `v: 1`.
+A connection lets the owner's devices reach an outside service, such as an MCP server that asks for an OAuth sign-in. The record says what the owner approved. Each device keeps its own credential and logs a small state event so the other devices can show "signed in on Mac". The first reader implements MCP over HTTP (kind `mcp-http`). The kinds `a2a`, `mcp-stdio`, `http-api` and `model` extend this document in place at `v: 1` (sections 3.6 to 3.9 and 13). A reader that implements only `mcp-http` lists them unsupported, and a reader that implements them is called the extended reader here.
 
 Existing roster v2 stores keep working unchanged. This contract adds no event type and no roster field. It adds a `consent` field to some `settings.set` bodies, which deployed kernels accept and fold as an unread setting.
 
-Reference code: `reference/connection.py` and `reference/connection_oauth.py`. Generator: `reference/generate_connection_vectors.py`. Vectors: `vectors/connection-v1.json` (keys, records, states, the fold, use, names and egress) and `vectors/connection-oauth-v1.json` (the adapter decisions of section 8). LETS-CJ/1, hashes, signatures and the consent object come from the preserved 105 reference. The name rule reads the caller ticket label table `reference/label_classes.json`.
+Reference code: `reference/connection.py`, `reference/connection_oauth.py`, `reference/a2a_card.py` and `reference/credential_items.py`. Generators: `reference/generate_connection_vectors.py`, `reference/generate_a2a_vectors.py` and `reference/generate_credential_vectors.py`. Vectors: `vectors/connection-v1.json` (keys, records, states, the fold, use, names and egress), `vectors/connection-oauth-v1.json` (the adapter decisions of section 8), `vectors/a2a-card-v1.json` (the card decisions of section 13) and `vectors/credential-items-v1.json` (the item rules of [credential-items.md](credential-items.md)). LETS-CJ/1, hashes, signatures and the consent object come from the preserved 105 reference. The name rule reads the caller ticket label table `reference/label_classes.json`.
 
 ## 1. Carrier
 
@@ -58,7 +58,7 @@ A record of kind `mcp-http` at `v: 1` has exactly these fields.
 | `device` | When `local` is true, the device id of the device that runs the calls. Otherwise null |
 | `auth` | An object with exactly `scheme`, `issuer`, `scopes`, `resource` and `client_id` |
 | `tools` | 0 to 128 objects with exactly `name` and `hash`, sorted by `name` with no repeats |
-| `flow` | `private`, or `phi` when the owner marks the connection a PHI source |
+| `flow` | `private`, or `phi` when the owner marks the connection a PHI source. The owner chooses it and a re-approval may set it to either value (section 3.5) |
 | `egress` | 1 to 16 entries of section 3.4 |
 
 `auth.scheme` is `oauth`, `none` or `key`.
@@ -93,7 +93,9 @@ An egress entry is `host` or `host:port`. `host` alone means port 443, so `host:
 
 `egress` is sorted by host as text and then by port as a number, with no repeats. So `mcp.research.example:8443` comes before `mcp.research.example.cdn`. Containment compares `(host, port)` pairs, and because entries are canonical, equal pairs are equal strings.
 
-A URL's entry is its host when the port is 443 (written or implied by `https`), and `host:port` otherwise, so `http://127.0.0.1/mcp` gives `127.0.0.1:80`. The reader checks that `egress` holds the endpoint's entry and, with `oauth`, the issuer's entry. A writer also lists the host of every authorization-server endpoint it found in metadata (authorization, token and registration). The reader cannot see those, and the device refuses any fetch outside `egress` (section 7.3).
+A URL's entry is its host when the port is 443 (written or implied by `https`), and `host:port` otherwise, so `http://127.0.0.1/mcp` gives `127.0.0.1:80`. The reader checks that `egress` holds the endpoint's entry and, with `oauth`, the issuer's entry. A writer also lists the host of every authorization-server endpoint it found in metadata: authorization, token, registration and device authorization. The reader cannot see those, and the device refuses any fetch outside `egress` (section 7.3).
+
+The writer takes each endpoint that is present and is text. Each must be a canonical fetch URL of section 7.3, with loopback only in a local record, otherwise the write fails with `connection.egress_refused`. A field that is not text is ignored, as the metadata checks of section 8 ignore it. The result is the endpoint's entry, the issuer's entry when there is one and one entry for each endpoint, sorted and without repeats. So an authorization server whose `device_authorization_endpoint` is on another host adds that host to `egress` before any device flow starts, and a device flow never fetches outside the record. The vectors `egress_entries_*` pin this.
 
 Each entry maps onto an exec policy `hosts` object. `host` gives `{"host": host, "port": 443}` and `host:port` gives `{"host": host, "port": port}`. Exec policy v1 accepts the result only for a DNS name with port 80 or 443. An entry with another port or a loopback literal has no exec form, and a backend that needs one refuses to launch. An entry that is not canonical, such as `host:443`, has no mapping and is `connection.egress_refused`.
 
@@ -112,9 +114,98 @@ The first matching row gives the reason.
 | 5 | Any rule of sections 3.2 to 3.4 fails | `connection.record_unsupported` |
 | 6 | Another listed connection keeps the server id (section 6.5) | `connection.server_id_collision` |
 
-This version implements kind `mcp-http` with the schemes `oauth` and `none`. A record with scheme `key` or any other scheme is listed with `connection.scheme_unsupported` before the reader looks at the scheme's fields. Row 6 replaces only an `ok` result, so a record that is already unsupported keeps its own reason.
+The first reader implements kind `mcp-http` with the schemes `oauth` and `none`. A record with scheme `key` or any other scheme is listed with `connection.scheme_unsupported` before the reader looks at the scheme's fields. The extended reader implements these kinds and schemes.
 
-The contract carries no server-declared confidentiality hint in this version. `flow` is the owner's choice.
+| Kind | Schemes the extended reader implements | Fields |
+|---|---|---|
+| `mcp-http` | `oauth`, `none`, `key` | Section 3.2 |
+| `a2a` | `none`, `key`, `oauth` | Section 3.6 |
+| `mcp-stdio` | none, the record has no `auth` | Section 3.7 |
+| `http-api` | none, the record has no `auth` | Section 3.8 |
+| `model` | none, the record has no `auth` | Section 3.9 |
+
+Row 3 uses the field set of the kind and checks `auth` only for a kind that has it. Row 4 applies only to a kind that has `auth`. Row 6 replaces only an `ok` result, so a record that is already unsupported keeps its own reason. A reader that implements only `mcp-http` lists every record of the four new kinds with `connection.kind_unsupported`, and the vectors `record_phase2_*` and `fold_phase2_lists_every_new_kind_unsupported` pin that.
+
+The contract carries no server-declared confidentiality hint. `flow` is the owner's choice. A re-approval may lower a connection's `flow` from `phi` to `private` as well as raise it, and nothing limits it. The check `connection.flow_below_hint` was removed and no code or vector refers to it.
+
+### 3.6 A2A agents
+
+A record of kind `a2a` at `v: 1` has exactly these fields.
+
+| Field | Rule |
+|---|---|
+| `v`, `id`, `name`, `kind` | Section 3.1, with `kind` equal to `a2a` |
+| `card_url` | The address of the agent card. An HTTPS URL on a DNS name in the endpoint form of section 3.3, so no query |
+| `card` | An object with exactly `hash`, `origin`, `signer` and `extended_hash` |
+| `auth` | An object with exactly `scheme`, `issuer`, `scopes`, `resource` and `client_id` |
+| `tools` | Empty, or one entry of section 3.2 named `ask_` and the slug of the record name (section 7.2). The hash is the card tool hash of section 13.6 |
+| `flow` | `private` or `phi` |
+| `egress` | 1 to 16 entries of section 3.4 |
+
+The `card` object pins what the owner approved.
+
+- `hash` is the card hash of section 13.2.
+- `origin` is the origin of `card_url`, written as `https://` and the host with its port when it is not 443.
+- `signer` is null for an unsigned card, and for a signed card the RFC 7638 thumbprint of the signing key, 43 characters of `[A-Za-z0-9_-]`.
+- `extended_hash` is null, or the card hash of the extended card the owner reviewed (section 13.5).
+
+`auth.scheme` is `none`, `key` or `oauth`. With `none` and `key`, `issuer`, `resource` and `client_id` are null and `scopes` is empty. A pasted key covers the card's `apiKey`, HTTP `bearer` and HTTP `basic` schemes, and the card says which one and where it goes. With `oauth`, `issuer` is the HTTPS issuer URL of the authorization server the owner approved and a loopback issuer is refused. For a card that names an `oauth2MetadataUrl` or an `openIdConnectUrl` the issuer is the one that document names. For a card that names only endpoints it is the origin of the token URL. `resource` is null, because A2A has no resource indicator. `scopes` and `client_id` follow section 3.2. The sign-in flow is `authorizationCode` on every device, `deviceCode` on a node only, and OpenID Connect through its discovery document, as section 13.3 says.
+
+`egress` holds the entry of `card_url` and, with `oauth`, the issuer's entry. The writer also lists the entry of every interface URL in the card and the host of every authorization endpoint the card or the issuer names, with the device authorization host as section 3.4 says. The reader cannot see those. The device refuses a card whose interface is outside `egress` (section 13.4).
+
+An A2A record has no `local` and no `device`. Any device that holds the credential may use it.
+
+### 3.7 Local stdio servers
+
+A record of kind `mcp-stdio` at `v: 1` has exactly these fields.
+
+| Field | Rule |
+|---|---|
+| `v`, `id`, `name`, `kind` | Section 3.1, with `kind` equal to `mcp-stdio` |
+| `command` | 1 to 1024 code points that the caller ticket label table accepts, so no control, format or unassigned code point |
+| `args` | 0 to 64 texts of 0 to 4096 code points each, under the same code point rule |
+| `env` | 0 to 32 names, each `[A-Z_][A-Z0-9_]{0,63}`, sorted with no repeats. `PATH` and every name that starts with `LD_` or `DYLD_` is refused, so a key can never become a library injection |
+| `device` | The device id of the one device that runs the server. A node may be named |
+| `tools` | 0 to 128 tool entries of section 3.2 |
+| `flow` | `private` or `phi` |
+| `egress` | 0 to 16 entries of section 3.4, with no loopback literal. Empty means the server may reach no host |
+
+The record holds the names of the environment variables and never their values. The values are the secrets of the key item `connection.key.<id>` (section 3.10). The device starts the server only on first use and injects the environment at that moment, so no call of the binding returns a secret. Only the device named in `device` runs the server. Any other device refuses with `connection.local_elsewhere`, and an iPhone shows "runs on your Mac".
+
+### 3.8 HTTP APIs
+
+A record of kind `http-api` at `v: 1` has exactly these fields.
+
+| Field | Rule |
+|---|---|
+| `v`, `id`, `name`, `kind` | Section 3.1, with `kind` equal to `http-api` |
+| `endpoint` | The base address, an HTTPS URL on a DNS name in the canonical form of section 3.3 |
+| `key` | An object with exactly `item`, `header` and `format` |
+| `tools` | 0 to 128 tool entries of section 3.2, the operations the owner reviewed |
+| `flow` | `private` or `phi` |
+| `egress` | 1 to 16 entries of section 3.4 that include the endpoint's entry |
+
+`key.item` is `connection.key.` and the record id. `key.header` is the name of the header that carries the key, 1 to 64 characters of `[A-Za-z][A-Za-z0-9-]`. It is never one of `host`, `content-length`, `content-type`, `transfer-encoding`, `connection`, `upgrade`, `te`, `trailer`, `cookie`, `set-cookie` or `proxy-authorization`, compared without regard to case. `key.format` is 1 to 64 printable ASCII characters (`%x20-7E`) holding the text `{key}` exactly once, for example `Bearer {key}` or `{key}`. The device sends the header only to the record's endpoint host (section 3.10).
+
+### 3.9 Model providers
+
+A record of kind `model` at `v: 1` pairs a record with a provider item in today's `model.provider.<name>` format. It has exactly these fields.
+
+| Field | Rule |
+|---|---|
+| `v`, `id`, `name`, `kind` | Section 3.1, with `kind` equal to `model` |
+| `endpoint` | The provider address, an HTTPS URL on a DNS name in the canonical form of section 3.3 |
+| `key` | An object with exactly `item`, which is `model.provider.` and a name of `[a-z0-9][a-z0-9._-]*`, at most 128 characters in all |
+| `flow` | `private` or `phi` |
+| `egress` | 1 to 16 entries of section 3.4 that include the endpoint's entry |
+
+The provider item keeps the endpoint, models and keys it has today and stays valid as written. A device on a kernel from before connections keeps using a provider item that an upgraded device wrote, and it ignores the record.
+
+### 3.10 Keys
+
+Keys for `http-api`, for `mcp-http` with scheme `key`, for A2A with scheme `key` and for the environment of a stdio server are `key.credential` items named `connection.key.<id>`, as [credential-items.md](credential-items.md) defines. The record names them and never holds a key. An item is sealed to every device by default or to the list the owner picked. A device that holds no box for the item reports `needs_attention` with reason `not_signed_in` and fails the call.
+
+A key leaves a device only inside a request to the host of the record. The `http-api` key goes in `key.header` to the endpoint host. An `mcp-http` key goes in the `Authorization` header to the endpoint's exact origin as section 8.9 says. An A2A key goes where the card's scheme puts it and only to a host in `egress` that the approved card lists as an interface. The stdio environment goes only to the server process. No key appears in an event, a log line, an error text, a return value of the binding or any model input.
 
 ## 4. State
 
@@ -124,14 +215,14 @@ A device writes its own state for a connection only on a transition. The value h
 |---|---|
 | `v` | The integer 1 |
 | `state` | `not_signed_in`, `signed_in` or `needs_attention` |
-| `reason` | With `needs_attention`, one of `refresh_refused`, `expired`, `scope` and `refused`. Otherwise null |
+| `reason` | With `needs_attention`, one of `refresh_refused`, `expired`, `scope`, `refused` and `not_signed_in`. Otherwise null |
 | `issuer` | Null, or an issuer URL of section 3.3 (a loopback issuer is allowed) |
 | `ms` | The transition time in milliseconds, a non-negative integer |
 | `tools` | Only with `signed_in`. 0 to 128 tool entries of section 3.2, the tools the device listed after it signed in |
 
 States are strict where records are tolerant. An unknown, missing or out-of-range field makes a state `connection.malformed`, because a state is display only and written by one device about itself, so a reader that cannot read it loses only a status line. A record stays tolerant (section 3.5), because a reader that dropped an unreadable record would fall back to an older one and use it.
 
-A device with no state event reads as `not_signed_in`. A device that deletes its credential, for example after a removal syncs in, writes `not_signed_in`. Any other shape, including a state or reason this version does not define, is `connection.malformed`, and that device's older state stands. States are shown and never authorize anything.
+A device with no state event reads as `not_signed_in`. A device that holds no stored credential for a connection that needs one writes `needs_attention` with reason `not_signed_in` when a call finds none. That covers a key item with no box for the device. The reason `expired` is only for a credential that was held and has run out (section 8.10). A device that deletes its credential, for example after a removal syncs in, writes `not_signed_in`. Any other shape, including a state or reason this version does not define, is `connection.malformed`, and that device's older state stands. States are shown and never authorize anything.
 
 `tools` is how the owner reviews the tools of a server that only a node can reach. The node signs in, writes its state with the tools, and an owner device draws the review card from it. A call still checks each tool's hash against the record.
 
@@ -219,7 +310,7 @@ Inside turns the server id of a connection is `c` and the first 8 hex digits of 
 
 ### 7.1 Where a call runs
 
-A device uses a connection only when its fold status is `ok`. Otherwise the call fails with the reason. A local record runs only on the device it names. Any other device refuses with `connection.local_elsewhere`. That device may be a node, which is how a node reaches a loopback server the owner added for it.
+A device uses a connection only when its fold status is `ok`. Otherwise the call fails with the reason. A local record, and a stdio record, runs only on the device it names. Any other device refuses with `connection.local_elsewhere`. That device may be a node, which is how a node reaches a loopback server the owner added for it.
 
 ### 7.2 Tool names
 
@@ -282,7 +373,7 @@ The first branch that applies wins.
 | 3 | The metadata has a non-empty text `registration_endpoint` | `dynamic` |
 | 4 | None of these | `connection.no_client_id`. The host asks the owner for a client id, which goes into the record by a new put |
 
-Dynamic registration sends `{"application_type", "client_name": "Astral", "grant_types": ["authorization_code", "refresh_token"], "redirect_uris": [<redirect>], "response_types": ["code"], "token_endpoint_auth_method": "none"}` with `application_type` `native`. A `200` or `201` answer with a non-empty text `client_id` succeeds. Only a `400` to the `native` request is retried, once, with `web`. Any other outcome is `connection.registration_refused`, and the vectors list the requests sent. A dynamically registered client belongs to one device and lives in its keystore, so each device registers its own and reuses it.
+Dynamic registration sends `{"application_type", "client_name": "Astral", "grant_types": ["authorization_code", "refresh_token"], "redirect_uris": [<redirect>], "response_types": ["code"], "token_endpoint_auth_method": "none"}` with `application_type` `native`. A `200` or `201` answer with a non-empty text `client_id` succeeds, unless it names a `token_endpoint_auth_method` the device cannot use. The device is a public client and sends no secret, so the only usable method is `none`. An answer that carries `token_endpoint_auth_method` with any other value, a different spelling such as `None`, a value that is not text or a JSON null, is `connection.registration_refused`. This fails closed. The device does not guess a method, does not use a `client_secret` and does not retry. An answer without the field succeeds, because the request asked for `none`. Only a `400` to the `native` request is retried, once, with `web`. Any other outcome is `connection.registration_refused`, and the vectors list the requests sent. A dynamically registered client belongs to one device and lives in its keystore, so each device registers its own and reuses it.
 
 ### 8.7 Scopes
 
@@ -309,7 +400,7 @@ The device sends `resource` set to the endpoint in the authorization, token and 
 
 ### 8.10 Refresh and step-up
 
-On a `401` with a credential the device refreshes once and retries once. A refused refresh gives `needs_attention` with reason `refresh_refused`, no refresh token gives reason `expired`, and a `401` after the retry gives reason `refused`. Each fails the call.
+On a `401` with a credential the device refreshes once and retries once. A refused refresh gives `needs_attention` with reason `refresh_refused`, a credential that has run out with no refresh token gives reason `expired`, and a `401` after the retry gives reason `refused`. A device with no stored credential at all gives reason `not_signed_in` and sends no request. Each fails the call.
 
 A `403` whose `Bearer` challenge has `error` equal to `insufficient_scope` starts a step-up. Any other `403` is `connection.refused`. The step-up is the union of the record's scopes and the challenge's scopes, put again by a reviewed record put and then a sign-in. A union equal to the record's scopes needs no put and is a sign-in alone. A device allows one step-up between successful calls, so a second one before any call succeeds is `connection.step_up_limit`. The limit is checked before the union. A union of more than 32 scopes is `connection.too_many_scopes` and does not count as a step-up. Until the step-up completes the device logs `needs_attention` with reason `scope` and fails the call.
 
@@ -327,6 +418,8 @@ A `403` whose `Bearer` challenge has `error` equal to `insufficient_scope` start
 | `connection.no_client_id`, `connection.registration_refused` | Registration |
 | `connection.too_many_scopes`, `connection.iss_missing`, `connection.iss_mismatch`, `connection.token_passthrough`, `connection.refused`, `connection.step_up_limit` | Sign-in and calls |
 
+The A2A codes are in section 13.8 and the credential item codes are in [credential-items.md](credential-items.md). The device authorization host and an unusable registration method add no code. They use `connection.egress_refused` and `connection.registration_refused`.
+
 ## 10. Existing data and mixed versions
 
 Existing data:
@@ -337,6 +430,7 @@ Existing data:
 | Kernel meta `connection.credential/*` | v2 stores | Additive. Absent means not signed in. Not in backups |
 | `remote.mcp.*` items | Mac 97, iPhone 99 | Unchanged and still offered in turns. Listed as "Added before connections". A new legacy name of the form `c` and 8 hex digits is refused |
 | `model.provider.*` items | Mac 97, iPhone 99, nodes | Unchanged and used. Later key connections write the same format |
+| Provider, legacy server and turn binding items | Mac 97, iPhone 99, nodes | Unchanged and valid, because the content rule of credential-items.md refuses only sign-in token fields and a size over 65536 bytes |
 | Node `__remote_mcp_connections__` rows (personal) | Deployed personal nodes | Bytes unchanged, unused, reported |
 | Same rows on server or institution profiles | Deployed servers | Unchanged and served |
 | `remote-mcp-1` leaves the personal catalog | Grants naming its tools | Grants untouched and inert |
@@ -351,7 +445,8 @@ Mixed versions:
 | Consent kind `connection` | Never read | Verified |
 | `connection.key.<id>` items | Accepted, resealed to late devices when the audience is `all`, name unused | Accepted and resealed the same way, name unused |
 | Model provider items written for model connections | Used as today | Used |
-| Kinds `a2a`, `mcp-stdio` and `http-api` | Ignored | Listed unsupported |
+| Kinds `a2a`, `mcp-stdio`, `http-api` and `model` | Ignored | Listed unsupported by a reader that implements only `mcp-http`, and used by the extended reader |
+| State reason `not_signed_in` | A state with an unknown reason is `connection.malformed` and the device's older state stands | Read |
 
 A test with two real kernels proves the first row.
 
@@ -370,7 +465,9 @@ Case kinds in `connection-v1.json`:
 - `connection_egress` has `egress` and `url`. `connection_exec_host` has `entry`.
 - `connection_coexistence` has a log with ordinary and connection events and `presence_keys`, and expects the deployed authority fold and the deployed settings fold with and without the connection events.
 
-Case kinds in `connection-oauth-v1.json`: `oauth_challenge`, `oauth_resource_metadata_urls`, `oauth_resource_metadata`, `oauth_as_metadata_urls`, `oauth_select_server` (with `record_issuer` null when the owner first adds the connection), `oauth_registration`, `oauth_dynamic_registration` (its expectation lists the requests in both outcomes), `oauth_scopes`, `oauth_iss`, `oauth_step_up_sequence` (steps of `forbidden` with a header or `success`) and `oauth_bearer_target`.
+The extended reader's cases use their own case kinds so that a reader that implements only `mcp-http` can skip them. `connection_record_ext` and `connection_fold_ext` run the same checks with the kinds and schemes of section 3.5. `connection_use` takes a fold entry from either reader. The cases `record_phase2_*` and `fold_phase2_lists_every_new_kind_unsupported` pin the first reader on the new kinds, and every older case keeps its first-reader outcome.
+
+Case kinds in `connection-oauth-v1.json`: `oauth_challenge`, `oauth_resource_metadata_urls`, `oauth_resource_metadata`, `oauth_as_metadata_urls`, `oauth_select_server` (with `record_issuer` null when the owner first adds the connection), `oauth_registration`, `oauth_dynamic_registration` (its expectation lists the requests in both outcomes), `oauth_egress_entries` (the entries a writer lists, section 3.4), `oauth_scopes`, `oauth_iss`, `oauth_step_up_sequence` (steps of `forbidden` with a header or `success`) and `oauth_bearer_target`.
 
 Groups of cases:
 
@@ -387,11 +484,95 @@ Groups of cases:
 | Carrier | `mem.remember` under a reserved key, other events, a malformed reserved key, an unknown family, wrong labels and a chat scope |
 | Use and names | `use_*`, `exposed_*` at 53 and 54 characters, `slug_*` |
 | Egress | `egress_*` and `exec_*`, including an entry that is not canonical |
+| Extended records | `record_ext_*` for each new kind, every field rule, and each limit at and one past its value: 64 args, an arg of 4096, a command of 1024, 32 env names, an env name of 64, a header of 64 and a format of 64 characters, a provider item of 128 characters. The refused env names `PATH`, `LD_` and `DYLD_`, the refused headers in any case, an A2A tool that is not the ask tool, a card origin that differs from `card_url`, an issuer or card host missing from `egress`, and the phase 2 pins `record_phase2_*` |
+| Extended fold and use | `fold_phase2_lists_every_new_kind_unsupported`, `fold_ext_*` including a server id collision between new kinds and the state reason `not_signed_in`, and `use_ext_*` including a stdio server on another device |
 | Coexistence | `coexistence_deployed_folds` |
-| Adapter | `challenge_*` including two header lines, `rm_*` including each near miss of the origin pin and an encoded dot segment, `prm_*`, `as_urls_*`, `select_*` including the mixed unreachable cases, error answers only and the record issuer, `reg_*`, `dyn_*`, `scopes_*`, the six `iss_*` rows and their spellings, `stepup_*` sequences, `bearer_*`, and an endpoint or issuer that is not canonical for each URL decision |
+| Adapter | `challenge_*` including two header lines, `rm_*` including each near miss of the origin pin and an encoded dot segment, `prm_*`, `as_urls_*`, `select_*` including the mixed unreachable cases, error answers only and the record issuer, `reg_*`, `dyn_*` including each unusable `token_endpoint_auth_method`, `egress_entries_*` including a device authorization host on another host and on another port, `scopes_*`, the six `iss_*` rows and their spellings, `stepup_*` sequences, `bearer_*`, and an endpoint or issuer that is not canonical for each URL decision |
 
-Regenerate with `python specs/106-sign-in-free-clients/contracts/reference/generate_connection_vectors.py` and verify with `--check`, which writes nothing.
+`a2a-card-v1.json` and `credential-items-v1.json` use the same format. Their case kinds are `a2a_card_read`, `a2a_card_canonical`, `a2a_card_select`, `a2a_thumbprint`, `a2a_card_verify`, `a2a_card_propose`, `a2a_card_check`, `a2a_card_extended` and `a2a_task_state` for section 13, and `credential_name`, `credential_write` and `credential_binding` for credential-items.md. The A2A cases come from the phase 0 fixture cards, the 19 valid and the 19 malformed, the signed and changed cards and the two public test keys, with a non-ASCII card and cards signed by deterministic test keys added. No private key is committed. The test keys derive from fixed seed strings.
+
+Regenerate with `python specs/106-sign-in-free-clients/contracts/reference/generate_connection_vectors.py`, `generate_a2a_vectors.py` and `generate_credential_vectors.py` and verify with `--check`, which writes nothing.
 
 ## 12. Versioning
 
-A change to a rule, a field or a code raises the format version, except a new kind or scheme defined in place at `v: 1`, which older readers list as unsupported. This document, the vectors and the reference modules change together, and `generate_connection_vectors.py --check` and the reference tests pass before a change merges.
+A change to a rule, a field or a code raises the format version, except a new kind or scheme defined in place at `v: 1`, which older readers list as unsupported. This document, the vectors and the reference modules change together, and the three `--check` commands and the reference tests pass before a change merges.
+
+## 13. A2A cards
+
+These decisions are pure functions over an agent card that the device already fetched and parsed. The client speaks the JSON-RPC binding of A2A 1.0.1. It sends a message, polls the task and fetches the extended card, and it takes the method names from the specification text at the `v1.0.1` tag. Each connection is one tool, `ask_<slug>`, with the input `{message}`. A card is never fetched without the record's egress check (section 7.3).
+
+### 13.1 Reading a card
+
+The reader accepts the 1.0 shape and the 0.3 shape and never a mix. It reads `securitySchemes`, the requirements, the skills, the interfaces and the extended card flag. Refusals have the codes `a2a.not_an_object`, `a2a.missing_field`, `a2a.wrong_type`, `a2a.insecure_url`, `a2a.ambiguous_scheme`, `a2a.unknown_scheme_type`, `a2a.bad_api_key_location`, `a2a.unknown_flow`, `a2a.requirement_unknown_scheme`, `a2a.empty_requirement`, `a2a.conflicting_requirements`, `a2a.mixed_dialects`, `a2a.float_in_card` and `a2a.bad_key`.
+
+- Requirements are OR across entries and AND inside one entry. The reader accepts `securityRequirements` or `security`, and refuses a card where both are present and disagree.
+- Every URL in a scheme or an interface is HTTPS with no credentials and no fragment.
+- A 1.0 scheme holds exactly one variant, and an OAuth scheme in 1.0 holds exactly one flow.
+- An unknown scheme, flow or variant is refused. A scheme that is known and not usable is parsed and refused at selection (section 13.3).
+- The extended card flag is `capabilities.extendedAgentCard` or the 0.3 `supportsAuthenticatedExtendedCard` and must be a boolean.
+
+### 13.2 Canonical form and the card hash
+
+The canonical form is RFC 8785 over the card with `signatures` removed, after pruning. Pruning drops null, empty text, empty arrays and objects and `false`, with three exceptions. The containers named `securitySchemes`, `securityRequirements` and `security`, and everything inside them, are kept as they are. The booleans `streaming`, `pushNotifications` and `extendedAgentCard` are kept when false. A number with no fraction is written as an integer, and a number with a fraction is refused with `a2a.float_in_card`. Keys sort by UTF-16 code units and text is written as UTF-8 with no escapes beyond JSON's own. The card hash is `sha256:` and the lowercase hex SHA-256 of those bytes. A signature, a key order and an empty field never change it.
+
+The SDK form drops every empty value, including the empty scope lists and empty requirement entries inside the requirement containers. A signer that follows the SDK produces a signature over that form.
+
+### 13.3 Selecting a sign-in
+
+The device takes the requirement entries in card order and uses the first one whose schemes are all usable. A card with no requirements needs no sign-in.
+
+| Scheme | Usable |
+|---|---|
+| `apiKey`, HTTP `bearer`, HTTP `basic` | Yes, with a pasted key (section 3.10) |
+| OAuth 2.0 `authorizationCode` | Yes, always with S256 and the flow of section 8 |
+| OAuth 2.0 `deviceCode` | On a node only |
+| OpenID Connect | Yes, through the discovery document |
+| Other HTTP schemes, `clientCredentials`, `implicit`, `password`, mutual TLS | No |
+
+No usable entry is `a2a.scheme_unsupported`. A card whose only entry uses `deviceCode` is unusable on a device that is not a node.
+
+### 13.4 Pins and the check
+
+A put pins the card as section 3.6 says. A signed card pins the signer's thumbprint, and an unsigned card pins the hash and the HTTPS origin and the card says "unsigned". The first sight, before any put, is `a2a_card_propose`. It reads the card, takes the origin of the address it was fetched from, verifies any signature against the public keys the device was given and returns `{hash, origin, signer, signed}`.
+
+Before each use the device fetches the card and checks it in this order, and the first failure wins.
+
+| Order | Check | Code |
+|---|---|---|
+| 1 | The card reads (section 13.1) | The reader's code |
+| 2 | The origin it was fetched from equals the pin's origin | `a2a.origin_changed` |
+| 3 | With a pinned signer, the card is signed and a signature verifies over the card, and it covers every requirement entry | `a2a.signature_missing`, `a2a.signature_invalid`, `a2a.signature_scope` |
+| 4 | With a pinned signer, the verifying key's thumbprint is the pin | `a2a.signer_changed` |
+| 5 | The card hash equals the pinned hash | `a2a.card_changed` |
+| 6 | Every interface host is in `egress` | `a2a.interface_offsite` |
+
+Any change to the card, a new signer or an interface host outside `egress` refuses use until the owner approves a reviewed put. A card that is re-signed by the pinned signer after a change is still `a2a.card_changed`, because the owner never reviewed the new content. An interface counts only when it is HTTPS on a DNS name and its entry is in `egress`, so an IP literal is `a2a.interface_offsite`. The pin of an unsigned card is not changed by the card gaining a signature.
+
+### 13.5 Signatures
+
+A signature is a JWS in the card's `signatures`, as A2A defines. Its protected header holds `alg` and a text `kid`. The algorithms are `ES256`, `EdDSA` and `RS256`, and an RSA key of fewer than 2048 bits is refused. Every other algorithm, including `none` and `HS256`, is not verified. A key is a public JWK of the kind the algorithm needs, and a key with a `kid` is tried only when it equals the header's `kid`, and a key with no `kid` is tried for any header. The signature is over the protected header, a dot and the base64url of the canonical form of section 13.2.
+
+The signer is the key, never its `kid`. The thumbprint is the RFC 7638 value, the base64url of the SHA-256 of the key's required members in sorted order with no spaces. Two keys with the same `kid` are different signers.
+
+A signature that verifies only over the SDK form is accepted only when it covers every requirement entry, which means the requirement containers of the card and of its skills are the same in both forms. A card whose empty scope lists or empty entries the SDK form dropped gets `a2a.signature_scope`. A card where the two forms differ only outside the requirements, such as a `false` flag, is accepted. A signature that is malformed, uses an unknown algorithm or verifies under no supplied key is `a2a.signature_invalid`. The first signature that verifies decides, and a bad signature before a good one is skipped.
+
+The extended card is fetched after sign-in. Its extra skills are used only after a reviewed put pins its hash in `card.extended_hash`. With no pinned hash the device uses none of them and reports `a2a.extended_unreviewed`, and with a different hash it reports `a2a.extended_changed`.
+
+### 13.6 The tool
+
+The connection offers one tool named `ask_<slug>` of the record name (section 7.2), with the input `{message}`. Its hash is the object id of 105 [tools.md](../../105-decentralized-personal-mesh/contracts/tools.md), `sha256:` and the SHA-256 of the LETS-CJ/1 bytes of `{"description", "name", "skills"}` taken from the card after pruning (section 13.2), with `""`, `""` and `[]` for a field the card does not have. A change to the card's name, description or skills is a new tool hash, so it goes through the review card of section 3.2.
+
+### 13.7 Tasks
+
+`TASK_STATE_AUTH_REQUIRED` fails the call with `connection.sign_in_needed`. The device writes `needs_attention` with reason `not_signed_in` when it holds no credential and `refused` when it does. It sends nothing on its own, so no credential is guessed and no message is retried. Every other task state continues.
+
+### 13.8 A2A codes
+
+| Code | Where |
+|---|---|
+| `a2a.not_an_object`, `a2a.missing_field`, `a2a.wrong_type`, `a2a.insecure_url`, `a2a.ambiguous_scheme`, `a2a.unknown_scheme_type`, `a2a.bad_api_key_location`, `a2a.unknown_flow`, `a2a.requirement_unknown_scheme`, `a2a.empty_requirement`, `a2a.conflicting_requirements`, `a2a.mixed_dialects`, `a2a.float_in_card`, `a2a.bad_key` | Reading a card |
+| `a2a.scheme_unsupported` | Selection |
+| `a2a.signature_invalid`, `a2a.signature_missing`, `a2a.signature_scope`, `a2a.signer_changed`, `a2a.origin_changed`, `a2a.card_changed`, `a2a.interface_offsite`, `a2a.not_a_card_pin` | Proposal and the check |
+| `a2a.extended_unreviewed`, `a2a.extended_changed` | The extended card |
+| `connection.sign_in_needed` | A task that needs authorization |
+
