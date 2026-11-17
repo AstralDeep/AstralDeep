@@ -320,8 +320,8 @@ def _open(root: Path, platform: str, descriptor_sha: str) -> InstalledBundle:
 
 def install(descriptor: str, sha256: str | None, root: Path | None = None, *, platform: str | None = None,
             glibc: tuple[int, int] | None | str = "host") -> InstalledBundle:
-    # Remote descriptors must carry a pinned digest; a pack on this machine's own disk may omit it, and every other check
-    # still runs. Versions install side by side, and a pack that fails any check leaves what was there untouched.
+    # Remote descriptors must carry a pinned digest; a pack on this machine's own disk may omit it, and every other
+    # check still runs. Versions install side by side, and a pack that fails any check leaves what was there untouched.
     platform = platform or platform_name()
     local = _local(descriptor)
     if sha256 is None and local is None:
