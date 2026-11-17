@@ -772,3 +772,25 @@ def test_the_built_pack_ships_fonts_and_a_configuration_that_stays_inside_it(pac
     assert 'prefix="relative"' in configuration and "/usr/share" not in configuration
     for conf in (pack / "native" / "etc" / "fonts" / "conf.d").iterdir():
         assert "/usr/share/fonts" not in conf.read_text()
+
+
+@pytest.mark.parametrize("lock", sorted(BUNDLE.glob("node-requirements.*.lock")), ids=lambda path: path.name)
+def test_every_platform_lock_satisfies_the_spacy_model_range(lock):
+    pinned = re.search(r"^spacy==(\S+) \\$", lock.read_text(), re.MULTILINE)
+    assert pinned is not None, f"{lock.name} has no spacy pin"
+    model = json.loads((BUNDLE / "pins.json").read_text())["spacy_model"]
+    assert ap.satisfies(pinned.group(1), model["requires_spacy"])
+    assert re.search(r"^presidio-analyzer==", lock.read_text(), re.MULTILINE)
+    assert re.search(r"^presidio-anonymizer==", lock.read_text(), re.MULTILINE)
+
+
+@pytest.mark.parametrize("lock", sorted(BUNDLE.glob("node-requirements.*.lock")), ids=lambda path: path.name)
+def test_every_platform_lock_meets_the_egress_floors(lock):
+    pinned = {name.lower().replace("_", "-"): version for name, version in re.findall(r"^([A-Za-z0-9_.-]+)==(\S+) \\$", lock.read_text(), re.MULTILINE)}
+    floors = re.findall(r"^([A-Za-z0-9_.-]+)(?:\[[^\]]*\])?>=([\d.]+)\s*$", (REPO / "vessel" / "egress" / "requirements.txt").read_text(), re.MULTILINE)
+    assert floors
+    for name, floor in floors:
+        key = name.lower().replace("_", "-")
+        if key in pinned:
+            assert ap.satisfies(pinned[key], f">={floor}"), f"{lock.name} pins {key} {pinned[key]} below the egress floor {floor}"
+    assert "fastapi" in pinned

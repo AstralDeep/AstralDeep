@@ -258,8 +258,8 @@ def test_stopping_a_group_ends_it_and_leftovers_are_found_by_marker():
     check.stop_group(process)
     assert not check.group_alive(process.pid)
     check.stop_group(None)
-    commands = lambda: [(os.getpid(), "marker"), (1, "x marker y"), (2, "other")]  # noqa: E731
-    assert check.leftover_processes("marker", commands) == [1]
+    commands = lambda: [(os.getpid(), "marker"), (os.getpid() + 1, "x marker y"), (os.getpid() + 2, "other")]  # noqa: E731
+    assert check.leftover_processes("marker", commands) == [os.getpid() + 1]
     assert any(pid == os.getpid() for pid, _ in check.listed_commands())
     assert check.free_port() > 0
 
