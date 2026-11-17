@@ -1,4 +1,4 @@
-"""Checks the package root exports what hosts import from it and that facade.json names only real modules.
+"""Checks the root exports hosts import and that facade.json names only real modules.
 The root names cover the SQLite URL check and the SQLite structure digest a host reads at boot.
 """
 

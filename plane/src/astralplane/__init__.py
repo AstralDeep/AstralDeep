@@ -174,8 +174,8 @@ from astralplane.database.sqlite import is_sqlite_url
 from astralplane.database.sqlite_migrations import (
     SQLITE_DATA_PLANE_REVISION,
     SQLITE_MIGRATION_DIGEST,
-    SQLITE_SCHEMA_STRUCTURE_DIGEST,
     SQLITE_MIGRATION_REGISTRY,
+    SQLITE_SCHEMA_STRUCTURE_DIGEST,
 )
 from astralplane.database.transaction import CommandResult, PlaneDatabase, Transaction
 from astralplane.endpoint_readiness import (
