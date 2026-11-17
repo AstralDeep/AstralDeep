@@ -273,6 +273,7 @@ def test_release_tooling_job_covers_owned_scripts_with_exact_omissions() -> None
     assert omissions == {
         "scripts/windows_release_candidate.py",
         "scripts/export_work_contract.py",
+        "scripts/dev_mesh.py",
     }
     assert not any("*" in omission for omission in omissions)
 
@@ -293,6 +294,7 @@ def test_release_tooling_job_covers_owned_scripts_with_exact_omissions() -> None
         "merge_xccov_line_coverage.py",
         "check_changed_coverage.py",
         "check_doc_links.py",
+        "dev_mesh.py",
         "export_work_contract.py",
         "export_xccov_line_coverage.py",
         "extract_release_artifact.py",
