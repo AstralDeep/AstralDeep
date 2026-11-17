@@ -8,6 +8,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import time
 from collections import Counter
 from dataclasses import dataclass
@@ -136,12 +137,42 @@ def _text(value: Any) -> str:
     return text[:MAX_CONTENT]
 
 
+CATALOG_LIMIT = 64
+ALLOWLIST_ENV = "ASTRAL_NODE_PUBLISHED_TOOLS"
+
+
+def published_allowlist() -> Optional[frozenset]:
+    raw = os.environ.get(ALLOWLIST_ENV)
+    if raw is None or not raw.strip():
+        return None
+    return frozenset(name.strip() for name in raw.split(",") if name.strip())
+
+
 class OrchestratorCalls:
     def __init__(self, orch: Any):
         self._orch = orch
 
     def published_tools(self, owner_id: str) -> List[Dict[str, Any]]:
-        return [tool for _, tool in self._entries(owner_id)]
+        return self.published_selection(owner_id)[0]
+
+    def published_selection(self, owner_id: str) -> Tuple[List[Dict[str, Any]], int]:
+        allowed = published_allowlist()
+        entries = [
+            (agent_id, tool) for agent_id, tool in self._entries(owner_id)
+            if self._remotely_callable(owner_id, agent_id, tool["name"])
+            and (allowed is None or f"{agent_id}__{tool['name']}" in allowed)
+        ]
+        entries.sort(key=lambda entry: (entry[0], entry[1]["name"]))
+        kept = entries[:CATALOG_LIMIT]
+        return [tool for _, tool in kept], len(entries) - len(kept)
+
+    def _remotely_callable(self, owner_id: str, agent_id: str, name: str) -> bool:
+        try:
+            if self._orch._is_draft_agent(agent_id):
+                return False
+            return self._orch.tool_permissions.is_tool_allowed(owner_id, agent_id, name) is True
+        except Exception:  # noqa: BLE001
+            return False
 
     def catalog(self, owner_id: str) -> Dict[Tuple[str, str], CatalogTool]:
         return {
