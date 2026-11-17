@@ -39,6 +39,9 @@ def native_environment(root: Path = PACK_ROOT, base: Mapping[str, str] | None = 
     database = root / "share" / "magic" / "magic.mgc"
     if database.is_file():
         values["MAGIC"] = str(database)
+    fonts = root / "share" / "fontconfig" / "fonts.conf"
+    if fonts.is_file():
+        values["FONTCONFIG_FILE"] = str(fonts)
     return values
 
 

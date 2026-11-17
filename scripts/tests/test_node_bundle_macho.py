@@ -118,12 +118,15 @@ def test_pack_scan_reports_problems_per_file_and_scopes_install_names(tmp_path):
     theirs = thin([dylib_command(macho.LC_ID_DYLIB, "@rpath/libtheirs.dylib"), build_version(1, (14, 0, 0))])
     write(tmp_path, "lib/libours.dylib", ours)
     write(tmp_path, "python/lib/libtheirs.dylib", theirs)
+    write(tmp_path, "lib/python3.11/site-packages/x/ext.so", theirs)
     write(tmp_path, "bin/tool", thin([build_version(1, (26, 0, 0))], file_type=2))
     write(tmp_path, "app/readme.txt", b"text")
     (tmp_path / "bin" / "link").symlink_to("tool")
     problems, scanned = macho.pack_problems(tmp_path)
-    assert scanned == 3
-    assert problems == ["bin/tool: minos 26.0.0 is newer than 14.0", "lib/libours.dylib: install name @rpath/libours.dylib"]
+    assert scanned == 4
+    assert problems == ["bin/tool: minos 26.0.0 is newer than 14.0",
+                        "lib/libours.dylib: install name @rpath/libours.dylib",
+                        "lib/python3.11/site-packages/x/ext.so: install name @rpath/libtheirs.dylib"]
 
 
 def test_pack_scan_reports_an_unreadable_header(tmp_path):

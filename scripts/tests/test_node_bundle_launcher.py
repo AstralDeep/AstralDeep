@@ -97,6 +97,11 @@ def test_native_environment_puts_the_pack_tools_first_and_names_the_library_and_
     assert values["PATH"] == f"{tmp_path / 'bin'}:/opt/tools"
     assert values["DYLD_FALLBACK_LIBRARY_PATH"] == f"{tmp_path / 'lib'}:/usr/lib:/lib"
     assert values["MAGIC"] == str(tmp_path / "share" / "magic" / "magic.mgc")
+    assert "FONTCONFIG_FILE" not in values
+    (tmp_path / "share" / "fontconfig").mkdir()
+    (tmp_path / "share" / "fontconfig" / "fonts.conf").write_text("x")
+    assert launch.native_environment(tmp_path, {})["FONTCONFIG_FILE"] == str(
+        tmp_path / "share" / "fontconfig" / "fonts.conf")
     assert launch.native_environment(tmp_path, {})["PATH"].endswith(launch.DEFAULT_PATH)
 
 

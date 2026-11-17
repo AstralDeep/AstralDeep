@@ -278,7 +278,9 @@ def natives_assembly(assembly, monkeypatch):
     folder = natives_folder(assembly.root)
     assembly.settings["platforms"]["macos-arm64"]["natives"] = {"sources_lock": "natives/sources.lock.json"}
     assembly.settings["spacy_model"] = {"name": "en_core_web_lg", "url": "https://example.invalid/model.whl",
-                                        "size": 5, "sha256": "0" * 64}
+                                        "size": 5, "sha256": "0" * 64, "version": "3.8.0",
+                                        "requires_spacy": ">=3.8.0,<3.9.0"}
+    assembly.installed[:] = [["spacy", "3.8.18"]]
     calls = []
     module = SimpleNamespace(
         build=lambda lock, out, cache, work: calls.append(("build", lock.name, out.name)) or folder,
@@ -330,3 +332,26 @@ def test_the_cli_takes_a_natives_folder(natives_assembly, capsys):
 
 def test_the_real_natives_module_loads_from_the_bundle_directory():
     assert ap.natives_module().__name__.endswith("build_macos")
+
+
+@pytest.mark.parametrize("version, specifier, expected", [
+    ("3.8.18", ">=3.8.0,<3.9.0", True), ("3.9.0", ">=3.8.0,<3.9.0", False), ("3.7.9", ">=3.8.0,<3.9.0", False),
+    ("3.8", "==3.8.0", True), ("3.8.1", "!=3.8.1", False), ("3.8.1", ">3.8.0", True), ("3.8.0", "<=3.8", True),
+])
+def test_version_clauses_compare_release_numbers(version, specifier, expected):
+    assert ap.satisfies(version, specifier) is expected
+
+
+def test_an_unsupported_version_clause_is_refused():
+    with pytest.raises(ap.PackError, match="unsupported version clause"):
+        ap.satisfies("3.8.0", "~=3.8")
+
+
+def test_a_model_that_does_not_fit_the_installed_spacy_stops_the_assembly(natives_assembly):
+    natives_assembly.installed[:] = [["spacy", "3.9.1"]]
+    with pytest.raises(ap.PackError, match=r"needs spaCy >=3.8.0,<3.9.0, found 3.9.1"):
+        build(natives_assembly)
+    assert not (natives_assembly.root / "out").exists()
+    natives_assembly.installed[:] = []
+    with pytest.raises(ap.PackError, match="spaCy, which is not installed"):
+        build(natives_assembly)

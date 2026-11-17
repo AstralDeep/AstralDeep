@@ -140,7 +140,7 @@ def pack_problems(root: Path, own_roots: tuple[str, ...] = ("bin", "lib")) -> tu
                 continue
             scanned += bool(slices)
             relative = path.relative_to(root).as_posix()
-            own = relative.split("/", 1)[0] in own_roots and not relative.startswith("lib/python")
+            own = relative.split("/", 1)[0] in own_roots
             for parsed in slices:
                 problems += [f"{relative}: {reason}" for reason in slice_problems(parsed, own)]
     return problems, scanned

@@ -36,9 +36,11 @@ def archive_bytes(files: dict, top: str) -> bytes:
 
 def test_the_committed_lock_pins_every_source_with_licenses():
     lock = bm.validate_lock(real_lock())
-    assert {entry["name"] for entry in lock["sources"]} == {"freetype", "libmagic", "poppler", "ripgrep"}
+    assert {entry["name"] for entry in lock["sources"]} == {"expat", "fontconfig", "freetype", "libjpeg-turbo", "libmagic", "poppler", "ripgrep"}
     assert all(entry["url"].startswith("https://") for entry in lock["sources"])
-    assert set(lock["shipped"]) >= {"bin/pdfinfo", "bin/pdftoppm", "bin/rg", "lib/libmagic.dylib"}
+    assert set(lock["shipped"]) >= {"bin/pdfinfo", "bin/pdftoppm", "bin/rg", "lib/libmagic.dylib",
+                                    "share/fontconfig/fonts.conf"}
+    assert "CJK" in lock["known_limits"][0]
 
 
 @pytest.mark.parametrize("mutation, message", [
@@ -110,11 +112,17 @@ def test_cmake_options_ignore_host_prefixes_and_every_optional_backend_is_off(tm
     common = bm.cmake_options(real_lock(), tmp_path, "/prefix")
     assert "-DCMAKE_IGNORE_PREFIX_PATH=/opt/homebrew;/usr/local" in common
     assert "-DCMAKE_OSX_DEPLOYMENT_TARGET=14.0" in common and "-DCMAKE_INSTALL_PREFIX=/prefix" in common
-    poppler = bm.poppler_options()
-    for name in ("ENABLE_LIBJPEG", "ENABLE_LIBOPENJPEG", "ENABLE_LCMS", "ENABLE_LIBTIFF", "ENABLE_GLIB", "ENABLE_QT6"):
+    poppler = bm.poppler_options(tmp_path)
+    for name in ("ENABLE_LIBOPENJPEG", "ENABLE_LCMS", "ENABLE_LIBTIFF", "ENABLE_GLIB", "ENABLE_QT6"):
         assert f"-D{name}=OFF" in poppler
-    assert "-DFONT_CONFIGURATION=generic" in poppler and "-DCMAKE_DISABLE_FIND_PACKAGE_PNG=ON" in poppler
+    assert "-DENABLE_LIBJPEG=ON" in poppler and "-DENABLE_LIBJPEG=OFF" not in poppler
+    assert "-DFONT_CONFIGURATION=fontconfig" in poppler and "-DCMAKE_DISABLE_FIND_PACKAGE_PNG=ON" in poppler
     assert "-DFT_DISABLE_HVF=ON" in bm.freetype_options()
+    assert "-DENABLE_SHARED=OFF" in bm.jpeg_options() and "-DEXPAT_SHARED_LIBS=OFF" in bm.expat_options()
+    fontconfig = bm.fontconfig_options(real_lock())
+    assert "--disable-shared" in fontconfig and "--with-default-fonts=/System/Library/Fonts" in fontconfig
+    configuration = bm.fonts_configuration()
+    assert "<dir>/System/Library/Fonts/Supplemental</dir>" in configuration and "<cachedir" in configuration
     magic = bm.libmagic_options(real_lock())
     assert "--disable-zlib" in magic and "--disable-xzlib" in magic and "ac_cv_func_pipe2=no" in magic
 
@@ -150,6 +158,8 @@ def fake_build(tmp_path, monkeypatch):
     archives = {}
     tops = {"freetype": {"docs/FTL.TXT": b"ftl", "docs/GPLv2.TXT": b"gpl"}, "libmagic": {"COPYING": b"bsd"},
             "poppler": {"COPYING": b"gpl2", "COPYING3": b"gpl3"},
+            "libjpeg-turbo": {"LICENSE.md": b"bsd", "README.ijg": b"ijg"}, "expat": {"COPYING": b"mit"},
+            "fontconfig": {"COPYING": b"hpnd"},
             "ripgrep": {"rg": b"rg-binary", "COPYING": b"c", "LICENSE-MIT": b"m", "UNLICENSE": b"u"}}
     for entry in lock["sources"]:
         archive = tmp_path / "dl" / f"{entry['name']}.tar.gz"
@@ -175,8 +185,13 @@ def fake_build(tmp_path, monkeypatch):
             Path(kwargs["cwd"]).mkdir(exist_ok=True)
         if command[0] == "make" and command[1] == "install":
             root = Path(command[2].split("=", 1)[1]) / "astral-node-pack"
-            write(root, "lib/libmagic.1.dylib", b"dylib")
-            write(root, "share/misc/magic.mgc", b"mgc")
+            if "fontconfig" in command[2]:
+                write(root, "include/fontconfig/fontconfig.h", b"h")
+                write(root, "lib/libfontconfig.a", b"a")
+                write(root, "lib/pkgconfig/fontconfig.pc", b"prefix=/astral-node-pack\n")
+            else:
+                write(root, "lib/libmagic.1.dylib", b"dylib")
+                write(root, "share/misc/magic.mgc", b"mgc")
         return SimpleNamespace(stdout="", returncode=0)
 
     monkeypatch.setattr(ap, "fetch_pinned", fetch)
@@ -201,6 +216,9 @@ def test_the_build_stages_tools_library_database_licenses_and_a_receipt(fake_bui
     assert bm.license_problems(out) == []
     assert any(command[:2] == ["install_name_tool", "-id"] for command in fake_build.commands)
     assert sum(command[0] == "codesign" for command in fake_build.commands) == 3
+    assert "<dir>/Library/Fonts</dir>" in (out / "share/fontconfig/fonts.conf").read_text()
+    descriptor = (fake_build.work / "deps/lib/pkgconfig/fontconfig.pc").read_text()
+    assert str(fake_build.work / "deps") in descriptor and "/astral-node-pack" not in descriptor
     assert bm.summary(out)["files"] == receipt["files"]
 
 
@@ -327,7 +345,7 @@ def test_build_tools_are_linked_and_their_versions_recorded(tmp_path, monkeypatc
     assert (tools / "cmake").resolve() == (found / "cmake").resolve()
     versions = bm.tool_versions(tools)
     assert versions["cmake"] == "cmake 9.9" and versions["ninja"] == "ninja 9.9"
-    assert set(versions) == {"cmake", "ninja", "clang", "make", "sdk"}
+    assert set(versions) == {"cmake", "ninja", "pkg-config", "clang", "make", "sdk"}
 
 
 def test_binaries_are_stripped_and_resigned_ad_hoc(tmp_path, monkeypatch):
@@ -346,3 +364,68 @@ def test_run_raises_on_a_failing_tool():
 @pytest.mark.skipif("ASTRAL_NODE_PACK_CHECK" not in os.environ, reason="needs an assembled full pack")
 def test_an_assembled_full_pack_passes_every_native_rule():
     assert bm.check_pack(Path(os.environ["ASTRAL_NODE_PACK_CHECK"])) == []
+
+
+def load_probe(monkeypatch):
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("native_probe", bm.PROBE)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_probe_fails_when_a_jpeg_page_or_a_plain_font_renders_blank(tmp_path, monkeypatch, capsys):
+    probe = load_probe(monkeypatch)
+    renders = {}
+
+    def fake_render(document, directory):
+        return renders.get("jpeg", 500) if b"DCTDecode" in document else (
+            renders.get("font", 500) if b"/BaseFont" in document else 500)
+
+    monkeypatch.setattr(probe, "render", fake_render)
+    monkeypatch.setattr(probe.subprocess, "run", lambda *a, **k: SimpleNamespace(
+        returncode=0, stdout=b"Pages:           1", stderr=b""))
+    pdf2image = SimpleNamespace(convert_from_bytes=lambda data, dpi: [SimpleNamespace(size=(50, 50))])
+    monkeypatch.setitem(__import__("sys").modules, "pdf2image", pdf2image)
+    probe.probe_poppler(tmp_path)
+    assert probe.FAILED == []
+    renders.update(jpeg=0)
+    probe.probe_poppler(tmp_path)
+    assert probe.FAILED == ["pdftoppm renders a JPEG image page"]
+    probe.FAILED.clear()
+    renders.update(jpeg=500, font=0)
+    probe.probe_poppler(tmp_path)
+    assert len(probe.FAILED) == 3 and all("non-embedded" in label for label in probe.FAILED)
+    assert "FAIL pdftoppm renders a JPEG" not in capsys.readouterr().out.split("non-embedded")[-1]
+
+
+def test_a_missing_imaging_library_fails_the_probe_instead_of_skipping(monkeypatch):
+    probe = load_probe(monkeypatch)
+    monkeypatch.setitem(__import__("sys").modules, "PIL", None)
+    with pytest.raises(ImportError):
+        probe.jpeg_pdf()
+
+
+def test_the_probe_fixtures_are_well_formed_pdfs(monkeypatch):
+    probe = load_probe(monkeypatch)
+    for document in (probe.square_pdf(), probe.flate_pdf(), probe.text_pdf("Helvetica")):
+        assert document.startswith(b"%PDF-1.4") and document.rstrip().endswith(b"%%EOF")
+    assert b"/BaseFont /Times-Roman" in probe.text_pdf("Times-Roman")
+
+
+def test_the_shared_error_class_is_the_one_assemble_run_as_a_script_catches():
+    import runpy
+
+    fresh = runpy.run_path(str(ap.HERE / "assemble.py"), run_name="not_main")
+    assert fresh["PackError"] is bm.PackError is ap.PackError
+    assert issubclass(bm.NativesError, fresh["PackError"])
+
+
+def test_a_natives_failure_prints_a_node_pack_message_and_exits(monkeypatch, tmp_path):
+    def broken(*arguments, **keywords):
+        raise bm.NativesError("natives broke")
+
+    monkeypatch.setattr(ap, "assemble", broken)
+    with pytest.raises(SystemExit, match="node pack: natives broke"):
+        ap.main(["--out", str(tmp_path / "o"), "--work", str(tmp_path / "w"), "--kernel-dir", str(tmp_path)])

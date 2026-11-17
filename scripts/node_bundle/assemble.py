@@ -16,6 +16,7 @@ import urllib.request
 from pathlib import Path
 
 import manifest as pack_manifest
+from pack_error import PackError
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
@@ -29,10 +30,6 @@ KERNEL_ARTIFACTS_ENV = "ASTRAL_KERNEL_ARTIFACTS"
 BYTECODE_PREFIX = "/astral-node-pack"
 FULL_PIN = re.compile(r"[0-9a-f]{40}")
 STATUS_ARGS = ("status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none")
-
-
-class PackError(Exception):
-    pass
 
 
 def load_pins(path: Path = PINS) -> dict:
@@ -258,6 +255,34 @@ def verify_exclusions(distributions: list[dict], excluded: list[dict]) -> None:
         raise PackError(f"excluded packages are present: {', '.join(present)}")
 
 
+def release_tuple(version: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in re.match(r"\d+(?:\.\d+)*", version).group().split("."))
+
+
+def satisfies(version: str, specifier: str) -> bool:
+    operators = {">=": lambda a, b: a >= b, "<=": lambda a, b: a <= b, ">": lambda a, b: a > b,
+                 "<": lambda a, b: a < b, "==": lambda a, b: a == b, "!=": lambda a, b: a != b}
+    installed = release_tuple(version)
+    for clause in specifier.split(","):
+        match = re.fullmatch(r"\s*(>=|<=|==|!=|>|<)\s*(\d+(?:\.\d+)*)\s*", clause)
+        if match is None:
+            raise PackError(f"unsupported version clause {clause!r}")
+        wanted = release_tuple(match.group(2))
+        width = max(len(installed), len(wanted))
+        if not operators[match.group(1)](installed + (0,) * (width - len(installed)),
+                                         wanted + (0,) * (width - len(wanted))):
+            return False
+    return True
+
+
+def verify_model_requirement(distributions: list[dict], model: dict) -> None:
+    spacy = [entry["version"] for entry in distributions if entry["name"].lower() == "spacy"]
+    if not spacy:
+        raise PackError(f"{model['name']} needs spaCy, which is not installed")
+    if not satisfies(spacy[0], model["requires_spacy"]):
+        raise PackError(f"{model['name']} {model['version']} needs spaCy {model['requires_spacy']}, found {spacy[0]}")
+
+
 def read_kernel_artifacts(directory: Path, pins: dict, spec: dict) -> dict:
     manifest_path = directory / spec["manifest"]
     try:
@@ -380,6 +405,8 @@ def assemble(platform: str, output: Path, kernel_dir: Path, work: Path, mailbox:
     prune_records(site_packages)
     distributions = installed_distributions(python)
     verify_exclusions(distributions, pins["excluded_packages"])
+    if "spacy_model" in pins:
+        verify_model_requirement(distributions, pins["spacy_model"])
 
     for relative in APP_PARTS:
         source = components_root / relative

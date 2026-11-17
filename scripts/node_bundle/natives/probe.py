@@ -10,7 +10,7 @@ import tempfile
 import zlib
 from pathlib import Path
 
-ROOT = Path(os.path.realpath(sys.argv[1]))
+ROOT = Path()
 FAILED = []
 
 
@@ -53,13 +53,17 @@ def square_pdf() -> bytes:
     return pdf(page_objects(b"0 0 0 rg 10 10 80 80 re f"))
 
 
-def jpeg_pdf() -> bytes | None:
-    try:
-        import io
+def text_pdf(font: str) -> bytes:
+    face = b"<< /Type /Font /Subtype /Type1 /BaseFont /" + font.encode() + b" >>"
+    page = page_objects(b"BT /F1 40 Tf 5 40 Td (Hello) Tj ET", b"<< /Font << /F1 5 0 R >> >>", [face])
+    return pdf([page[0], page[1], page[2].replace(b"[0 0 100 100]", b"[0 0 200 100]"), *page[3:]])
 
-        from PIL import Image
-    except ImportError:
-        return None
+
+def jpeg_pdf() -> bytes:
+    import io
+
+    from PIL import Image
+
     buffer = io.BytesIO()
     Image.new("RGB", (20, 20), (0, 0, 0)).save(buffer, "JPEG")
     image = stream(b"/Type /XObject /Subtype /Image /Width 20 /Height 20 /ColorSpace /DeviceRGB "
@@ -118,10 +122,9 @@ def probe_poppler(directory: Path) -> None:
 
     pages = convert_from_bytes(square_pdf(), dpi=36)
     check("pdf2image converts through the pack's poppler", len(pages) == 1 and pages[0].size == (50, 50))
-    document = jpeg_pdf()
-    if document is not None:
-        dark = render(document, directory)
-        print(f"INFO a JPEG image in a PDF renders {dark} dark samples (0 means DCT images draw blank)")
+    check("pdftoppm renders a JPEG image page", render(jpeg_pdf(), directory) > 100)
+    for font in ("Helvetica", "Times-Roman", "Courier"):
+        check(f"pdftoppm renders non-embedded {font} text", render(text_pdf(font), directory) > 100)
 
 
 def probe_ripgrep(directory: Path) -> None:
@@ -149,7 +152,9 @@ def probe_language() -> None:
     check("presidio finds US_SSN", "US_SSN" in kinds, str(sorted(kinds)))
 
 
-def main() -> None:
+def main(root: str) -> None:
+    global ROOT
+    ROOT = Path(os.path.realpath(root))
     probe_environment()
     with tempfile.TemporaryDirectory(prefix="node-pack-probe-") as scratch:
         directory = Path(scratch)
@@ -161,4 +166,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1])

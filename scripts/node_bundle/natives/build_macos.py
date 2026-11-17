@@ -20,6 +20,7 @@ import manifest as pack_manifest  # noqa: E402
 import relocation_check  # noqa: E402
 import verify  # noqa: E402
 from natives import macho  # noqa: E402
+from pack_error import PackError  # noqa: E402
 
 LOCK_FORMAT = "astral.nodepack-natives-sources/v1"
 RECEIPT_FORMAT = "astral.nodepack-natives/v1"
@@ -29,7 +30,7 @@ LOCK_COPY_PATH = f"{LICENSE_ROOT}/sources.lock.json"
 PROBE = HERE / "probe.py"
 HOST_PREFIXES = "/opt/homebrew;/usr/local"
 SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
-BUILD_TOOLS = ("cmake", "ninja")
+BUILD_TOOLS = ("cmake", "ninja", "pkg-config")
 DIGEST = re.compile(r"[0-9a-f]{64}")
 TARGET = re.compile(r"\d{1,2}\.\d{1,2}")
 SOURCE_KINDS = {"source", "binary"}
@@ -37,7 +38,7 @@ PROBE_TIMEOUT = 900
 PROBE_ENV = {"PATH": "/usr/bin:/bin"}
 DISABLED_POPPLER_BACKENDS = (
     "ENABLE_BOOST", "ENABLE_CPP", "ENABLE_GLIB", "ENABLE_GOBJECT_INTROSPECTION", "ENABLE_QT5", "ENABLE_QT6",
-    "ENABLE_BROTLI", "ENABLE_LIBOPENJPEG", "ENABLE_LIBJPEG", "ENABLE_LCMS", "ENABLE_LIBCURL", "ENABLE_LIBTIFF",
+    "ENABLE_BROTLI", "ENABLE_LIBOPENJPEG", "ENABLE_LCMS", "ENABLE_LIBCURL", "ENABLE_LIBTIFF",
     "ENABLE_NSS3", "ENABLE_GPGME", "ENABLE_HARFBUZZ", "BUILD_MANUAL_TESTS", "BUILD_GTK_TESTS", "BUILD_QT5_TESTS",
     "BUILD_QT6_TESTS", "BUILD_CPP_TESTS",
 )
@@ -46,9 +47,11 @@ DISABLED_LIBMAGIC_LIBRARIES = ("zlib", "bzlib", "xzlib", "zstdlib", "lzlib", "li
 # The macOS 27 SDK declares pipe2, which a macOS 14 machine does not have.
 LIBMAGIC_FUNCTION_OVERRIDES = ["ac_cv_func_pipe2=no"]
 POPPLER_TOOLS = ("pdfinfo", "pdftoppm")
+SYSTEM_FONT_DIRS = ("/System/Library/Fonts", "/System/Library/Fonts/Supplemental", "/Library/Fonts")
+FONTS_CONFIGURATION_PATH = "share/fontconfig/fonts.conf"
 
 
-class NativesError(assemble.PackError):
+class NativesError(PackError):
     pass
 
 
@@ -113,6 +116,7 @@ def tool_versions(tools: Path) -> dict:
         "ninja": first_line([tools / "ninja", "--version"]),
         "clang": first_line(["/usr/bin/clang", "--version"]),
         "make": first_line(["/usr/bin/make", "--version"]),
+        "pkg-config": first_line([tools / "pkg-config", "--version"]),
         "sdk": first_line(["/usr/bin/xcrun", "--show-sdk-version"]),
     }
 
@@ -162,10 +166,34 @@ def freetype_options() -> list[str]:
     return [f"-DFT_DISABLE_{name}=ON" for name in DISABLED_FREETYPE_LIBRARIES]
 
 
-def poppler_options() -> list[str]:
+def poppler_options(deps: Path) -> list[str]:
     options = [f"-D{name}=OFF" for name in DISABLED_POPPLER_BACKENDS]
-    return options + ["-DFONT_CONFIGURATION=generic", "-DENABLE_UTILS=ON", "-DCMAKE_DISABLE_FIND_PACKAGE_PNG=ON",
-                      "-DCMAKE_DISABLE_FIND_PACKAGE_Cairo=ON", "-DCMAKE_DISABLE_FIND_PACKAGE_Boost=ON"]
+    return options + ["-DFONT_CONFIGURATION=fontconfig", "-DENABLE_LIBJPEG=ON", "-DENABLE_UTILS=ON",
+                      "-DCMAKE_DISABLE_FIND_PACKAGE_PNG=ON", "-DCMAKE_DISABLE_FIND_PACKAGE_Cairo=ON",
+                      "-DCMAKE_DISABLE_FIND_PACKAGE_Boost=ON",
+                      f"-DCMAKE_EXE_LINKER_FLAGS={deps / 'lib' / 'libexpat.a'}"]
+
+
+def jpeg_options() -> list[str]:
+    return ["-DENABLE_SHARED=OFF", "-DENABLE_STATIC=ON", "-DWITH_TURBOJPEG=OFF", "-DWITH_JAVA=OFF",
+            "-DWITH_TOOLS=OFF", "-DWITH_TESTS=OFF"]
+
+
+def expat_options() -> list[str]:
+    return ["-DEXPAT_SHARED_LIBS=OFF", "-DEXPAT_BUILD_TOOLS=OFF", "-DEXPAT_BUILD_EXAMPLES=OFF",
+            "-DEXPAT_BUILD_TESTS=OFF", "-DEXPAT_BUILD_DOCS=OFF"]
+
+
+def fontconfig_options(lock: dict) -> list[str]:
+    return [f"--prefix={lock['prefix']}", "--enable-static", "--disable-shared", "--disable-docs", "--disable-nls",
+            "--disable-dependency-tracking", f"--with-default-fonts={SYSTEM_FONT_DIRS[0]}",
+            f"--with-add-fonts={','.join(SYSTEM_FONT_DIRS[1:])}"]
+
+
+def fonts_configuration() -> str:
+    directories = "".join(f"  <dir>{path}</dir>\n" for path in SYSTEM_FONT_DIRS)
+    return ('<?xml version="1.0"?>\n<!DOCTYPE fontconfig SYSTEM "fonts.dtd">\n<fontconfig>\n'
+            f'{directories}  <cachedir prefix="xdg">astral-node/fontconfig</cachedir>\n</fontconfig>\n')
 
 
 def libmagic_options(lock: dict) -> list[str]:
@@ -180,9 +208,36 @@ def build_freetype(lock: dict, source: Path, work: Path, deps: Path, environment
     run(["cmake", "--install", build], env=environment)
 
 
+def build_jpeg(lock: dict, source: Path, work: Path, deps: Path, environment: dict) -> None:
+    build = work / "build-libjpeg-turbo"
+    run(["cmake", "-S", source, "-B", build, *cmake_options(lock, deps, str(deps)), *jpeg_options()], env=environment)
+    run(["cmake", "--build", build], env=environment)
+    run(["cmake", "--install", build], env=environment)
+
+
+def build_expat(lock: dict, source: Path, work: Path, deps: Path, environment: dict) -> None:
+    build = work / "build-expat"
+    run(["cmake", "-S", source, "-B", build, *cmake_options(lock, deps, str(deps)), *expat_options()], env=environment)
+    run(["cmake", "--build", build], env=environment)
+    run(["cmake", "--install", build], env=environment)
+
+
+def build_fontconfig(lock: dict, source: Path, work: Path, deps: Path, environment: dict) -> None:
+    build, destination = work / "build-fontconfig", work / "install-fontconfig"
+    build.mkdir()
+    run([source / "configure", *fontconfig_options(lock)], cwd=build, env=environment, stdout=subprocess.DEVNULL)
+    run(["make", f"-j{os.cpu_count() or 2}"], cwd=build, env=environment, stdout=subprocess.DEVNULL)
+    run(["make", "install", f"DESTDIR={destination}"], cwd=build, env=environment, stdout=subprocess.DEVNULL)
+    installed = destination / lock["prefix"].lstrip("/")
+    shutil.copytree(installed / "include", deps / "include", dirs_exist_ok=True)
+    shutil.copytree(installed / "lib", deps / "lib", dirs_exist_ok=True)
+    descriptor = deps / "lib" / "pkgconfig" / "fontconfig.pc"
+    descriptor.write_text(descriptor.read_text().replace(lock["prefix"], str(deps)))
+
+
 def build_poppler(lock: dict, source: Path, work: Path, deps: Path, environment: dict) -> Path:
     build = work / "build-poppler"
-    run(["cmake", "-S", source, "-B", build, *cmake_options(lock, deps, lock["prefix"]), *poppler_options()], env=environment)
+    run(["cmake", "-S", source, "-B", build, *cmake_options(lock, deps, lock["prefix"]), *poppler_options(deps)], env=environment)
     run(["cmake", "--build", build, "--target", *POPPLER_TOOLS], env=environment)
     return build / "utils"
 
@@ -259,9 +314,12 @@ def build(lock_path: Path, out: Path, cache: Path, work: Path) -> Path:
     environment = build_environment(lock, tools, deps, work, sdk)
     entries = {entry["name"]: entry for entry in lock["sources"]}
     tops = {name: unpack(entries[name], archives[name], work / "src" / name)
-            for name in ("freetype", "poppler", "libmagic")}
+            for name in ("freetype", "libjpeg-turbo", "expat", "fontconfig", "poppler", "libmagic")}
 
     build_freetype(lock, tops["freetype"], work, deps, environment)
+    build_jpeg(lock, tops["libjpeg-turbo"], work, deps, environment)
+    build_expat(lock, tops["expat"], work, deps, environment)
+    build_fontconfig(lock, tops["fontconfig"], work, deps, environment)
     utilities = build_poppler(lock, tops["poppler"], work, deps, environment)
     installed = build_libmagic(lock, tops["libmagic"], work, environment)
 
@@ -276,6 +334,8 @@ def build(lock_path: Path, out: Path, cache: Path, work: Path) -> Path:
     seal_binary(library, environment)
     (out / "lib" / "libmagic.dylib").symlink_to("libmagic.1.dylib")
     shutil.copy2(installed / "share" / "misc" / "magic.mgc", out / "share" / "magic" / "magic.mgc")
+    (out / FONTS_CONFIGURATION_PATH).parent.mkdir(parents=True)
+    (out / FONTS_CONFIGURATION_PATH).write_text(fonts_configuration())
     extract_ripgrep(entries["ripgrep"], archives["ripgrep"], work / "src" / "ripgrep", out)
 
     licenses = {}
@@ -379,7 +439,7 @@ def main(argv: list[str] | None = None) -> None:
             print(build(arguments.lock, arguments.build, arguments.cache, arguments.work))
             return
         failures = check_pack(arguments.check)
-    except (assemble.PackError, relocation_check.RelocationError, verify.VerifyError, OSError,
+    except (PackError, relocation_check.RelocationError, verify.VerifyError, OSError,
             subprocess.SubprocessError) as error:
         sys.exit(f"natives: {error}")
     if failures:
