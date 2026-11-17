@@ -68,7 +68,7 @@ sys.exit(0 if kind == "application/pdf" else 1)
 """
 
 
-LOADED_PATTERN = re.compile(r"calling init: (\S+)")
+LOADED_PATTERN = re.compile(r"calling init: (.+?)\s*$", re.MULTILINE)
 LOAD_PROBE = "import astral_kernel, PIL._imaging, bcrypt, cryptography.hazmat.bindings._rust, psycopg2, numpy"
 
 

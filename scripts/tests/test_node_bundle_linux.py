@@ -607,6 +607,10 @@ def test_loaded_library_trace_flags_only_libraries_from_outside_the_pack(tmp_pat
     ))
     assert relocation_check.foreign_libraries(trace, tmp_path) == ["/usr/lib/aarch64-linux-gnu/libz.so.1"]
     assert relocation_check.foreign_libraries("", tmp_path) == []
+    spaced = tmp_path / "relocated copy" / "python" / "lib" / "libz.so.1"
+    spaced.parent.mkdir(parents=True)
+    spaced.write_bytes(b"x")
+    assert relocation_check.foreign_libraries(f"  9: calling init: {spaced}\n", tmp_path / "relocated copy") == []
 
 
 def test_the_default_kernel_directory_comes_from_the_environment_first(monkeypatch, tmp_path):
