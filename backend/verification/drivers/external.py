@@ -81,7 +81,7 @@ class ExternalDriver:
                 },
             )
             return (resp or {}).get("access_token", "")
-        return "dev-token"
+        return ""
 
     async def run_scenario(self, scenario: Any) -> CapturedEvidence:
         principal = scenario.principal

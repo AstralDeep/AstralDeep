@@ -85,10 +85,6 @@ def unbind_credential_manager(manager) -> None:
     _CREDENTIAL_MANAGER = None
 
 
-def _is_mock() -> bool:
-    return os.getenv("USE_MOCK_AUTH", "").strip().lower() in ("1", "true", "yes")
-
-
 def _secret() -> bytes:
     explicit = os.getenv("WEB_SESSION_SECRET")
     if explicit:
@@ -311,7 +307,7 @@ def _bound_session_destination(issuer, client_id):
     from orchestrator.session_store import SessionRefreshUnavailable, _binding_string
     from shared.auth_clients import allowed_azps
     authority, web_client, secret = _keycloak_config()
-    if (_is_mock() or not _binding_string(issuer, 2048)
+    if (not _binding_string(issuer, 2048)
             or not _binding_string(client_id, 256)
             or issuer != authority or client_id not in allowed_azps()):
         raise SessionRefreshUnavailable("bound session authority unavailable")
@@ -442,9 +438,6 @@ async def _end_voice_session(request: Request, user_id: str, reason: str) -> Non
 
 
 async def ensure_session(request: Request) -> Optional[Dict[str, Any]]:
-    if _is_mock():
-        return {"access_token": "dev-token", "refresh_token": "", "sub": "test_user",
-                "created_at": time.time(), "resumed": True, "sid": "mock"}
     sess = await aget_session(request)
     if sess is None:
         return None
@@ -465,8 +458,6 @@ async def ensure_session(request: Request) -> Optional[Dict[str, Any]]:
 
 
 def shell_gate(request: Request) -> Optional[str]:
-    if _is_mock():
-        return None
     if get_session(request) is not None:
         return None
     path = request.url.path or "/"
@@ -477,8 +468,6 @@ def shell_gate(request: Request) -> Optional[str]:
 
 
 def session_token(request: Request) -> str:
-    if _is_mock():
-        return "dev-token"
     sess = get_session(request)
     return (sess or {}).get("access_token", "") or ""
 
@@ -502,21 +491,15 @@ def session_resumed_flag(request: Request) -> bool:
 
 
 def session_roles(request: Request) -> list:
-    if _is_mock():
-        return ["admin", "user"]
     sess = get_session(request)
     return _roles_from_token((sess or {}).get("access_token", "") or "")
 
 
 def session_subject(request: Request) -> str:
-    if _is_mock():
-        return "test_user"
     return str((get_session(request) or {}).get("sub", "") or "")
 
 
 ANONYMOUS_IDENTITY = {"name": "Signed in", "role": "Guest", "initials": "A"}
-
-MOCK_IDENTITY = {"name": "Local operator", "role": "Development session", "initials": "LO"}
 
 
 def identity_from_claims(payload: dict, roles=None) -> dict:
@@ -541,8 +524,6 @@ def identity_from_claims(payload: dict, roles=None) -> dict:
 
 
 def session_identity(request: Request) -> dict:
-    if _is_mock():
-        return dict(MOCK_IDENTITY)
     token = (get_session(request) or {}).get("access_token", "") or ""
     return identity_from_claims(_jwt_payload(token), _roles_from_token(token))
 
@@ -589,8 +570,6 @@ async def _idp_reachable(authority: str) -> bool:
 @web_auth_router.get("/auth/login")
 async def auth_login(request: Request):
     nxt = _validate_next(request.query_params.get("next", "/"))
-    if _is_mock():
-        return _establish_session(request, {"access_token": "dev-token", "refresh_token": "", "sub": "test_user"}, nxt)
     authority, client_id, _secret_unused = _keycloak_config()
     if not authority:
         return _error_page(nxt, "OIDC is not configured on this server.", status=500)
@@ -721,8 +700,6 @@ def _advertise_native_custody(resp: JSONResponse) -> JSONResponse:
 
 @web_auth_router.get("/auth/session")
 async def auth_session(request: Request):
-    if _is_mock():
-        return JSONResponse({"authenticated": True, "access_token": "dev-token", "resumed": True})
     sess = await ensure_session(request)
     if not sess:
         raw = request.cookies.get(COOKIE_NAME, "")
@@ -763,7 +740,7 @@ async def auth_logout(request: Request):
     if sess:
         user_id = sess.get("sub", "")
         await _end_voice_session(request, user_id, "logout")
-    if sess and not _is_mock():
+    if sess:
         revocation = await _revoke_session_or_queue(sess)
         try:
             from orchestrator.offline_grant import get_offline_grant_store
@@ -781,13 +758,12 @@ async def auth_logout(request: Request):
                      f"remote refresh credential revocation {remote}")
     resp = RedirectResponse("/", status_code=303)
     resp.delete_cookie(COOKIE_NAME)
-    if not _is_mock():
-        authority, client_id, _ = _keycloak_config()
-        if authority:
-            from urllib.parse import urlencode
-            params = urlencode({"client_id": client_id, "post_logout_redirect_uri": str(request.base_url).rstrip("/")})
-            resp = RedirectResponse(f"{authority}/protocol/openid-connect/logout?{params}", status_code=303)
-            resp.delete_cookie(COOKIE_NAME)
+    authority, client_id, _ = _keycloak_config()
+    if authority:
+        from urllib.parse import urlencode
+        params = urlencode({"client_id": client_id, "post_logout_redirect_uri": str(request.base_url).rstrip("/")})
+        resp = RedirectResponse(f"{authority}/protocol/openid-connect/logout?{params}", status_code=303)
+        resp.delete_cookie(COOKIE_NAME)
     return resp
 
 
@@ -954,11 +930,10 @@ async def _process_revocation_page(store, pending):
 
 
 def _attach_session(request: Request, payload: Dict[str, Any], resp: Response) -> str:
-    mock = _is_mock()
     binding = {}
     if "issuing_issuer" in payload or "issuing_client_id" in payload:
         authority, client_id, _ = _keycloak_config()
-        if (mock or not authority or not client_id
+        if (not authority or not client_id
                 or payload.get("issuing_issuer") != authority.rstrip("/")
                 or payload.get("issuing_client_id") != client_id):
             raise ValueError("interactive issuing identity changed")
@@ -967,29 +942,28 @@ def _attach_session(request: Request, payload: Dict[str, Any], resp: Response) -
     sid = secrets.token_urlsafe(24)
     previous = _SESSIONS.get(sid)
     cached = {**payload, "created_at": time.time(), "sid": sid, "resumed": False}
-    if not mock:
-        store = _get_store()
-        if store is None and binding:
-            raise RuntimeError("durable interactive session required")
-        if store is not None:
-            try:
-                row = store.create(sid, user_id=payload.get("sub", "anonymous"),
-                             access_token=payload.get("access_token", ""),
-                             refresh_token=payload.get("refresh_token", ""),
-                             hard_max_seconds=HARD_MAX_SECONDS, **binding)
-                if binding:
-                    current_authority, current_client, _ = _keycloak_config()
-                    if (_get_store() is not store or _is_mock()
-                            or current_authority.rstrip("/") != binding["issuing_issuer"]
-                            or current_client != binding["issuing_client_id"]):
-                        store.delete(sid, expected_incarnation_id=row["incarnation_id"])
-                        raise ValueError("interactive issuing identity changed")
-                cached = {**_session_from_row(row), "resumed": False}
-            except Exception:
-                if binding:
-                    raise
-                logger.warning("web_auth: durable session persist failed — session is process-local",
-                               exc_info=True)
+    store = _get_store()
+    if store is None and binding:
+        raise RuntimeError("durable interactive session required")
+    if store is not None:
+        try:
+            row = store.create(sid, user_id=payload.get("sub", "anonymous"),
+                         access_token=payload.get("access_token", ""),
+                         refresh_token=payload.get("refresh_token", ""),
+                         hard_max_seconds=HARD_MAX_SECONDS, **binding)
+            if binding:
+                current_authority, current_client, _ = _keycloak_config()
+                if (_get_store() is not store
+                        or current_authority.rstrip("/") != binding["issuing_issuer"]
+                        or current_client != binding["issuing_client_id"]):
+                    store.delete(sid, expected_incarnation_id=row["incarnation_id"])
+                    raise ValueError("interactive issuing identity changed")
+            cached = {**_session_from_row(row), "resumed": False}
+        except Exception:
+            if binding:
+                raise
+            logger.warning("web_auth: durable session persist failed — session is process-local",
+                           exc_info=True)
     with _SESSION_CACHE_LOCK:
         if _SESSIONS.get(sid) is previous or _same_incarnation(_SESSIONS.get(sid), cached):
             _SESSIONS[sid] = cached

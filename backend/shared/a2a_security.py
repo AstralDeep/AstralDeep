@@ -5,8 +5,6 @@ accepts only node-minted delegation agent-inbound and refuses every orchestrator
 """
 
 import os
-import base64
-import json
 import logging
 from typing import Optional, Dict, List, Any
 
@@ -21,16 +19,6 @@ from shared.auth_clients import (
 logger = logging.getLogger("A2ASecurity")
 
 ENTRY_ROLES = frozenset({"user", "admin"})
-
-_DEFAULT_MOCK_CLAIMS = {
-    "sub": "test_user",
-    "aud": "account",
-    "preferred_username": "test_user",
-    "email": "test_user@local",
-    "realm_access": {"roles": ["admin", "user"]},
-    "resource_access": {"astral-frontend": {"roles": ["admin", "user"]}},
-}
-
 
 def token_roles(payload: Dict[str, Any]) -> List[str]:
     if not isinstance(payload, dict):
@@ -47,7 +35,6 @@ def token_roles(payload: Dict[str, Any]) -> List[str]:
 
 class A2ASecurityValidator:
     def __init__(self, *, require_first_party_user: bool = False):
-        self.mock_auth = os.getenv("USE_MOCK_AUTH", "false").lower() == "true"
         self.authority = os.getenv("KEYCLOAK_AUTHORITY", "")
         self.client_id = os.getenv("KEYCLOAK_CLIENT_ID", "")
         self.require_first_party_user = require_first_party_user
@@ -61,10 +48,7 @@ class A2ASecurityValidator:
                 return None
             return self._validate_node_token(token)
 
-        if self.mock_auth:
-            payload = self._validate_mock_token(token)
-        else:
-            payload = await self._validate_keycloak_token(token)
+        payload = await self._validate_keycloak_token(token)
 
         if payload is None:
             return None
@@ -74,24 +58,6 @@ class A2ASecurityValidator:
                 logger.warning(f"A2A token rejected (orchestrator inbound): {reason}")
                 return None
         return payload
-
-    def _validate_mock_token(self, token: str) -> Optional[Dict[str, Any]]:
-        if token == "dev-token":
-            return dict(_DEFAULT_MOCK_CLAIMS)
-        try:
-            parts = token.split(".")
-            if len(parts) == 3:
-                payload_b64 = parts[1]
-                payload_b64 += "=" * ((4 - len(payload_b64) % 4) % 4)
-                payload_json = base64.b64decode(payload_b64).decode("utf-8")
-                decoded = json.loads(payload_json)
-                if isinstance(decoded, dict):
-                    return decoded
-        except Exception as e:
-            logger.debug(f"A2A mock JWT decode failed, falling back to default test_user: {e}")
-        if self.require_first_party_user:
-            return None
-        return dict(_DEFAULT_MOCK_CLAIMS)
 
     def _accepted_azps(self) -> set:
         accepted = set(allowed_azps())

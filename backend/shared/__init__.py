@@ -7,7 +7,6 @@ import os as _os
 
 # Unprefixed wins when both are set (keeps old .env working)
 for _new, _old in (
-    ("USE_MOCK_AUTH", "VITE_USE_MOCK_AUTH"),
     ("KEYCLOAK_AUTHORITY", "VITE_KEYCLOAK_AUTHORITY"),
     ("KEYCLOAK_CLIENT_ID", "VITE_KEYCLOAK_CLIENT_ID"),
 ):
