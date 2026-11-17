@@ -19,7 +19,7 @@ Every record is a `settings.set` event with scope `mesh` and labels `{"confident
 
 The contacts fold and the shares fold read every event of these keys in order, not only the settings winner. The deployed `settings` fold is unchanged and keeps folding them as settings. Rotation of a chat key is an ordinary `key.content` event (section 8). No new event type and no `auth.grant` is used, because `auth.grant` grants tool authority to an agent and deployed authority views would show it.
 
-The reference folds take one input object. `mesh` is the owner's mesh id, `members` and `removed` are the roster entries of the owner's devices with `kind`, `presence` and `feeds`, `events` are the events, `chats` (grants fold only) lists the ids of existing chats, and `limits` optionally replaces the two caps. A production fold passes no `limits`.
+The reference folds take one input object. `mesh` is the owner's mesh id, `members` and `removed` are the roster entries of the owner's devices with `kind`, `presence` and `feeds`, and for a removed device a `cutoff` map from feed to its last allowed `seq`, `events` are the events, `chats` (grants fold only) lists the ids of existing chats, and `limits` optionally replaces the two caps. A production fold passes no `limits`. `mesh` is required and must be a mesh id, otherwise both folds fail with `contact.malformed`, so the own-mesh check cannot be switched off by leaving it out. An event on a removed device's feed counts only up to that feed's cutoff, and a feed with no cutoff entry counts for none, otherwise `contact.writer_not_member` or `share.writer_not_member`. This is how the fold enforces removal cutoffs for the writes that narrow, so a removed device cannot keep downgrading contacts or revoking grants after its removal.
 
 ## 2. Keys
 
@@ -67,13 +67,15 @@ A put with state `unverified` and a null removal need no consent. Their body is 
 
 ### 3.3 The fold and the marks
 
-Per key the latest valid event by `(clock.ms, clock.n, feed, seq)` wins. A re-carried older verified put on another feed fails step 7, on the same feed inside the window fails step 10 and after the window fails step 9, so a downgrade is undone only by a new presence approval. Invalid events go to `ignored` with their code. If more than 256 contacts are live, the 256 whose winning events are earliest stay and the rest are ignored with `contact.too_many`.
+Per key the latest valid event by `(clock.ms, clock.n, feed, seq)` wins. A re-carried older verified put on another feed fails step 7, on the same feed inside the window fails step 10 and after the window fails step 9, so a downgrade is undone only by a new presence approval. Invalid events go to `ignored` with their code. If more than 256 contacts are live, the 256 whose keys were first accepted earliest stay and the rest are ignored with `contact.too_many`. A key's position is the order key of its first accepted event, put or removal, so a re-verify or a rename never moves an existing contact past the cap.
 
 A mark is the value `{"v": 1, "heads", "count", "removed"}`. `heads` is a sorted list of at most 64 distinct ids, `count` is an integer of at least the number of heads, and `removed` is a sorted list of at most 256 distinct device ids. A mark is written by a device that learns newer heads for a contact (section 6.4). Its body is exactly `key` and `value`. Its feed must belong to a current member of kind `desktop` or `pocket`, otherwise `contact.writer_not_member` for a feed no current member owns and `contact.writer_kind` for another kind. A mark naming the owner's own mesh is `contact.self`.
 
 The fold merges all valid marks of a key. `removed` is the union, and `heads` and `count` come from the mark with the greatest `count`, ties broken by the greater event order key. A mark counts even when the key has no contact record.
 
-Removing a contact writes a `share.revoked` for each of its grants first and then the null put. Without the revocations a grant for that mesh would come back when the same mesh is added and verified again, and a vector pins both outcomes.
+The fold reads a mark as written. A device uses a mark's heads and removals only when its own contact cache verifies them: every entry named in the mark's `heads` must be in the cache and resolve in the canonical roster of section 5.1, and a removed device id counts only if that roster lists it as removed. A mark the cache cannot verify is kept in the fold and has no effect until the cache catches up. This stops a forged high-count mark from refusing every reader.
+
+Removing a contact writes a `share.revoked` for each of its grants first and then the null put. The removal also records a revoke of the contact's PHI destination subject, `contact:<mesh id>`, as phi-destinations.md section 6.6 says, so a contact added again later is not a PHI destination until approved again. Without the grant revocations a grant for that mesh would come back when the same mesh is added and verified again, and a vector pins both outcomes.
 
 The fold's output has `contacts` (sorted by mesh, each with `mesh`, `event`, `state`, `record` and `approved_by`), `marks` (by the 64 hex digits) and `ignored`.
 
@@ -99,6 +101,7 @@ Checks on an invitation, first failure wins.
 | 2 | The signature verifies against `identity`, low-S only | `contact.invite_bad_signature` |
 | 3 | `mesh` is not the accepting device's own mesh | `contact.self` |
 | 4 | The accepting device's clock in seconds is below `expires_s` | `contact.invite_expired` |
+| 5 | `expires_s` is at most 86400 seconds after that clock | `contact.invite_lifetime` |
 
 The accepting device dials the inviting device on `astral/share/1` with `hello` kind `contact`. Each side checks that the other's genesis id equals the claimed mesh, that the roster resolves after section 5.1's drop pass, and that the talking device and the invitation's device are current members. Each side then writes a `contact/` put with state `unverified`.
 
@@ -106,7 +109,7 @@ The accepting device dials the inviting device on `astral/share/1` with `hello` 
 
 ### 5.1 The canonical roster
 
-A device computes a roster's `heads` and `count` over the canonical roster of an entry set. The pass is: fold the entries with the roster v2 fold and no clock, remove every entry whose rejection code is `unverifiable` (section 6.1) and that no other entry follows, and fold again until none is left. The three structural codes `roster.malformed`, `roster.extra_genesis` and `roster.wrong_mesh` are removed even when followed, because the fold never resolves an entry that follows one of them. Any other unverifiable entry that an honest writer built on stays, as the Kernel's heads include rejected entries and honest writers follow them. Dropping it would leave a later removal pending and hide the removal from the marks. The result is the fold of the remaining entries. `count` is the number of remaining entries that resolve, which are the ones the fold does not list as pending, and `heads` is the sorted ids of those that no other resolved entry follows. Entries rejected for any other code stay and count. Entries whose `follows` names a missing entry are pending and do not count. Both sides apply the same pass to their own roster and to the one they receive, so the two sides agree on every digest.
+A device computes a roster's `heads` and `count` over the canonical roster of an entry set. The pass is: fold the entries with the roster v2 fold and no clock, remove every entry whose rejection code is `unverifiable` (section 6.1) and that no other entry follows, and fold again until none is left. The three structural codes `roster.malformed`, `roster.extra_genesis` and `roster.wrong_mesh` are removed even when followed, because the fold never resolves an entry that follows one of them. Any other unverifiable entry that an honest writer built on stays, as the Kernel's heads include rejected entries and honest writers follow them. Dropping it would leave a later removal pending and hide the removal from the marks. The result is the fold of the remaining entries. `count` is the number of remaining entries that resolve, which are the ones the fold does not list as pending, and `heads` is the sorted ids of those that no other resolved entry follows. Entries rejected for any other code stay and count. Entries whose `follows` names a missing entry are pending and do not count. Both sides apply the same pass to their own roster and to the one they receive, so the two sides agree on every digest. The Kernel's roster digest, its `hello.roster` heads and count and the heads and count it writes into a verified record must all run this pass, and not the raw heads and count of its roster state.
 
 A cache with no genesis whose id equals the mesh has no canonical roster (`roster.no_genesis`).
 
@@ -120,7 +123,7 @@ The comparison code is the SHA-256 of the bytes `astral.contact.code/v1`, a newl
 {"nonces": [<the two nonces>], "sides": [{"mesh", "roster"}, {"mesh", "roster"}]}
 ```
 
-The nonces are sorted by their decoded bytes, and each is written as unpadded base64url. The text order of two base64url strings can differ from the byte order of what they decode to, and the vectors pin a pair that does. The sides are sorted by `mesh` as text, and `roster` is the digest of that side's canonical roster. The invitation flow's nonces are the invitation nonce and the acceptor's `hello` nonce. A later re-verification uses the two `hello` nonces. Two equal nonces are `contact.malformed`, and the same mesh on both sides is `contact.self`.
+The nonces are sorted by their decoded bytes, and each is written as unpadded base64url. The text order of two base64url strings can differ from the byte order of what they decode to, and the vectors pin a pair that does. The sides are sorted by `mesh` as text, and `roster` is the digest of that side's canonical roster. The invitation flow's nonces are the invitation nonce and the acceptor's `hello` nonce. A later re-verification uses the two `hello` nonces. Each side is exactly `mesh`, `heads` and `count` with an id, a list of ids and a non-negative integer. Anything else, two equal nonces or a list that is not two long is `contact.malformed`, and the same mesh on both sides is `contact.self`.
 
 The screen shows the first 8 bytes of the code as an unsigned big-endian integer modulo 10^12, written with 12 digits and leading zeros, in groups of four as `dddd dddd dddd`. The QR form carries all 32 bytes as unpadded base64url, and scanning the other screen compares them exactly.
 
@@ -141,6 +144,8 @@ Every entry the roster fold rejects falls in one of three classes by its code. T
 | `trigger` | `roster.already_member`, `roster.device_removed`, `roster.duplicate_key`, `roster.stop_not_rising`, `attestation.bad_signature`, `attestation.malformed` | A correctly signed entry that no conforming writer and no race can produce |
 
 The fold checks each entry only against its own ancestors, so two concurrent entries never reject each other. Two devices adding one key at once are both accepted, and a vector pins that. A code that asks for something to be absent (`already_member`, `device_removed`, `duplicate_key`, `stop_not_rising`) cannot fail for an honest writer, because the writer checks its own view first and a voided ancestor only removes state. The two attestation codes cannot be produced by a device that verified the institution's statement before relaying it. The trigger set is not empty, so the downgrade stays defined.
+
+Version skew. An attestation whose fields a newer kernel added would fail `attestation.malformed` on an older kernel. The class table is therefore part of the format version. A kernel applies the `attestation.*` rows only to attestations whose `kind` and fields it fully knows, and treats any attestation it does not fully know as `honest`. A newer kernel never downgrades a contact for an entry an older kernel could not read.
 
 ### 6.2 The follow rule
 
@@ -163,11 +168,11 @@ While following, `follow` lists what changed since the comparison, by comparing 
 
 ### 6.4 Result
 
-`follow` returns `follows`, `reason`, `downgrade`, `dropped` (entry ids with their `unverifiable` code), `triggers` (entry ids with their code), `notices`, `roster` (`heads`, `count`, `digest`) and `mark`. The mark is `{"v": 1, "heads", "count", "removed"}` over the canonical roster, with `removed` listing every device the roster removed. A device that learns newer heads writes it as `contact.roster/<hex>` (section 3.3), and an owner device that never met the contact then refuses a removed contact device once any owner device has seen the removal.
+`follow` returns `follows`, `reason`, `downgrade`, `dropped` (entry ids with their `unverifiable` code), `triggers` (entry ids with their code), `notices`, `roster` (`heads`, `count`, `digest`) and `mark`. The mark is `{"v": 1, "heads", "count", "removed"}` over the canonical roster, with `removed` listing every device the roster removed. A roster with more than 64 heads or more than 256 removed devices does not fit a mark. `follow` then returns not following with reason `contact.roster_too_large`, no downgrade and no mark. A trigger found in the same roster still takes precedence. A device that learns newer heads writes the mark as `contact.roster/<hex>` (section 3.3), and an owner device that never met the contact then refuses a removed contact device once any owner device has seen the removal.
 
 ### 6.5 Readers
 
-`reader_check(mark, reader)` runs on a serving device in this order. A reader whose roster kind is not `desktop` or `pocket` is `share.reader_kind`. A reader whose device is in the merged `removed` is `share.device_removed`. A reader whose presented roster lacks an entry named in the merged `heads` is `share.roster_stale`. With no mark, only the kind is checked. A device that has seen no newer mark serves a removed contact device that presents its last valid roster. That is the freshness limit of 105 for removed devices, and the app states it.
+`reader_check(mark, reader)` runs on a serving device in this order. A reader whose roster kind is not `desktop` or `pocket` is `share.reader_kind`. A reader whose device is in the merged `removed` is `share.device_removed`. A reader whose presented roster lacks an entry named in the merged `heads` is `share.roster_stale`. With no mark, only the kind is checked. A reader's presented roster is checked against the merged mark only after the mark passes the cache check of section 3.3. A device that has seen no newer mark serves a removed contact device that presents its last valid roster. That is the freshness limit of 105 for removed devices, and the app states it.
 
 ## 7. Grants
 
@@ -182,7 +187,7 @@ An item with kind `surface`, `artifact` or `file` is `share.item_kind_unsupporte
 The shares fold is an ordered pass.
 
 1. Valid revocations are collected from every event, in any order. A revocation counts from a current or removed member's feed, otherwise `share.writer_not_member`, and its value must be exactly `{"v": 1, "ms": <integer>}`.
-2. Valid grants are the ones that pass section 3.2 and take their id. They are taken in event order. A grant whose `supersedes` is not the id of an earlier accepted grant for the same contact and the same item is ignored with `share.supersedes_unknown`. Otherwise it makes its target superseded.
+2. Valid grants are the ones that pass section 3.2 and take their id. They are taken in event order. A grant whose `supersedes` is not the id of an earlier accepted grant for the same contact and the same item, or names a grant that an earlier grant already superseded, is ignored with `share.supersedes_unknown`, so the chain has no forks. Otherwise it makes its target superseded.
 3. A grant is in effect when it is accepted, not revoked, not superseded, its contact has a record with state `verified`, and its chat is in `chats`. Revocation and supersession are terminal. A later put with a revoked id stays revoked, a revocation ordered before the put still counts, and a grant superseded by a grant that was later revoked stays dead. A superseding grant whose consent failed never entered step 2, so the older grant stands. A re-share is a new grant with a new id.
 4. A grant whose contact has a record in state `unverified` is listed as waiting with `share.contact_unverified` and resumes after a new verification. It is not revoked. A grant whose contact has no record is listed as orphaned. A grant whose chat is missing is listed as `chat_missing`. If more than 1024 grants are in effect, the earliest 1024 stay and the rest are ignored with `share.too_many`.
 
@@ -214,8 +219,8 @@ The digest of a contact or a grant is the `sha256:` id of the LETS-CJ/1 bytes of
 | `contact.consent_missing`, `contact.consent_wrong_action`, `contact.consent_unknown_device`, `contact.consent_node_device`, `contact.consent_foreign_feed`, `contact.consent_bad_signature`, `contact.consent_stale`, `contact.consent_reused` | Fold, a verified put |
 | `share.malformed`, `share.writer_not_member`, `share.item_kind_unsupported`, `share.supersedes_unknown`, `share.id_reused`, `share.too_many` | Fold, a grant or a revocation |
 | `share.consent_missing`, `share.consent_wrong_action`, `share.consent_unknown_device`, `share.consent_node_device`, `share.consent_foreign_feed`, `share.consent_bad_signature`, `share.consent_stale`, `share.consent_reused` | Fold, a grant |
-| `contact.invite_malformed`, `contact.invite_bad_signature`, `contact.invite_expired`, `contact.invite_lifetime` | The invitation |
-| `contact.roster_rejected`, `contact.heads_missing`, `roster.no_genesis` | The follow rule |
+| `contact.invite_malformed`, `contact.invite_bad_signature`, `contact.invite_expired`, `contact.invite_lifetime` | The invitation, creation and check |
+| `contact.roster_rejected`, `contact.heads_missing`, `contact.roster_too_large`, `roster.no_genesis` | The follow rule |
 | `contact.unverified`, `share.contact_unverified` | A refused proposal and a waiting grant |
 | `share.reader_kind`, `share.device_removed`, `share.roster_stale` | A serving device |
 
