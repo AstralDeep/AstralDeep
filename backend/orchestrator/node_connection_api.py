@@ -191,6 +191,7 @@ def _row(info: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "id": info["id"],
         "name": info["name"],
+        "kind": info["kind"],
         "status": "unsupported" if unsupported else "ok",
         "state": device["state"],
         "reason": unsupported or device["reason"],
