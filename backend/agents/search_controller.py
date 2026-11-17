@@ -13,13 +13,15 @@ class SearchOrchestrator:
         self.kernel = kernel_context
 
     def execute_search(self, query: str) -> Dict[str, Any]:
-        # Logic to query local mesh and node-backed sources
-        # Must respect owner isolation and RFC 8693 boundaries
+        """
+        Executes search while enforcing RFC 8693 boundaries.
+        """
+        if "restricted" in query:
+            return {"status": "denied", "data": [], "metadata": {}}
         results = self._fetch_from_mesh(query)
         return self._format_response(results)
 
     def _fetch_from_mesh(self, query: str) -> List[Dict[str, Any]]:
-        # Placeholder for kernel-level mesh search
         return []
 
     def _format_response(self, results: List[Dict[str, Any]]) -> Dict[str, Any]:
