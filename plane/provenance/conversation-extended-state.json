@@ -1,0 +1,52 @@
+{
+  "schemaVersion": "astralplane.repository-slice/v1",
+  "slice": "conversation-extended-state",
+  "status": "implemented_not_composed",
+  "schemaRevision": "074.001",
+  "schemaRevisionDisposition": "historical slice evidence; repositories remain schema-neutral and available under current 074.004",
+  "currentSchemaRevision": "074.004",
+  "migrationRequired": false,
+  "baseline": "066.001",
+  "publicFactories": [
+    "create_chat_step_repository",
+    "create_conversation_file_repository",
+    "create_saved_component_repository"
+  ],
+  "sourceSurfaces": [
+    "backend/orchestrator/api.py",
+    "backend/orchestrator/chat_steps.py",
+    "backend/orchestrator/history.py",
+    "backend/orchestrator/workspace.py",
+    "backend/shared/database.py"
+  ],
+  "tables": [
+    "chat_files",
+    "chat_steps",
+    "messages",
+    "saved_components"
+  ],
+  "invariants": [
+    "caller-owned transactions",
+    "owner and conversation predicates on ordinary operations",
+    "turn-message ownership proof before step creation",
+    "step-count increment only for a new step identity",
+    "immutable step replay identity",
+    "compare-and-set live-to-terminal step transition",
+    "deterministic chronological and upload ordering",
+    "single-sourced saved-component publication and CAS implementation",
+    "no PHI, transport, upload, parser, blob, filesystem, or UI policy in Plane"
+  ],
+  "focusedVerification": {
+    "command": "uv run --no-sync --with pytest python -m pytest tests/repositories/test_chat_steps.py tests/repositories/test_conversation_files.py tests/repositories/test_saved_components.py tests/test_api.py -q",
+    "status": "passed",
+    "passed": 56,
+    "failed": 0
+  },
+  "focusedCoverage": {
+    "command": "uv run --no-sync --with pytest --with pytest-cov python -m pytest tests/repositories/test_chat_steps.py tests/repositories/test_conversation_files.py tests/repositories/test_saved_components.py tests/test_api.py --cov=astralplane.repositories.chat_steps --cov=astralplane.repositories.conversation_files --cov=astralplane.repositories.saved_components --cov=astralplane.api --cov-branch --cov-report=term-missing -q",
+    "status": "passed",
+    "lineAndBranchCoverage": "98%"
+  },
+  "livePostgresVerification": "not_run_no_test_dsn",
+  "deepCutover": "pending"
+}

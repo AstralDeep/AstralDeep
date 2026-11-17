@@ -1,0 +1,1 @@
+synthetic AstralPlane pre-split artifact fixture
