@@ -199,6 +199,8 @@ Validation codes: `policy.malformed`, `policy.unknown_field`, `policy.path_inval
 
 Run codes: `exec.backend_unavailable`, `exec.agent_server_unsupported`, `exec.shadow_refused`, `exec.policy_overlaps_data`, `exec.time_limit`, `exec.memory_limit`, `exec.process_limit`, `exec.file_limit` and `exec.launch_failed`.
 
+`exec.agent_server_unsupported` carries a reason too. The only reason in this version is `phi_node`: the node is a member of the owner's PHI group, so agents the owner creates cannot start on it, and one already running is stopped when the node joins or rejoins the group. Excluding the node from the PHI group lifts the refusal. The node reports it with `{code, reason, message}` and a client shows the message.
+
 Every message names the missing piece in plain words. The exact texts, including the per-reason texts with `{observed}`, `{required}` and `{platform}` slots, are in `constants.messages` of the vectors. A client shows the message and never the code alone.
 
 ## 8. Vectors

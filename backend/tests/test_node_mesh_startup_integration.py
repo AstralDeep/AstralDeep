@@ -9,6 +9,7 @@ from orchestrator import node_mesh, node_mesh_chat
 from orchestrator.session_store import assert_production_posture
 from shared import node_identity
 from tests.test_node_mesh_kernel_integration import Listener, ak, enrolled, free_port, until
+from tests.test_node_mesh_kernel_integration import adopt_phi_group
 from tests.test_node_mesh_kernel_request_tools import ask, setup_native
 from tests.test_node_mesh_peer_tools import FakeModel, REPLY, model_server, node_host  # noqa: F401
 from tests.test_node_mesh_turn_tools import dice_grant, grant
@@ -48,6 +49,7 @@ async def test_fresh_production_startup_binds_the_approved_mesh_and_answers_a_se
         assert node_identity.bound_owner() == host.owner
         assert (await node.status())["owner_binding"] == {"state": "ready", "code": None}
         device = (await node.status())["member_id"]
+        await adopt_phi_group(node, laptop)
         completed = await setup_native(host, node, laptop, device, bridge, model_server, monkeypatch)
         await grant(node, laptop, dice_grant(host))
         chat, request = await ask(node, laptop, device)

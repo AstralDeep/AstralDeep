@@ -5323,6 +5323,12 @@ class AgentLifecycleManager:
                 self._draft_processes.pop(draft_id, None)
             logger.info(f"Stopped draft agent process for {draft_id}")
 
+    async def stop_running_drafts(self) -> List[str]:
+        running = list(self._draft_processes)
+        for draft_id in running:
+            await self.stop_draft_agent(draft_id)
+        return running
+
     async def refine_agent(self, draft_id: str, user_message: str,
                             websocket=None) -> Dict[str, Any]:
         draft = await asyncio.to_thread(self.db.get_draft_agent, draft_id)

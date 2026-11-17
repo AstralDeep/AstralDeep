@@ -21,6 +21,7 @@ def kernel_host(personal, tmp_path):  # noqa: F811
     host.request.state = SimpleNamespace(name="PENDING")
     host.request.labels = SimpleNamespace(confidentiality="PRIVATE", integrity="OWNER")
     host.mesh.chat = AsyncMock(return_value=SimpleNamespace(view=SimpleNamespace(messages=[])))
+    host.mesh.phi_refusal = AsyncMock(return_value=None)
     host.mesh.claim_request = AsyncMock(side_effect=AssertionError("Python must not claim Kernel-owned turns"))
     host.mesh.record_turn = AsyncMock(side_effect=AssertionError("Python must not record Kernel-owned turns"))
     host.mesh._kernel.supports_node_request_tools = lambda: True

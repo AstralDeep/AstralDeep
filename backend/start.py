@@ -3,9 +3,11 @@ check, then discovers and spawns each agents/ subdirectory as its own supervised
 child, or runs it in-process/remote-compute per feature flags.
 """
 
+import json
 import time
 import sys
 import os
+import urllib.error
 import urllib.request
 import uuid
 
@@ -103,6 +105,16 @@ def _wait_for_orchestrator(port: int, process, timeout_s: float = 60.0,
     return False
 
 
+def _agent_servers_refused(port: int) -> bool:
+    try:
+        with urllib.request.urlopen(f"http://localhost:{port}/api/node/agent-servers", timeout=5) as resp:
+            return json.load(resp).get("allowed") is False
+    except urllib.error.HTTPError as exc:
+        return exc.code != 404
+    except Exception:
+        return False
+
+
 def main(process_supervisor=None):
     process_supervisor = (
         process_supervisor
@@ -157,15 +169,17 @@ def main(process_supervisor=None):
 
         inprocess_enabled = os.environ.get("FF_INPROCESS_AGENTS", "True").lower() in ("true", "1", "yes")
         try:
-            from orchestrator.local_agents import BUILT_IN_AGENT_DIRS
+            from orchestrator.local_agents import BUILT_IN_AGENT_DIRS, FIRST_PARTY_AGENT_DIRS
         except Exception:
             BUILT_IN_AGENT_DIRS = ()
+            FIRST_PARTY_AGENT_DIRS = frozenset()
         try:
             from orchestrator.local_agents import _REMOTE_COMPUTE_AGENT_DIRS
         except Exception:
             _REMOTE_COMPUTE_AGENT_DIRS = ("remote_compute",)
         remote_compute_enabled = _remote_compute_enabled()
 
+        phi_node = _agent_servers_refused(orch_port)
         next_port = int(os.environ.get("AGENT_PORT", 8003))
         for item in os.listdir(agents_dir):
             custom_agent_script = _agent_entrypoint(agents_dir, item)
@@ -177,6 +191,9 @@ def main(process_supervisor=None):
                 continue
             if inprocess_enabled and item in BUILT_IN_AGENT_DIRS:
                 print(f"Running {item} in-process (no port)")
+                continue
+            if phi_node and item not in FIRST_PARTY_AGENT_DIRS:
+                print(f"Skipping {item}: exec.agent_server_unsupported (phi_node)")
                 continue
             if item in _REMOTE_COMPUTE_AGENT_DIRS:
                 # Off must fully disable the agent — no in-process, no subprocess

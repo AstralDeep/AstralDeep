@@ -511,6 +511,9 @@ class MeshChatBridge:
     async def _answer_kernel(self, request: Any) -> None:
         kernel, owner = self._mesh.kernel, self._owner
         try:
+            refusal = await self._mesh.phi_refusal()
+            if refusal is not None:
+                raise NodeMeshError(refusal)
             await self._mesh.personal_request_context(RequestReference.capture(request), owner, kernel)
             if self._owner != owner:
                 raise NodeMeshError("node.owner_mismatch")
