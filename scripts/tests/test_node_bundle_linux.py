@@ -772,3 +772,13 @@ def test_the_built_pack_ships_fonts_and_a_configuration_that_stays_inside_it(pac
     assert 'prefix="relative"' in configuration and "/usr/share" not in configuration
     for conf in (pack / "native" / "etc" / "fonts" / "conf.d").iterdir():
         assert "/usr/share/fonts" not in conf.read_text()
+
+
+@pytest.mark.parametrize("lock", sorted(BUNDLE.glob("node-requirements.*.lock")), ids=lambda path: path.name)
+def test_every_platform_lock_satisfies_the_spacy_model_range(lock):
+    pinned = re.search(r"^spacy==(\S+) \\$", lock.read_text(), re.MULTILINE)
+    assert pinned is not None, f"{lock.name} has no spacy pin"
+    model = json.loads((BUNDLE / "pins.json").read_text())["spacy_model"]
+    assert ap.satisfies(pinned.group(1), model["requires_spacy"])
+    assert re.search(r"^presidio-analyzer==", lock.read_text(), re.MULTILINE)
+    assert re.search(r"^presidio-anonymizer==", lock.read_text(), re.MULTILINE)
