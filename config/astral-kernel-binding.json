@@ -3,7 +3,7 @@
   "source": {
     "repository": "https://github.com/AstralDeep/AstralKernel.git",
     "branch": "main",
-    "commit": "ac2360b4f9fd8856fd7896677a80c80261e56833"
+    "commit": "eee9e02873f56fcbf1fa9e99c61d3b3cfbc9a435"
   },
   "python": {
     "distribution": "astral-kernel",

@@ -255,4 +255,4 @@ def test_the_binding_pin_names_the_phase_five_kernel():
     binding = json.loads((root / "astral-kernel-binding.json").read_text())
     composition = json.loads((root / "astral-composition.json").read_text())
     assert binding["source"]["commit"] == composition["components"]["astral-kernel"]["commit"]
-    assert binding["source"]["commit"] == "ac2360b4f9fd8856fd7896677a80c80261e56833"
+    assert binding["source"]["commit"] == "eee9e02873f56fcbf1fa9e99c61d3b3cfbc9a435"
