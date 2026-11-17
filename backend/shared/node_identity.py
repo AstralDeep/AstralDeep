@@ -369,10 +369,13 @@ def bound_owner() -> Optional[str]:
 
 
 def bound_mesh_owner() -> Optional[str]:
-    owner = bound_owner()
-    if owner is not None and MESH_OWNER_ID.fullmatch(owner) is None:
+    configured = os.getenv(OWNER_ENV, "").strip()
+    owners = {_stored_owner(value) for value in (configured, _owner_file()) if value}
+    if any(MESH_OWNER_ID.fullmatch(owner) is None for owner in owners):
         raise LegacyOwner("this node holds a legacy owner binding")
-    return owner
+    if len(owners) > 1:
+        raise OwnerMismatch("the configured owner and the owner binding differ")
+    return next(iter(owners), None)
 
 
 def _bind_owner_file(owner_id: str) -> str:

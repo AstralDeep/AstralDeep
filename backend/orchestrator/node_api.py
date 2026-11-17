@@ -42,7 +42,7 @@ def _require_node() -> node_identity.NodeIdentity:
 def _owner_hash() -> str | None:
     try:
         owner = node_identity.bound_mesh_owner()
-    except node_identity.LegacyOwner:
+    except node_identity.OwnerMismatch:
         return None
     except node_identity.NodeIdentityError as exc:
         raise HTTPException(503, "node.owner_binding_unavailable", headers=NO_STORE) from exc

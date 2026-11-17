@@ -82,6 +82,16 @@ async def test_a_legacy_owner_is_neither_hashed_nor_shown(env, source):
         assert (ni.data_dir() / ni.OWNER_FILE).read_bytes() == stored
 
 
+@pytest.mark.parametrize("stored", [LEGACY, "mesh." + "5" * 64])
+async def test_a_configured_mesh_owner_over_a_different_owner_file_hashes_nothing(env, stored):
+    before = seed_owner(stored)
+    env.monkeypatch.setenv(ni.OWNER_ENV, MESH)
+    async with client(env) as http:
+        response = await http.get("/api/node/descriptor")
+    assert response.status_code == 200 and response.json()["owner_hash"] is None
+    assert (ni.data_dir() / ni.OWNER_FILE).read_bytes() == before
+
+
 async def test_an_unreadable_owner_binding_is_reported_not_hidden(env):
     ni.data_dir().mkdir(parents=True)
     (ni.data_dir() / ni.OWNER_FILE).write_text("")

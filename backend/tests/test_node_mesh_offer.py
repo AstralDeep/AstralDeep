@@ -152,6 +152,18 @@ async def test_a_node_with_a_legacy_owner_is_refused_and_keeps_its_owner(node, m
         assert (node.home / ni.OWNER_FILE).read_bytes() == before
 
 
+@pytest.mark.parametrize("configured", [MESH, "mesh." + "e" * 64])
+@pytest.mark.parametrize("stored,code", [(LEGACY, "node.legacy_owner"), ("mesh." + "f" * 64, "node.owner_mismatch")])
+async def test_a_configured_mesh_owner_cannot_hide_a_different_owner_file_from_the_offer(node, monkeypatch, configured, stored, code):
+    before = seed_owner(stored)
+    monkeypatch.setenv(ni.OWNER_ENV, configured)
+    secret = _secret(node.home)
+    response = await _post(node.app, secret)
+    assert (response.status_code, response.json()["detail"]) == (409, code)
+    assert _secret(node.home) == secret and node.kernel.offers == 0
+    assert (node.home / ni.OWNER_FILE).read_bytes() == before
+
+
 async def test_an_unreadable_owner_binding_is_unavailable(node):
     (node.home / ni.OWNER_FILE).write_text("")
     response = await _post(node.app, _secret(node.home))

@@ -596,6 +596,8 @@ class NodeMesh:
                     await asyncio.to_thread(node_identity.bound_mesh_owner)
                 except node_identity.LegacyOwner:
                     raise NodeMeshError("node.legacy_owner") from None
+                except node_identity.OwnerMismatch:
+                    raise NodeMeshError("node.owner_mismatch") from None
                 except node_identity.NodeIdentityError:
                     raise NodeMeshError("node.owner_binding_unavailable") from None
                 self._personal_owner = None
@@ -704,11 +706,13 @@ class NodeMesh:
                     await asyncio.to_thread(self._pairing.ensure)
                     raise NodeMeshError("node.pairing_secret_required", 401)
             try:
-                owner = node_identity.bound_owner()
+                node_identity.bound_mesh_owner()
+            except node_identity.LegacyOwner:
+                raise NodeMeshError("node.legacy_owner", 409) from None
+            except node_identity.OwnerMismatch:
+                raise NodeMeshError("node.owner_mismatch", 409) from None
             except node_identity.NodeIdentityError:
                 raise NodeMeshError("node.owner_binding_unavailable", 503) from None
-            if owner is not None and not node_identity.is_mesh_owner(owner):
-                raise NodeMeshError("node.legacy_owner", 409)
             if self._enrollment(status) in ENROLLED_STATES:
                 self._pairing.close()
                 return {"state": "enrolled", "mesh_id": status.mesh_id, "member_id": status.device_id}

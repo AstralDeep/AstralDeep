@@ -140,6 +140,19 @@ async def test_a_legacy_owner_is_reported_before_the_node_joins_a_mesh(receiver,
         assert (host.home / node_identity.OWNER_FILE).read_bytes() == stored
 
 
+@pytest.mark.parametrize("stored,code", [(LEGACY, "node.legacy_owner"), (OTHER_STORED, "node.owner_mismatch")])
+async def test_a_configured_mesh_owner_cannot_hide_a_different_owner_file_before_the_node_joins(receiver, monkeypatch, stored, code):
+    host = receiver
+    before = seed_owner(stored)
+    monkeypatch.setenv(node_identity.OWNER_ENV, MESH)
+    await host.bridge.scan()
+    assert (await host.mesh.status())["owner_binding"] == {"state": "refused", "code": code}
+    host.kernel.join(MESH)
+    await host.bridge.scan()
+    assert (await host.mesh.status())["owner_binding"] == {"state": "refused", "code": code}
+    assert host.bridge._owner is None and (host.home / node_identity.OWNER_FILE).read_bytes() == before
+
+
 async def test_an_unreadable_owner_binding_is_reported_before_the_node_joins_a_mesh(receiver):
     host = receiver
     host.home.mkdir(parents=True, exist_ok=True)

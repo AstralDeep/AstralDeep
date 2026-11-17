@@ -289,6 +289,26 @@ def test_a_configured_mesh_owner_in_either_form_admits_only_that_mesh(node, monk
     assert (node / ni.OWNER_FILE).read_text() == STORED
 
 
+@pytest.mark.parametrize("configured", [MESH, STORED])
+@pytest.mark.parametrize("stored,refusal", [(LEGACY, ni.LegacyOwner), (OTHER, ni.OwnerMismatch), ("mesh." + "b" * 64, ni.OwnerMismatch)])
+def test_a_configured_mesh_owner_cannot_hide_a_different_owner_file(node, monkeypatch, configured, stored, refusal):
+    before = seed_owner(stored)
+    monkeypatch.setenv(ni.OWNER_ENV, configured)
+    for attempt in (ni.bound_mesh_owner, lambda: ni.bind_mesh_owner(MESH), lambda: ni.enforce_owner(STORED)):
+        with pytest.raises(refusal) as refused:
+            attempt()
+        assert refusal is ni.LegacyOwner or type(refused.value) is ni.OwnerMismatch
+    assert (node / ni.OWNER_FILE).read_bytes() == before
+
+
+def test_a_configured_owner_in_either_form_agrees_with_its_own_file(node, monkeypatch):
+    stored = seed_owner(MESH)
+    monkeypatch.setenv(ni.OWNER_ENV, STORED)
+    assert ni.bound_mesh_owner() == STORED == ni.bind_mesh_owner(MESH)
+    ni.enforce_owner(STORED)
+    assert (node / ni.OWNER_FILE).read_bytes() == stored
+
+
 def test_a_configured_legacy_owner_is_refused_as_legacy(node, monkeypatch):
     monkeypatch.setenv(ni.OWNER_ENV, LEGACY)
     with pytest.raises(ni.LegacyOwner):
