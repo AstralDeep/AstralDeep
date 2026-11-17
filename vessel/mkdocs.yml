@@ -77,6 +77,7 @@ nav:
   - Run it:
       - deployment.toml: run/deployment-toml.md
       - Pairing: run/pairing.md
+      - Connections: run/connections.md
       - The executor: run/executor.md
       - The egress: run/models-and-egress.md
       - Several deployments on one host: run/several-deployments.md
