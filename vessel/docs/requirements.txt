@@ -1,0 +1,5 @@
+# The documentation site's build tools. The config tables are read from astralvessel's pydantic models, so pydantic
+# is pinned here too; the package itself is imported from the checkout, not installed.
+mkdocs==1.6.1
+mkdocs-material==9.8.1
+pydantic==2.14.3
