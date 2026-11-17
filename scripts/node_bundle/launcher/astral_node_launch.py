@@ -4,6 +4,7 @@ The node's supervisor runs it with the pack's own Python in isolated mode with b
 """
 
 import argparse
+import ctypes
 import os
 import runpy
 import sys
@@ -39,7 +40,18 @@ def configure(arguments: argparse.Namespace, root: Path = PACK_ROOT) -> dict[str
     mailbox = root / "bin" / "astral-mailbox"
     if "ASTRAL_MAILBOX_BIN" not in values and mailbox.is_file():
         values["ASTRAL_MAILBOX_BIN"] = str(mailbox)
+    native = root / "native"
+    if native.is_dir():
+        values["PATH"] = os.pathsep.join([str(native / "bin"), values.get("PATH", os.environ.get("PATH", ""))])
+        if (native / "share" / "magic.mgc").is_file():
+            values.setdefault("MAGIC", str(native / "share" / "magic.mgc"))
     return values
+
+
+def preload_native_libraries(root: Path = PACK_ROOT) -> None:
+    magic = root / "native" / "lib" / "libmagic.so.1"
+    if magic.is_file():
+        ctypes.CDLL(str(magic))
 
 
 def pin_bind_host(host: str) -> None:
@@ -67,6 +79,7 @@ def main(argv: list[str] | None = None) -> None:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     values = configure(arguments)
     os.environ.update(values)
+    preload_native_libraries()
     if arguments.log_dir is not None:
         from node_logging import capture_output, secret_values
 

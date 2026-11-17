@@ -51,6 +51,18 @@ sys.exit(1 if failed else 0)
 """
 
 
+NATIVE_TOOLS = ("pdftoppm", "pdfinfo")
+NATIVE_SCRIPT = r"""
+import ctypes, os, sys
+root = sys.argv[1]
+ctypes.CDLL(os.path.join(root, "native", "lib", "libmagic.so.1"))
+import magic
+kind = magic.from_buffer(b"%PDF-1.4\n1 0 obj\n", mime=True)
+print("magic:", kind)
+sys.exit(0 if kind == "application/pdf" else 1)
+"""
+
+
 class RelocationError(Exception):
     pass
 
@@ -103,6 +115,25 @@ def run_launcher_help(root: Path) -> subprocess.CompletedProcess:
     )
 
 
+def native_problems(root: Path) -> list[str]:
+    problems = []
+    for tool in NATIVE_TOOLS:
+        result = subprocess.run(
+            [str(root / "native" / "bin" / tool), "-v"], env=CHILD_ENV, capture_output=True, text=True,
+            timeout=CHILD_TIMEOUT, check=False,
+        )
+        if result.returncode != 0:
+            problems.append(f"native {tool} -v exited {result.returncode}: {result.stderr.strip()[-200:]}")
+    magic = subprocess.run(
+        [str(root / "python" / "bin" / "python3.11"), "-I", "-B", "-c", NATIVE_SCRIPT, str(root)],
+        env={**CHILD_ENV, "MAGIC": str(root / "native" / "share" / "magic.mgc")}, capture_output=True, text=True,
+        timeout=CHILD_TIMEOUT, check=False,
+    )
+    if magic.returncode != 0:
+        problems.append(f"libmagic did not identify a PDF from the pack: {(magic.stdout + magic.stderr).strip()[-300:]}")
+    return problems
+
+
 def check_pack(source: Path, modules: tuple = MODULES, backend_modules: tuple = BACKEND_MODULES) -> list[str]:
     with tempfile.TemporaryDirectory(prefix="node-pack-relocation-") as scratch:
         root, manifest = locate_pack(source, Path(scratch))
@@ -117,6 +148,10 @@ def check_pack(source: Path, modules: tuple = MODULES, backend_modules: tuple = 
         print(f"{'PASS' if launcher.returncode == 0 else 'FAIL'} launcher --help")
         if launcher.returncode != 0:
             failures.append(f"launcher --help exited {launcher.returncode}: {launcher.stderr.strip()[-400:]}")
+        if (root / "native").is_dir():
+            native = native_problems(root)
+            print(f"{'PASS' if not native else 'FAIL'} native tools and libmagic run from the pack")
+            failures += native
         caches = sorted(bytecode_files(root) - cached)
         print(f"{'PASS' if not caches else 'FAIL'} no bytecode written")
         if caches:
