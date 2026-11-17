@@ -253,6 +253,8 @@ class Release:
             raise ReleaseError("Use either --node-pack-dir or --node-bundle-dir, not both")
         if self.args.node_pack_dir is None and self.args.node_bundle_dir is None:
             raise ReleaseError("--node-pack-dir is required for a Mac release with a node offer")
+        if self.args.node_bundle_dir is not None and not self.dry and not self.args.node_team_id:
+            raise ReleaseError("--node-team-id is required to publish a node bundle")
 
     def preflight(self) -> None:
         if not self.dry and platform.system() != "Darwin":
@@ -367,7 +369,7 @@ class Release:
             raise ReleaseError("The macOS node pack manifest predates signing")
         signing = self.signing_module()
         try:
-            checked = signing.verify_signed_pack(root / "macos-arm64" / "node-pack.json")
+            checked = signing.verify_signed_pack(root / "macos-arm64" / "node-pack.json", team=self.args.node_team_id)
         except (signing.PackError, OSError, ValueError) as error:
             raise ReleaseError(f"The macOS node pack signature does not verify: {error}") from error
         self.pack_sources = []
@@ -386,7 +388,8 @@ class Release:
         return {**mac, "source_equivalence": {
                     "releaseDeep": self.deep_sha, "kernel": composition["components"]["astral-kernel"]["commit"],
                     "verified": "release-commit-and-composition-gitlinks"},
-                "signing": {"identity": record.get("identity"), "signedFiles": checked["files"]},
+                "signing": {"identity": record.get("identity"), "signedFiles": checked["files"],
+                            "hardened": checked["hardened"], "teamID": self.args.node_team_id},
                 "linux": extras}
 
     def dry_node_pack(self, folder: Path) -> dict[str, object]:
@@ -845,11 +848,13 @@ class Release:
             (self.staging / name).write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
     def stage_node_pack(self) -> None:
-        for source, name, _ in self.pack_sources:
+        for source, name, digest in self.pack_sources:
             target = self.staging / name
             if target.exists():
                 raise ReleaseError(f"Staged asset {name} already exists; release assets are never overwritten")
             shutil.copy2(source, target)
+            if sha256_file(target) != digest:
+                raise ReleaseError(f"Staged asset {name} differs from the verified bytes")
 
     def load_staged(self) -> None:
         self.state = json.loads((self.staging / STATE_FILE).read_text(encoding="utf-8")) if not self.dry else {}
@@ -990,6 +995,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sparkle-bin", type=Path)
     parser.add_argument("--node-pack-dir", type=Path)
     parser.add_argument("--node-bundle-dir", type=Path)
+    parser.add_argument("--node-team-id")
     return parser
 
 

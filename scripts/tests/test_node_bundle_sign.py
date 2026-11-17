@@ -52,7 +52,7 @@ def test_ad_hoc_signing_verifies_every_file_and_reseals_the_pack(tmp_path):
     assert pm.sha256_file(after.parent / "node-pack-manifest.json") == json.loads(after.read_text())["manifest_sha256"]
     assert (tree / "python/bin/python3.11").stat().st_mode & 0o100
     assert any(entry["path"].startswith(f"{BUNDLE}/Contents/_CodeSignature") for entry in sealed["files"])
-    assert sm.verify_signed_pack(after) == {"identity": "-", "files": 5}
+    assert sm.verify_signed_pack(after) == {"identity": "-", "files": 5, "hardened": False}
 
 
 def test_the_command_line_signs_and_prints_the_descriptor(tmp_path, capsys):
@@ -180,3 +180,82 @@ def test_a_stale_manifest_over_changed_signed_files_is_refused(tmp_path):
     (stale / "node-pack-manifest.json").write_bytes((signed.parent / "node-pack-manifest.json").read_bytes())
     with pytest.raises(sm.PackError, match="content changed python/bin/python3.11"):
         sm.verify_signed_pack(stale / "node-pack.json")
+
+
+def test_the_team_requirement_is_built_exactly_and_reaches_codesign(tmp_path):
+    assert sm.team_requirement("ABCDE12345") == 'anchor apple generic and certificate leaf[subject.OU] = "ABCDE12345"'
+    for bad in ("abcde12345", "SHORT", 'ABCDE12345" or true'):
+        with pytest.raises(sm.PackError, match="ten uppercase"):
+            sm.team_requirement(bad)
+    _, signed = signed_pack(tmp_path)
+    seen = []
+
+    def recording(command, **kwargs):
+        seen.append(command)
+        return subprocess.run(command, **kwargs)
+
+    with pytest.raises(sm.PackError, match="does not verify"):
+        sm.verify_signed_pack(signed, recording, team="ABCDE12345")
+    assert seen[0][:4] == ["codesign", "--verify", "--strict",
+                           '-R=anchor apple generic and certificate leaf[subject.OU] = "ABCDE12345"']
+
+
+def test_a_bundle_missing_from_the_signing_record_is_refused(tmp_path):
+    _, signed = signed_pack(tmp_path)
+
+    def drop(tree, sealed):
+        sealed["signing"]["files"].remove(BUNDLE)
+
+    with pytest.raises(sm.PackError, match=f"unsigned code in the pack: {BUNDLE}"):
+        sm.verify_signed_pack(reseal_with(signed, tmp_path, "nobundle", drop))
+
+
+def test_a_failed_self_verification_leaves_the_output_untouched(tmp_path, monkeypatch):
+    descriptor = unsigned_mac_pack(tmp_path)
+
+    def refuse(*arguments, **keywords):
+        raise sm.PackError("the signature on x does not verify")
+
+    monkeypatch.setattr(sm, "verify_signed_pack", refuse)
+    with pytest.raises(sm.PackError, match="does not verify"):
+        sm.sign_pack(descriptor, "-", tmp_path / "out")
+    assert not (tmp_path / "out").exists()
+
+
+def test_the_macho_reader_is_loaded_once():
+    assert sm.macho_reader() is sm.macho_reader()
+
+
+def test_hardened_signing_passes_the_runtime_options_and_is_verified(tmp_path):
+    descriptor = unsigned_mac_pack(tmp_path)
+    seen = []
+
+    def offline(command, **kwargs):
+        seen.append(command)
+        command = ["--timestamp=none" if part == "--timestamp" else part for part in command]
+        return subprocess.run(command, **kwargs)
+
+    signed = sm.sign_pack(descriptor, "-", tmp_path / "hardened", offline, hardened=True)
+    signs = [command for command in seen if "--force" in command]
+    assert signs and all(command[4:7] == ["--options", "runtime", "--timestamp"] for command in signs)
+    assert json.loads((unpack(signed, tmp_path / "tree") / pm.MANIFEST_NAME).read_text())["signing"]["hardened"] is True
+    assert sm.verify_signed_pack(signed)["hardened"] is True
+    plain = sm.sign_pack(descriptor, "-", tmp_path / "plain")
+    assert sm.verify_signed_pack(plain)["hardened"] is False
+
+
+def test_a_hardened_record_over_code_without_the_runtime_flag_is_refused(tmp_path):
+    _, signed = signed_pack(tmp_path)
+
+    def claim(tree, sealed):
+        sealed["signing"]["hardened"] = True
+
+    with pytest.raises(sm.PackError, match="lacks the hardened runtime"):
+        sm.verify_signed_pack(reseal_with(signed, tmp_path, "claim", claim))
+
+
+def test_the_command_line_accepts_the_hardened_flag(tmp_path, monkeypatch, capsys):
+    seen = {}
+    monkeypatch.setattr(sm, "sign_pack", lambda *a, **k: seen.update(k) or tmp_path)
+    sm.main([str(tmp_path), "--identity", "-", "--out", str(tmp_path / "o"), "--hardened"])
+    assert seen == {"hardened": True}

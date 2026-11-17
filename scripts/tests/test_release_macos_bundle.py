@@ -220,3 +220,29 @@ def test_a_dry_run_names_the_pack_assets_without_reading_them(tmp_path):
     assert pack["archive_name"].endswith("macos-arm64.tar.gz")
     assert len(subject.pack_sources) == 3
     assert json.dumps(pack)
+
+
+def test_an_ad_hoc_pack_is_refused_when_a_team_is_required(good):
+    with pytest.raises(release.ReleaseError, match="signature does not verify"):
+        good.release("--node-team-id", "ABCDE12345").verify_node_bundle()
+
+
+def test_a_real_run_without_a_team_is_refused_before_anything_is_staged(good):
+    subject = good.release()
+    with pytest.raises(release.ReleaseError, match="--node-team-id is required"):
+        subject.validate()
+    assert not subject.staging.exists()
+    dry = good.release("--dry-run")
+    dry.dry = True
+    dry.args.notes = good.tmp / "notes.md"
+    dry.validate()
+
+
+def test_a_staged_copy_that_differs_from_the_verified_bytes_is_refused(good):
+    subject = good.release()
+    subject.node_pack = subject.verify_node_bundle()
+    subject.pack_sources[0] = (subject.pack_sources[0][0], subject.pack_sources[0][1], "0" * 64)
+    subject.staging.mkdir(parents=True, exist_ok=True)
+    with pytest.raises(release.ReleaseError, match="differs from the verified bytes"):
+        subject.stage_node_pack()
+    shutil.rmtree(subject.staging)
