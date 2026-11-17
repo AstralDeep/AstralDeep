@@ -43,6 +43,7 @@ class ComponentSpec:
     path: str
     repository: str
     manifest_path: str | None = None
+    in_tree: bool = False
 
 
 DEFAULT_COMPONENTS = (
@@ -54,9 +55,10 @@ DEFAULT_COMPONENTS = (
     ),
     ComponentSpec(
         "astral-plane",
-        "components/AstralPlane",
+        "plane",
         "https://github.com/AstralDeep/AstralPlane.git",
         "provenance/extraction.json",
+        in_tree=True,
     ),
     ComponentSpec(
         "astral-primitives",
@@ -688,6 +690,95 @@ def _matching_trailer_commit(
     return None
 
 
+def _imported_tip(deep_repo: Path, path: str) -> str | None:
+    bodies = _git_text(
+        deep_repo, "log", "--merges", f"--grep=^git-subtree-dir: {path}$", "--format=%B%x00"
+    )
+    for body in bodies.split("\0"):
+        lines = body.splitlines()
+        if f"git-subtree-dir: {path}" not in lines:
+            continue
+        tips = [
+            line.removeprefix("git-subtree-split:").strip()
+            for line in lines
+            if line.startswith("git-subtree-split:")
+        ]
+        if len(tips) == 1 and SHA1.fullmatch(tips[0]):
+            return tips[0]
+    return None
+
+
+def _verify_in_tree(
+    *,
+    deep_repo: Path,
+    spec: ComponentSpec,
+    composition: Mapping[str, object],
+    schema: object,
+    diagnostics: list[Diagnostic],
+) -> None:
+    in_tree = composition.get("in_tree")
+    configured = in_tree.get(spec.name) if isinstance(in_tree, dict) else None
+    if not isinstance(configured, dict):
+        _add(
+            diagnostics,
+            "E_COMPONENT_CONFIG",
+            spec.name,
+            "component is absent from the composition in_tree map",
+            "restore the exact in-tree component entry",
+        )
+        return
+    if configured.get("path") != spec.path:
+        _add(
+            diagnostics,
+            "E_COMPONENT_PATH",
+            spec.name,
+            "composition path does not match the governed component path",
+            "restore the exact component path",
+        )
+        return
+    tip = _imported_tip(deep_repo, spec.path)
+    if tip is None:
+        _add(
+            diagnostics,
+            "E_IMPORT_COMMIT",
+            spec.name,
+            "no subtree import commit records the imported source tip",
+            "retain the merge commit that imported the folder with its history",
+        )
+        return
+    if not spec.manifest_path:
+        return
+    try:
+        tracked = _git_bytes(deep_repo, "show", f"{tip}:{spec.manifest_path}")
+        current = _git_bytes(deep_repo, "show", f"HEAD:{spec.path}/{spec.manifest_path}")
+        if current != tracked:
+            _add(
+                diagnostics,
+                "E_MANIFEST_WORKTREE",
+                spec.name,
+                "committed manifest bytes differ from the imported source tip",
+                "restore the reviewed manifest bytes; provenance is immutable",
+            )
+        _verify_manifest(
+            deep_repo=deep_repo,
+            component_repo=deep_repo,
+            spec=spec,
+            target_commit=tip,
+            manifest=_parse_json_bytes(tracked, label=f"{tip}:{spec.manifest_path}"),
+            schema=schema,
+            remote=None,
+            diagnostics=diagnostics,
+        )
+    except VerificationError as exc:
+        _add(
+            diagnostics,
+            "E_MANIFEST_READ",
+            spec.name,
+            str(exc),
+            "restore the tracked strict-JSON extraction manifest",
+        )
+
+
 def _verify_manifest(
     *,
     deep_repo: Path,
@@ -984,7 +1075,7 @@ def verify_migration_provenance(
     _check_origin(deep_repo, SOURCE_REPOSITORY, "astraldeep", diagnostics)
     remotes: dict[str, RemoteState | None] = {}
     repositories = (("astraldeep", SOURCE_REPOSITORY),) + tuple(
-        (spec.name, spec.repository) for spec in components
+        (spec.name, spec.repository) for spec in components if not spec.in_tree
     )
     for name, repository in repositories:
         try:
@@ -1053,6 +1144,16 @@ def verify_migration_provenance(
 
     verified: list[str] = ["astraldeep"]
     for spec in components:
+        if spec.in_tree:
+            _verify_in_tree(
+                deep_repo=deep_repo,
+                spec=spec,
+                composition=composition,
+                schema=schema,
+                diagnostics=diagnostics,
+            )
+            verified.append(spec.name)
+            continue
         configured = composition_components.get(spec.name)
         module = gitmodules.get(spec.path)
         if not isinstance(configured, dict):

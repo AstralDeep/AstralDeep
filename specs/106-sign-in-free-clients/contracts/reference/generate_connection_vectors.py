@@ -16,6 +16,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 connection = importlib.import_module("connection")
 connection_oauth = importlib.import_module("connection_oauth")
+a2a_card = importlib.import_module("a2a_card")
 cj = importlib.import_module("astral_mesh_ref.cj")
 consent_mod = importlib.import_module("astral_mesh_ref.consent")
 crypto = importlib.import_module("astral_mesh_ref.crypto")
@@ -25,6 +26,7 @@ b64 = cj.b64url_encode
 DetRng, TestDevice, hlc = testkit.DetRng, testkit.TestDevice, testkit.hlc
 
 VECTORS = HERE.parent / "vectors"
+PHASE0 = HERE.parents[1] / "phase-0/a2a-reader/fixtures"
 SPEC = "106/contracts/connection.md"
 T0 = 1794445200000
 MIN = 60000
@@ -133,6 +135,101 @@ def a2a_record(record_id: str, name: str = "Agent", **extra: Any) -> dict[str, A
         "kind": "a2a",
         "card": {"url": "https://agent.research.example/.well-known/agent-card.json"},
         **extra,
+    }
+
+
+def _fixture(*parts: str) -> Any:
+    return json.loads(PHASE0.joinpath(*parts).read_text(encoding="utf-8"))
+
+
+A2A_CARD = _fixture("valid", "extended_card.json")
+A2A_ORIGIN = "https://agent.example.org"
+A2A_URL = A2A_ORIGIN + "/.well-known/agent-card.json"
+A2A_SIGNER = a2a_card.jwk_thumbprint(_fixture("keys", "fixture-signer-one.public.jwk.json"))
+A2A_AS = "https://login.example.org"
+
+
+def a2a_full_record(
+    record_id: str, name: str = "Agent desk", **change: Any
+) -> dict[str, Any]:
+    value: dict[str, Any] = {
+        "v": 1,
+        "id": record_id,
+        "name": name,
+        "kind": "a2a",
+        "card_url": A2A_URL,
+        "card": {
+            "hash": a2a_card.card_digest(A2A_CARD),
+            "origin": A2A_ORIGIN,
+            "signer": None,
+            "extended_hash": None,
+        },
+        "auth": {
+            "scheme": "none",
+            "issuer": None,
+            "scopes": [],
+            "resource": None,
+            "client_id": None,
+        },
+        "tools": [],
+        "flow": "private",
+        "egress": ["agent.example.org"],
+    }
+    for key, item in change.items():
+        if key in ("auth", "card"):
+            value[key] = {**value[key], **item}
+        else:
+            value[key] = item
+    return copy.deepcopy(value)
+
+
+def stdio_record(record_id: str, name: str = "Local tools", **change: Any) -> dict[str, Any]:
+    return {
+        "v": 1,
+        "id": record_id,
+        "name": name,
+        "kind": "mcp-stdio",
+        "command": "/usr/local/bin/files-server",
+        "args": ["--root", "/Users/owner/Documents"],
+        "env": ["FILES_TOKEN"],
+        "device": ALICE.id,
+        "tools": TOOLS,
+        "flow": "private",
+        "egress": ["files.research.example"],
+        **change,
+    }
+
+
+def http_api_record(record_id: str, name: str = "Lab API", **change: Any) -> dict[str, Any]:
+    return {
+        "v": 1,
+        "id": record_id,
+        "name": name,
+        "kind": "http-api",
+        "endpoint": "https://api.research.example/v2",
+        "key": {
+            "item": "connection.key." + record_id,
+            "header": "Authorization",
+            "format": "Bearer {key}",
+        },
+        "tools": TOOLS,
+        "flow": "phi",
+        "egress": ["api.research.example"],
+        **change,
+    }
+
+
+def model_record(record_id: str, name: str = "Lab model", **change: Any) -> dict[str, Any]:
+    return {
+        "v": 1,
+        "id": record_id,
+        "name": name,
+        "kind": "model",
+        "endpoint": "https://models.research.example/v1",
+        "key": {"item": "model.provider.lab-models"},
+        "flow": "private",
+        "egress": ["models.research.example"],
+        **change,
     }
 
 
@@ -257,6 +354,8 @@ def put_state(
 RNG = DetRng("connection-v1")
 RID = RNG.bytes(16).hex()
 RID2 = RNG.bytes(16).hex()
+RID3 = RNG.bytes(16).hex()
+RID4 = RNG.bytes(16).hex()
 LOWER = RID[:8] + "0" * 24
 HIGHER = RID[:8] + "f" * 24
 
@@ -689,12 +788,16 @@ def generate_connection() -> dict[str, Any]:
     state("state_null", None)
 
     def fold(
-        name: str, log: Log, legacy: list[str] | None = None, reverse: bool = False
+        name: str,
+        log: Log,
+        legacy: list[str] | None = None,
+        reverse: bool = False,
+        kind: str = "connection_fold",
     ) -> dict[str, Any]:
         events = list(reversed(log.events)) if reverse else log.events
         return add(
             name,
-            "connection_fold",
+            kind,
             {
                 "members": MEMBERS,
                 "removed": REMOVED,
@@ -997,7 +1100,9 @@ def generate_connection() -> dict[str, Any]:
     put(log, "p", ALICE, t1, first, tampered(make_consent(first, ALICE, t1 - 600001)))
     fold("fold_order_bad_signature_before_stale", log)
 
-    def entry_of(value: Any, legacy: list[str] | None = None) -> dict[str, Any]:
+    def entry_of(
+        value: Any, legacy: list[str] | None = None, extended: bool = False
+    ) -> dict[str, Any]:
         log = Log("use")
         put(log, "p", ALICE, t1, value)
         listed = connection.fold(
@@ -1006,7 +1111,8 @@ def generate_connection() -> dict[str, Any]:
                 "removed": REMOVED,
                 "events": log.events,
                 "legacy_servers": legacy or [],
-            }
+            },
+            extended,
         )
         return listed["connections"][0]
 
@@ -1091,6 +1197,278 @@ def generate_connection() -> dict[str, Any]:
         ("exec_entry_not_canonical", "mcp.research.example:443"),
     ):
         add(name, "connection_exec_host", {"entry": entry})
+
+    def ext(name: str, value: Any) -> None:
+        add(name, "connection_record_ext", {"id": RID, "value": value})
+
+    def without(value: dict[str, Any], *fields: str) -> dict[str, Any]:
+        return {k: v for k, v in value.items() if k not in fields}
+
+    a2a_ok = a2a_full_record(RID)
+    a2a_tool = {"name": "ask_agent_desk", "hash": a2a_card.tool_hash(A2A_CARD)}
+    a2a_oauth = a2a_full_record(
+        RID,
+        auth={"scheme": "oauth", "issuer": A2A_AS, "scopes": ["read"]},
+        egress=["agent.example.org", "login.example.org"],
+    )
+    for name, value in (
+        ("record_phase2_a2a_full_unsupported", a2a_ok),
+        ("record_phase2_stdio_unsupported", stdio_record(RID)),
+        ("record_phase2_http_api_unsupported", http_api_record(RID)),
+        ("record_phase2_model_unsupported", model_record(RID)),
+    ):
+        rec(name, value)
+    for name, value in (
+        ("record_ext_a2a_unsigned_valid", a2a_ok),
+        (
+            "record_ext_a2a_signed_valid",
+            a2a_full_record(
+                RID,
+                card={
+                    "signer": A2A_SIGNER,
+                    "extended_hash": a2a_card.card_digest(A2A_CARD),
+                },
+            ),
+        ),
+        ("record_ext_a2a_key_valid", a2a_full_record(RID, auth={"scheme": "key"})),
+        ("record_ext_a2a_oauth_valid", a2a_oauth),
+        (
+            "record_ext_a2a_oauth_client_id_valid",
+            {**a2a_oauth, "auth": {**a2a_oauth["auth"], "client_id": "astral-uk"}},
+        ),
+        ("record_ext_a2a_ask_tool_valid", a2a_full_record(RID, tools=[a2a_tool])),
+        ("record_ext_a2a_flow_phi_valid", a2a_full_record(RID, flow="phi")),
+        (
+            "record_ext_a2a_tool_name_not_the_ask_slug",
+            a2a_full_record(RID, tools=[{**a2a_tool, "name": "ask_other"}]),
+        ),
+        (
+            "record_ext_a2a_two_tools",
+            a2a_full_record(
+                RID, tools=[a2a_tool, {**a2a_tool, "name": "ask_agent_desk_2"}]
+            ),
+        ),
+        (
+            "record_ext_a2a_card_origin_differs",
+            a2a_full_record(RID, card={"origin": "https://other.example.org"}),
+        ),
+        (
+            "record_ext_a2a_card_hash_not_an_id",
+            a2a_full_record(RID, card={"hash": "sha256:abc"}),
+        ),
+        (
+            "record_ext_a2a_signer_not_a_thumbprint",
+            a2a_full_record(RID, card={"signer": "short"}),
+        ),
+        (
+            "record_ext_a2a_extended_hash_not_an_id",
+            a2a_full_record(RID, card={"extended_hash": "x"}),
+        ),
+        (
+            "record_ext_a2a_card_extra_field",
+            a2a_full_record(RID, card={"approved": True}),
+        ),
+        (
+            "record_ext_a2a_card_missing_field",
+            {**a2a_ok, "card": without(a2a_ok["card"], "signer")},
+        ),
+        (
+            "record_ext_a2a_card_url_http",
+            a2a_full_record(
+                RID, card_url="http://agent.example.org/.well-known/agent-card.json"
+            ),
+        ),
+        (
+            "record_ext_a2a_card_url_loopback",
+            a2a_full_record(
+                RID,
+                card_url="http://127.0.0.1:8765/card",
+                card={"origin": "http://127.0.0.1:8765"},
+                egress=["127.0.0.1:8765"],
+            ),
+        ),
+        (
+            "record_ext_a2a_card_url_with_query",
+            a2a_full_record(RID, card_url=A2A_URL + "?v=1"),
+        ),
+        (
+            "record_ext_a2a_egress_lacks_card_host",
+            a2a_full_record(RID, egress=["other.example.org"]),
+        ),
+        (
+            "record_ext_a2a_oauth_issuer_not_in_egress",
+            {**a2a_oauth, "egress": ["agent.example.org"]},
+        ),
+        (
+            "record_ext_a2a_oauth_resource_set",
+            {**a2a_oauth, "auth": {**a2a_oauth["auth"], "resource": A2A_URL}},
+        ),
+        (
+            "record_ext_a2a_oauth_loopback_issuer",
+            {
+                **a2a_oauth,
+                "auth": {**a2a_oauth["auth"], "issuer": "http://127.0.0.1:8766"},
+                "egress": ["127.0.0.1:8766", "agent.example.org"],
+            },
+        ),
+        (
+            "record_ext_a2a_none_with_scopes",
+            a2a_full_record(RID, auth={"scopes": ["read"]}),
+        ),
+        (
+            "record_ext_a2a_scheme_basic_unsupported",
+            a2a_full_record(RID, auth={"scheme": "basic"}),
+        ),
+        (
+            "record_ext_a2a_unknown_field",
+            {**a2a_ok, "device": None},
+        ),
+        ("record_ext_a2a_flow_unknown", a2a_full_record(RID, flow="public")),
+        ("record_ext_mcp_key_valid", record(RID, auth={"scheme": "key", "issuer": None, "scopes": [], "resource": None}, egress=["mcp.research.example"])),
+        (
+            "record_ext_mcp_key_with_issuer",
+            record(RID, auth={"scheme": "key", "scopes": [], "resource": None}),
+        ),
+        ("record_ext_mcp_oauth_still_valid", record(RID)),
+        ("record_ext_mcp_dpop_scheme_unsupported", record(RID, auth={"scheme": "dpop"})),
+        ("record_ext_kind_unknown_unsupported", record(RID, kind="carrier-pigeon")),
+        ("record_ext_version_2_unsupported", stdio_record(RID, v=2)),
+    ):
+        ext(name, value)
+
+    for name, value in (
+        ("record_ext_stdio_valid", stdio_record(RID)),
+        ("record_ext_stdio_no_egress_valid", stdio_record(RID, egress=[])),
+        ("record_ext_stdio_no_env_valid", stdio_record(RID, env=[], args=[])),
+        ("record_ext_stdio_names_node_valid", stdio_record(RID, device=NODE.id)),
+        ("record_ext_stdio_empty_arg_valid", stdio_record(RID, args=["", "x"])),
+        ("record_ext_stdio_args_64_valid", stdio_record(RID, args=["a"] * 64)),
+        ("record_ext_stdio_args_65", stdio_record(RID, args=["a"] * 65)),
+        ("record_ext_stdio_arg_4096_valid", stdio_record(RID, args=["a" * 4096])),
+        ("record_ext_stdio_arg_4097", stdio_record(RID, args=["a" * 4097])),
+        ("record_ext_stdio_arg_not_text", stdio_record(RID, args=[1])),
+        ("record_ext_stdio_arg_with_control", stdio_record(RID, args=["a\u0000b"])),
+        ("record_ext_stdio_command_empty", stdio_record(RID, command="")),
+        ("record_ext_stdio_command_1024_valid", stdio_record(RID, command="c" * 1024)),
+        ("record_ext_stdio_command_1025", stdio_record(RID, command="c" * 1025)),
+        ("record_ext_stdio_command_newline", stdio_record(RID, command="a\nb")),
+        ("record_ext_stdio_command_bidi_override", stdio_record(RID, command="a\u202eb")),
+        ("record_ext_stdio_env_32_valid", stdio_record(RID, env=[f"K{i:02d}" for i in range(32)])),
+        ("record_ext_stdio_env_33", stdio_record(RID, env=[f"K{i:02d}" for i in range(33)])),
+        ("record_ext_stdio_env_name_64_valid", stdio_record(RID, env=["A" * 64])),
+        ("record_ext_stdio_env_name_65", stdio_record(RID, env=["A" * 65])),
+        ("record_ext_stdio_env_lowercase", stdio_record(RID, env=["files_token"])),
+        ("record_ext_stdio_env_leading_digit", stdio_record(RID, env=["1TOKEN"])),
+        ("record_ext_stdio_env_unsorted", stdio_record(RID, env=["B", "A"])),
+        ("record_ext_stdio_env_duplicate", stdio_record(RID, env=["A", "A"])),
+        ("record_ext_stdio_env_path", stdio_record(RID, env=["PATH"])),
+        ("record_ext_stdio_env_ld_preload", stdio_record(RID, env=["LD_PRELOAD"])),
+        ("record_ext_stdio_env_dyld_insert", stdio_record(RID, env=["DYLD_INSERT_LIBRARIES"])),
+        ("record_ext_stdio_device_null", stdio_record(RID, device=None)),
+        ("record_ext_stdio_device_not_an_id", stdio_record(RID, device="alice")),
+        ("record_ext_stdio_loopback_egress", stdio_record(RID, egress=["127.0.0.1:8765"])),
+        ("record_ext_stdio_egress_unsorted", stdio_record(RID, egress=["b.research.example", "a.research.example"])),
+        ("record_ext_stdio_egress_17", stdio_record(RID, egress=[f"h{i:02d}.research.example" for i in range(17)])),
+        ("record_ext_stdio_flow_unknown", stdio_record(RID, flow="public")),
+        ("record_ext_stdio_unknown_field", stdio_record(RID, local=True)),
+        ("record_ext_stdio_has_no_auth", stdio_record(RID, auth={"scheme": "none"})),
+    ):
+        ext(name, value)
+
+    http_ok = http_api_record(RID)
+    for name, value in (
+        ("record_ext_http_api_valid", http_ok),
+        ("record_ext_http_api_api_key_header_valid", http_api_record(RID, key={**http_ok["key"], "header": "X-Api-Key", "format": "{key}"})),
+        ("record_ext_http_api_empty_tools_valid", http_api_record(RID, tools=[])),
+        ("record_ext_http_api_endpoint_with_port_valid", http_api_record(RID, endpoint="https://api.research.example:8443/v2", egress=["api.research.example:8443"])),
+        ("record_ext_http_api_item_names_another_id", http_api_record(RID, key={**http_ok["key"], "item": "connection.key." + RID2})),
+        ("record_ext_http_api_item_is_a_provider", http_api_record(RID, key={**http_ok["key"], "item": "model.provider.lab"})),
+        ("record_ext_http_api_header_host", http_api_record(RID, key={**http_ok["key"], "header": "Host"})),
+        ("record_ext_http_api_header_cookie_any_case", http_api_record(RID, key={**http_ok["key"], "header": "COOKIE"})),
+        ("record_ext_http_api_header_with_space", http_api_record(RID, key={**http_ok["key"], "header": "X Api"})),
+        ("record_ext_http_api_header_64_valid", http_api_record(RID, key={**http_ok["key"], "header": "X" * 64})),
+        ("record_ext_http_api_header_65", http_api_record(RID, key={**http_ok["key"], "header": "X" * 65})),
+        ("record_ext_http_api_format_without_placeholder", http_api_record(RID, key={**http_ok["key"], "format": "Bearer"})),
+        ("record_ext_http_api_format_two_placeholders", http_api_record(RID, key={**http_ok["key"], "format": "{key}{key}"})),
+        ("record_ext_http_api_format_64_valid", http_api_record(RID, key={**http_ok["key"], "format": "a" * 59 + "{key}"})),
+        ("record_ext_http_api_format_65", http_api_record(RID, key={**http_ok["key"], "format": "a" * 60 + "{key}"})),
+        ("record_ext_http_api_format_with_newline", http_api_record(RID, key={**http_ok["key"], "format": "{key}\n"})),
+        ("record_ext_http_api_key_extra_field", http_api_record(RID, key={**http_ok["key"], "scheme": "bearer"})),
+        ("record_ext_http_api_key_missing_header", http_api_record(RID, key=without(http_ok["key"], "header"))),
+        ("record_ext_http_api_endpoint_http", http_api_record(RID, endpoint="http://api.research.example/v2")),
+        ("record_ext_http_api_endpoint_loopback", http_api_record(RID, endpoint="http://127.0.0.1:8765/v2", egress=["127.0.0.1:8765"])),
+        ("record_ext_http_api_egress_lacks_endpoint", http_api_record(RID, egress=["other.research.example"])),
+        ("record_ext_http_api_tools_unsorted", http_api_record(RID, tools=list(reversed(TOOLS)))),
+        ("record_ext_http_api_flow_unknown", http_api_record(RID, flow="public")),
+        ("record_ext_http_api_unknown_field", http_api_record(RID, local=False)),
+    ):
+        ext(name, value)
+
+    model_ok = model_record(RID)
+    for name, value in (
+        ("record_ext_model_valid", model_ok),
+        ("record_ext_model_flow_phi_valid", model_record(RID, flow="phi")),
+        ("record_ext_model_item_128_valid", model_record(RID, key={"item": "model.provider." + "a" * 113})),
+        ("record_ext_model_item_129", model_record(RID, key={"item": "model.provider." + "a" * 114})),
+        ("record_ext_model_item_not_a_provider", model_record(RID, key={"item": "connection.key." + RID})),
+        ("record_ext_model_item_without_name", model_record(RID, key={"item": "model.provider."})),
+        ("record_ext_model_item_uppercase", model_record(RID, key={"item": "model.provider.Lab"})),
+        ("record_ext_model_item_leading_dash", model_record(RID, key={"item": "model.provider.-lab"})),
+        ("record_ext_model_key_has_header", model_record(RID, key={"item": "model.provider.lab", "header": "Authorization"})),
+        ("record_ext_model_endpoint_http", model_record(RID, endpoint="http://models.research.example/v1")),
+        ("record_ext_model_egress_lacks_endpoint", model_record(RID, egress=["other.research.example"])),
+        ("record_ext_model_has_tools", model_record(RID, tools=[])),
+        ("record_ext_model_flow_unknown", model_record(RID, flow="public")),
+    ):
+        ext(name, value)
+
+    log = Log("ext-kinds")
+    ext_records = {
+        "a2a": a2a_full_record(RID),
+        "stdio": stdio_record(RID2),
+        "http": http_api_record(RID3),
+        "model": model_record(RID4),
+    }
+    for index, (label, value) in enumerate(ext_records.items()):
+        put(log, label, ALICE, t1 + index, value)
+    fold("fold_phase2_lists_every_new_kind_unsupported", log)
+    fold("fold_ext_lists_every_new_kind_ok", log, kind="connection_fold_ext")
+    log = Log("ext-later")
+    put(log, "p1", ALICE, t1, first)
+    put(log, "p2", ALICE, t2, a2a_full_record(RID, "Second"))
+    fold("fold_ext_later_a2a_put_wins", log, kind="connection_fold_ext")
+    log = Log("ext-bad")
+    put(log, "p", ALICE, t1, a2a_full_record(RID, flow="public"))
+    fold("fold_ext_bad_values_unsupported", log, kind="connection_fold_ext")
+    log = Log("ext-collision")
+    put(log, "p1", ALICE, t1, model_record(HIGHER))
+    put(log, "p2", BOB, t2, http_api_record(LOWER))
+    fold("fold_ext_server_id_collision", log, kind="connection_fold_ext")
+    log = Log("ext-state")
+    put(log, "p", ALICE, t1, a2a_full_record(RID))
+    put_state(
+        log,
+        "s",
+        ALICE,
+        ALICE,
+        t2,
+        state_value("needs_attention", "not_signed_in", t2),
+    )
+    fold("fold_ext_state_not_signed_in", log, kind="connection_fold_ext")
+
+    for name, value, device in (
+        ("use_ext_stdio_on_its_device", stdio_record(RID), ALICE),
+        ("use_ext_stdio_elsewhere", stdio_record(RID), BOB),
+        ("use_ext_stdio_on_the_node_it_names", stdio_record(RID, device=NODE.id), NODE),
+        ("use_ext_a2a_on_any_device", a2a_full_record(RID), BOB),
+        ("use_ext_http_api_on_any_device", http_api_record(RID), CAROL),
+        ("use_ext_model_on_any_device", model_record(RID), NODE),
+    ):
+        add(
+            name,
+            "connection_use",
+            {"connection": entry_of(value, None, True), "device": device.id},
+        )
 
     log = Log("coexistence")
     log.add("theme", ALICE, t1, {"key": "theme", "value": "dark"})
@@ -1573,6 +1951,46 @@ def generate_oauth() -> dict[str, Any]:
         ("dyn_native_unreachable", [None]),
         ("dyn_accepted_without_client_id", [{"status": 201, "json": {}}]),
         ("dyn_web_unreachable", [refused, None]),
+        (
+            "dyn_method_none_accepted",
+            [{"status": 201, "json": {"client_id": "dyn-1", "token_endpoint_auth_method": "none"}}],
+        ),
+        (
+            "dyn_method_absent_accepted",
+            [{"status": 201, "json": {"client_id": "dyn-1"}}],
+        ),
+        (
+            "dyn_method_client_secret_basic_refused",
+            [{"status": 201, "json": {"client_id": "dyn-1", "token_endpoint_auth_method": "client_secret_basic", "client_secret": "s"}}],
+        ),
+        (
+            "dyn_method_client_secret_post_refused",
+            [{"status": 200, "json": {"client_id": "dyn-1", "token_endpoint_auth_method": "client_secret_post"}}],
+        ),
+        (
+            "dyn_method_private_key_jwt_refused",
+            [{"status": 201, "json": {"client_id": "dyn-1", "token_endpoint_auth_method": "private_key_jwt"}}],
+        ),
+        (
+            "dyn_method_null_refused",
+            [{"status": 201, "json": {"client_id": "dyn-1", "token_endpoint_auth_method": None}}],
+        ),
+        (
+            "dyn_method_not_text_refused",
+            [{"status": 201, "json": {"client_id": "dyn-1", "token_endpoint_auth_method": ["none"]}}],
+        ),
+        (
+            "dyn_method_uppercase_refused",
+            [{"status": 201, "json": {"client_id": "dyn-1", "token_endpoint_auth_method": "None"}}],
+        ),
+        (
+            "dyn_web_retry_method_refused",
+            [refused, {"status": 201, "json": {"client_id": "dyn-1", "token_endpoint_auth_method": "client_secret_basic"}}],
+        ),
+        (
+            "dyn_native_method_refused_has_no_retry",
+            [{"status": 201, "json": {"client_id": "dyn-1", "token_endpoint_auth_method": "client_secret_basic"}}, created],
+        ),
     ):
         add(
             name,
@@ -1689,6 +2107,31 @@ def generate_oauth() -> dict[str, Any]:
         "oauth_bearer_target",
         {"endpoint": "https://mcp.research.example:443/mcp", "url": E},
     )
+
+    device = "https://device.research.example/device"
+    for name, endpoint, issuer, metadata, local in (
+        ("egress_entries_full_metadata", E, AS, _meta(AS, registration_endpoint="https://register.research.example/register", device_authorization_endpoint=device), False),
+        ("egress_entries_device_authorization_host_joins", E, AS, _meta(AS, device_authorization_endpoint=device), False),
+        ("egress_entries_device_host_same_as_issuer_listed_once", E, AS, _meta(AS, device_authorization_endpoint=AS + "/device"), False),
+        ("egress_entries_device_host_other_port", E, AS, _meta(AS, device_authorization_endpoint=AS + ":8443/device"), False),
+        ("egress_entries_without_device_endpoint", E, AS, _meta(AS), False),
+        ("egress_entries_token_host_elsewhere", E, AS, _meta(AS, token_endpoint="https://tokens.research.example/token"), False),
+        ("egress_entries_registration_host_joins", E, AS, _meta(AS, registration_endpoint="https://register.research.example/register"), False),
+        ("egress_entries_no_issuer", E, None, _meta(AS), False),
+        ("egress_entries_non_text_endpoint_ignored", E, AS, _meta(AS, device_authorization_endpoint=5), False),
+        ("egress_entries_device_endpoint_http_refused", E, AS, _meta(AS, device_authorization_endpoint="http://device.research.example/device"), False),
+        ("egress_entries_device_endpoint_loopback_refused", E, AS, _meta(AS, device_authorization_endpoint="http://127.0.0.1:9000/device"), False),
+        ("egress_entries_device_endpoint_uppercase_host_refused", E, AS, _meta(AS, device_authorization_endpoint="https://Device.research.example/device"), False),
+        ("egress_entries_device_endpoint_userinfo_refused", E, AS, _meta(AS, device_authorization_endpoint="https://x@device.research.example/device"), False),
+        ("egress_entries_authorization_endpoint_http_refused", E, AS, _meta(AS, authorization_endpoint="http://login.research.example/authorize"), False),
+        ("egress_entries_local_loopback", LOCAL_E, LOCAL_AS, _meta(LOCAL_AS, device_authorization_endpoint="http://127.0.0.1:8767/device"), True),
+        ("egress_entries_endpoint_not_canonical", "https://Mcp.research.example/mcp", AS, _meta(AS), False),
+    ):
+        add(
+            name,
+            "oauth_egress_entries",
+            {"endpoint": endpoint, "issuer": issuer, "metadata": metadata, "local": local},
+        )
 
     return {
         "format": "astral.vectors/v1",

@@ -26836,7 +26836,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         evidence_service = evidence_context.get_context(self)
         if evidence_service is not None:
             evidence_service.start()
-        from orchestrator import node_mesh_chat
+        from orchestrator import node_mesh, node_mesh_chat, phi_node_policy
 
         try:
             await _vessel_executor.start_for(self)
@@ -26846,6 +26846,10 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             await node_mesh_chat.start_for(self)
         except Exception:
             logger.exception("node_mesh_start_failed")
+        mesh = node_mesh.current()
+        if mesh is not None and mesh.started:
+            self._phi_draft_guard = phi_node_policy.DraftGuard(mesh, self.lifecycle_manager)
+            self._phi_draft_guard.start()
         await server.serve()
 
     async def _close_started_services(self) -> None:
@@ -26873,6 +26877,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
     async def _close_started_services_once(self) -> None:
         from orchestrator import node_mesh_chat
 
+        guard = getattr(self, "_phi_draft_guard", None)
+        if guard is not None:
+            await guard.stop()
         try:
             await node_mesh_chat.stop_all()
         except Exception:

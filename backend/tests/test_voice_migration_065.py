@@ -26,7 +26,7 @@ from astralplane.repositories.voice import VoiceRepository
 from orchestrator.voice_sessions import VoiceSessionRepository
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-EMBEDDED_PLANE_SOURCE = (REPO_ROOT / "components/AstralPlane/src").resolve()
+EMBEDDED_PLANE_SOURCE = (REPO_ROOT / "plane/src").resolve()
 _EXPECTED_VOICE_RECORD_OPERATIONS = {
     "abandon_chat_turns",
     "abandon_unaccepted_session_turns",

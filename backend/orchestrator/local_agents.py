@@ -25,6 +25,12 @@ BUILT_IN_AGENT_DIRS = (
     "web_research",
 )
 
+FIRST_PARTY_AGENT_DIRS = frozenset({
+    *BUILT_IN_AGENT_DIRS,
+    "artifacts", "computer_use", "cresco", "evidence", "fhir", "gaiakeep", "remote_compute", "remote_control",
+    "remote_mcp", "remote_observe", "sandbox_qualification", "terminal_shell",
+})
+
 _REMOTE_COMPUTE_AGENT_DIRS = (
     "remote_compute",
 )

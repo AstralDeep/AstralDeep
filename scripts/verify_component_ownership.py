@@ -41,6 +41,9 @@ _WINDOWS_DEVICE_NAMES = {
 _WINDOWS_FORBIDDEN = frozenset('<>:"|?*')
 
 
+IN_TREE_PATHS = frozenset({"plane"})
+
+
 class OwnershipError(RuntimeError):
     pass
 
@@ -608,10 +611,34 @@ def exact_git_root(value: str | Path) -> Path:
     return resolved
 
 
+def _subtree_root(value: str | Path, subdirectory: str) -> Path:
+    candidate = Path(value).expanduser()
+    if _is_reparse_point(candidate):
+        raise OwnershipError(f"repository root is a reparse point: {candidate}")
+    try:
+        resolved = candidate.resolve(strict=True)
+        git_root = Path(
+            os.fsdecode(_git(resolved, ("rev-parse", "--show-toplevel"))).rstrip("\r\n")
+        ).resolve(strict=True)
+        relative = resolved.relative_to(git_root).as_posix()
+    except (OSError, ValueError) as exc:
+        raise OwnershipError(f"repository root is not inside a Git root: {candidate}") from exc
+    if relative != subdirectory:
+        raise OwnershipError(
+            f"exact-root mismatch: requested '{resolved}', Git root is '{git_root}'"
+        )
+    return git_root
+
+
 def inventory_repository(
-    identifier: str, root: str | Path, revision: str = "HEAD"
+    identifier: str,
+    root: str | Path,
+    revision: str = "HEAD",
+    subdirectory: str | None = None,
 ) -> RepositoryInventory:
-    exact_root = exact_git_root(root)
+    exact_root = (
+        exact_git_root(root) if subdirectory is None else _subtree_root(root, subdirectory)
+    )
     commit = (
         _git(exact_root, ("rev-parse", "--verify", f"{revision}^{{commit}}"))
         .decode("ascii", "strict")
@@ -619,14 +646,17 @@ def inventory_repository(
     )
     if _GIT_OBJECT_ID.fullmatch(commit) is None:
         raise OwnershipError(f"repository {identifier} resolved an invalid commit ID")
+    tree_spec = f"{commit}^{{tree}}" if subdirectory is None else f"{commit}:{subdirectory}"
     tree = (
-        _git(exact_root, ("rev-parse", "--verify", f"{commit}^{{tree}}"))
+        _git(exact_root, ("rev-parse", "--verify", tree_spec))
         .decode("ascii", "strict")
         .strip()
     )
     if _GIT_OBJECT_ID.fullmatch(tree) is None:
         raise OwnershipError(f"repository {identifier} resolved an invalid tree ID")
-    raw = _git(exact_root, ("ls-tree", "-r", "-l", "-z", "--full-tree", commit))
+    if subdirectory is not None and _git(exact_root, ("cat-file", "-t", tree)).strip() != b"tree":
+        raise OwnershipError(f"repository {identifier} root is not a tracked directory")
+    raw = _git(exact_root, ("ls-tree", "-r", "-l", "-z", "--full-tree", tree))
     blobs: dict[str, TrackedBlob] = {}
     for record in raw.split(b"\0"):
         if not record:
@@ -727,6 +757,12 @@ def _violation(
     return result
 
 
+def _subtree_of(spec: RepositorySpec, root: str | Path) -> str | None:
+    if spec.composition_path not in IN_TREE_PATHS:
+        return None
+    return spec.composition_path
+
+
 def audit_component_ownership(
     ownership: OwnershipMap,
     *,
@@ -752,6 +788,7 @@ def audit_component_ownership(
             identifier,
             repository_roots[identifier],
             revisions.get(identifier, "HEAD"),
+            subdirectory=_subtree_of(ownership.repositories[identifier], repository_roots[identifier]),
         )
         for identifier in sorted(expected)
     }

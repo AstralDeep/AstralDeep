@@ -1,11 +1,10 @@
-"""The node's peer in its owner's mesh: it opens the pinned kernel binding with the node's own keys, a software signer and a node device kind, serves a pairing offer only to a holder of the node's private pairing secret, reports mesh status for the descriptor, and refuses to bind, serve or sync a mesh listing a seeded development device (shared/dev_mesh_keys.py) unless ASTRAL_ENV is development.
+"""The node's peer in its owner's mesh: it opens the pinned kernel binding with the node's own keys, a software signer and a node device kind, serves a pairing offer only to a holder of the node's private pairing secret, keeps the operator secret file the loopback connections API checks, reports mesh status for the descriptor, and refuses to bind, serve or sync a mesh listing a seeded development device (shared/dev_mesh_keys.py) unless ASTRAL_ENV is development.
 node_api.py serves it, node_mailbox.py supervises the node's mailbox beside it, node_mesh_chat.py moves chat activity through it, and nothing else imports the kernel binding.
 """
 
 from __future__ import annotations
 
 import asyncio
-import gc
 import hmac
 import inspect
 import importlib
@@ -18,12 +17,12 @@ import stat
 import tempfile
 import threading
 import time
-import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
-from orchestrator import node_mesh_calls, node_mesh_keys
+from orchestrator import node_connection_keystore, node_mesh_calls, node_mesh_keys, node_stdio_launcher
 from orchestrator.node_mailbox import MailboxError, MailboxProcess, MailboxSettings
 from shared import dev_mesh_keys, node_identity
 
@@ -50,6 +49,7 @@ DEVELOPMENT_MESH = "node.development_mesh"
 ROSTER_CHANGES = frozenset({"ROSTER_CHANGED", "RosterChanged", "ENROLLMENT", "Enrollment"})
 PAIRING_SECRET_FILE = "pairing-secret"
 PAIRING_SECRET_BYTES = 32
+OPERATOR_SECRET_FILE = "operator-secret"
 OFFERS_PER_WINDOW = 5
 OFFER_WINDOW_SECONDS = 60.0
 
@@ -121,6 +121,17 @@ def _code_of(exc: BaseException) -> str:
     return str(getattr(exc, "code", "") or "kernel_error")
 
 
+PHI_CODES = ("phi.group_not_ready", "phi.device_excluded")
+
+
+def _code_with_phi(exc: BaseException) -> str:
+    code = _code_of(exc)
+    if code == "engine.sink":
+        text = str(getattr(exc, "message", "") or exc)
+        return next((phi for phi in PHI_CODES if phi in text), code)
+    return code
+
+
 def _development_allowed() -> bool:
     return os.environ.get(ENVIRONMENT_ENV) == DEVELOPMENT
 
@@ -139,6 +150,24 @@ def refuse_development_mesh(roster: Any) -> None:
         raise NodeMeshError(DEVELOPMENT_MESH) from None
     if any(type(value) is not str for value in (mesh_id, *listed)) or not set(listed).isdisjoint(dev_mesh_keys.device_ids().values()):
         raise NodeMeshError(DEVELOPMENT_MESH)
+
+
+def _mesh_gate(binding: Any) -> Any:
+    class DevelopmentMeshGate(binding.MeshGate):  # type: ignore[name-defined, misc]
+        def accept(self, candidate):
+            roster = SimpleNamespace(
+                mesh_id=candidate.mesh_id,
+                members=[SimpleNamespace(device_id=device) for device in candidate.device_ids],
+                removed=[],
+            )
+            try:
+                refuse_development_mesh(roster)
+            except NodeMeshError:
+                logger.warning("node_mesh_development_mesh_refused")
+                return False
+            return True
+
+    return DevelopmentMeshGate()
 
 
 class _Listener:
@@ -248,6 +277,43 @@ class PairingSecret:
             raise
 
 
+class OperatorSecret:
+    def __init__(self, directory: Path):
+        self._directory = Path(directory)
+        self._path = self._directory / OPERATOR_SECRET_FILE
+
+    def ensure(self) -> None:
+        if self._read() is None:
+            self._write()
+
+    def matches(self, presented: str) -> bool:
+        stored = self._read()
+        return stored is not None and hmac.compare_digest(stored, presented.encode())
+
+    def _read(self) -> Optional[bytes]:
+        try:
+            info = self._path.lstat()
+            if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) & 0o077:
+                return None
+            stored = self._path.read_bytes().strip()
+        except OSError:
+            return None
+        return stored or None
+
+    def _write(self) -> None:
+        node_identity._ensure_private_dir(self._directory)
+        descriptor, temporary = tempfile.mkstemp(prefix=".operator-secret-", dir=self._directory)
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(secrets.token_urlsafe(PAIRING_SECRET_BYTES).encode())
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, self._path)
+        except BaseException:
+            Path(temporary).unlink(missing_ok=True)
+            raise
+
+
 def _relay(binding: Any, relay: Sequence[str]) -> Any:
     if relay == ("default",):
         return binding.RelayChoice.DEFAULT()
@@ -325,7 +391,9 @@ class NodeMesh:
         binding: Any = None,
         mailbox: Optional[MailboxProcess] = None,
         mailbox_address: Optional[str] = None,
+        sandbox: Optional[node_stdio_launcher.SandboxBackend] = None,
     ):
+        self._launcher = node_stdio_launcher.NodeStdioLauncher(sandbox)
         self._mailbox_address = mailbox_address
         self._data_dir = Path(data_dir)
         self._settings = settings or MeshSettings()
@@ -354,6 +422,14 @@ class NodeMesh:
         if self._kernel is None:
             raise MeshUnavailable("mesh_not_started")
         return self._kernel
+
+    @property
+    def binding(self) -> Any:
+        return self._binding
+
+    @property
+    def stdio_refusal(self) -> Optional[str]:
+        return self._launcher.refusal
 
     @property
     def started(self) -> bool:
@@ -391,6 +467,8 @@ class NodeMesh:
             self._loop = asyncio.get_running_loop()
             self._quarantined = False
             (self._data_dir / KERNEL_DIR).mkdir(mode=0o700, parents=True, exist_ok=True)
+            if node_identity.is_personal():
+                await asyncio.to_thread(OperatorSecret(self._data_dir).ensure)
             checked = await self._check_stored_mesh(keys)
             if self._quarantined:
                 self._pairing.close()
@@ -434,7 +512,21 @@ class NodeMesh:
                 mailbox=mailbox,
             ),
         )
-        return await asyncio.to_thread(binding.Kernel.open, config, _signer(binding, keys), None, None, self._listener.bridge)
+        kernel = await asyncio.to_thread(
+            binding.Kernel.open, config, _signer(binding, keys), None, None, self._listener.bridge, None, _mesh_gate(binding),
+        )
+        try:
+            kernel.set_keystore(node_connection_keystore.host_keystore(
+                binding, node_connection_keystore.NodeKeystore(self._data_dir / KERNEL_DIR, keys.wrap_secret),
+            ))
+            self.set_launcher(kernel)
+        except BaseException:
+            await kernel.close()
+            raise
+        return kernel
+
+    def set_launcher(self, kernel: Any) -> None:
+        kernel.set_launcher(node_stdio_launcher.host_launcher(self._binding, self._launcher))
 
     def _supervises_mailbox(self) -> bool:
         return self._mailbox is not None or self._settings.mailbox.enabled
@@ -451,12 +543,7 @@ class NodeMesh:
             return None
         if not self._supervises_mailbox():
             return kernel
-        released = weakref.ref(kernel)
-        del kernel
-        if released() is not None:
-            gc.collect()
-        if released() is not None:
-            raise MeshUnavailable("kernel_store_busy")
+        await kernel.close()
         return None
 
     async def _start_mailbox(self) -> None:
@@ -570,10 +657,16 @@ class NodeMesh:
             try:
                 await self._kernel.stop_network()
             finally:
-                await self._stop_mailbox()
+                try:
+                    await self._kernel.close()
+                finally:
+                    try:
+                        await asyncio.to_thread(self._launcher.stop_all)
+                    finally:
+                        await self._stop_mailbox()
 
     async def _state(self) -> Any:
-        return await self.kernel.mesh_status()
+        return await self._request_call(self.kernel.mesh_status)
 
     @staticmethod
     def _enrollment(status: Any) -> str:
@@ -767,7 +860,11 @@ class NodeMesh:
         if self.kernel is not kernel:
             raise NodeMeshError("node.mesh_admission_unavailable")
         capability = getattr(kernel, "supports_node_request_tools", None)
-        if (not callable(capability) or capability() is not True
+        try:
+            supported = callable(capability) and capability() is True
+        except self._binding.KernelError:
+            supported = False
+        if (not supported
                 or not callable(getattr(kernel, "answer_request", None))
                 or not callable(getattr(kernel, "interrupt_request", None))):
             raise MeshUnavailable("node.request_runtime_unsupported")
@@ -777,7 +874,7 @@ class NodeMesh:
         try:
             return await kernel.answer_request(request_id)
         except self._binding.KernelError as exc:
-            raise NodeMeshError(_code_of(exc)) from exc
+            raise NodeMeshError(_code_with_phi(exc)) from exc
 
     async def interrupt_request(self, request_id: str, kernel: Any) -> bool:
         if self.kernel is not kernel:
@@ -1001,6 +1098,9 @@ class NodeMesh:
             for tool in tools
         }
         return event
+
+    async def request_call(self, function: Callable[..., Any], *arguments: Any) -> Any:
+        return await self._request_call(function, *arguments)
 
     async def _request_call(self, function: Callable[..., Any], *arguments: Any) -> Any:
         try:

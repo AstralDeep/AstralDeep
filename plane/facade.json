@@ -1,0 +1,14 @@
+{
+  "format": "astralplane.facade/v1",
+  "modules": [
+    "astralplane",
+    "astralplane.api",
+    "astralplane.errors",
+    "astralplane.contracts",
+    "astralplane.async_runtime"
+  ],
+  "packages": [
+    "astralplane.repositories",
+    "astralplane.authority"
+  ]
+}

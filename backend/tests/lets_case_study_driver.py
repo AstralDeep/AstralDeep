@@ -26,7 +26,7 @@ from typing import Any, Iterator, Literal
 
 _BACKEND_ROOT = Path(__file__).resolve().parents[1]
 _REPOSITORY_ROOT = _BACKEND_ROOT.parent
-_ASTRALPLANE_SOURCE_ROOT = _REPOSITORY_ROOT / "components/AstralPlane/src"
+_ASTRALPLANE_SOURCE_ROOT = _REPOSITORY_ROOT / "plane/src"
 _LETS_SOURCE_ROOT = _REPOSITORY_ROOT / "components/LETS/src"
 for source_root in (_BACKEND_ROOT, _ASTRALPLANE_SOURCE_ROOT, _LETS_SOURCE_ROOT):
     if str(source_root) not in sys.path:

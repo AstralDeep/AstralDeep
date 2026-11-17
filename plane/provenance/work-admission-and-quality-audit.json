@@ -1,0 +1,55 @@
+{
+  "schemaVersion": "astralplane.repository-slice/v1",
+  "slice": "work-admission-and-quality-audit",
+  "status": "implemented_and_locally_verified",
+  "schemaRevision": "074.004",
+  "migrationRegistryDigest": "31495e9b916301e5d9d5011f256224e62e0a0822e25fdf3b9c339beb695eff50",
+  "currentSchemaVerifierChecksum": "bd5ff43f781e08fe127a6e28ae9bd9b57a796190360215ee485941bc56870e69",
+  "currentSchemaStructureDigest": "2e95879e293dbac3018a5c3fea92662b2939390bb12195f5a9f8d1eca03d6ec3",
+  "preSplitSchemaStructureDigest": "781cc210f9ea8f01a1392317a04639d73e14949a65274cc28ea3b36bf2c3c7a8",
+  "publicFactories": [
+    "create_quality_audit_repository",
+    "create_work_admission_repository"
+  ],
+  "catalogKeys": [
+    "quality_audit",
+    "work_admission"
+  ],
+  "tables": [
+    "audit_entries",
+    "latex_artifacts",
+    "operation_admission_class",
+    "operation_admission_slot",
+    "operation_record",
+    "operation_submission_result",
+    "test_case_results",
+    "test_evidence",
+    "test_runs"
+  ],
+  "invariants": [
+    "caller-owned transactions and no driver escape hatch",
+    "work configuration is bound only after caller commit",
+    "owner-partitioned operation status and explicit administrative full read",
+    "execution generation and lease token fence every running mutation",
+    "request generation binding is null-only and exact-replay safe",
+    "qualification review and case transition are one atomic operation",
+    "qualification audit head is locked and version-2 hashes authenticate the full record",
+    "legacy version-1 audit histories are never silently rewritten",
+    "already-current startup verifies canonical catalog semantics",
+    "all applicable public repository writes remain subject to caller-owned rollback"
+  ],
+  "focusedVerification": {
+    "command": "python -m pytest -q tests/repositories/test_quality_audit.py tests/test_schema_migrations.py tests/test_revision.py tests/test_pre_split_fixture.py tests/test_compatibility.py tests/repositories/test_work_admission.py tests/test_api.py",
+    "status": "passed",
+    "passed": 137,
+    "failed": 0
+  },
+  "postgresVerification": {
+    "command": "python -m pytest -q tests/integration/test_pre_split_upgrade.py tests/integration/test_empty_database_startup.py tests/integration/test_catalog_caller_rollback.py",
+    "status": "passed",
+    "passed": 58,
+    "failed": 0,
+    "maxWorkers": 1
+  },
+  "migrationEvidence": "provenance/checks.json"
+}

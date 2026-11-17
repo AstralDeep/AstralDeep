@@ -1,0 +1,439 @@
+{
+  "destination": {
+    "branch": "codex/074-extract-data-plane",
+    "legacyBaseline": {
+      "commit": "2cd12602e361a0dfb3e74655070720be405c09a3",
+      "observedAt": "2026-08-13T23:06:36.7146430Z",
+      "sourceRef": "refs/heads/master"
+    },
+    "repository": "https://github.com/AstralDeep/AstralPlane.git"
+  },
+  "digestAlgorithm": "sha256",
+  "entries": [
+    {
+      "blob": "4b12bde46bbf9510b0d20ef71c5456d8227194c5",
+      "bytes": 8986,
+      "destinationPath": "src/astralplane/_legacy_import/audit/recorder.py",
+      "mode": "100644",
+      "sourcePath": "backend/audit/recorder.py"
+    },
+    {
+      "blob": "01dbe1b9e9d47a173e410e3c94e4036f31964cdd",
+      "bytes": 17769,
+      "destinationPath": "src/astralplane/_legacy_import/audit/repository.py",
+      "mode": "100644",
+      "sourcePath": "backend/audit/repository.py"
+    },
+    {
+      "blob": "963116f37d017f8b994bac1ecf54f8e6ba21b214",
+      "bytes": 10044,
+      "destinationPath": "src/astralplane/_legacy_import/audit/schemas.py",
+      "mode": "100644",
+      "sourcePath": "backend/audit/schemas.py"
+    },
+    {
+      "blob": "a25c6d2ce1fa3813021eab3a650d3300c76efb1b",
+      "bytes": 1811,
+      "destinationPath": "tests/_legacy_import/audit/tests/test_append_only_trigger.py",
+      "mode": "100644",
+      "sourcePath": "backend/audit/tests/test_append_only_trigger.py"
+    },
+    {
+      "blob": "5738486bb85b484f972eb076cd6ab4cba4fedca6",
+      "bytes": 4089,
+      "destinationPath": "tests/_legacy_import/audit/tests/test_repository_filters.py",
+      "mode": "100644",
+      "sourcePath": "backend/audit/tests/test_repository_filters.py"
+    },
+    {
+      "blob": "53a460dd85ed3e3bd7c078db76ed508df5ece35b",
+      "bytes": 3368,
+      "destinationPath": "tests/_legacy_import/audit/tests/test_repository_hash_chain.py",
+      "mode": "100644",
+      "sourcePath": "backend/audit/tests/test_repository_hash_chain.py"
+    },
+    {
+      "blob": "70414cd5aaf01873c9a0c0be4cd77634b4186ace",
+      "bytes": 1923,
+      "destinationPath": "src/astralplane/_legacy_import/audit/ws_publisher.py",
+      "mode": "100644",
+      "sourcePath": "backend/audit/ws_publisher.py"
+    },
+    {
+      "blob": "a0e26fff215bb1379e79485091b10b456f01595d",
+      "bytes": 39386,
+      "destinationPath": "src/astralplane/_legacy_import/feedback/repository.py",
+      "mode": "100644",
+      "sourcePath": "backend/feedback/repository.py"
+    },
+    {
+      "blob": "13fcf24e90cb49d6c188326ff0af1abda759114c",
+      "bytes": 14523,
+      "destinationPath": "tests/_legacy_import/llm_config/tests/test_user_store.py",
+      "mode": "100644",
+      "sourcePath": "backend/llm_config/tests/test_user_store.py"
+    },
+    {
+      "blob": "276252aa7ea344f2d4e2b778a5adf94ea8e7c691",
+      "bytes": 22659,
+      "destinationPath": "src/astralplane/_legacy_import/llm_config/user_store.py",
+      "mode": "100644",
+      "sourcePath": "backend/llm_config/user_store.py"
+    },
+    {
+      "blob": "a59662db08011b81247f0dfc7b39a1a547d85aa5",
+      "bytes": 22345,
+      "destinationPath": "src/astralplane/_legacy_import/onboarding/repository.py",
+      "mode": "100644",
+      "sourcePath": "backend/onboarding/repository.py"
+    },
+    {
+      "blob": "2c3254b0424fd81a82e5c4e02af974c68bca8b8e",
+      "bytes": 9898,
+      "destinationPath": "tests/_legacy_import/onboarding/tests/test_repository.py",
+      "mode": "100644",
+      "sourcePath": "backend/onboarding/tests/test_repository.py"
+    },
+    {
+      "blob": "fab236247fe14148fad3270c45f974e4fa556a91",
+      "bytes": 10940,
+      "destinationPath": "src/astralplane/_legacy_import/orchestrator/artifact_share.py",
+      "mode": "100644",
+      "sourcePath": "backend/orchestrator/artifact_share.py"
+    },
+    {
+      "blob": "a66d9403390c5bc1e6ab30fecca8e814996bc326",
+      "bytes": 8482,
+      "destinationPath": "src/astralplane/_legacy_import/orchestrator/artifact_versions.py",
+      "mode": "100644",
+      "sourcePath": "backend/orchestrator/artifact_versions.py"
+    },
+    {
+      "blob": "99875b7efedb4c63b06df9b21c13ce954a495cb0",
+      "bytes": 86532,
+      "destinationPath": "src/astralplane/_legacy_import/orchestrator/async_tasks.py",
+      "mode": "100644",
+      "sourcePath": "backend/orchestrator/async_tasks.py"
+    },
+    {
+      "blob": "059670e2c40eafcc364dcfb73c317212b760e6aa",
+      "bytes": 1219,
+      "destinationPath": "src/astralplane/_legacy_import/orchestrator/attachments/account_lifecycle.py",
+      "mode": "100644",
+      "sourcePath": "backend/orchestrator/attachments/account_lifecycle.py"
+    },
+    {
+      "blob": "ad04e347e29c4b864ef64a3786df5a34b6db0cbc",
+      "bytes": 3604,
+      "destinationPath": "src/astralplane/_legacy_import/orchestrator/attachments/message_attachment_repo.py",
+      "mode": "100644",
+      "sourcePath": "backend/orchestrator/attachments/message_attachment_repo.py"
+    },
+    {
+      "blob": "55c917b081a2b5abed6d461641f352a0bc455fba",
+      "bytes": 1654,
+      "destinationPath": "src/astralplane/_legacy_import/orchestrator/attachments/models.py",
+      "mode": "100644",
+      "sourcePath": "backend/orchestrator/attachments/models.py"
+    },
+    {
+      "blob": "267cd05bb80785e9ad550f0657f5819d63989c3c",
+      "bytes": 6099,
+      "destinationPath": "src/astralplane/_legacy_import/orchestrator/attachments/parser_repo.py",
+      "mode": "100644",
+      "sourcePath": "backend/orchestrator/attachments/parser_repo.py"
+    },
+    {
+      "blob": "e0b8689cb7bfdcece8e6feface98d43a2e19bbd1",
+      "bytes": 7657,
+      "destinationPath": "src/astralplane/_legacy_import/orchestrator/attachments/repository.py",
+      "mode": "100644",
+      "sourcePath": "backend/orchestrator/attachments/repository.py"
+    },
+    {
+      "blob": "5fdcf30d12553473034ad4106364747d78b9fa90",
+      "bytes": 5855,
+      "destinationPath": "src/astralplane/_legacy_import/orchestrator/attachments/store.py",
+      "mode": "100644",
+      "sourcePath": "backend/orchestrator/attachments/store.py"
+    },
+    {
+      "blob": "4e94ba509f51d58824e19ce14362686a18c415de",
+      "bytes": 138720,
+      "destinationPath": "src/astralplane/_legacy_import/orchestrator/history.py",
+      "mode": "100644",
+      "sourcePath": "backend/orchestrator/history.py"
+    },
+    {
+      "blob": "790507fbafe1e9d877d9c411b2a7ddbe2e08b0e2",
+      "bytes": 72658,
+      "destinationPath": "src/astralplane/_legacy_import/orchestrator/knowledge_synthesis.py",
+      "mode": "100644",
+      "sourcePath": "backend/orchestrator/knowledge_synthesis.py"
+    },
+    {
+      "blob": "f8e26f063e8171be8afb4b6ea3755c287794983b",
+      "bytes": 16184,
+      "destinationPath": "src/astralplane/_legacy_import/orchestrator/remote_jobs.py",
+      "mode": "100644",
+      "sourcePath": "backend/orchestrator/remote_jobs.py"
+    },
+    {
+      "blob": "49ddf72b1a4a65033276c77f1662ae11d5e21a1d",
+      "bytes": 10120,
+      "destinationPath": "src/astralplane/_legacy_import/orchestrator/remote_machines.py",
+      "mode": "100644",
+      "sourcePath": "backend/orchestrator/remote_machines.py"
+    },
+    {
+      "blob": "380d57e0d6d583489bd872168f757677151cff16",
+      "bytes": 6622,
+      "destinationPath": "src/astralplane/_legacy_import/orchestrator/scheduled_publication.py",
+      "mode": "100644",
+      "sourcePath": "backend/orchestrator/scheduled_publication.py"
+    },
+    {
+      "blob": "5da0d1a0fb9e63d058e0e006636d2e9aefbaacd5",
+      "bytes": 18625,
+      "destinationPath": "src/astralplane/_legacy_import/orchestrator/session_store.py",
+      "mode": "100644",
+      "sourcePath": "backend/orchestrator/session_store.py"
+    },
+    {
+      "blob": "34383048d8142621f6a07ecb216edeb3879169f0",
+      "bytes": 150190,
+      "destinationPath": "src/astralplane/_legacy_import/orchestrator/voice_sessions.py",
+      "mode": "100644",
+      "sourcePath": "backend/orchestrator/voice_sessions.py"
+    },
+    {
+      "blob": "27abb39c2543cac1198b14e4e0aa0651c2700a80",
+      "bytes": 145889,
+      "destinationPath": "src/astralplane/_legacy_import/orchestrator/work_admission.py",
+      "mode": "100644",
+      "sourcePath": "backend/orchestrator/work_admission.py"
+    },
+    {
+      "blob": "ee5650a5e4b5d3d474c9117cf29b1a74f34aab5d",
+      "bytes": 46227,
+      "destinationPath": "src/astralplane/_legacy_import/orchestrator/workspace.py",
+      "mode": "100644",
+      "sourcePath": "backend/orchestrator/workspace.py"
+    },
+    {
+      "blob": "86df957b36fe25a64d273155322ca864e74853de",
+      "bytes": 15846,
+      "destinationPath": "src/astralplane/_legacy_import/personalization/repository.py",
+      "mode": "100644",
+      "sourcePath": "backend/personalization/repository.py"
+    },
+    {
+      "blob": "09a4ab7ddf73822bf9917768b2c399bd92cb5aed",
+      "bytes": 85298,
+      "destinationPath": "src/astralplane/_legacy_import/scheduler/store.py",
+      "mode": "100644",
+      "sourcePath": "backend/scheduler/store.py"
+    },
+    {
+      "blob": "d4ddfd9207a447989a50fbe0cc44291f9047d9af",
+      "bytes": 25257,
+      "destinationPath": "tests/_legacy_import/scheduler/tests/test_atomic_chat_publication_060.py",
+      "mode": "100644",
+      "sourcePath": "backend/scheduler/tests/test_atomic_chat_publication_060.py"
+    },
+    {
+      "blob": "8d37a91a2d494117823956dbd3994240c88ee4fc",
+      "bytes": 80218,
+      "destinationPath": "tests/_legacy_import/scheduler/tests/test_occurrence_claims_060.py",
+      "mode": "100644",
+      "sourcePath": "backend/scheduler/tests/test_occurrence_claims_060.py"
+    },
+    {
+      "blob": "886fd904962487abe964bad4812f374d728da8c0",
+      "bytes": 7911,
+      "destinationPath": "src/astralplane/_legacy_import/shared/attachment_materializer.py",
+      "mode": "100644",
+      "sourcePath": "backend/shared/attachment_materializer.py"
+    },
+    {
+      "blob": "dea4c74401da6f66bd17b7c4262acec2564fe8cd",
+      "bytes": 3436,
+      "destinationPath": "src/astralplane/_legacy_import/shared/attachment_resolver.py",
+      "mode": "100644",
+      "sourcePath": "backend/shared/attachment_resolver.py"
+    },
+    {
+      "blob": "39cdc1d328f17840305b88158a892f5fd09c96dd",
+      "bytes": 233301,
+      "destinationPath": "src/astralplane/_legacy_import/shared/database.py",
+      "mode": "100644",
+      "sourcePath": "backend/shared/database.py"
+    },
+    {
+      "blob": "83a1a44c6d040802baa903fcda7b76557be17b56",
+      "bytes": 1641,
+      "destinationPath": "tests/_legacy_import/tests/attachments/test_account_deletion.py",
+      "mode": "100644",
+      "sourcePath": "backend/tests/attachments/test_account_deletion.py"
+    },
+    {
+      "blob": "ff0acaf0627901b0d2de639a3971d3dff4b535da",
+      "bytes": 5408,
+      "destinationPath": "tests/_legacy_import/tests/attachments/test_message_attachment_repo.py",
+      "mode": "100644",
+      "sourcePath": "backend/tests/attachments/test_message_attachment_repo.py"
+    },
+    {
+      "blob": "e85ac873af23481b3f634a9c82de22d270dd3f80",
+      "bytes": 2956,
+      "destinationPath": "tests/_legacy_import/tests/attachments/test_repository.py",
+      "mode": "100644",
+      "sourcePath": "backend/tests/attachments/test_repository.py"
+    },
+    {
+      "blob": "9944037aa880bf0965e73be9c2bf8d641435ba5a",
+      "bytes": 3820,
+      "destinationPath": "tests/_legacy_import/tests/attachments/test_store.py",
+      "mode": "100644",
+      "sourcePath": "backend/tests/attachments/test_store.py"
+    },
+    {
+      "blob": "6158e78c84c09a82c7e9d9ad5df8970cf77a8e5c",
+      "bytes": 13875,
+      "destinationPath": "tests/_legacy_import/tests/test_artifact_share.py",
+      "mode": "100644",
+      "sourcePath": "backend/tests/test_artifact_share.py"
+    },
+    {
+      "blob": "8c93b154e2faa40470074fa9a164ca5dfc38f704",
+      "bytes": 10969,
+      "destinationPath": "tests/_legacy_import/tests/test_artifact_versions.py",
+      "mode": "100644",
+      "sourcePath": "backend/tests/test_artifact_versions.py"
+    },
+    {
+      "blob": "62155817bebd411e51aff4b95f0322b4de70394b",
+      "bytes": 6833,
+      "destinationPath": "tests/_legacy_import/tests/test_chain_audit.py",
+      "mode": "100644",
+      "sourcePath": "backend/tests/test_chain_audit.py"
+    },
+    {
+      "blob": "69a4a5ef7b8b0bd4326e66d8c6192ebdb0ebb6f4",
+      "bytes": 1965,
+      "destinationPath": "tests/_legacy_import/tests/test_database.py",
+      "mode": "100644",
+      "sourcePath": "backend/tests/test_database.py"
+    },
+    {
+      "blob": "1117e5b41074bd903823b54c02aa6f2179715389",
+      "bytes": 7344,
+      "destinationPath": "tests/_legacy_import/tests/test_history_previews.py",
+      "mode": "100644",
+      "sourcePath": "backend/tests/test_history_previews.py"
+    },
+    {
+      "blob": "d5b15301f86fe373a044c47404db03171e611824",
+      "bytes": 42615,
+      "destinationPath": "tests/_legacy_import/tests/test_remote_jobs_063.py",
+      "mode": "100644",
+      "sourcePath": "backend/tests/test_remote_jobs_063.py"
+    },
+    {
+      "blob": "073b0e138e4b9a85ae19e9ea986a6fe2a1008e16",
+      "bytes": 15655,
+      "destinationPath": "tests/_legacy_import/tests/test_session_store_refresh.py",
+      "mode": "100644",
+      "sourcePath": "backend/tests/test_session_store_refresh.py"
+    },
+    {
+      "blob": "45119ab77a692a567aed68092deb56e9eba56db8",
+      "bytes": 16014,
+      "destinationPath": "tests/_legacy_import/tests/test_voice_session_api_065.py",
+      "mode": "100644",
+      "sourcePath": "backend/tests/test_voice_session_api_065.py"
+    },
+    {
+      "blob": "df67e9ff60e1bd8f757683aaeb9790ee4f1c15dd",
+      "bytes": 41175,
+      "destinationPath": "tests/_legacy_import/tests/test_work_admission_repository.py",
+      "mode": "100644",
+      "sourcePath": "backend/tests/test_work_admission_repository.py"
+    },
+    {
+      "blob": "74a650abea0f1082f14a9c85746a202861ce77b9",
+      "bytes": 13035,
+      "destinationPath": "tests/_legacy_import/tests/test_workspace_layout.py",
+      "mode": "100644",
+      "sourcePath": "backend/tests/test_workspace_layout.py"
+    },
+    {
+      "blob": "c175a3a107571e1014f207dd16ba3fefb776b9e7",
+      "bytes": 7560,
+      "destinationPath": "tests/_legacy_import/tests/test_workspace_snapshots.py",
+      "mode": "100644",
+      "sourcePath": "backend/tests/test_workspace_snapshots.py"
+    }
+  ],
+  "format": "astral.extraction-provenance/v1",
+  "manifestSha256": "faf3e958601379954875cbc928423bc95d4b1786b59d6d3992241c8f69ee91ba",
+  "selectionRoots": [
+    "backend/audit/recorder.py",
+    "backend/audit/repository.py",
+    "backend/audit/schemas.py",
+    "backend/audit/tests/test_append_only_trigger.py",
+    "backend/audit/tests/test_repository_filters.py",
+    "backend/audit/tests/test_repository_hash_chain.py",
+    "backend/audit/ws_publisher.py",
+    "backend/feedback/repository.py",
+    "backend/llm_config/tests/test_user_store.py",
+    "backend/llm_config/user_store.py",
+    "backend/onboarding/repository.py",
+    "backend/onboarding/tests/test_repository.py",
+    "backend/orchestrator/artifact_share.py",
+    "backend/orchestrator/artifact_versions.py",
+    "backend/orchestrator/async_tasks.py",
+    "backend/orchestrator/attachments/account_lifecycle.py",
+    "backend/orchestrator/attachments/message_attachment_repo.py",
+    "backend/orchestrator/attachments/models.py",
+    "backend/orchestrator/attachments/parser_repo.py",
+    "backend/orchestrator/attachments/repository.py",
+    "backend/orchestrator/attachments/store.py",
+    "backend/orchestrator/history.py",
+    "backend/orchestrator/knowledge_synthesis.py",
+    "backend/orchestrator/remote_jobs.py",
+    "backend/orchestrator/remote_machines.py",
+    "backend/orchestrator/scheduled_publication.py",
+    "backend/orchestrator/session_store.py",
+    "backend/orchestrator/voice_sessions.py",
+    "backend/orchestrator/work_admission.py",
+    "backend/orchestrator/workspace.py",
+    "backend/personalization/repository.py",
+    "backend/scheduler/store.py",
+    "backend/scheduler/tests/test_atomic_chat_publication_060.py",
+    "backend/scheduler/tests/test_occurrence_claims_060.py",
+    "backend/shared/attachment_materializer.py",
+    "backend/shared/attachment_resolver.py",
+    "backend/shared/database.py",
+    "backend/tests/attachments/test_account_deletion.py",
+    "backend/tests/attachments/test_message_attachment_repo.py",
+    "backend/tests/attachments/test_repository.py",
+    "backend/tests/attachments/test_store.py",
+    "backend/tests/test_artifact_share.py",
+    "backend/tests/test_artifact_versions.py",
+    "backend/tests/test_chain_audit.py",
+    "backend/tests/test_database.py",
+    "backend/tests/test_history_previews.py",
+    "backend/tests/test_remote_jobs_063.py",
+    "backend/tests/test_session_store_refresh.py",
+    "backend/tests/test_voice_session_api_065.py",
+    "backend/tests/test_work_admission_repository.py",
+    "backend/tests/test_workspace_layout.py",
+    "backend/tests/test_workspace_snapshots.py"
+  ],
+  "source": {
+    "commit": "fc113c4f99121b2053bb71523835c5c4743f1f56",
+    "repository": "https://github.com/AstralDeep/AstralDeep.git",
+    "tree": "914b04d369faa4ee0d7c2bb59ce09db38a18d45a"
+  }
+}

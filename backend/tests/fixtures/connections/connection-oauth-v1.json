@@ -1,0 +1,3800 @@
+{
+  "cases": [
+    {
+      "expect": {
+        "ok": {
+          "bearer": {
+            "resource_metadata": "https://mcp.research.example/.well-known/oauth-protected-resource/mcp",
+            "scope": "a b"
+          }
+        }
+      },
+      "input": {
+        "header": "Bearer resource_metadata=\"https://mcp.research.example/.well-known/oauth-protected-resource/mcp\", scope=\"a b\""
+      },
+      "kind": "oauth_challenge",
+      "name": "challenge_bearer_quoted"
+    },
+    {
+      "expect": {
+        "ok": {
+          "bearer": {
+            "scope": "a"
+          }
+        }
+      },
+      "input": {
+        "header": "bEaReR scope=\"a\""
+      },
+      "kind": "oauth_challenge",
+      "name": "challenge_scheme_case_insensitive"
+    },
+    {
+      "expect": {
+        "ok": {
+          "bearer": {
+            "resource_metadata": "https://mcp.research.example/.well-known/oauth-protected-resource"
+          }
+        }
+      },
+      "input": {
+        "header": "Bearer Resource_Metadata=\"https://mcp.research.example/.well-known/oauth-protected-resource\""
+      },
+      "kind": "oauth_challenge",
+      "name": "challenge_param_names_lowercased"
+    },
+    {
+      "expect": {
+        "ok": {
+          "bearer": {
+            "error": "insufficient_scope",
+            "scope": "files.write"
+          }
+        }
+      },
+      "input": {
+        "header": "Bearer error=insufficient_scope, scope=\"files.write\""
+      },
+      "kind": "oauth_challenge",
+      "name": "challenge_token_value"
+    },
+    {
+      "expect": {
+        "ok": {
+          "bearer": {
+            "realm": "say \"hi\""
+          }
+        }
+      },
+      "input": {
+        "header": "Bearer realm=\"say \\\"hi\\\"\""
+      },
+      "kind": "oauth_challenge",
+      "name": "challenge_quoted_pair"
+    },
+    {
+      "expect": {
+        "ok": {
+          "bearer": {
+            "scope": "a"
+          }
+        }
+      },
+      "input": {
+        "header": "Basic realm=\"x\", Bearer scope=\"a\""
+      },
+      "kind": "oauth_challenge",
+      "name": "challenge_basic_before_bearer"
+    },
+    {
+      "expect": {
+        "ok": {
+          "bearer": {
+            "error": "invalid_token"
+          }
+        }
+      },
+      "input": {
+        "header": "Basic realm=\"x\", charset=\"UTF-8\", Bearer error=\"invalid_token\""
+      },
+      "kind": "oauth_challenge",
+      "name": "challenge_basic_params_before_bearer"
+    },
+    {
+      "expect": {
+        "ok": {
+          "bearer": {
+            "scope": "a"
+          }
+        }
+      },
+      "input": {
+        "header": "Negotiate abc==, Bearer scope=\"a\""
+      },
+      "kind": "oauth_challenge",
+      "name": "challenge_token68_before_bearer"
+    },
+    {
+      "expect": {
+        "ok": {
+          "bearer": {
+            "scope": "first"
+          }
+        }
+      },
+      "input": {
+        "header": "Bearer scope=\"first\", Bearer scope=\"second\""
+      },
+      "kind": "oauth_challenge",
+      "name": "challenge_two_bearer_first_wins"
+    },
+    {
+      "expect": {
+        "ok": {
+          "bearer": {}
+        }
+      },
+      "input": {
+        "header": "Bearer"
+      },
+      "kind": "oauth_challenge",
+      "name": "challenge_bearer_without_params"
+    },
+    {
+      "expect": {
+        "ok": {
+          "bearer": {
+            "scope": "a"
+          }
+        }
+      },
+      "input": {
+        "header": "Bearer scope = \"a\""
+      },
+      "kind": "oauth_challenge",
+      "name": "challenge_spaces_around_equals"
+    },
+    {
+      "expect": {
+        "ok": {
+          "bearer": null
+        }
+      },
+      "input": {
+        "header": "Basic realm=\"x\""
+      },
+      "kind": "oauth_challenge",
+      "name": "challenge_no_bearer"
+    },
+    {
+      "expect": {
+        "ok": {
+          "bearer": null
+        }
+      },
+      "input": {
+        "header": null
+      },
+      "kind": "oauth_challenge",
+      "name": "challenge_absent"
+    },
+    {
+      "expect": {
+        "ok": {
+          "bearer": null
+        }
+      },
+      "input": {
+        "header": ""
+      },
+      "kind": "oauth_challenge",
+      "name": "challenge_empty"
+    },
+    {
+      "expect": {
+        "ok": {
+          "bearer": null
+        }
+      },
+      "input": {
+        "header": "Bearer scope=\"a\", scope=\"b\""
+      },
+      "kind": "oauth_challenge",
+      "name": "challenge_duplicate_param"
+    },
+    {
+      "expect": {
+        "ok": {
+          "bearer": null
+        }
+      },
+      "input": {
+        "header": "Bearer scope=\"a"
+      },
+      "kind": "oauth_challenge",
+      "name": "challenge_unterminated_quote"
+    },
+    {
+      "expect": {
+        "ok": {
+          "bearer": null
+        }
+      },
+      "input": {
+        "header": "Bearer scope=\"\u00e9\""
+      },
+      "kind": "oauth_challenge",
+      "name": "challenge_non_ascii"
+    },
+    {
+      "expect": {
+        "ok": {
+          "bearer": null
+        }
+      },
+      "input": {
+        "header": "scope=\"a\""
+      },
+      "kind": "oauth_challenge",
+      "name": "challenge_param_without_scheme"
+    },
+    {
+      "expect": {
+        "ok": {
+          "bearer": {
+            "scope": "a"
+          }
+        }
+      },
+      "input": {
+        "header": [
+          "Basic realm=\"x\"",
+          "Bearer scope=\"a\""
+        ]
+      },
+      "kind": "oauth_challenge",
+      "name": "challenge_two_header_lines_joined"
+    },
+    {
+      "expect": {
+        "ok": {
+          "urls": [
+            "https://mcp.research.example/.well-known/oauth-protected-resource/mcp"
+          ]
+        }
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "header": "Bearer resource_metadata=\"https://mcp.research.example/.well-known/oauth-protected-resource/mcp\""
+      },
+      "kind": "oauth_resource_metadata_urls",
+      "name": "rm_header_on_origin"
+    },
+    {
+      "expect": {
+        "ok": {
+          "urls": [
+            "https://mcp.research.example/.well-known/oauth-protected-resource"
+          ]
+        }
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "header": "Bearer resource_metadata=\"https://mcp.research.example/.well-known/oauth-protected-resource\""
+      },
+      "kind": "oauth_resource_metadata_urls",
+      "name": "rm_header_exact_well_known"
+    },
+    {
+      "expect": {
+        "error": "connection.resource_metadata_offsite"
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "header": "Bearer resource_metadata=\"https://evil.example/.well-known/oauth-protected-resource\""
+      },
+      "kind": "oauth_resource_metadata_urls",
+      "name": "rm_header_offsite_host"
+    },
+    {
+      "expect": {
+        "error": "connection.resource_metadata_offsite"
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "header": "Bearer resource_metadata=\"https://auth.mcp.research.example/.well-known/oauth-protected-resource\""
+      },
+      "kind": "oauth_resource_metadata_urls",
+      "name": "rm_header_subdomain"
+    },
+    {
+      "expect": {
+        "error": "connection.resource_metadata_offsite"
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "header": "Bearer resource_metadata=\"https://mcp.research.example:8443/.well-known/oauth-protected-resource\""
+      },
+      "kind": "oauth_resource_metadata_urls",
+      "name": "rm_header_other_port"
+    },
+    {
+      "expect": {
+        "error": "connection.resource_metadata_offsite"
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "header": "Bearer resource_metadata=\"http://mcp.research.example/.well-known/oauth-protected-resource\""
+      },
+      "kind": "oauth_resource_metadata_urls",
+      "name": "rm_header_http"
+    },
+    {
+      "expect": {
+        "error": "connection.resource_metadata_offsite"
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "header": "Bearer resource_metadata=\"https://mcp.research.example:443/.well-known/oauth-protected-resource\""
+      },
+      "kind": "oauth_resource_metadata_urls",
+      "name": "rm_header_default_port_spelled"
+    },
+    {
+      "expect": {
+        "error": "connection.resource_metadata_offsite"
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "header": "Bearer resource_metadata=\"https://MCP.research.example/.well-known/oauth-protected-resource\""
+      },
+      "kind": "oauth_resource_metadata_urls",
+      "name": "rm_header_uppercase_host"
+    },
+    {
+      "expect": {
+        "error": "connection.resource_metadata_offsite"
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "header": "Bearer resource_metadata=\"https://mcp.research.example/.well-known/oauth-protected-resourcex\""
+      },
+      "kind": "oauth_resource_metadata_urls",
+      "name": "rm_header_path_prefix_lookalike"
+    },
+    {
+      "expect": {
+        "error": "connection.resource_metadata_offsite"
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "header": "Bearer resource_metadata=\"https://mcp.research.example/.well-known/openid-configuration\""
+      },
+      "kind": "oauth_resource_metadata_urls",
+      "name": "rm_header_other_well_known"
+    },
+    {
+      "expect": {
+        "error": "connection.resource_metadata_offsite"
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "header": "Bearer resource_metadata=\"https://mcp.research.example/.well-known/oauth-protected-resource?x=1\""
+      },
+      "kind": "oauth_resource_metadata_urls",
+      "name": "rm_header_query"
+    },
+    {
+      "expect": {
+        "error": "connection.resource_metadata_offsite"
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "header": "Bearer resource_metadata=\"https://mcp.research.example/.well-known/oauth-protected-resource#x\""
+      },
+      "kind": "oauth_resource_metadata_urls",
+      "name": "rm_header_fragment"
+    },
+    {
+      "expect": {
+        "error": "connection.resource_metadata_offsite"
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "header": "Bearer resource_metadata=\"https://mcp.research.example@evil.example/.well-known/oauth-protected-resource\""
+      },
+      "kind": "oauth_resource_metadata_urls",
+      "name": "rm_header_userinfo"
+    },
+    {
+      "expect": {
+        "error": "connection.resource_metadata_offsite"
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "header": "Bearer resource_metadata=\"https://mcp.research.example/.well-known/oauth-protected-resource/../../evil\""
+      },
+      "kind": "oauth_resource_metadata_urls",
+      "name": "rm_header_dot_segment"
+    },
+    {
+      "expect": {
+        "error": "connection.resource_metadata_offsite"
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "header": "Bearer resource_metadata=\"https://mcp.research.example/.well-known/oauth-protected-resource/%2E%2E/%2E%2E/other\""
+      },
+      "kind": "oauth_resource_metadata_urls",
+      "name": "rm_header_encoded_dot_segment"
+    },
+    {
+      "expect": {
+        "error": "connection.malformed"
+      },
+      "input": {
+        "endpoint": "https://MCP.research.example/mcp",
+        "header": null
+      },
+      "kind": "oauth_resource_metadata_urls",
+      "name": "rm_endpoint_not_canonical"
+    },
+    {
+      "expect": {
+        "error": "connection.resource_metadata_offsite"
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "header": "Bearer resource_metadata=\"/.well-known/oauth-protected-resource\""
+      },
+      "kind": "oauth_resource_metadata_urls",
+      "name": "rm_header_relative"
+    },
+    {
+      "expect": {
+        "ok": {
+          "urls": [
+            "https://mcp.research.example/.well-known/oauth-protected-resource/mcp",
+            "https://mcp.research.example/.well-known/oauth-protected-resource"
+          ]
+        }
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "header": null
+      },
+      "kind": "oauth_resource_metadata_urls",
+      "name": "rm_no_header_path_then_root"
+    },
+    {
+      "expect": {
+        "ok": {
+          "urls": [
+            "https://mcp.research.example/.well-known/oauth-protected-resource/api/mcp",
+            "https://mcp.research.example/.well-known/oauth-protected-resource"
+          ]
+        }
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/api/mcp",
+        "header": null
+      },
+      "kind": "oauth_resource_metadata_urls",
+      "name": "rm_no_header_nested_path"
+    },
+    {
+      "expect": {
+        "ok": {
+          "urls": [
+            "https://mcp.research.example/.well-known/oauth-protected-resource"
+          ]
+        }
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example",
+        "header": null
+      },
+      "kind": "oauth_resource_metadata_urls",
+      "name": "rm_no_header_root_endpoint"
+    },
+    {
+      "expect": {
+        "ok": {
+          "urls": [
+            "https://mcp.research.example/.well-known/oauth-protected-resource/mcp",
+            "https://mcp.research.example/.well-known/oauth-protected-resource"
+          ]
+        }
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "header": "Basic realm=\"x\""
+      },
+      "kind": "oauth_resource_metadata_urls",
+      "name": "rm_basic_challenge_falls_back"
+    },
+    {
+      "expect": {
+        "ok": {
+          "urls": [
+            "https://mcp.research.example/.well-known/oauth-protected-resource/mcp",
+            "https://mcp.research.example/.well-known/oauth-protected-resource"
+          ]
+        }
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "header": "Bearer resource_metadata=\"https://evil.example/x"
+      },
+      "kind": "oauth_resource_metadata_urls",
+      "name": "rm_malformed_header_falls_back"
+    },
+    {
+      "expect": {
+        "ok": {
+          "urls": [
+            "https://mcp.research.example/.well-known/oauth-protected-resource/mcp",
+            "https://mcp.research.example/.well-known/oauth-protected-resource"
+          ]
+        }
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "header": "Bearer scope=\"a\""
+      },
+      "kind": "oauth_resource_metadata_urls",
+      "name": "rm_bearer_without_resource_metadata"
+    },
+    {
+      "expect": {
+        "ok": {
+          "authorization_servers": [
+            "https://login.research.example"
+          ],
+          "scopes_supported": [],
+          "url": "https://mcp.research.example/.well-known/oauth-protected-resource/mcp"
+        }
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "header": "Bearer resource_metadata=\"https://mcp.research.example/.well-known/oauth-protected-resource/mcp\"",
+        "local": false,
+        "responses": {
+          "https://mcp.research.example/.well-known/oauth-protected-resource/mcp": {
+            "json": {
+              "authorization_servers": [
+                "https://login.research.example"
+              ],
+              "resource": "https://mcp.research.example/mcp"
+            },
+            "status": 200
+          }
+        }
+      },
+      "kind": "oauth_resource_metadata",
+      "name": "prm_found_from_header"
+    },
+    {
+      "expect": {
+        "ok": {
+          "authorization_servers": [
+            "https://login.research.example"
+          ],
+          "scopes_supported": [],
+          "url": "https://mcp.research.example/.well-known/oauth-protected-resource"
+        }
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "header": "Bearer",
+        "local": false,
+        "responses": {
+          "https://mcp.research.example/.well-known/oauth-protected-resource": {
+            "json": {
+              "authorization_servers": [
+                "https://login.research.example"
+              ],
+              "resource": "https://mcp.research.example/mcp"
+            },
+            "status": 200
+          },
+          "https://mcp.research.example/.well-known/oauth-protected-resource/mcp": {
+            "status": 404
+          }
+        }
+      },
+      "kind": "oauth_resource_metadata",
+      "name": "prm_path_missing_root_found"
+    },
+    {
+      "expect": {
+        "error": "connection.no_resource_metadata"
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "header": "Bearer resource_metadata=\"https://mcp.research.example/.well-known/oauth-protected-resource/mcp\"",
+        "local": false,
+        "responses": {
+          "https://mcp.research.example/.well-known/oauth-protected-resource": {
+            "json": {
+              "authorization_servers": [
+                "https://login.research.example"
+              ],
+              "resource": "https://mcp.research.example/mcp"
+            },
+            "status": 200
+          },
+          "https://mcp.research.example/.well-known/oauth-protected-resource/mcp": {
+            "status": 404
+          }
+        }
+      },
+      "kind": "oauth_resource_metadata",
+      "name": "prm_header_url_missing_has_no_fallback"
+    },
+    {
+      "expect": {
+        "error": "connection.no_resource_metadata"
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "header": null,
+        "local": false,
+        "responses": {}
+      },
+      "kind": "oauth_resource_metadata",
+      "name": "prm_none_found"
+    },
+    {
+      "expect": {
+        "ok": {
+          "authorization_servers": [
+            "https://login.research.example"
+          ],
+          "scopes_supported": [],
+          "url": "https://mcp.research.example/.well-known/oauth-protected-resource"
+        }
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "header": null,
+        "local": false,
+        "responses": {
+          "https://mcp.research.example/.well-known/oauth-protected-resource": {
+            "json": {
+              "authorization_servers": [
+                "https://login.research.example"
+              ],
+              "resource": "https://mcp.research.example/mcp"
+            },
+            "status": 200
+          },
+          "https://mcp.research.example/.well-known/oauth-protected-resource/mcp": {
+            "json": [
+              1
+            ],
+            "status": 200
+          }
+        }
+      },
+      "kind": "oauth_resource_metadata",
+      "name": "prm_body_not_object_is_missing"
+    },
+    {
+      "expect": {
+        "error": "connection.resource_mismatch"
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "header": null,
+        "local": false,
+        "responses": {
+          "https://mcp.research.example/.well-known/oauth-protected-resource/mcp": {
+            "json": {
+              "authorization_servers": [
+                "https://login.research.example"
+              ],
+              "resource": "https://other.research.example/mcp"
+            },
+            "status": 200
+          }
+        }
+      },
+      "kind": "oauth_resource_metadata",
+      "name": "prm_resource_mismatch"
+    },
+    {
+      "expect": {
+        "error": "connection.resource_mismatch"
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "header": null,
+        "local": false,
+        "responses": {
+          "https://mcp.research.example/.well-known/oauth-protected-resource/mcp": {
+            "json": {
+              "authorization_servers": [
+                "https://login.research.example"
+              ],
+              "resource": "https://mcp.research.example/mcp/"
+            },
+            "status": 200
+          }
+        }
+      },
+      "kind": "oauth_resource_metadata",
+      "name": "prm_resource_trailing_slash_mismatch"
+    },
+    {
+      "expect": {
+        "error": "connection.resource_metadata_offsite"
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "header": "Bearer resource_metadata=\"https://evil.example/.well-known/oauth-protected-resource\"",
+        "local": false,
+        "responses": {
+          "https://evil.example/.well-known/oauth-protected-resource": {
+            "json": {
+              "authorization_servers": [
+                "https://login.research.example"
+              ],
+              "resource": "https://mcp.research.example/mcp"
+            },
+            "status": 200
+          },
+          "https://mcp.research.example/.well-known/oauth-protected-resource/mcp": {
+            "json": {
+              "authorization_servers": [
+                "https://login.research.example"
+              ],
+              "resource": "https://mcp.research.example/mcp"
+            },
+            "status": 200
+          }
+        }
+      },
+      "kind": "oauth_resource_metadata",
+      "name": "prm_order_offsite_before_fetch"
+    },
+    {
+      "expect": {
+        "error": "connection.resource_mismatch"
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "header": null,
+        "local": false,
+        "responses": {
+          "https://mcp.research.example/.well-known/oauth-protected-resource/mcp": {
+            "json": {
+              "authorization_servers": [],
+              "resource": "https://mcp.research.example/mcp/x"
+            },
+            "status": 200
+          }
+        }
+      },
+      "kind": "oauth_resource_metadata",
+      "name": "prm_order_resource_before_servers"
+    },
+    {
+      "expect": {
+        "error": "connection.no_authorization_server"
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "header": null,
+        "local": false,
+        "responses": {
+          "https://mcp.research.example/.well-known/oauth-protected-resource/mcp": {
+            "json": {
+              "resource": "https://mcp.research.example/mcp"
+            },
+            "status": 200
+          }
+        }
+      },
+      "kind": "oauth_resource_metadata",
+      "name": "prm_no_authorization_servers"
+    },
+    {
+      "expect": {
+        "ok": {
+          "authorization_servers": [
+            "https://login.research.example",
+            "https://login2.research.example/realms/uk"
+          ],
+          "scopes_supported": [],
+          "url": "https://mcp.research.example/.well-known/oauth-protected-resource/mcp"
+        }
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "header": null,
+        "local": false,
+        "responses": {
+          "https://mcp.research.example/.well-known/oauth-protected-resource/mcp": {
+            "json": {
+              "authorization_servers": [
+                "http://login.research.example",
+                "https://login.research.example",
+                "https://login.research.example?tenant=uk",
+                "https://login2.research.example/realms/uk"
+              ],
+              "resource": "https://mcp.research.example/mcp"
+            },
+            "status": 200
+          }
+        }
+      },
+      "kind": "oauth_resource_metadata",
+      "name": "prm_invalid_issuers_dropped"
+    },
+    {
+      "expect": {
+        "error": "connection.no_authorization_server"
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "header": null,
+        "local": false,
+        "responses": {
+          "https://mcp.research.example/.well-known/oauth-protected-resource/mcp": {
+            "json": {
+              "authorization_servers": [
+                "http://login.research.example",
+                42
+              ],
+              "resource": "https://mcp.research.example/mcp"
+            },
+            "status": 200
+          }
+        }
+      },
+      "kind": "oauth_resource_metadata",
+      "name": "prm_all_issuers_invalid"
+    },
+    {
+      "expect": {
+        "ok": {
+          "authorization_servers": [
+            "https://login.research.example"
+          ],
+          "scopes_supported": [],
+          "url": "https://mcp.research.example/.well-known/oauth-protected-resource/mcp"
+        }
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "header": null,
+        "local": false,
+        "responses": {
+          "https://mcp.research.example/.well-known/oauth-protected-resource/mcp": {
+            "json": {
+              "authorization_servers": [
+                "https://login.research.example",
+                "https://login.research.example"
+              ],
+              "resource": "https://mcp.research.example/mcp"
+            },
+            "status": 200
+          }
+        }
+      },
+      "kind": "oauth_resource_metadata",
+      "name": "prm_duplicate_issuers_kept_once"
+    },
+    {
+      "expect": {
+        "ok": {
+          "authorization_servers": [
+            "http://127.0.0.1:8766"
+          ],
+          "scopes_supported": [],
+          "url": "http://127.0.0.1:8765/.well-known/oauth-protected-resource/mcp"
+        }
+      },
+      "input": {
+        "endpoint": "http://127.0.0.1:8765/mcp",
+        "header": null,
+        "local": true,
+        "responses": {
+          "http://127.0.0.1:8765/.well-known/oauth-protected-resource/mcp": {
+            "json": {
+              "authorization_servers": [
+                "http://127.0.0.1:8766"
+              ],
+              "resource": "http://127.0.0.1:8765/mcp"
+            },
+            "status": 200
+          }
+        }
+      },
+      "kind": "oauth_resource_metadata",
+      "name": "prm_loopback_issuer_accepted_when_local"
+    },
+    {
+      "expect": {
+        "ok": {
+          "authorization_servers": [
+            "https://login.research.example"
+          ],
+          "scopes_supported": [],
+          "url": "https://mcp.research.example/.well-known/oauth-protected-resource/mcp"
+        }
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "header": null,
+        "local": false,
+        "responses": {
+          "https://mcp.research.example/.well-known/oauth-protected-resource/mcp": {
+            "json": {
+              "authorization_servers": [
+                "http://127.0.0.1:8766",
+                "https://login.research.example"
+              ],
+              "resource": "https://mcp.research.example/mcp"
+            },
+            "status": 200
+          }
+        }
+      },
+      "kind": "oauth_resource_metadata",
+      "name": "prm_loopback_issuer_dropped_when_not_local"
+    },
+    {
+      "expect": {
+        "ok": {
+          "authorization_servers": [
+            "https://login.research.example"
+          ],
+          "scopes_supported": [],
+          "url": "https://mcp.research.example/.well-known/oauth-protected-resource/mcp"
+        }
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "header": null,
+        "local": false,
+        "responses": {
+          "https://mcp.research.example/.well-known/oauth-protected-resource/mcp": {
+            "json": {
+              "authorization_servers": [
+                "https://login.research.example"
+              ],
+              "resource": "https://mcp.research.example/mcp",
+              "scopes_supported": [
+                "mcp.read",
+                "bad scope"
+              ]
+            },
+            "status": 200
+          }
+        }
+      },
+      "kind": "oauth_resource_metadata",
+      "name": "prm_invalid_scopes_supported_ignored"
+    },
+    {
+      "expect": {
+        "ok": {
+          "urls": [
+            "https://login.research.example/.well-known/oauth-authorization-server",
+            "https://login.research.example/.well-known/openid-configuration"
+          ]
+        }
+      },
+      "input": {
+        "issuer": "https://login.research.example"
+      },
+      "kind": "oauth_as_metadata_urls",
+      "name": "as_urls_no_path"
+    },
+    {
+      "expect": {
+        "ok": {
+          "urls": [
+            "https://tenant.research.example/.well-known/oauth-authorization-server",
+            "https://tenant.research.example/.well-known/openid-configuration"
+          ]
+        }
+      },
+      "input": {
+        "issuer": "https://tenant.research.example/"
+      },
+      "kind": "oauth_as_metadata_urls",
+      "name": "as_urls_root_slash"
+    },
+    {
+      "expect": {
+        "ok": {
+          "urls": [
+            "https://login.research.example/.well-known/oauth-authorization-server/realms/uk",
+            "https://login.research.example/.well-known/openid-configuration/realms/uk",
+            "https://login.research.example/realms/uk/.well-known/openid-configuration"
+          ]
+        }
+      },
+      "input": {
+        "issuer": "https://login.research.example/realms/uk"
+      },
+      "kind": "oauth_as_metadata_urls",
+      "name": "as_urls_with_path"
+    },
+    {
+      "expect": {
+        "ok": {
+          "urls": [
+            "https://login.research.example/.well-known/oauth-authorization-server/tenant1",
+            "https://login.research.example/.well-known/openid-configuration/tenant1",
+            "https://login.research.example/tenant1/.well-known/openid-configuration"
+          ]
+        }
+      },
+      "input": {
+        "issuer": "https://login.research.example/tenant1/"
+      },
+      "kind": "oauth_as_metadata_urls",
+      "name": "as_urls_path_trailing_slash"
+    },
+    {
+      "expect": {
+        "error": "connection.malformed"
+      },
+      "input": {
+        "issuer": "https://login.research.example?tenant=uk"
+      },
+      "kind": "oauth_as_metadata_urls",
+      "name": "as_urls_issuer_not_canonical"
+    },
+    {
+      "expect": {
+        "ok": {
+          "issuer": "https://login.research.example",
+          "url": "https://login.research.example/.well-known/oauth-authorization-server"
+        }
+      },
+      "input": {
+        "issuers": [
+          "https://login.research.example",
+          "https://login2.research.example"
+        ],
+        "record_issuer": null,
+        "responses": {
+          "https://login.research.example/.well-known/oauth-authorization-server": {
+            "json": {
+              "authorization_endpoint": "https://login.research.example/authorize",
+              "code_challenge_methods_supported": [
+                "S256"
+              ],
+              "issuer": "https://login.research.example",
+              "token_endpoint": "https://login.research.example/token"
+            },
+            "status": 200
+          }
+        }
+      },
+      "kind": "oauth_select_server",
+      "name": "select_first_with_s256"
+    },
+    {
+      "expect": {
+        "ok": {
+          "issuer": "https://login2.research.example",
+          "url": "https://login2.research.example/.well-known/oauth-authorization-server"
+        }
+      },
+      "input": {
+        "issuers": [
+          "https://login.research.example",
+          "https://login2.research.example"
+        ],
+        "record_issuer": null,
+        "responses": {
+          "https://login.research.example/.well-known/oauth-authorization-server": {
+            "status": 404
+          },
+          "https://login.research.example/.well-known/openid-configuration": {
+            "status": 404
+          },
+          "https://login2.research.example/.well-known/oauth-authorization-server": {
+            "json": {
+              "authorization_endpoint": "https://login2.research.example/authorize",
+              "code_challenge_methods_supported": [
+                "S256"
+              ],
+              "issuer": "https://login2.research.example",
+              "token_endpoint": "https://login2.research.example/token"
+            },
+            "status": 200
+          }
+        }
+      },
+      "kind": "oauth_select_server",
+      "name": "select_skips_missing_metadata"
+    },
+    {
+      "expect": {
+        "ok": {
+          "issuer": "https://login2.research.example",
+          "url": "https://login2.research.example/.well-known/oauth-authorization-server"
+        }
+      },
+      "input": {
+        "issuers": [
+          "https://login.research.example",
+          "https://login2.research.example"
+        ],
+        "record_issuer": null,
+        "responses": {
+          "https://login.research.example/.well-known/oauth-authorization-server": {
+            "json": {
+              "authorization_endpoint": "https://login.research.example/authorize",
+              "issuer": "https://login.research.example",
+              "token_endpoint": "https://login.research.example/token"
+            },
+            "status": 200
+          },
+          "https://login2.research.example/.well-known/oauth-authorization-server": {
+            "json": {
+              "authorization_endpoint": "https://login2.research.example/authorize",
+              "code_challenge_methods_supported": [
+                "S256"
+              ],
+              "issuer": "https://login2.research.example",
+              "token_endpoint": "https://login2.research.example/token"
+            },
+            "status": 200
+          }
+        }
+      },
+      "kind": "oauth_select_server",
+      "name": "select_skips_absent_s256"
+    },
+    {
+      "expect": {
+        "ok": {
+          "issuer": "https://login2.research.example",
+          "url": "https://login2.research.example/.well-known/oauth-authorization-server"
+        }
+      },
+      "input": {
+        "issuers": [
+          "https://login.research.example",
+          "https://login2.research.example"
+        ],
+        "record_issuer": null,
+        "responses": {
+          "https://login.research.example/.well-known/oauth-authorization-server": {
+            "json": {
+              "authorization_endpoint": "https://login.research.example/authorize",
+              "code_challenge_methods_supported": [],
+              "issuer": "https://login.research.example",
+              "token_endpoint": "https://login.research.example/token"
+            },
+            "status": 200
+          },
+          "https://login2.research.example/.well-known/oauth-authorization-server": {
+            "json": {
+              "authorization_endpoint": "https://login2.research.example/authorize",
+              "code_challenge_methods_supported": [
+                "S256"
+              ],
+              "issuer": "https://login2.research.example",
+              "token_endpoint": "https://login2.research.example/token"
+            },
+            "status": 200
+          }
+        }
+      },
+      "kind": "oauth_select_server",
+      "name": "select_skips_empty_s256"
+    },
+    {
+      "expect": {
+        "ok": {
+          "issuer": "https://login2.research.example",
+          "url": "https://login2.research.example/.well-known/oauth-authorization-server"
+        }
+      },
+      "input": {
+        "issuers": [
+          "https://login.research.example",
+          "https://login2.research.example"
+        ],
+        "record_issuer": null,
+        "responses": {
+          "https://login.research.example/.well-known/oauth-authorization-server": {
+            "json": {
+              "authorization_endpoint": "https://login.research.example/authorize",
+              "code_challenge_methods_supported": [
+                "plain"
+              ],
+              "issuer": "https://login.research.example",
+              "token_endpoint": "https://login.research.example/token"
+            },
+            "status": 200
+          },
+          "https://login2.research.example/.well-known/oauth-authorization-server": {
+            "json": {
+              "authorization_endpoint": "https://login2.research.example/authorize",
+              "code_challenge_methods_supported": [
+                "S256"
+              ],
+              "issuer": "https://login2.research.example",
+              "token_endpoint": "https://login2.research.example/token"
+            },
+            "status": 200
+          }
+        }
+      },
+      "kind": "oauth_select_server",
+      "name": "select_skips_plain_only"
+    },
+    {
+      "expect": {
+        "ok": {
+          "issuer": "https://login.research.example",
+          "url": "https://login.research.example/.well-known/oauth-authorization-server"
+        }
+      },
+      "input": {
+        "issuers": [
+          "https://login.research.example",
+          "https://login2.research.example"
+        ],
+        "record_issuer": null,
+        "responses": {
+          "https://login.research.example/.well-known/oauth-authorization-server": {
+            "json": {
+              "authorization_endpoint": "https://login.research.example/authorize",
+              "code_challenge_methods_supported": [
+                "S256"
+              ],
+              "issuer": "https://login.research.example",
+              "token_endpoint": "https://login.research.example/token"
+            },
+            "status": 200
+          },
+          "https://login2.research.example/.well-known/oauth-authorization-server": {
+            "json": {
+              "authorization_endpoint": "https://evil.example/authorize",
+              "code_challenge_methods_supported": [
+                "S256"
+              ],
+              "issuer": "https://evil.example",
+              "token_endpoint": "https://evil.example/token"
+            },
+            "status": 200
+          }
+        }
+      },
+      "kind": "oauth_select_server",
+      "name": "select_stops_at_first_usable"
+    },
+    {
+      "expect": {
+        "error": "connection.issuer_mismatch"
+      },
+      "input": {
+        "issuers": [
+          "https://login.research.example",
+          "https://login2.research.example"
+        ],
+        "record_issuer": null,
+        "responses": {
+          "https://login.research.example/.well-known/oauth-authorization-server": {
+            "json": {
+              "authorization_endpoint": "https://evil.example/authorize",
+              "code_challenge_methods_supported": [
+                "S256"
+              ],
+              "issuer": "https://evil.example",
+              "token_endpoint": "https://evil.example/token"
+            },
+            "status": 200
+          },
+          "https://login2.research.example/.well-known/oauth-authorization-server": {
+            "json": {
+              "authorization_endpoint": "https://login2.research.example/authorize",
+              "code_challenge_methods_supported": [
+                "S256"
+              ],
+              "issuer": "https://login2.research.example",
+              "token_endpoint": "https://login2.research.example/token"
+            },
+            "status": 200
+          }
+        }
+      },
+      "kind": "oauth_select_server",
+      "name": "select_issuer_mismatch_aborts"
+    },
+    {
+      "expect": {
+        "error": "connection.issuer_mismatch"
+      },
+      "input": {
+        "issuers": [
+          "https://login.research.example"
+        ],
+        "record_issuer": null,
+        "responses": {
+          "https://login.research.example/.well-known/oauth-authorization-server": {
+            "json": {
+              "authorization_endpoint": "https://login.research.example/authorize",
+              "code_challenge_methods_supported": [
+                "S256"
+              ],
+              "token_endpoint": "https://login.research.example/token"
+            },
+            "status": 200
+          }
+        }
+      },
+      "kind": "oauth_select_server",
+      "name": "select_issuer_missing_in_metadata"
+    },
+    {
+      "expect": {
+        "ok": {
+          "issuer": "https://login.research.example/realms/uk",
+          "url": "https://login.research.example/.well-known/openid-configuration/realms/uk"
+        }
+      },
+      "input": {
+        "issuers": [
+          "https://login.research.example/realms/uk"
+        ],
+        "record_issuer": null,
+        "responses": {
+          "https://login.research.example/.well-known/oauth-authorization-server/realms/uk": {
+            "status": 404
+          },
+          "https://login.research.example/.well-known/openid-configuration/realms/uk": {
+            "json": {
+              "authorization_endpoint": "https://login.research.example/realms/uk/authorize",
+              "code_challenge_methods_supported": [
+                "S256"
+              ],
+              "issuer": "https://login.research.example/realms/uk",
+              "token_endpoint": "https://login.research.example/realms/uk/token"
+            },
+            "status": 200
+          }
+        }
+      },
+      "kind": "oauth_select_server",
+      "name": "select_oidc_path_insertion"
+    },
+    {
+      "expect": {
+        "ok": {
+          "issuer": "https://login.research.example/realms/uk",
+          "url": "https://login.research.example/realms/uk/.well-known/openid-configuration"
+        }
+      },
+      "input": {
+        "issuers": [
+          "https://login.research.example/realms/uk"
+        ],
+        "record_issuer": null,
+        "responses": {
+          "https://login.research.example/.well-known/oauth-authorization-server/realms/uk": {
+            "status": 404
+          },
+          "https://login.research.example/.well-known/openid-configuration/realms/uk": {
+            "status": 404
+          },
+          "https://login.research.example/realms/uk/.well-known/openid-configuration": {
+            "json": {
+              "authorization_endpoint": "https://login.research.example/realms/uk/authorize",
+              "code_challenge_methods_supported": [
+                "S256"
+              ],
+              "issuer": "https://login.research.example/realms/uk",
+              "token_endpoint": "https://login.research.example/realms/uk/token"
+            },
+            "status": 200
+          }
+        }
+      },
+      "kind": "oauth_select_server",
+      "name": "select_oidc_path_appending_last"
+    },
+    {
+      "expect": {
+        "error": "connection.no_s256"
+      },
+      "input": {
+        "issuers": [
+          "https://login.research.example"
+        ],
+        "record_issuer": null,
+        "responses": {
+          "https://login.research.example/.well-known/oauth-authorization-server": {
+            "json": {
+              "authorization_endpoint": "https://login.research.example/authorize",
+              "issuer": "https://login.research.example",
+              "token_endpoint": "https://login.research.example/token"
+            },
+            "status": 200
+          },
+          "https://login.research.example/.well-known/openid-configuration": {
+            "json": {
+              "authorization_endpoint": "https://login.research.example/authorize",
+              "code_challenge_methods_supported": [
+                "S256"
+              ],
+              "issuer": "https://login.research.example",
+              "token_endpoint": "https://login.research.example/token"
+            },
+            "status": 200
+          }
+        }
+      },
+      "kind": "oauth_select_server",
+      "name": "select_first_answer_decides_the_server"
+    },
+    {
+      "expect": {
+        "ok": {
+          "issuer": "https://login.research.example",
+          "url": "https://login.research.example/.well-known/openid-configuration"
+        }
+      },
+      "input": {
+        "issuers": [
+          "https://login.research.example"
+        ],
+        "record_issuer": null,
+        "responses": {
+          "https://login.research.example/.well-known/oauth-authorization-server": {
+            "json": "text",
+            "status": 200
+          },
+          "https://login.research.example/.well-known/openid-configuration": {
+            "json": {
+              "authorization_endpoint": "https://login.research.example/authorize",
+              "code_challenge_methods_supported": [
+                "S256"
+              ],
+              "issuer": "https://login.research.example",
+              "token_endpoint": "https://login.research.example/token"
+            },
+            "status": 200
+          }
+        }
+      },
+      "kind": "oauth_select_server",
+      "name": "select_non_object_body_tries_next_url"
+    },
+    {
+      "expect": {
+        "ok": {
+          "issuer": "https://login.research.example",
+          "url": "https://login.research.example/.well-known/openid-configuration"
+        }
+      },
+      "input": {
+        "issuers": [
+          "https://login.research.example"
+        ],
+        "record_issuer": null,
+        "responses": {
+          "https://login.research.example/.well-known/oauth-authorization-server": {
+            "status": 302
+          },
+          "https://login.research.example/.well-known/openid-configuration": {
+            "json": {
+              "authorization_endpoint": "https://login.research.example/authorize",
+              "code_challenge_methods_supported": [
+                "S256"
+              ],
+              "issuer": "https://login.research.example",
+              "token_endpoint": "https://login.research.example/token"
+            },
+            "status": 200
+          }
+        }
+      },
+      "kind": "oauth_select_server",
+      "name": "select_redirect_answer_tries_next_url"
+    },
+    {
+      "expect": {
+        "error": "connection.as_unreachable"
+      },
+      "input": {
+        "issuers": [
+          "https://login.research.example",
+          "https://login2.research.example"
+        ],
+        "record_issuer": null,
+        "responses": {}
+      },
+      "kind": "oauth_select_server",
+      "name": "select_all_unreachable"
+    },
+    {
+      "expect": {
+        "error": "connection.no_s256"
+      },
+      "input": {
+        "issuers": [
+          "https://login.research.example",
+          "https://login2.research.example"
+        ],
+        "record_issuer": null,
+        "responses": {
+          "https://login2.research.example/.well-known/oauth-authorization-server": {
+            "json": {
+              "authorization_endpoint": "https://login2.research.example/authorize",
+              "issuer": "https://login2.research.example",
+              "token_endpoint": "https://login2.research.example/token"
+            },
+            "status": 200
+          }
+        }
+      },
+      "kind": "oauth_select_server",
+      "name": "select_unreachable_and_no_s256"
+    },
+    {
+      "expect": {
+        "error": "connection.as_unreachable"
+      },
+      "input": {
+        "issuers": [
+          "https://login.research.example",
+          "https://login2.research.example"
+        ],
+        "record_issuer": null,
+        "responses": {
+          "https://login2.research.example/.well-known/oauth-authorization-server": {
+            "status": 404
+          },
+          "https://login2.research.example/.well-known/openid-configuration": {
+            "status": 404
+          }
+        }
+      },
+      "kind": "oauth_select_server",
+      "name": "select_unreachable_and_not_found"
+    },
+    {
+      "expect": {
+        "error": "connection.as_unreachable"
+      },
+      "input": {
+        "issuers": [
+          "https://login.research.example",
+          "https://login2.research.example"
+        ],
+        "record_issuer": null,
+        "responses": {
+          "https://login.research.example/.well-known/oauth-authorization-server": {
+            "status": 404
+          },
+          "https://login.research.example/.well-known/openid-configuration": {
+            "status": 302
+          },
+          "https://login2.research.example/.well-known/oauth-authorization-server": {
+            "status": 500
+          },
+          "https://login2.research.example/.well-known/openid-configuration": {
+            "json": "not metadata",
+            "status": 200
+          }
+        }
+      },
+      "kind": "oauth_select_server",
+      "name": "select_no_valid_metadata_is_unreachable"
+    },
+    {
+      "expect": {
+        "error": "connection.no_s256"
+      },
+      "input": {
+        "issuers": [
+          "https://login.research.example"
+        ],
+        "record_issuer": null,
+        "responses": {
+          "https://login.research.example/.well-known/oauth-authorization-server": {
+            "json": {
+              "authorization_endpoint": "https://login.research.example/authorize",
+              "code_challenge_methods_supported": [
+                "plain"
+              ],
+              "issuer": "https://login.research.example",
+              "token_endpoint": "https://login.research.example/token"
+            },
+            "status": 200
+          }
+        }
+      },
+      "kind": "oauth_select_server",
+      "name": "select_valid_metadata_without_s256_is_no_s256"
+    },
+    {
+      "expect": {
+        "ok": {
+          "issuer": "https://login2.research.example",
+          "url": "https://login2.research.example/.well-known/oauth-authorization-server"
+        }
+      },
+      "input": {
+        "issuers": [
+          "https://login.research.example",
+          "https://login2.research.example"
+        ],
+        "record_issuer": null,
+        "responses": {
+          "https://login2.research.example/.well-known/oauth-authorization-server": {
+            "json": {
+              "authorization_endpoint": "https://login2.research.example/authorize",
+              "code_challenge_methods_supported": [
+                "S256"
+              ],
+              "issuer": "https://login2.research.example",
+              "token_endpoint": "https://login2.research.example/token"
+            },
+            "status": 200
+          }
+        }
+      },
+      "kind": "oauth_select_server",
+      "name": "select_unreachable_then_usable"
+    },
+    {
+      "expect": {
+        "ok": {
+          "issuer": "https://login2.research.example",
+          "url": "https://login2.research.example/.well-known/oauth-authorization-server"
+        }
+      },
+      "input": {
+        "issuers": [
+          "https://login.research.example",
+          "https://login2.research.example"
+        ],
+        "record_issuer": "https://login2.research.example",
+        "responses": {
+          "https://login.research.example/.well-known/oauth-authorization-server": {
+            "json": {
+              "authorization_endpoint": "https://login.research.example/authorize",
+              "code_challenge_methods_supported": [
+                "S256"
+              ],
+              "issuer": "https://login.research.example",
+              "token_endpoint": "https://login.research.example/token"
+            },
+            "status": 200
+          },
+          "https://login2.research.example/.well-known/oauth-authorization-server": {
+            "json": {
+              "authorization_endpoint": "https://login2.research.example/authorize",
+              "code_challenge_methods_supported": [
+                "S256"
+              ],
+              "issuer": "https://login2.research.example",
+              "token_endpoint": "https://login2.research.example/token"
+            },
+            "status": 200
+          }
+        }
+      },
+      "kind": "oauth_select_server",
+      "name": "select_record_issuer_listed_later"
+    },
+    {
+      "expect": {
+        "error": "connection.issuer_changed"
+      },
+      "input": {
+        "issuers": [
+          "https://login.research.example"
+        ],
+        "record_issuer": "https://login2.research.example",
+        "responses": {
+          "https://login.research.example/.well-known/oauth-authorization-server": {
+            "json": {
+              "authorization_endpoint": "https://login.research.example/authorize",
+              "code_challenge_methods_supported": [
+                "S256"
+              ],
+              "issuer": "https://login.research.example",
+              "token_endpoint": "https://login.research.example/token"
+            },
+            "status": 200
+          }
+        }
+      },
+      "kind": "oauth_select_server",
+      "name": "select_record_issuer_not_listed"
+    },
+    {
+      "expect": {
+        "error": "connection.no_s256"
+      },
+      "input": {
+        "issuers": [
+          "https://login.research.example",
+          "https://login2.research.example"
+        ],
+        "record_issuer": "https://login.research.example",
+        "responses": {
+          "https://login.research.example/.well-known/oauth-authorization-server": {
+            "json": {
+              "authorization_endpoint": "https://login.research.example/authorize",
+              "issuer": "https://login.research.example",
+              "token_endpoint": "https://login.research.example/token"
+            },
+            "status": 200
+          },
+          "https://login2.research.example/.well-known/oauth-authorization-server": {
+            "json": {
+              "authorization_endpoint": "https://login2.research.example/authorize",
+              "code_challenge_methods_supported": [
+                "S256"
+              ],
+              "issuer": "https://login2.research.example",
+              "token_endpoint": "https://login2.research.example/token"
+            },
+            "status": 200
+          }
+        }
+      },
+      "kind": "oauth_select_server",
+      "name": "select_record_issuer_without_s256"
+    },
+    {
+      "expect": {
+        "error": "connection.as_unreachable"
+      },
+      "input": {
+        "issuers": [
+          "https://login.research.example",
+          "https://login2.research.example"
+        ],
+        "record_issuer": "https://login.research.example",
+        "responses": {
+          "https://login2.research.example/.well-known/oauth-authorization-server": {
+            "json": {
+              "authorization_endpoint": "https://login2.research.example/authorize",
+              "code_challenge_methods_supported": [
+                "S256"
+              ],
+              "issuer": "https://login2.research.example",
+              "token_endpoint": "https://login2.research.example/token"
+            },
+            "status": 200
+          }
+        }
+      },
+      "kind": "oauth_select_server",
+      "name": "select_record_issuer_unreachable"
+    },
+    {
+      "expect": {
+        "ok": {
+          "branch": "record"
+        }
+      },
+      "input": {
+        "client_id": "astral-uk",
+        "metadata": {}
+      },
+      "kind": "oauth_registration",
+      "name": "reg_record_client_id"
+    },
+    {
+      "expect": {
+        "ok": {
+          "branch": "record"
+        }
+      },
+      "input": {
+        "client_id": "astral-uk",
+        "metadata": {
+          "client_id_metadata_document_supported": true,
+          "registration_endpoint": "https://login.research.example/register"
+        }
+      },
+      "kind": "oauth_registration",
+      "name": "reg_record_client_id_over_metadata_document"
+    },
+    {
+      "expect": {
+        "ok": {
+          "branch": "metadata_document"
+        }
+      },
+      "input": {
+        "client_id": null,
+        "metadata": {
+          "client_id_metadata_document_supported": true
+        }
+      },
+      "kind": "oauth_registration",
+      "name": "reg_metadata_document"
+    },
+    {
+      "expect": {
+        "ok": {
+          "branch": "dynamic"
+        }
+      },
+      "input": {
+        "client_id": null,
+        "metadata": {
+          "client_id_metadata_document_supported": "true",
+          "registration_endpoint": "https://login.research.example/register"
+        }
+      },
+      "kind": "oauth_registration",
+      "name": "reg_metadata_document_flag_must_be_true"
+    },
+    {
+      "expect": {
+        "ok": {
+          "branch": "metadata_document"
+        }
+      },
+      "input": {
+        "client_id": null,
+        "metadata": {
+          "client_id_metadata_document_supported": true,
+          "registration_endpoint": "https://login.research.example/register"
+        }
+      },
+      "kind": "oauth_registration",
+      "name": "reg_metadata_document_over_dynamic"
+    },
+    {
+      "expect": {
+        "ok": {
+          "branch": "dynamic"
+        }
+      },
+      "input": {
+        "client_id": null,
+        "metadata": {
+          "registration_endpoint": "https://login.research.example/register"
+        }
+      },
+      "kind": "oauth_registration",
+      "name": "reg_dynamic"
+    },
+    {
+      "expect": {
+        "error": "connection.no_client_id"
+      },
+      "input": {
+        "client_id": null,
+        "metadata": {}
+      },
+      "kind": "oauth_registration",
+      "name": "reg_nothing_offered"
+    },
+    {
+      "expect": {
+        "error": "connection.no_client_id"
+      },
+      "input": {
+        "client_id": null,
+        "metadata": {
+          "registration_endpoint": true
+        }
+      },
+      "kind": "oauth_registration",
+      "name": "reg_registration_endpoint_not_text"
+    },
+    {
+      "expect": {
+        "ok": {
+          "application_type": "native",
+          "client_id": "dyn-1",
+          "requests": [
+            {
+              "application_type": "native",
+              "client_name": "Astral",
+              "grant_types": [
+                "authorization_code",
+                "refresh_token"
+              ],
+              "redirect_uris": [
+                "https://astraldeep.github.io/oauth/callback"
+              ],
+              "response_types": [
+                "code"
+              ],
+              "token_endpoint_auth_method": "none"
+            }
+          ]
+        }
+      },
+      "input": {
+        "redirect_uri": "https://astraldeep.github.io/oauth/callback",
+        "responses": [
+          {
+            "json": {
+              "client_id": "dyn-1"
+            },
+            "status": 201
+          }
+        ]
+      },
+      "kind": "oauth_dynamic_registration",
+      "name": "dyn_native_accepted"
+    },
+    {
+      "expect": {
+        "ok": {
+          "application_type": "web",
+          "client_id": "dyn-1",
+          "requests": [
+            {
+              "application_type": "native",
+              "client_name": "Astral",
+              "grant_types": [
+                "authorization_code",
+                "refresh_token"
+              ],
+              "redirect_uris": [
+                "https://astraldeep.github.io/oauth/callback"
+              ],
+              "response_types": [
+                "code"
+              ],
+              "token_endpoint_auth_method": "none"
+            },
+            {
+              "application_type": "web",
+              "client_name": "Astral",
+              "grant_types": [
+                "authorization_code",
+                "refresh_token"
+              ],
+              "redirect_uris": [
+                "https://astraldeep.github.io/oauth/callback"
+              ],
+              "response_types": [
+                "code"
+              ],
+              "token_endpoint_auth_method": "none"
+            }
+          ]
+        }
+      },
+      "input": {
+        "redirect_uri": "https://astraldeep.github.io/oauth/callback",
+        "responses": [
+          {
+            "json": {
+              "error": "invalid_client_metadata"
+            },
+            "status": 400
+          },
+          {
+            "json": {
+              "client_id": "dyn-1"
+            },
+            "status": 201
+          }
+        ]
+      },
+      "kind": "oauth_dynamic_registration",
+      "name": "dyn_native_400_then_web_accepted"
+    },
+    {
+      "expect": {
+        "error": "connection.registration_refused",
+        "requests": [
+          {
+            "application_type": "native",
+            "client_name": "Astral",
+            "grant_types": [
+              "authorization_code",
+              "refresh_token"
+            ],
+            "redirect_uris": [
+              "https://astraldeep.github.io/oauth/callback"
+            ],
+            "response_types": [
+              "code"
+            ],
+            "token_endpoint_auth_method": "none"
+          },
+          {
+            "application_type": "web",
+            "client_name": "Astral",
+            "grant_types": [
+              "authorization_code",
+              "refresh_token"
+            ],
+            "redirect_uris": [
+              "https://astraldeep.github.io/oauth/callback"
+            ],
+            "response_types": [
+              "code"
+            ],
+            "token_endpoint_auth_method": "none"
+          }
+        ]
+      },
+      "input": {
+        "redirect_uri": "https://astraldeep.github.io/oauth/callback",
+        "responses": [
+          {
+            "json": {
+              "error": "invalid_client_metadata"
+            },
+            "status": 400
+          },
+          {
+            "json": {
+              "error": "invalid_client_metadata"
+            },
+            "status": 400
+          }
+        ]
+      },
+      "kind": "oauth_dynamic_registration",
+      "name": "dyn_both_refused"
+    },
+    {
+      "expect": {
+        "error": "connection.registration_refused",
+        "requests": [
+          {
+            "application_type": "native",
+            "client_name": "Astral",
+            "grant_types": [
+              "authorization_code",
+              "refresh_token"
+            ],
+            "redirect_uris": [
+              "https://astraldeep.github.io/oauth/callback"
+            ],
+            "response_types": [
+              "code"
+            ],
+            "token_endpoint_auth_method": "none"
+          }
+        ]
+      },
+      "input": {
+        "redirect_uri": "https://astraldeep.github.io/oauth/callback",
+        "responses": [
+          {
+            "status": 500
+          }
+        ]
+      },
+      "kind": "oauth_dynamic_registration",
+      "name": "dyn_native_500_has_no_retry"
+    },
+    {
+      "expect": {
+        "error": "connection.registration_refused",
+        "requests": [
+          {
+            "application_type": "native",
+            "client_name": "Astral",
+            "grant_types": [
+              "authorization_code",
+              "refresh_token"
+            ],
+            "redirect_uris": [
+              "https://astraldeep.github.io/oauth/callback"
+            ],
+            "response_types": [
+              "code"
+            ],
+            "token_endpoint_auth_method": "none"
+          }
+        ]
+      },
+      "input": {
+        "redirect_uri": "https://astraldeep.github.io/oauth/callback",
+        "responses": [
+          null
+        ]
+      },
+      "kind": "oauth_dynamic_registration",
+      "name": "dyn_native_unreachable"
+    },
+    {
+      "expect": {
+        "error": "connection.registration_refused",
+        "requests": [
+          {
+            "application_type": "native",
+            "client_name": "Astral",
+            "grant_types": [
+              "authorization_code",
+              "refresh_token"
+            ],
+            "redirect_uris": [
+              "https://astraldeep.github.io/oauth/callback"
+            ],
+            "response_types": [
+              "code"
+            ],
+            "token_endpoint_auth_method": "none"
+          }
+        ]
+      },
+      "input": {
+        "redirect_uri": "https://astraldeep.github.io/oauth/callback",
+        "responses": [
+          {
+            "json": {},
+            "status": 201
+          }
+        ]
+      },
+      "kind": "oauth_dynamic_registration",
+      "name": "dyn_accepted_without_client_id"
+    },
+    {
+      "expect": {
+        "error": "connection.registration_refused",
+        "requests": [
+          {
+            "application_type": "native",
+            "client_name": "Astral",
+            "grant_types": [
+              "authorization_code",
+              "refresh_token"
+            ],
+            "redirect_uris": [
+              "https://astraldeep.github.io/oauth/callback"
+            ],
+            "response_types": [
+              "code"
+            ],
+            "token_endpoint_auth_method": "none"
+          },
+          {
+            "application_type": "web",
+            "client_name": "Astral",
+            "grant_types": [
+              "authorization_code",
+              "refresh_token"
+            ],
+            "redirect_uris": [
+              "https://astraldeep.github.io/oauth/callback"
+            ],
+            "response_types": [
+              "code"
+            ],
+            "token_endpoint_auth_method": "none"
+          }
+        ]
+      },
+      "input": {
+        "redirect_uri": "https://astraldeep.github.io/oauth/callback",
+        "responses": [
+          {
+            "json": {
+              "error": "invalid_client_metadata"
+            },
+            "status": 400
+          },
+          null
+        ]
+      },
+      "kind": "oauth_dynamic_registration",
+      "name": "dyn_web_unreachable"
+    },
+    {
+      "expect": {
+        "ok": {
+          "application_type": "native",
+          "client_id": "dyn-1",
+          "requests": [
+            {
+              "application_type": "native",
+              "client_name": "Astral",
+              "grant_types": [
+                "authorization_code",
+                "refresh_token"
+              ],
+              "redirect_uris": [
+                "https://astraldeep.github.io/oauth/callback"
+              ],
+              "response_types": [
+                "code"
+              ],
+              "token_endpoint_auth_method": "none"
+            }
+          ]
+        }
+      },
+      "input": {
+        "redirect_uri": "https://astraldeep.github.io/oauth/callback",
+        "responses": [
+          {
+            "json": {
+              "client_id": "dyn-1",
+              "token_endpoint_auth_method": "none"
+            },
+            "status": 201
+          }
+        ]
+      },
+      "kind": "oauth_dynamic_registration",
+      "name": "dyn_method_none_accepted"
+    },
+    {
+      "expect": {
+        "ok": {
+          "application_type": "native",
+          "client_id": "dyn-1",
+          "requests": [
+            {
+              "application_type": "native",
+              "client_name": "Astral",
+              "grant_types": [
+                "authorization_code",
+                "refresh_token"
+              ],
+              "redirect_uris": [
+                "https://astraldeep.github.io/oauth/callback"
+              ],
+              "response_types": [
+                "code"
+              ],
+              "token_endpoint_auth_method": "none"
+            }
+          ]
+        }
+      },
+      "input": {
+        "redirect_uri": "https://astraldeep.github.io/oauth/callback",
+        "responses": [
+          {
+            "json": {
+              "client_id": "dyn-1"
+            },
+            "status": 201
+          }
+        ]
+      },
+      "kind": "oauth_dynamic_registration",
+      "name": "dyn_method_absent_accepted"
+    },
+    {
+      "expect": {
+        "error": "connection.registration_refused",
+        "requests": [
+          {
+            "application_type": "native",
+            "client_name": "Astral",
+            "grant_types": [
+              "authorization_code",
+              "refresh_token"
+            ],
+            "redirect_uris": [
+              "https://astraldeep.github.io/oauth/callback"
+            ],
+            "response_types": [
+              "code"
+            ],
+            "token_endpoint_auth_method": "none"
+          }
+        ]
+      },
+      "input": {
+        "redirect_uri": "https://astraldeep.github.io/oauth/callback",
+        "responses": [
+          {
+            "json": {
+              "client_id": "dyn-1",
+              "client_secret": "s",
+              "token_endpoint_auth_method": "client_secret_basic"
+            },
+            "status": 201
+          }
+        ]
+      },
+      "kind": "oauth_dynamic_registration",
+      "name": "dyn_method_client_secret_basic_refused"
+    },
+    {
+      "expect": {
+        "error": "connection.registration_refused",
+        "requests": [
+          {
+            "application_type": "native",
+            "client_name": "Astral",
+            "grant_types": [
+              "authorization_code",
+              "refresh_token"
+            ],
+            "redirect_uris": [
+              "https://astraldeep.github.io/oauth/callback"
+            ],
+            "response_types": [
+              "code"
+            ],
+            "token_endpoint_auth_method": "none"
+          }
+        ]
+      },
+      "input": {
+        "redirect_uri": "https://astraldeep.github.io/oauth/callback",
+        "responses": [
+          {
+            "json": {
+              "client_id": "dyn-1",
+              "token_endpoint_auth_method": "client_secret_post"
+            },
+            "status": 200
+          }
+        ]
+      },
+      "kind": "oauth_dynamic_registration",
+      "name": "dyn_method_client_secret_post_refused"
+    },
+    {
+      "expect": {
+        "error": "connection.registration_refused",
+        "requests": [
+          {
+            "application_type": "native",
+            "client_name": "Astral",
+            "grant_types": [
+              "authorization_code",
+              "refresh_token"
+            ],
+            "redirect_uris": [
+              "https://astraldeep.github.io/oauth/callback"
+            ],
+            "response_types": [
+              "code"
+            ],
+            "token_endpoint_auth_method": "none"
+          }
+        ]
+      },
+      "input": {
+        "redirect_uri": "https://astraldeep.github.io/oauth/callback",
+        "responses": [
+          {
+            "json": {
+              "client_id": "dyn-1",
+              "token_endpoint_auth_method": "private_key_jwt"
+            },
+            "status": 201
+          }
+        ]
+      },
+      "kind": "oauth_dynamic_registration",
+      "name": "dyn_method_private_key_jwt_refused"
+    },
+    {
+      "expect": {
+        "error": "connection.registration_refused",
+        "requests": [
+          {
+            "application_type": "native",
+            "client_name": "Astral",
+            "grant_types": [
+              "authorization_code",
+              "refresh_token"
+            ],
+            "redirect_uris": [
+              "https://astraldeep.github.io/oauth/callback"
+            ],
+            "response_types": [
+              "code"
+            ],
+            "token_endpoint_auth_method": "none"
+          }
+        ]
+      },
+      "input": {
+        "redirect_uri": "https://astraldeep.github.io/oauth/callback",
+        "responses": [
+          {
+            "json": {
+              "client_id": "dyn-1",
+              "token_endpoint_auth_method": null
+            },
+            "status": 201
+          }
+        ]
+      },
+      "kind": "oauth_dynamic_registration",
+      "name": "dyn_method_null_refused"
+    },
+    {
+      "expect": {
+        "error": "connection.registration_refused",
+        "requests": [
+          {
+            "application_type": "native",
+            "client_name": "Astral",
+            "grant_types": [
+              "authorization_code",
+              "refresh_token"
+            ],
+            "redirect_uris": [
+              "https://astraldeep.github.io/oauth/callback"
+            ],
+            "response_types": [
+              "code"
+            ],
+            "token_endpoint_auth_method": "none"
+          }
+        ]
+      },
+      "input": {
+        "redirect_uri": "https://astraldeep.github.io/oauth/callback",
+        "responses": [
+          {
+            "json": {
+              "client_id": "dyn-1",
+              "token_endpoint_auth_method": [
+                "none"
+              ]
+            },
+            "status": 201
+          }
+        ]
+      },
+      "kind": "oauth_dynamic_registration",
+      "name": "dyn_method_not_text_refused"
+    },
+    {
+      "expect": {
+        "error": "connection.registration_refused",
+        "requests": [
+          {
+            "application_type": "native",
+            "client_name": "Astral",
+            "grant_types": [
+              "authorization_code",
+              "refresh_token"
+            ],
+            "redirect_uris": [
+              "https://astraldeep.github.io/oauth/callback"
+            ],
+            "response_types": [
+              "code"
+            ],
+            "token_endpoint_auth_method": "none"
+          }
+        ]
+      },
+      "input": {
+        "redirect_uri": "https://astraldeep.github.io/oauth/callback",
+        "responses": [
+          {
+            "json": {
+              "client_id": "dyn-1",
+              "token_endpoint_auth_method": "None"
+            },
+            "status": 201
+          }
+        ]
+      },
+      "kind": "oauth_dynamic_registration",
+      "name": "dyn_method_uppercase_refused"
+    },
+    {
+      "expect": {
+        "error": "connection.registration_refused",
+        "requests": [
+          {
+            "application_type": "native",
+            "client_name": "Astral",
+            "grant_types": [
+              "authorization_code",
+              "refresh_token"
+            ],
+            "redirect_uris": [
+              "https://astraldeep.github.io/oauth/callback"
+            ],
+            "response_types": [
+              "code"
+            ],
+            "token_endpoint_auth_method": "none"
+          },
+          {
+            "application_type": "web",
+            "client_name": "Astral",
+            "grant_types": [
+              "authorization_code",
+              "refresh_token"
+            ],
+            "redirect_uris": [
+              "https://astraldeep.github.io/oauth/callback"
+            ],
+            "response_types": [
+              "code"
+            ],
+            "token_endpoint_auth_method": "none"
+          }
+        ]
+      },
+      "input": {
+        "redirect_uri": "https://astraldeep.github.io/oauth/callback",
+        "responses": [
+          {
+            "json": {
+              "error": "invalid_client_metadata"
+            },
+            "status": 400
+          },
+          {
+            "json": {
+              "client_id": "dyn-1",
+              "token_endpoint_auth_method": "client_secret_basic"
+            },
+            "status": 201
+          }
+        ]
+      },
+      "kind": "oauth_dynamic_registration",
+      "name": "dyn_web_retry_method_refused"
+    },
+    {
+      "expect": {
+        "error": "connection.registration_refused",
+        "requests": [
+          {
+            "application_type": "native",
+            "client_name": "Astral",
+            "grant_types": [
+              "authorization_code",
+              "refresh_token"
+            ],
+            "redirect_uris": [
+              "https://astraldeep.github.io/oauth/callback"
+            ],
+            "response_types": [
+              "code"
+            ],
+            "token_endpoint_auth_method": "none"
+          }
+        ]
+      },
+      "input": {
+        "redirect_uri": "https://astraldeep.github.io/oauth/callback",
+        "responses": [
+          {
+            "json": {
+              "client_id": "dyn-1",
+              "token_endpoint_auth_method": "client_secret_basic"
+            },
+            "status": 201
+          },
+          {
+            "json": {
+              "client_id": "dyn-1"
+            },
+            "status": 201
+          }
+        ]
+      },
+      "kind": "oauth_dynamic_registration",
+      "name": "dyn_native_method_refused_has_no_retry"
+    },
+    {
+      "expect": {
+        "ok": {
+          "scopes": [
+            "mcp.read",
+            "mcp.tools"
+          ]
+        }
+      },
+      "input": {
+        "challenge": "mcp.tools mcp.read",
+        "scopes_supported": [
+          "other"
+        ]
+      },
+      "kind": "oauth_scopes",
+      "name": "scopes_from_challenge"
+    },
+    {
+      "expect": {
+        "ok": {
+          "scopes": [
+            "a",
+            "b"
+          ]
+        }
+      },
+      "input": {
+        "challenge": " b  a ",
+        "scopes_supported": null
+      },
+      "kind": "oauth_scopes",
+      "name": "scopes_challenge_runs_of_spaces"
+    },
+    {
+      "expect": {
+        "ok": {
+          "scopes": [
+            "mcp.read"
+          ]
+        }
+      },
+      "input": {
+        "challenge": null,
+        "scopes_supported": [
+          "mcp.read"
+        ]
+      },
+      "kind": "oauth_scopes",
+      "name": "scopes_from_scopes_supported"
+    },
+    {
+      "expect": {
+        "ok": {
+          "scopes": []
+        }
+      },
+      "input": {
+        "challenge": null,
+        "scopes_supported": null
+      },
+      "kind": "oauth_scopes",
+      "name": "scopes_none"
+    },
+    {
+      "expect": {
+        "ok": {
+          "scopes": [
+            "mcp.read"
+          ]
+        }
+      },
+      "input": {
+        "challenge": "",
+        "scopes_supported": [
+          "mcp.read"
+        ]
+      },
+      "kind": "oauth_scopes",
+      "name": "scopes_empty_challenge_falls_through"
+    },
+    {
+      "expect": {
+        "ok": {
+          "scopes": [
+            "mcp.read"
+          ]
+        }
+      },
+      "input": {
+        "challenge": "a \"b\"",
+        "scopes_supported": [
+          "mcp.read"
+        ]
+      },
+      "kind": "oauth_scopes",
+      "name": "scopes_invalid_challenge_falls_through"
+    },
+    {
+      "expect": {
+        "ok": {
+          "scopes": []
+        }
+      },
+      "input": {
+        "challenge": null,
+        "scopes_supported": [
+          "ok",
+          "bad\\scope"
+        ]
+      },
+      "kind": "oauth_scopes",
+      "name": "scopes_invalid_scopes_supported_gives_none"
+    },
+    {
+      "expect": {
+        "ok": {
+          "scopes": [
+            "a",
+            "b",
+            "c"
+          ]
+        }
+      },
+      "input": {
+        "challenge": "c a b a",
+        "scopes_supported": null
+      },
+      "kind": "oauth_scopes",
+      "name": "scopes_sorted_and_unique"
+    },
+    {
+      "expect": {
+        "ok": {
+          "scopes": [
+            "s00",
+            "s01",
+            "s02",
+            "s03",
+            "s04",
+            "s05",
+            "s06",
+            "s07",
+            "s08",
+            "s09",
+            "s10",
+            "s11",
+            "s12",
+            "s13",
+            "s14",
+            "s15",
+            "s16",
+            "s17",
+            "s18",
+            "s19",
+            "s20",
+            "s21",
+            "s22",
+            "s23",
+            "s24",
+            "s25",
+            "s26",
+            "s27",
+            "s28",
+            "s29",
+            "s30",
+            "s31"
+          ]
+        }
+      },
+      "input": {
+        "challenge": "s00 s01 s02 s03 s04 s05 s06 s07 s08 s09 s10 s11 s12 s13 s14 s15 s16 s17 s18 s19 s20 s21 s22 s23 s24 s25 s26 s27 s28 s29 s30 s31",
+        "scopes_supported": null
+      },
+      "kind": "oauth_scopes",
+      "name": "scopes_32_accepted"
+    },
+    {
+      "expect": {
+        "error": "connection.too_many_scopes"
+      },
+      "input": {
+        "challenge": "s00 s01 s02 s03 s04 s05 s06 s07 s08 s09 s10 s11 s12 s13 s14 s15 s16 s17 s18 s19 s20 s21 s22 s23 s24 s25 s26 s27 s28 s29 s30 s31 s32",
+        "scopes_supported": null
+      },
+      "kind": "oauth_scopes",
+      "name": "scopes_33_refused"
+    },
+    {
+      "expect": {
+        "error": "connection.iss_missing"
+      },
+      "input": {
+        "iss": [],
+        "iss_supported": true,
+        "issuer": "https://login.research.example"
+      },
+      "kind": "oauth_iss",
+      "name": "iss_supported_absent"
+    },
+    {
+      "expect": {
+        "ok": {}
+      },
+      "input": {
+        "iss": [
+          "https://login.research.example"
+        ],
+        "iss_supported": true,
+        "issuer": "https://login.research.example"
+      },
+      "kind": "oauth_iss",
+      "name": "iss_supported_equal"
+    },
+    {
+      "expect": {
+        "error": "connection.iss_mismatch"
+      },
+      "input": {
+        "iss": [
+          "https://login2.research.example"
+        ],
+        "iss_supported": true,
+        "issuer": "https://login.research.example"
+      },
+      "kind": "oauth_iss",
+      "name": "iss_supported_different"
+    },
+    {
+      "expect": {
+        "ok": {}
+      },
+      "input": {
+        "iss": [],
+        "iss_supported": false,
+        "issuer": "https://login.research.example"
+      },
+      "kind": "oauth_iss",
+      "name": "iss_unsupported_absent"
+    },
+    {
+      "expect": {
+        "ok": {}
+      },
+      "input": {
+        "iss": [
+          "https://login.research.example"
+        ],
+        "iss_supported": false,
+        "issuer": "https://login.research.example"
+      },
+      "kind": "oauth_iss",
+      "name": "iss_unsupported_equal"
+    },
+    {
+      "expect": {
+        "error": "connection.iss_mismatch"
+      },
+      "input": {
+        "iss": [
+          "https://login2.research.example"
+        ],
+        "iss_supported": false,
+        "issuer": "https://login.research.example"
+      },
+      "kind": "oauth_iss",
+      "name": "iss_unsupported_different"
+    },
+    {
+      "expect": {
+        "ok": {}
+      },
+      "input": {
+        "iss": [],
+        "iss_supported": "true",
+        "issuer": "https://login.research.example"
+      },
+      "kind": "oauth_iss",
+      "name": "iss_flag_must_be_true"
+    },
+    {
+      "expect": {
+        "error": "connection.iss_mismatch"
+      },
+      "input": {
+        "iss": [
+          "https://login.research.example/"
+        ],
+        "iss_supported": true,
+        "issuer": "https://login.research.example"
+      },
+      "kind": "oauth_iss",
+      "name": "iss_trailing_slash_differs"
+    },
+    {
+      "expect": {
+        "error": "connection.iss_mismatch"
+      },
+      "input": {
+        "iss": [
+          "https://Login.research.example"
+        ],
+        "iss_supported": true,
+        "issuer": "https://login.research.example"
+      },
+      "kind": "oauth_iss",
+      "name": "iss_case_differs"
+    },
+    {
+      "expect": {
+        "error": "connection.iss_mismatch"
+      },
+      "input": {
+        "iss": [
+          ""
+        ],
+        "iss_supported": false,
+        "issuer": "https://login.research.example"
+      },
+      "kind": "oauth_iss",
+      "name": "iss_empty_value"
+    },
+    {
+      "expect": {
+        "error": "connection.iss_mismatch"
+      },
+      "input": {
+        "iss": [
+          "https://login.research.example",
+          "https://login.research.example"
+        ],
+        "iss_supported": true,
+        "issuer": "https://login.research.example"
+      },
+      "kind": "oauth_iss",
+      "name": "iss_repeated"
+    },
+    {
+      "expect": {
+        "ok": {
+          "results": [
+            {
+              "ok": {
+                "action": "put",
+                "scopes": [
+                  "mcp.read",
+                  "mcp.write"
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "input": {
+        "scopes": [
+          "mcp.read"
+        ],
+        "steps": [
+          {
+            "forbidden": "Bearer error=\"insufficient_scope\", scope=\"mcp.write\""
+          }
+        ]
+      },
+      "kind": "oauth_step_up_sequence",
+      "name": "stepup_first_allowed_with_union"
+    },
+    {
+      "expect": {
+        "ok": {
+          "results": [
+            {
+              "ok": {
+                "action": "put",
+                "scopes": [
+                  "mcp.read",
+                  "mcp.write"
+                ]
+              }
+            },
+            {
+              "error": "connection.step_up_limit"
+            }
+          ]
+        }
+      },
+      "input": {
+        "scopes": [
+          "mcp.read"
+        ],
+        "steps": [
+          {
+            "forbidden": "Bearer error=\"insufficient_scope\", scope=\"mcp.write\""
+          },
+          {
+            "forbidden": "Bearer error=\"insufficient_scope\", scope=\"mcp.admin\""
+          }
+        ]
+      },
+      "kind": "oauth_step_up_sequence",
+      "name": "stepup_second_without_success_hits_limit"
+    },
+    {
+      "expect": {
+        "ok": {
+          "results": [
+            {
+              "ok": {
+                "action": "put",
+                "scopes": [
+                  "mcp.read",
+                  "mcp.write"
+                ]
+              }
+            },
+            {
+              "ok": {
+                "action": "success"
+              }
+            },
+            {
+              "ok": {
+                "action": "put",
+                "scopes": [
+                  "mcp.admin",
+                  "mcp.read",
+                  "mcp.write"
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "input": {
+        "scopes": [
+          "mcp.read"
+        ],
+        "steps": [
+          {
+            "forbidden": "Bearer error=\"insufficient_scope\", scope=\"mcp.write\""
+          },
+          {
+            "success": true
+          },
+          {
+            "forbidden": "Bearer error=\"insufficient_scope\", scope=\"mcp.admin\""
+          }
+        ]
+      },
+      "kind": "oauth_step_up_sequence",
+      "name": "stepup_success_resets_the_count"
+    },
+    {
+      "expect": {
+        "ok": {
+          "results": [
+            {
+              "ok": {
+                "action": "sign_in",
+                "scopes": [
+                  "mcp.read",
+                  "mcp.write"
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "input": {
+        "scopes": [
+          "mcp.read",
+          "mcp.write"
+        ],
+        "steps": [
+          {
+            "forbidden": "Bearer error=\"insufficient_scope\", scope=\"mcp.write\""
+          }
+        ]
+      },
+      "kind": "oauth_step_up_sequence",
+      "name": "stepup_no_new_scope_signs_in_again"
+    },
+    {
+      "expect": {
+        "ok": {
+          "results": [
+            {
+              "ok": {
+                "action": "sign_in",
+                "scopes": [
+                  "mcp.read"
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "input": {
+        "scopes": [
+          "mcp.read"
+        ],
+        "steps": [
+          {
+            "forbidden": "Bearer error=\"insufficient_scope\", scope=\"ok bad\\\\scope\""
+          }
+        ]
+      },
+      "kind": "oauth_step_up_sequence",
+      "name": "stepup_invalid_challenge_scope_adds_nothing"
+    },
+    {
+      "expect": {
+        "ok": {
+          "results": [
+            {
+              "error": "connection.refused"
+            }
+          ]
+        }
+      },
+      "input": {
+        "scopes": [
+          "mcp.read"
+        ],
+        "steps": [
+          {
+            "forbidden": "Bearer error=\"invalid_token\""
+          }
+        ]
+      },
+      "kind": "oauth_step_up_sequence",
+      "name": "stepup_not_insufficient_scope"
+    },
+    {
+      "expect": {
+        "ok": {
+          "results": [
+            {
+              "error": "connection.refused"
+            },
+            {
+              "ok": {
+                "action": "put",
+                "scopes": [
+                  "mcp.read",
+                  "mcp.write"
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "input": {
+        "scopes": [
+          "mcp.read"
+        ],
+        "steps": [
+          {
+            "forbidden": "Bearer error=\"invalid_token\""
+          },
+          {
+            "forbidden": "Bearer error=\"insufficient_scope\", scope=\"mcp.write\""
+          }
+        ]
+      },
+      "kind": "oauth_step_up_sequence",
+      "name": "stepup_refusal_does_not_count"
+    },
+    {
+      "expect": {
+        "ok": {
+          "results": [
+            {
+              "error": "connection.too_many_scopes"
+            },
+            {
+              "ok": {
+                "action": "put",
+                "scopes": [
+                  "a",
+                  "s00",
+                  "s01",
+                  "s02",
+                  "s03",
+                  "s04",
+                  "s05",
+                  "s06",
+                  "s07",
+                  "s08",
+                  "s09",
+                  "s10",
+                  "s11",
+                  "s12",
+                  "s13",
+                  "s14",
+                  "s15",
+                  "s16",
+                  "s17",
+                  "s18",
+                  "s19",
+                  "s20",
+                  "s21",
+                  "s22",
+                  "s23",
+                  "s24",
+                  "s25",
+                  "s26",
+                  "s27",
+                  "s28",
+                  "s29"
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "input": {
+        "scopes": [
+          "s00",
+          "s01",
+          "s02",
+          "s03",
+          "s04",
+          "s05",
+          "s06",
+          "s07",
+          "s08",
+          "s09",
+          "s10",
+          "s11",
+          "s12",
+          "s13",
+          "s14",
+          "s15",
+          "s16",
+          "s17",
+          "s18",
+          "s19",
+          "s20",
+          "s21",
+          "s22",
+          "s23",
+          "s24",
+          "s25",
+          "s26",
+          "s27",
+          "s28",
+          "s29"
+        ],
+        "steps": [
+          {
+            "forbidden": "Bearer error=\"insufficient_scope\", scope=\"a b c\""
+          },
+          {
+            "forbidden": "Bearer error=\"insufficient_scope\", scope=\"a\""
+          }
+        ]
+      },
+      "kind": "oauth_step_up_sequence",
+      "name": "stepup_too_many_scopes"
+    },
+    {
+      "expect": {
+        "ok": {
+          "results": [
+            {
+              "ok": {
+                "action": "put",
+                "scopes": [
+                  "mcp.read",
+                  "mcp.write"
+                ]
+              }
+            },
+            {
+              "error": "connection.step_up_limit"
+            }
+          ]
+        }
+      },
+      "input": {
+        "scopes": [
+          "mcp.read"
+        ],
+        "steps": [
+          {
+            "forbidden": "Bearer error=\"insufficient_scope\", scope=\"mcp.write\""
+          },
+          {
+            "forbidden": "Bearer error=\"insufficient_scope\", scope=\"n00 n01 n02 n03 n04 n05 n06 n07 n08 n09 n10 n11 n12 n13 n14 n15 n16 n17 n18 n19 n20 n21 n22 n23 n24 n25 n26 n27 n28 n29 n30 n31 n32 n33 n34 n35 n36 n37 n38 n39\""
+          }
+        ]
+      },
+      "kind": "oauth_step_up_sequence",
+      "name": "stepup_limit_before_scope_count"
+    },
+    {
+      "expect": {
+        "ok": {}
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "url": "https://mcp.research.example/mcp"
+      },
+      "kind": "oauth_bearer_target",
+      "name": "bearer_same_url"
+    },
+    {
+      "expect": {
+        "ok": {}
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "url": "https://mcp.research.example/other"
+      },
+      "kind": "oauth_bearer_target",
+      "name": "bearer_other_path_same_origin"
+    },
+    {
+      "expect": {
+        "ok": {}
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "url": "https://mcp.research.example/mcp?x=1"
+      },
+      "kind": "oauth_bearer_target",
+      "name": "bearer_query_same_origin"
+    },
+    {
+      "expect": {
+        "error": "connection.token_passthrough"
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "url": "https://evil.example/mcp"
+      },
+      "kind": "oauth_bearer_target",
+      "name": "bearer_other_host"
+    },
+    {
+      "expect": {
+        "error": "connection.token_passthrough"
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "url": "https://api.mcp.research.example/mcp"
+      },
+      "kind": "oauth_bearer_target",
+      "name": "bearer_subdomain"
+    },
+    {
+      "expect": {
+        "error": "connection.token_passthrough"
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "url": "https://mcp.research.example.evil.example/mcp"
+      },
+      "kind": "oauth_bearer_target",
+      "name": "bearer_host_prefix_lookalike"
+    },
+    {
+      "expect": {
+        "error": "connection.token_passthrough"
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "url": "https://mcp.research.example:8443/mcp"
+      },
+      "kind": "oauth_bearer_target",
+      "name": "bearer_other_port"
+    },
+    {
+      "expect": {
+        "error": "connection.token_passthrough"
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "url": "http://mcp.research.example/mcp"
+      },
+      "kind": "oauth_bearer_target",
+      "name": "bearer_http_downgrade"
+    },
+    {
+      "expect": {
+        "error": "connection.token_passthrough"
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "url": "https://mcp.research.example:443/mcp"
+      },
+      "kind": "oauth_bearer_target",
+      "name": "bearer_default_port_spelled"
+    },
+    {
+      "expect": {
+        "error": "connection.token_passthrough"
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "url": "https://mcp.research.example@evil.example/mcp"
+      },
+      "kind": "oauth_bearer_target",
+      "name": "bearer_userinfo"
+    },
+    {
+      "expect": {
+        "error": "connection.malformed"
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example:443/mcp",
+        "url": "https://mcp.research.example/mcp"
+      },
+      "kind": "oauth_bearer_target",
+      "name": "bearer_endpoint_not_canonical"
+    },
+    {
+      "expect": {
+        "ok": {
+          "entries": [
+            "device.research.example",
+            "login.research.example",
+            "mcp.research.example",
+            "register.research.example"
+          ]
+        }
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "issuer": "https://login.research.example",
+        "local": false,
+        "metadata": {
+          "authorization_endpoint": "https://login.research.example/authorize",
+          "code_challenge_methods_supported": [
+            "S256"
+          ],
+          "device_authorization_endpoint": "https://device.research.example/device",
+          "issuer": "https://login.research.example",
+          "registration_endpoint": "https://register.research.example/register",
+          "token_endpoint": "https://login.research.example/token"
+        }
+      },
+      "kind": "oauth_egress_entries",
+      "name": "egress_entries_full_metadata"
+    },
+    {
+      "expect": {
+        "ok": {
+          "entries": [
+            "device.research.example",
+            "login.research.example",
+            "mcp.research.example"
+          ]
+        }
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "issuer": "https://login.research.example",
+        "local": false,
+        "metadata": {
+          "authorization_endpoint": "https://login.research.example/authorize",
+          "code_challenge_methods_supported": [
+            "S256"
+          ],
+          "device_authorization_endpoint": "https://device.research.example/device",
+          "issuer": "https://login.research.example",
+          "token_endpoint": "https://login.research.example/token"
+        }
+      },
+      "kind": "oauth_egress_entries",
+      "name": "egress_entries_device_authorization_host_joins"
+    },
+    {
+      "expect": {
+        "ok": {
+          "entries": [
+            "login.research.example",
+            "mcp.research.example"
+          ]
+        }
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "issuer": "https://login.research.example",
+        "local": false,
+        "metadata": {
+          "authorization_endpoint": "https://login.research.example/authorize",
+          "code_challenge_methods_supported": [
+            "S256"
+          ],
+          "device_authorization_endpoint": "https://login.research.example/device",
+          "issuer": "https://login.research.example",
+          "token_endpoint": "https://login.research.example/token"
+        }
+      },
+      "kind": "oauth_egress_entries",
+      "name": "egress_entries_device_host_same_as_issuer_listed_once"
+    },
+    {
+      "expect": {
+        "ok": {
+          "entries": [
+            "login.research.example",
+            "login.research.example:8443",
+            "mcp.research.example"
+          ]
+        }
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "issuer": "https://login.research.example",
+        "local": false,
+        "metadata": {
+          "authorization_endpoint": "https://login.research.example/authorize",
+          "code_challenge_methods_supported": [
+            "S256"
+          ],
+          "device_authorization_endpoint": "https://login.research.example:8443/device",
+          "issuer": "https://login.research.example",
+          "token_endpoint": "https://login.research.example/token"
+        }
+      },
+      "kind": "oauth_egress_entries",
+      "name": "egress_entries_device_host_other_port"
+    },
+    {
+      "expect": {
+        "ok": {
+          "entries": [
+            "login.research.example",
+            "mcp.research.example"
+          ]
+        }
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "issuer": "https://login.research.example",
+        "local": false,
+        "metadata": {
+          "authorization_endpoint": "https://login.research.example/authorize",
+          "code_challenge_methods_supported": [
+            "S256"
+          ],
+          "issuer": "https://login.research.example",
+          "token_endpoint": "https://login.research.example/token"
+        }
+      },
+      "kind": "oauth_egress_entries",
+      "name": "egress_entries_without_device_endpoint"
+    },
+    {
+      "expect": {
+        "ok": {
+          "entries": [
+            "login.research.example",
+            "mcp.research.example",
+            "tokens.research.example"
+          ]
+        }
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "issuer": "https://login.research.example",
+        "local": false,
+        "metadata": {
+          "authorization_endpoint": "https://login.research.example/authorize",
+          "code_challenge_methods_supported": [
+            "S256"
+          ],
+          "issuer": "https://login.research.example",
+          "token_endpoint": "https://tokens.research.example/token"
+        }
+      },
+      "kind": "oauth_egress_entries",
+      "name": "egress_entries_token_host_elsewhere"
+    },
+    {
+      "expect": {
+        "ok": {
+          "entries": [
+            "login.research.example",
+            "mcp.research.example",
+            "register.research.example"
+          ]
+        }
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "issuer": "https://login.research.example",
+        "local": false,
+        "metadata": {
+          "authorization_endpoint": "https://login.research.example/authorize",
+          "code_challenge_methods_supported": [
+            "S256"
+          ],
+          "issuer": "https://login.research.example",
+          "registration_endpoint": "https://register.research.example/register",
+          "token_endpoint": "https://login.research.example/token"
+        }
+      },
+      "kind": "oauth_egress_entries",
+      "name": "egress_entries_registration_host_joins"
+    },
+    {
+      "expect": {
+        "ok": {
+          "entries": [
+            "login.research.example",
+            "mcp.research.example"
+          ]
+        }
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "issuer": null,
+        "local": false,
+        "metadata": {
+          "authorization_endpoint": "https://login.research.example/authorize",
+          "code_challenge_methods_supported": [
+            "S256"
+          ],
+          "issuer": "https://login.research.example",
+          "token_endpoint": "https://login.research.example/token"
+        }
+      },
+      "kind": "oauth_egress_entries",
+      "name": "egress_entries_no_issuer"
+    },
+    {
+      "expect": {
+        "ok": {
+          "entries": [
+            "login.research.example",
+            "mcp.research.example"
+          ]
+        }
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "issuer": "https://login.research.example",
+        "local": false,
+        "metadata": {
+          "authorization_endpoint": "https://login.research.example/authorize",
+          "code_challenge_methods_supported": [
+            "S256"
+          ],
+          "device_authorization_endpoint": 5,
+          "issuer": "https://login.research.example",
+          "token_endpoint": "https://login.research.example/token"
+        }
+      },
+      "kind": "oauth_egress_entries",
+      "name": "egress_entries_non_text_endpoint_ignored"
+    },
+    {
+      "expect": {
+        "error": "connection.egress_refused"
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "issuer": "https://login.research.example",
+        "local": false,
+        "metadata": {
+          "authorization_endpoint": "https://login.research.example/authorize",
+          "code_challenge_methods_supported": [
+            "S256"
+          ],
+          "device_authorization_endpoint": "http://device.research.example/device",
+          "issuer": "https://login.research.example",
+          "token_endpoint": "https://login.research.example/token"
+        }
+      },
+      "kind": "oauth_egress_entries",
+      "name": "egress_entries_device_endpoint_http_refused"
+    },
+    {
+      "expect": {
+        "error": "connection.egress_refused"
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "issuer": "https://login.research.example",
+        "local": false,
+        "metadata": {
+          "authorization_endpoint": "https://login.research.example/authorize",
+          "code_challenge_methods_supported": [
+            "S256"
+          ],
+          "device_authorization_endpoint": "http://127.0.0.1:9000/device",
+          "issuer": "https://login.research.example",
+          "token_endpoint": "https://login.research.example/token"
+        }
+      },
+      "kind": "oauth_egress_entries",
+      "name": "egress_entries_device_endpoint_loopback_refused"
+    },
+    {
+      "expect": {
+        "error": "connection.egress_refused"
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "issuer": "https://login.research.example",
+        "local": false,
+        "metadata": {
+          "authorization_endpoint": "https://login.research.example/authorize",
+          "code_challenge_methods_supported": [
+            "S256"
+          ],
+          "device_authorization_endpoint": "https://Device.research.example/device",
+          "issuer": "https://login.research.example",
+          "token_endpoint": "https://login.research.example/token"
+        }
+      },
+      "kind": "oauth_egress_entries",
+      "name": "egress_entries_device_endpoint_uppercase_host_refused"
+    },
+    {
+      "expect": {
+        "error": "connection.egress_refused"
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "issuer": "https://login.research.example",
+        "local": false,
+        "metadata": {
+          "authorization_endpoint": "https://login.research.example/authorize",
+          "code_challenge_methods_supported": [
+            "S256"
+          ],
+          "device_authorization_endpoint": "https://x@device.research.example/device",
+          "issuer": "https://login.research.example",
+          "token_endpoint": "https://login.research.example/token"
+        }
+      },
+      "kind": "oauth_egress_entries",
+      "name": "egress_entries_device_endpoint_userinfo_refused"
+    },
+    {
+      "expect": {
+        "error": "connection.egress_refused"
+      },
+      "input": {
+        "endpoint": "https://mcp.research.example/mcp",
+        "issuer": "https://login.research.example",
+        "local": false,
+        "metadata": {
+          "authorization_endpoint": "http://login.research.example/authorize",
+          "code_challenge_methods_supported": [
+            "S256"
+          ],
+          "issuer": "https://login.research.example",
+          "token_endpoint": "https://login.research.example/token"
+        }
+      },
+      "kind": "oauth_egress_entries",
+      "name": "egress_entries_authorization_endpoint_http_refused"
+    },
+    {
+      "expect": {
+        "ok": {
+          "entries": [
+            "127.0.0.1:8765",
+            "127.0.0.1:8766",
+            "127.0.0.1:8767"
+          ]
+        }
+      },
+      "input": {
+        "endpoint": "http://127.0.0.1:8765/mcp",
+        "issuer": "http://127.0.0.1:8766",
+        "local": true,
+        "metadata": {
+          "authorization_endpoint": "http://127.0.0.1:8766/authorize",
+          "code_challenge_methods_supported": [
+            "S256"
+          ],
+          "device_authorization_endpoint": "http://127.0.0.1:8767/device",
+          "issuer": "http://127.0.0.1:8766",
+          "token_endpoint": "http://127.0.0.1:8766/token"
+        }
+      },
+      "kind": "oauth_egress_entries",
+      "name": "egress_entries_local_loopback"
+    },
+    {
+      "expect": {
+        "error": "connection.malformed"
+      },
+      "input": {
+        "endpoint": "https://Mcp.research.example/mcp",
+        "issuer": "https://login.research.example",
+        "local": false,
+        "metadata": {
+          "authorization_endpoint": "https://login.research.example/authorize",
+          "code_challenge_methods_supported": [
+            "S256"
+          ],
+          "issuer": "https://login.research.example",
+          "token_endpoint": "https://login.research.example/token"
+        }
+      },
+      "kind": "oauth_egress_entries",
+      "name": "egress_entries_endpoint_not_canonical"
+    }
+  ],
+  "format": "astral.vectors/v1",
+  "name": "connection-oauth-v1",
+  "spec": "106/contracts/connection.md"
+}

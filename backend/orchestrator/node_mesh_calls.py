@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from orchestrator import vessel_executor
 from orchestrator.remote_mcp_pins import sanitize_annotations
+from shared import node_identity
 
 logger = logging.getLogger("Orchestrator.NodeMeshCalls")
 
@@ -23,6 +24,7 @@ READ_SCOPES = frozenset({"tools:read", "tools:search"})
 MAX_CONTENT = 65536
 QUALIFIER = "__"
 GRANT_AGENTS = frozenset({"kernel", "*"})
+PERSONAL_WITHDRAWN_AGENTS = frozenset({"remote-mcp-1"})
 
 
 class CallRefused(Exception):
@@ -207,6 +209,8 @@ class OrchestratorCalls:
             from orchestrator.tool_visibility import eligible_tool_pairs
 
             first_party = frozenset(FIRST_PARTY_PUBLIC_AGENT_IDS)
+            if node_identity.is_personal():
+                first_party -= PERSONAL_WITHDRAWN_AGENTS
             for agent_id, skill in eligible_tool_pairs(self._orch, owner_id):
                 if agent_id not in first_party or agent_id not in local_agents:
                     continue
@@ -235,7 +239,8 @@ class OrchestratorCalls:
         from orchestrator.tool_visibility import eligible_tool_pairs
 
         pairs: List[Tuple[str, Any]] = await asyncio.to_thread(eligible_tool_pairs, self._orch, owner_id)
-        matches = [(agent, skill) for agent, skill in pairs if _matches(tool, agent, skill.id)]
+        withdrawn = PERSONAL_WITHDRAWN_AGENTS if node_identity.is_personal() else frozenset()
+        matches = [(agent, skill) for agent, skill in pairs if agent not in withdrawn and _matches(tool, agent, skill.id)]
         if not matches:
             raise CallRefused("node.tool_unknown")
         if len(matches) > 1:
@@ -249,7 +254,6 @@ class OrchestratorCalls:
         from orchestrator.chain_authority import AuthoritySkip
         from orchestrator import node_mesh_admission
         from orchestrator.node_mesh import NodeMeshError
-        from shared import node_identity
 
         if node_identity.is_personal():
             bound = node_mesh_admission.current_admission()

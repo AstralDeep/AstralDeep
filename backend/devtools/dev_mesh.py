@@ -1,4 +1,4 @@
-"""Opens the seeded development mesh devices on the real kernel binding with the published keys of shared/dev_mesh_keys.py, so a developer or a test can create a mesh, pair a node with full history, send it requests and call it with caller tickets and holder proofs.
+"""Opens the seeded development mesh devices on the real kernel binding with the published keys of shared/dev_mesh_keys.py, so a developer or a test can create a mesh, pair a node with full history, adopt the PHI group, approve destinations, exclude devices, send it requests and call it with caller tickets and holder proofs.
 It refuses to build a device, and a device refuses to create, start, offer, approve, send, mint or sign, unless ASTRAL_ENV is exactly development. tests/helpers/dev_mesh.py builds on it and no orchestrator or shared module imports it."""
 
 from __future__ import annotations
@@ -82,6 +82,20 @@ class _Signer(ak.HostSigner):
         return False
 
 
+class _MemoryKeystore(ak.HostKeystore):
+    def __init__(self) -> None:
+        self.items: Dict[str, bytes] = {}
+
+    def get(self, account):
+        return self.items.get(account)
+
+    def put(self, account, secret):
+        self.items[account] = bytes(secret)
+
+    def remove(self, account):
+        self.items.pop(account, None)
+
+
 @dataclass(frozen=True)
 class CallerHolder:
     key: ed25519.Ed25519PrivateKey
@@ -161,6 +175,8 @@ class DevOwner(DevDevice):
         if name not in OWNERS:
             raise ValueError(f"{name!r} is not a development mesh owner")
         super().__init__(name, data_dir)
+        self.keystore = _MemoryKeystore()
+        self.kernel.set_keystore(self.keystore)
 
     @property
     def mesh_id(self) -> str:
@@ -219,3 +235,51 @@ class DevOwner(DevDevice):
             "Authorization": SCHEME + ticket.text[len(TICKET_TEXT):],
             PROOF_HEADER: self.sign_holder_proof(holder, ticket.id, method, target, body),
         }
+
+    async def propose_connection(self, endpoint: str, name: str, *, local: bool = True) -> ak.ConnectionProposal:
+        require_development()
+        return await self.kernel.propose_connection(endpoint, name, local)
+
+    def approve_connection(
+        self, proposal: ak.ConnectionProposal, tool_names: Sequence[str] = (), *, flow: Optional[str] = None,
+        client_id: Optional[str] = None,
+    ) -> ak.ConnectionInfo:
+        require_development()
+        return self.kernel.approve_connection(proposal.proposal, flow or proposal.flow_hint, list(tool_names), client_id)
+
+    async def add_connection(
+        self, endpoint: str, name: str, tool_names: Sequence[str], *, local: bool = True,
+    ) -> ak.ConnectionInfo:
+        return self.approve_connection(await self.propose_connection(endpoint, name, local=local), tool_names)
+
+    def connections(self) -> list:
+        return self.kernel.connections()
+
+    def remove_connection(self, connection_id: str) -> None:
+        require_development()
+        self.kernel.remove_connection(connection_id)
+
+    def phi_markers_synced(self) -> bool:
+        return all(member.upgraded for member in self.kernel.phi_group().members)
+
+    def adopt_phi_group(self) -> ak.PhiGroupInfo:
+        require_development()
+        return self.kernel.adopt_phi_group()
+
+    def exclude_phi_device(self, device_id: str) -> ak.PhiGroupInfo:
+        require_development()
+        return self.kernel.exclude_phi_device(device_id)
+
+    def include_phi_device(self, device_id: str) -> ak.PhiGroupInfo:
+        require_development()
+        return self.kernel.include_phi_device(device_id)
+
+    def approve_provider_destination(self, name: str) -> ak.PhiDestinationProposal:
+        require_development()
+        proposal = self.kernel.propose_provider_phi_destination(name)
+        self.kernel.approve_phi_destination(proposal)
+        return proposal
+
+    def revoke_destination(self, subject: str) -> None:
+        require_development()
+        self.kernel.revoke_phi_destination(subject)

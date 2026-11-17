@@ -42,9 +42,16 @@ SLUG_MAX = 49
 SLUG_FALLBACK = "agent"
 ASK_PREFIX = "ask_"
 IMPLEMENTED = {"mcp-http": ("oauth", "none")}
+IMPLEMENTED_EXT = {
+    "mcp-http": ("oauth", "none", "key"),
+    "a2a": ("none", "key", "oauth"),
+    "mcp-stdio": (),
+    "http-api": (),
+    "model": (),
+}
 FLOWS = ("private", "phi")
 STATES = ("not_signed_in", "signed_in", "needs_attention")
-REASONS = ("refresh_refused", "expired", "scope", "refused")
+REASONS = ("refresh_refused", "expired", "scope", "refused", "not_signed_in")
 LOOPBACK = ("127.0.0.1", "[::1]")
 DEFAULT_PORT = {"https": 443, "http": 80}
 MAX_PORT = 65535
@@ -63,6 +70,23 @@ RECORD_FIELDS = {
     "egress",
 }
 AUTH_FIELDS = {"scheme", "issuer", "scopes", "resource", "client_id"}
+KIND_FIELDS = {
+    "mcp-http": RECORD_FIELDS,
+    "a2a": {"v", "id", "name", "kind", "card_url", "card", "auth", "tools", "flow", "egress"},
+    "mcp-stdio": {"v", "id", "name", "kind", "command", "args", "env", "device", "tools", "flow", "egress"},
+    "http-api": {"v", "id", "name", "kind", "endpoint", "key", "tools", "flow", "egress"},
+    "model": {"v", "id", "name", "kind", "endpoint", "key", "flow", "egress"},
+}
+CARD_FIELDS = {"hash", "origin", "signer", "extended_hash"}
+HTTP_KEY_FIELDS = {"item", "header", "format"}
+MODEL_KEY_FIELDS = {"item"}
+MAX_COMMAND = 1024
+MAX_ARGS = 64
+MAX_ARG = 4096
+MAX_ENV = 32
+MAX_ITEM_NAME = 128
+KEY_ITEM_PREFIX = "connection.key."
+PROVIDER_ITEM_PREFIX = "model.provider."
 STATE_FIELDS = {"v", "state", "reason", "issuer", "ms"}
 PUT_CHECKS = (
     "connection.malformed",
@@ -112,6 +136,26 @@ SCOPE = re.compile(r"[\x21\x23-\x5b\x5d-\x7e]{1,256}")
 CLIENT_ID = re.compile(r"[\x21-\x7e]{1,1024}")
 TOOL_NAME = re.compile(r"[A-Za-z0-9_.-]{1,128}")
 OFFERED_NAME = re.compile(r"[A-Za-z0-9_-]+")
+ENV_NAME = re.compile(r"[A-Z_][A-Z0-9_]{0,63}")
+HEADER_NAME = re.compile(r"[A-Za-z][A-Za-z0-9-]{0,63}")
+KEY_FORMAT = re.compile(r"[\x20-\x7e]{1,64}")
+ITEM_NAME = re.compile(r"[a-z0-9][a-z0-9._-]*")
+THUMBPRINT = re.compile(r"[A-Za-z0-9_-]{43}")
+REFUSED_ENV = ("PATH",)
+REFUSED_ENV_PREFIXES = ("LD_", "DYLD_")
+REFUSED_HEADERS = (
+    "host",
+    "content-length",
+    "content-type",
+    "transfer-encoding",
+    "connection",
+    "upgrade",
+    "te",
+    "trailer",
+    "cookie",
+    "set-cookie",
+    "proxy-authorization",
+)
 
 
 class RemovedApproval(MeshError):
@@ -364,22 +408,199 @@ def _mcp_http_values(value: dict[str, Any]) -> bool:
     return needed <= set(egress)
 
 
-def classify(value: dict[str, Any]) -> tuple[str, str | None]:
+def _plain_text(value: Any, low: int, high: int) -> bool:
+    return (
+        isinstance(value, str)
+        and low <= len(value) <= high
+        and not any(caller_ticket.refused_in_label(c) for c in value)
+    )
+
+
+def _egress_ok(value: dict[str, Any], needed: set[str], low: int = 1) -> bool:
+    egress = value["egress"]
+    if not isinstance(egress, list) or not low <= len(egress) <= MAX_EGRESS:
+        return False
+    parsed = [parse_entry(e, False) for e in egress]
+    return (
+        all(p is not None for p in parsed)
+        and _sorted_unique(parsed)
+        and needed <= set(egress)
+    )
+
+
+def _key_item(record_id: str) -> str:
+    return KEY_ITEM_PREFIX + record_id
+
+
+def _http_key_ok(key: Any, record_id: str) -> bool:
+    return (
+        isinstance(key, dict)
+        and set(key) == HTTP_KEY_FIELDS
+        and key["item"] == _key_item(record_id)
+        and isinstance(key["header"], str)
+        and HEADER_NAME.fullmatch(key["header"]) is not None
+        and key["header"].lower() not in REFUSED_HEADERS
+        and isinstance(key["format"], str)
+        and KEY_FORMAT.fullmatch(key["format"]) is not None
+        and key["format"].count("{key}") == 1
+    )
+
+
+def _provider_item_ok(item: Any) -> bool:
+    return (
+        isinstance(item, str)
+        and item.startswith(PROVIDER_ITEM_PREFIX)
+        and len(item) <= MAX_ITEM_NAME
+        and ITEM_NAME.fullmatch(item[len(PROVIDER_ITEM_PREFIX) :]) is not None
+    )
+
+
+def _cloud_values(value: dict[str, Any], needed: set[str]) -> bool:
+    return (
+        value["flow"] in FLOWS
+        and _egress_ok(value, needed)
+        and ("tools" not in value or tools_ok(value["tools"]))
+    )
+
+
+def _http_api_values(value: dict[str, Any]) -> bool:
+    endpoint = split_url(value["endpoint"], "endpoint")
+    return (
+        endpoint is not None
+        and not endpoint["loopback"]
+        and endpoint["scheme"] == "https"
+        and _http_key_ok(value["key"], value["id"])
+        and _cloud_values(value, {entry_for(endpoint)})
+    )
+
+
+def _model_values(value: dict[str, Any]) -> bool:
+    endpoint = split_url(value["endpoint"], "endpoint")
+    key = value["key"]
+    return (
+        endpoint is not None
+        and not endpoint["loopback"]
+        and endpoint["scheme"] == "https"
+        and isinstance(key, dict)
+        and set(key) == MODEL_KEY_FIELDS
+        and _provider_item_ok(key["item"])
+        and _cloud_values(value, {entry_for(endpoint)})
+    )
+
+
+def _stdio_values(value: dict[str, Any]) -> bool:
+    env, args = value["env"], value["args"]
+    return (
+        _plain_text(value["command"], 1, MAX_COMMAND)
+        and isinstance(args, list)
+        and len(args) <= MAX_ARGS
+        and all(_plain_text(a, 0, MAX_ARG) for a in args)
+        and isinstance(env, list)
+        and len(env) <= MAX_ENV
+        and all(
+            isinstance(n, str)
+            and ENV_NAME.fullmatch(n) is not None
+            and not n.startswith(REFUSED_ENV_PREFIXES)
+            and n not in REFUSED_ENV
+            for n in env
+        )
+        and _sorted_unique(env)
+        and isinstance(value["device"], str)
+        and DEVICE_ID.fullmatch(value["device"]) is not None
+        and tools_ok(value["tools"])
+        and value["flow"] in FLOWS
+        and _egress_ok(value, set(), 0)
+    )
+
+
+def _card_ok(card: Any, card_url: dict[str, Any]) -> bool:
+    return (
+        isinstance(card, dict)
+        and set(card) == CARD_FIELDS
+        and crypto.is_id(card["hash"])
+        and card["origin"] == card_url["origin"]
+        and (card["signer"] is None or _thumbprint(card["signer"]))
+        and (card["extended_hash"] is None or crypto.is_id(card["extended_hash"]))
+    )
+
+
+def _thumbprint(value: Any) -> bool:
+    return isinstance(value, str) and THUMBPRINT.fullmatch(value) is not None
+
+
+def _a2a_values(value: dict[str, Any]) -> bool:
+    card_url = split_url(value["card_url"], "endpoint")
+    if (
+        card_url is None
+        or card_url["loopback"]
+        or card_url["scheme"] != "https"
+        or not _card_ok(value["card"], card_url)
+    ):
+        return False
+    auth = value["auth"]
+    needed = {entry_for(card_url)}
+    if auth["scheme"] == "oauth":
+        issuer = secure_url(auth["issuer"], "issuer", False)
+        if (
+            issuer is None
+            or auth["resource"] is not None
+            or not _scopes_ok(auth["scopes"])
+            or not _client_id_ok(auth["client_id"])
+        ):
+            return False
+        needed.add(entry_for(issuer))
+    elif (auth["issuer"], auth["resource"], auth["scopes"], auth["client_id"]) != (
+        None,
+        None,
+        [],
+        None,
+    ):
+        return False
+    tools = value["tools"]
+    return (
+        tools_ok(tools)
+        and len(tools) <= 1
+        and all(t["name"] == ask_tool(value["name"]) for t in tools)
+        and _cloud_values(value, needed)
+    )
+
+
+def _client_id_ok(client_id: Any) -> bool:
+    return client_id is None or (
+        isinstance(client_id, str) and CLIENT_ID.fullmatch(client_id) is not None
+    )
+
+
+KIND_VALUES = {
+    "mcp-http": _mcp_http_values,
+    "a2a": _a2a_values,
+    "mcp-stdio": _stdio_values,
+    "http-api": _http_api_values,
+    "model": _model_values,
+}
+
+
+def classify(value: dict[str, Any], extended: bool = False) -> tuple[str, str | None]:
+    table = IMPLEMENTED_EXT if extended else IMPLEMENTED
     if value["v"] != 1:
         return "unsupported", "connection.version_unsupported"
-    if value["kind"] not in IMPLEMENTED:
+    kind = value["kind"]
+    if kind not in table:
         return "unsupported", "connection.kind_unsupported"
+    has_auth = "auth" in KIND_FIELDS[kind]
     auth = value.get("auth")
-    if (
-        set(value) != RECORD_FIELDS
-        or not isinstance(auth, dict)
-        or set(auth) != AUTH_FIELDS
-        or not isinstance(auth["scheme"], str)
+    if set(value) != KIND_FIELDS[kind] or (
+        has_auth
+        and (
+            not isinstance(auth, dict)
+            or set(auth) != AUTH_FIELDS
+            or not isinstance(auth["scheme"], str)
+        )
     ):
         return "unsupported", "connection.record_unsupported"
-    if auth["scheme"] not in IMPLEMENTED[value["kind"]]:
+    if has_auth and auth["scheme"] not in table[kind]:
         return "unsupported", "connection.scheme_unsupported"
-    if not _mcp_http_values(value):
+    if not KIND_VALUES[kind](value):
         return "unsupported", "connection.record_unsupported"
     return "ok", None
 
@@ -582,7 +803,7 @@ def _check_event(
     return {"form": "state", "id": key["id"], "device": writer}
 
 
-def fold(state: dict[str, Any]) -> dict[str, Any]:
+def fold(state: dict[str, Any], extended: bool = False) -> dict[str, Any]:
     members, removed = state["members"], state["removed"]
     legacy = set(state.get("legacy_servers", []))
     feed_owner = {f: d for d, m in members.items() for f in m["feeds"]}
@@ -617,7 +838,7 @@ def fold(state: dict[str, Any]) -> dict[str, Any]:
         if checked["form"] != "put":
             continue
         value = event["body"]["value"]
-        status, reason = classify(value)
+        status, reason = classify(value, extended)
         connections.append(
             {
                 "id": record_id,
@@ -660,8 +881,8 @@ def fold(state: dict[str, Any]) -> dict[str, Any]:
 def use(entry: dict[str, Any], device: str) -> dict[str, Any]:
     if entry["status"] != "ok":
         raise _fail(entry["reason"])
-    record = entry["record"]
-    if record["local"] and record["device"] != device:
+    holder = entry["record"].get("device")
+    if holder is not None and holder != device:
         raise _fail("connection.local_elsewhere", device)
     return {}
 
@@ -676,10 +897,10 @@ def coexistence(case_input: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _record_result(case_input: dict[str, Any]) -> dict[str, Any]:
+def _record_result(case_input: dict[str, Any], extended: bool) -> dict[str, Any]:
     value = case_input["value"]
     check_common(case_input["id"], value)
-    status, reason = classify(value)
+    status, reason = classify(value, extended)
     return {
         "status": status,
         "reason": reason,
@@ -703,9 +924,11 @@ def _guard(call: Any) -> dict[str, Any]:
 def run(kind: str, case_input: dict[str, Any]) -> dict[str, Any]:
     calls = {
         "connection_key": lambda: parse_key(case_input["key"]),
-        "connection_record": lambda: _record_result(case_input),
+        "connection_record": lambda: _record_result(case_input, False),
+        "connection_record_ext": lambda: _record_result(case_input, True),
         "connection_state": lambda: _state_result(case_input["value"]),
         "connection_fold": lambda: fold(case_input),
+        "connection_fold_ext": lambda: fold(case_input, True),
         "connection_use": lambda: use(case_input["connection"], case_input["device"]),
         "connection_exposed_name": lambda: {
             "name": offered_name(case_input["id"], case_input["tool"])

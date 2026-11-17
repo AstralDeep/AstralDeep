@@ -35,11 +35,13 @@ The evidence control adapter depends on the orchestrator's private ephemeral arc
 - `backend/shared/protocol.py`: shared transport structures.
 - `components/AstralProjection/contracts/ui_protocol.json`: authoritative cross-client frame/component vocabulary, consumed from the pinned Projection component.
 - `backend/orchestrator/plane_composition.py`: fail-closed binding to the one
-  application-scoped AstralPlane runtime and its pinned contract metadata.
-- `components/AstralPlane/`: pinned data-plane component. Its public facade,
+  application-scoped AstralPlane runtime and the contract metadata of the in-tree `plane/` package.
+- `plane/`: the `astralplane` package, moved from AstralPlane with its history. Its public facade,
   guarded migration registry, repositories, PostgreSQL pool, recovery logic,
   and configured blob stores own all durable mechanics; Deep code must not
-  borrow connections or reintroduce `backend/shared/database.py`.
+  borrow connections or reintroduce `backend/shared/database.py`. It keeps its own manifest, tests and lint,
+  and stays outside Deep's root lint, test discovery, coverage gate and Docker build context except for the
+  files the `Dockerfile` copies to build its wheel, as `scripts/tests/test_moved_packages.py` checks. An imported file keeps its own text until someone edits it for a reason.
 - `backend/shared/external_http.py`: approved outbound HTTP/egress path.
 - `components/AstralProjection/backend/webrender/`: authoritative primitive rendering, sanitization, accessibility, web shell, reusable chrome, and static resources.
 - `components/AstralKernel/python/rote/`: ROTE (`astral-rote`, import `rote`), the base's authoritative device capabilities and semantic adaptation. Deep and Projection both depend on it, and it imports neither.
@@ -85,19 +87,20 @@ The pinned `components/AstralPrimitives` repository owns primitive definitions a
 - Backend access to user-controlled URLs must use `backend/shared/external_http.py` and its allow/deny/size/TLS controls.
 - `.env` may be inspected when relevant to diagnosis, setup, or live verification; the user has explicitly authorized this. Never echo secret values or commit the file. Treat credentials, tokens, encryption keys, agent keys, user uploads, generated user code, `backend/data`, `backend/tmp`, and synthesized `backend/knowledge` as sensitive: access them only when the task requires it, redact sensitive output, and never stage them.
 - `ASTRAL_ENV` unset means production. Production configuration must fail closed. Missing or placeholder secrets must retain the documented exit-78 posture. A leftover mock-auth setting is refused.
-- LLM credentials are configured in-product and encrypted. Do not reintroduce environment-backed provider keys, type user keys, or perform the owner's sign-in to any service.
+- Every outside credential is entered in a native secure field and kept in the device keystore. A sign-in token never syncs. A pasted key syncs only sealed to the owner's devices. Do not reintroduce environment-backed provider keys, type user keys, or perform the owner's sign-in to any service.
 
 ## Database changes
 
 - PostgreSQL schema evolution lives only in AstralPlane's guarded, idempotent
-  migration registry. Deep pins the exact Plane schema revision and migration
-  digest in `config/astral-composition.json`; it owns product policy and
+  migration registry under `plane/`. `config/astral-composition.json` records the exact Plane schema
+  revision and migration digest, and `scripts/verify_composition.py` fails when they disagree with
+  `plane/`. Deep code owns product policy and
   orchestration, not SQL, driver pools, baseline provisioning, or blob
   mechanics.
 - Schema changes require the matching AstralPlane `SCHEMA_REVISION` bump,
   repeat-safe DDL/data migration, rollback or recovery procedure, current-schema
-  verification, and tests against representative existing data. Update Deep's
-  composition pin only after the exact Plane revision is qualified. Do not use
+  verification, and tests against representative existing data. Change `plane/` and the
+  `compatibility.data_plane*` fields in the same commit. Do not use
   ad-hoc deployed SQL or introduce a second migration framework.
 
 ## Build and verification
@@ -129,6 +132,12 @@ Client gates:
 - Android (from `components/AstralProjection/android-client/`): run the committed wrapper for `ktlintCheck`, `:app:lintDebug`, `:core:test`, `:app:testDebugUnitTest`, `:core:koverVerify`, and `:app:assembleDebug`.
 - Apple (macOS only): run `swift test --package-path components/AstralProjection/apple-clients/AstralCore` and the affected unsigned `xcodebuild` schemes from `components/AstralProjection/apple-clients/README.md`.
 - AstralPrimitives changes (only when explicitly in scope): run its pytest suite before any version bump/publish. Publication checks do not replace PR qualification.
+
+Plane gate, from `plane/` with a PostgreSQL DSN in `ASTRALPLANE_TEST_POSTGRES_DSN` and `ASTRALDEEP_SOURCE_REPO` set to the repository root.
+
+```text
+cd plane && uv sync --frozen --group ci && uv run --frozen --group ci ruff check . && uv run --frozen --group ci pytest -q -ra -p no:cacheprovider
+```
 
 Vessel gate, from the repository root. Its sandbox tests need Linux (Landlock and `/proc`).
 

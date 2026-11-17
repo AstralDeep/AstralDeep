@@ -18,6 +18,37 @@ class KernelListener:
     pass
 
 
+class MeshGate:
+    pass
+
+
+class HostKeystore:
+    pass
+
+
+class HostLauncher:
+    pass
+
+
+class HostLauncherError(Exception):
+    class Failed(Exception):
+        pass
+
+
+class HostLaunchedServer:
+    def __init__(self, url, bearer):
+        self.url = url
+        self.bearer = bearer
+
+
+class HostKeystoreError(Exception):
+    class Failed(Exception):
+        pass
+
+    class Unavailable(Exception):
+        pass
+
+
 class ConsentKind(enum.Enum):
     ROSTER_ADD = 0
     ROSTER_REMOVE = 1
@@ -71,6 +102,34 @@ class PeerIntegrity(enum.Enum):
     OWNER = 0
     TOOL_TRUSTED = 1
     UNTRUSTED = 2
+
+
+class SignInRedirect:
+    class LOOPBACK:
+        def __init__(self, port):
+            self.port = port
+
+    class PASTED:
+        pass
+
+    class DEVICE_CODE:
+        pass
+
+
+class SignInPoll:
+    class PENDING:
+        def __init__(self, interval_s):
+            self.interval_s = interval_s
+
+        def is_DONE(self):
+            return False
+
+    class DONE:
+        def __init__(self, state):
+            self.state = state
+
+        def is_DONE(self):
+            return True
 
 
 class RequestState(enum.Enum):
@@ -244,6 +303,10 @@ class Kernel:
         self.signer = signer
         self.listener = listener
         self.enrolled = False
+        self.mesh_gate = None
+        self.keystore = None
+        self.closed = False
+        self.connection_list: List[Any] = []
         self.mesh_id: Optional[str] = None
         self.device_id = "dev-node"
         self.network = False
@@ -274,8 +337,22 @@ class Kernel:
         Kernel.instances.append(self)
 
     @classmethod
-    def open(cls, config, signer, model=None, tools=None, listener=None):
-        return cls(config, signer, listener)
+    def open(cls, config, signer, model=None, tools=None, listener=None, peer_tools=None, mesh_gate=None):
+        kernel = cls(config, signer, listener)
+        kernel.mesh_gate = mesh_gate
+        return kernel
+
+    def set_keystore(self, keystore):
+        self.keystore = keystore
+
+    def set_launcher(self, launcher):
+        self.launcher = launcher
+
+    async def close(self):
+        self.closed = True
+
+    def connections(self):
+        return list(self.connection_list)
 
     def join(self, mesh_id: str = "mesh-1") -> None:
         self.enrolled = True

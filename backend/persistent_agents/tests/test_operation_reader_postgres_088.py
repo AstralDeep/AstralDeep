@@ -502,7 +502,7 @@ async def test_required_governed_adapter_refusal_prevents_reader_permit(operatio
 async def test_genuine_v1_ledger_refuses_new_reader_but_authentic_settlement_charges_once(operation):
     op = operation
     relative = "tests/fixtures/session_incarnation_088001.json"
-    candidates = [Path(__file__).parents[3] / "components/AstralPlane" / relative,
+    candidates = [Path(__file__).parents[3] / "plane" / relative,
                   Path(astralplane.__file__).resolve().parents[2] / relative]
     data = next(path for path in candidates if path.is_file()).read_bytes()
     assert hashlib.sha256(data).hexdigest() == "36ef17d004c846209ab2f806c02ec33e487491d914f86062d9851cbc46849530"

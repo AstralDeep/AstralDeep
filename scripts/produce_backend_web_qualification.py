@@ -249,8 +249,9 @@ def services_phase(args, driver, destination):
         composition = json.loads((args.source / "config/astral-composition.json").read_text())
         deployment_args = argparse.Namespace(
             qualification_id=identifier, candidate_sha=args.candidate_sha, candidate_image=args.candidate_image,
-            postgres_image=POSTGRES, plane_commit=composition["components"]["astral-plane"]["commit"],
-            plane_source=args.source / "components/AstralPlane", baseline_plane_source=args.baseline_plane_source,
+            postgres_image=POSTGRES,
+            plane_commit=args.candidate_sha if "astral-plane" in composition.get("in_tree", {}) else composition["components"]["astral-plane"]["commit"],
+            plane_source=args.source / "plane", baseline_plane_source=args.baseline_plane_source,
             fixture_sha256=FIXTURE, runtime_env=Path(initialized["runtime_fragment"]),
             material_root=Path(initialized["material_root"]), service_network=initialized["service_network"],
             port=args.port, output=args.private_root / "deployment.json", baseline_deep_image=recovery_baseline["image_ref"],

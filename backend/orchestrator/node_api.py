@@ -1,16 +1,17 @@
 """REST surface of a personal node: the public v2 descriptor, which names no identity server and carries only a hash of the owner's mesh id, the node's JWKS, and the loopback pairing offer that only a holder of the node's pairing secret can read.
-The offer comes from node_mesh.py, which owns the secret file, the owner approves it on an existing mesh device, and institution_api.py keeps the v1 descriptor.
+node_connection_api.py adds the loopback operator routes for the node's outside connections. The offer comes from node_mesh.py, which owns the secret file, the owner approves it on an existing mesh device, and institution_api.py keeps the v1 descriptor.
 """
 
 from __future__ import annotations
 
-import ipaddress
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from orchestrator import institution_api
+from orchestrator import node_connection_api
 from orchestrator import node_mesh
+from orchestrator import phi_node_policy
 from shared import node_identity
 
 node_router = APIRouter(tags=["Node"])
@@ -26,7 +27,6 @@ CAPABILITIES = (
     "emergency-stop",
 )
 PAIRING_SECRET_HEADER = "astral-pairing-secret"
-FORWARDING_HEADERS = ("forwarded", "x-forwarded-for")
 NO_STORE = {"Cache-Control": "no-store"}
 
 
@@ -115,6 +115,17 @@ async def get_descriptor(response: Response):
     return await mesh_descriptor_fields(descriptor())
 
 
+@node_router.get("/api/node/agent-servers", include_in_schema=False)
+async def get_agent_server_policy(request: Request, response: Response):
+    node_connection_api.require_loopback(request)
+    _no_store(response)
+    try:
+        await phi_node_policy.refuse_on_phi_node()
+    except phi_node_policy.AgentServerUnsupported as refused:
+        return {"allowed": False, **refused.detail()}
+    return {"allowed": True}
+
+
 @node_router.get("/.well-known/astral-node/jwks.json", include_in_schema=False)
 async def get_node_jwks(response: Response):
     response.headers["Cache-Control"] = "public, max-age=300"
@@ -124,14 +135,7 @@ async def get_node_jwks(response: Response):
 def pairing_gate(request: Request) -> str:
     if not node_identity.is_personal():
         raise HTTPException(404, "node_profile_inactive")
-    try:
-        address = ipaddress.ip_address(request.client.host if request.client else "")
-    except ValueError:
-        address = None
-    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
-        address = address.ipv4_mapped
-    if address is None or not address.is_loopback or any(name in request.headers for name in FORWARDING_HEADERS):
-        raise HTTPException(403, "node.loopback_required", headers=NO_STORE)
+    node_connection_api.require_loopback(request)
     presented = request.headers.getlist(PAIRING_SECRET_HEADER)
     if len(presented) != 1 or not presented[0]:
         raise HTTPException(401, "node.pairing_secret_required", headers=NO_STORE)
@@ -150,4 +154,5 @@ async def mesh_offer(response: Response, secret: str = Depends(pairing_gate)):
         raise HTTPException(exc.status, exc.code, headers=NO_STORE) from exc
 
 
+node_router.include_router(node_connection_api.connections_router)
 node_router.include_router(institution_api.institution_router)

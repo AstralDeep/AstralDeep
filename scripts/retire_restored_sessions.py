@@ -69,7 +69,17 @@ def _strict_json(data: bytes) -> dict:
     return value
 
 
-def _qualified_composition(root: Path, lock: Path) -> tuple[dict, str, str]:
+def _plane_identity(manifest: dict, lock_bytes: bytes) -> str:
+    pinned = manifest["components"].get("astral-plane")
+    if pinned is not None:
+        return pinned["commit"]
+    for entry in _strict_json(lock_bytes).get("components", ()):
+        if entry.get("component") == "astral-plane" and isinstance(entry.get("source_sha256"), str):
+            return "in-tree:" + entry["source_sha256"]
+    _reject()
+
+
+def _qualified_composition(root: Path, lock: Path) -> tuple[dict, str, str, str]:
     manifest_path = root / "config/astral-composition.json"
     manifest_bytes = _regular_bytes(manifest_path, maximum=262144)
     lock_bytes = _regular_bytes(lock, maximum=1048576)
@@ -84,7 +94,8 @@ def _qualified_composition(root: Path, lock: Path) -> tuple[dict, str, str]:
         or _regular_bytes(lock, maximum=1048576) != lock_bytes
     ):
         _reject()
-    return _strict_json(manifest_bytes), _digest(manifest_bytes), _digest(lock_bytes)
+    manifest = _strict_json(manifest_bytes)
+    return manifest, _digest(manifest_bytes), _digest(lock_bytes), _plane_identity(manifest, lock_bytes)
 
 
 def _retire(database_url: str, database: str, schema: str, contract: dict) -> int:
@@ -134,11 +145,10 @@ def retire(args: argparse.Namespace) -> dict:
     record = _regular_bytes(Path(args.recovery_record), maximum=1048576)
     if not record or _digest(record) != args.recovery_record_sha256:
         _reject()
-    manifest, manifest_digest, lock_digest = _qualified_composition(
+    manifest, manifest_digest, lock_digest, plane_commit = _qualified_composition(
         root, Path(args.wheel_lock)
     )
     contract = manifest["compatibility"]["data_plane"]
-    plane_commit = manifest["components"]["astral-plane"]["commit"]
     database_url = (
         _regular_bytes(Path(args.database_url_file), maximum=65536, private=True)
         .decode()

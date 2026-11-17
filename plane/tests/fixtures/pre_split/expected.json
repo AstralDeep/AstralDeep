@@ -1,0 +1,56 @@
+{
+  "blobs": [
+    {
+      "sha256": "b70ef33cdab65179930b27076c17c861f3f6b00b7025833378ac39728cec4be4",
+      "sizeBytes": 49,
+      "storageKey": "fixture-owner-a/artifact-1/artifact.txt"
+    },
+    {
+      "sha256": "bf54f7326432f19faee001e9dd8885c8798b70e8173fa1e4252698b3dc1ced9b",
+      "sizeBytes": 41,
+      "storageKey": "fixture-owner-b/artifact-2/summary.json"
+    }
+  ],
+  "ownerCount": 2,
+  "legacyBaseline": {
+    "builderSha256": "3127d3445fca7b8239dc7956d92cefe92e0df54b0af03187529d58929fe8dafb",
+    "loaderSha256": "804939c4979c777a49e644883e7a77530481b785bebf3acded1f9be7863ee612",
+    "sourceBlob": "39cdc1d328f17840305b88158a892f5fd09c96dd"
+  },
+  "preMigrationCatalog": {
+    "rowCount": 1593,
+    "sha256": "84cc9f0af555517013af26ada3920aebb8cc10e0d05fed75d424f960c810aa5f"
+  },
+  "recordCounts": {
+    "audit": 3,
+    "artifacts": 2,
+    "history": 2,
+    "preferences": 2,
+    "qualityAudit": 5,
+    "remote": 1,
+    "scheduler": 1,
+    "voice": 1,
+    "workspaces": 1
+  },
+  "recordDomains": [
+    "audit",
+    "artifacts",
+    "history",
+    "preferences",
+    "qualityAudit",
+    "remote",
+    "scheduler",
+    "voice",
+    "workspaces"
+  ],
+  "schemaPath": [
+    "066.001",
+    "067.001",
+    "074.001",
+    "074.002",
+    "074.003",
+    "074.004"
+  ],
+  "schemaRevisionAfterUpgrade": "074.004",
+  "schemaRevisionBeforeUpgrade": "066.001"
+}

@@ -39,8 +39,11 @@ PROBE_NAME = "moved-package-probe.md"
 class MovedPackage:
     folder: str
     distribution: str
-    command: str
+    command: str | None
     github_files: frozenset[str]
+    import_name: str | None = None
+    image_copies: frozenset[str] = frozenset()
+    named_in: frozenset[str] = frozenset()
 
 
 MOVED_PACKAGES = (
@@ -54,6 +57,31 @@ MOVED_PACKAGES = (
                 "workflows/ci.yml",
             }
         ),
+    ),
+    MovedPackage(
+        folder="plane",
+        distribution="astralplane",
+        command=None,
+        github_files=frozenset(
+            {
+                "PR_TRIAGE.md",
+                "pull_request_template.md",
+                "ISSUE_TEMPLATE/issue.md",
+                "workflows/ci.yml",
+                "workflows/pr-ci-notifications.yml",
+                "workflows/pr-triage.yml",
+            }
+        ),
+        import_name="astralplane",
+        image_copies=frozenset(
+            {
+                "plane/pyproject.toml",
+                "plane/README.md",
+                "plane/LICENSE",
+                "plane/src/astralplane",
+            }
+        ),
+        named_in=frozenset({"pyproject.toml"}),
     ),
 )
 MOVED_FOLDERS = tuple(package.folder for package in MOVED_PACKAGES)
@@ -176,7 +204,8 @@ def test_the_package_keeps_its_own_manifest_and_command(package: MovedPackage) -
         )
     )
     assert manifest["project"]["name"] == package.distribution
-    assert package.command in manifest["project"]["scripts"]
+    if package.command is not None:
+        assert package.command in manifest["project"]["scripts"]
 
 
 @by_package
@@ -260,7 +289,8 @@ def test_the_image_and_deep_requirements_never_take_the_package(
 ) -> None:
     _package_files(package)
     context_rules = (REPOSITORY_ROOT / ".dockerignore").read_text(encoding="utf-8")
-    assert package.folder in context_rules.splitlines()
+    if not package.image_copies:
+        assert package.folder in context_rules.splitlines()
     tracked = [path for path in _tracked() if _outside_moved_packages(path)]
     dockerfiles = [path for path in tracked if DOCKERFILE.search(path)]
     assert "Dockerfile" in dockerfiles
@@ -270,6 +300,8 @@ def test_the_image_and_deep_requirements_never_take_the_package(
             assert normalized not in {"", ".", "*"}, (
                 f"{dockerfile} copies the whole context"
             )
+            if normalized in package.image_copies:
+                continue
             assert normalized != package.folder, (
                 f"{dockerfile} copies {package.folder}/"
             )
@@ -280,6 +312,8 @@ def test_the_image_and_deep_requirements_never_take_the_package(
     requirements = [path for path in tracked if REQUIREMENT_FILE.search(path)]
     assert "backend/requirements.txt" in requirements
     for path in requirements:
+        if path in package.named_in:
+            continue
         text = (REPOSITORY_ROOT / path).read_text(encoding="utf-8")
         assert not distribution.search(text), f"{path} names {package.distribution}"
 
@@ -301,7 +335,7 @@ def test_the_package_imports_no_deep_backend_package_or_astralplane(
         if len(PurePosixPath(path).parts) == 2 and path.endswith(".py")
     }
     assert "orchestrator" in backend_packages and "shared" in backend_packages
-    own_names = _top_level_names(files, package.folder)
+    own_names = _top_level_names(files, package.folder) | {package.import_name}
     forbidden = (
         ({"backend", "astralplane"} | backend_packages | backend_modules)
         - own_names

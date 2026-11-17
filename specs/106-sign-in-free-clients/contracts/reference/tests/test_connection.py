@@ -167,6 +167,7 @@ EXPECTED = {
     "state_needs_attention_expired_valid": "ok",
     "state_needs_attention_scope_valid": "ok",
     "state_needs_attention_refused_valid": "ok",
+    "state_needs_attention_not_signed_in_valid": "ok",
     "state_tools_on_needs_attention": "connection.malformed",
     "state_tools_129": "connection.malformed",
     "state_tools_unsorted": "connection.malformed",
@@ -358,6 +359,32 @@ EXPECTED = {
     "use_node_local_from_an_owner_device": "connection.local_elsewhere",
     "use_unsupported": "connection.kind_unsupported",
     "use_collision": "connection.server_id_collision",
+    "use_ext_stdio_on_its_device": "ok",
+    "use_ext_stdio_elsewhere": "connection.local_elsewhere",
+    "use_ext_stdio_on_the_node_it_names": "ok",
+    "use_ext_a2a_on_any_device": "ok",
+    "use_ext_http_api_on_any_device": "ok",
+    "use_ext_model_on_any_device": "ok",
+    "fold_phase2_lists_every_new_kind_unsupported": {
+        "listed": [
+            f"{name}:connection.kind_unsupported"
+            for name in ("Agent desk", "Lab API", "Lab model", "Local tools")
+        ]
+    },
+    "fold_ext_lists_every_new_kind_ok": {
+        "listed": ["Agent desk:ok", "Lab API:ok", "Lab model:ok", "Local tools:ok"]
+    },
+    "fold_ext_later_a2a_put_wins": {"listed": ["Second:ok"]},
+    "fold_ext_bad_values_unsupported": {
+        "listed": ["Agent desk:connection.record_unsupported"]
+    },
+    "fold_ext_server_id_collision": {
+        "listed": ["Lab API:ok", "Lab model:connection.server_id_collision"]
+    },
+    "fold_ext_state_not_signed_in": {
+        "listed": ["Agent desk:ok"],
+        "states": ["Agent desk:alice:needs_attention"],
+    },
     "exposed_simple": "ok",
     "exposed_tool_53_accepted": "ok",
     "exposed_tool_54_too_long": "tool.name_too_long",
@@ -511,6 +538,66 @@ OAUTH_EXPECTED = {
     "dyn_native_unreachable": "connection.registration_refused",
     "dyn_accepted_without_client_id": "connection.registration_refused",
     "dyn_web_unreachable": "connection.registration_refused",
+    "dyn_method_none_accepted": ["native"],
+    "dyn_method_absent_accepted": ["native"],
+    "dyn_method_client_secret_basic_refused": "connection.registration_refused",
+    "dyn_method_client_secret_post_refused": "connection.registration_refused",
+    "dyn_method_private_key_jwt_refused": "connection.registration_refused",
+    "dyn_method_null_refused": "connection.registration_refused",
+    "dyn_method_not_text_refused": "connection.registration_refused",
+    "dyn_method_uppercase_refused": "connection.registration_refused",
+    "dyn_web_retry_method_refused": "connection.registration_refused",
+    "dyn_native_method_refused_has_no_retry": "connection.registration_refused",
+    "egress_entries_full_metadata": [
+        "device.research.example",
+        "login.research.example",
+        "mcp.research.example",
+        "register.research.example",
+    ],
+    "egress_entries_device_authorization_host_joins": [
+        "device.research.example",
+        "login.research.example",
+        "mcp.research.example",
+    ],
+    "egress_entries_device_host_same_as_issuer_listed_once": [
+        "login.research.example",
+        "mcp.research.example",
+    ],
+    "egress_entries_device_host_other_port": [
+        "login.research.example",
+        "login.research.example:8443",
+        "mcp.research.example",
+    ],
+    "egress_entries_without_device_endpoint": [
+        "login.research.example",
+        "mcp.research.example",
+    ],
+    "egress_entries_token_host_elsewhere": [
+        "login.research.example",
+        "mcp.research.example",
+        "tokens.research.example",
+    ],
+    "egress_entries_registration_host_joins": [
+        "login.research.example",
+        "mcp.research.example",
+        "register.research.example",
+    ],
+    "egress_entries_no_issuer": ["login.research.example", "mcp.research.example"],
+    "egress_entries_non_text_endpoint_ignored": [
+        "login.research.example",
+        "mcp.research.example",
+    ],
+    "egress_entries_device_endpoint_http_refused": "connection.egress_refused",
+    "egress_entries_device_endpoint_loopback_refused": "connection.egress_refused",
+    "egress_entries_device_endpoint_uppercase_host_refused": "connection.egress_refused",
+    "egress_entries_device_endpoint_userinfo_refused": "connection.egress_refused",
+    "egress_entries_authorization_endpoint_http_refused": "connection.egress_refused",
+    "egress_entries_local_loopback": [
+        "127.0.0.1:8765",
+        "127.0.0.1:8766",
+        "127.0.0.1:8767",
+    ],
+    "egress_entries_endpoint_not_canonical": "connection.malformed",
     "scopes_from_challenge": ["mcp.read", "mcp.tools"],
     "scopes_challenge_runs_of_spaces": ["a", "b"],
     "scopes_from_scopes_supported": ["mcp.read"],
@@ -553,6 +640,22 @@ OAUTH_EXPECTED = {
     "bearer_userinfo": "connection.token_passthrough",
     "bearer_endpoint_not_canonical": "connection.malformed",
 }
+
+EXT_REASONS = {
+    "record_ext_a2a_scheme_basic_unsupported": "scheme_unsupported",
+    "record_ext_mcp_dpop_scheme_unsupported": "scheme_unsupported",
+    "record_ext_kind_unknown_unsupported": "kind_unsupported",
+    "record_ext_version_2_unsupported": "version_unsupported",
+}
+for _name in CASES:
+    if _name.startswith("record_ext_"):
+        EXPECTED[_name] = (
+            "ok"
+            if _name.endswith("_valid")
+            else UNSUP + EXT_REASONS.get(_name, "record_unsupported")
+        )
+    elif _name.startswith("record_phase2_"):
+        EXPECTED[_name] = UNSUP + "kind_unsupported"
 
 PUT_ORDER = [
     "malformed",
@@ -598,9 +701,9 @@ def outcome(case: dict) -> object:
     ok = expect["ok"]
     if kind == "connection_key":
         return ok["form"]
-    if kind == "connection_record":
+    if kind in ("connection_record", "connection_record_ext"):
         return "ok" if ok["status"] == "ok" else "unsupported:" + ok["reason"]
-    if kind == "connection_fold":
+    if kind in ("connection_fold", "connection_fold_ext"):
         return fold_outcome(expect)
     if kind == "connection_exec_host":
         return ok
@@ -630,6 +733,7 @@ def oauth_outcome(case: dict) -> object:
             r["application_type"] for r in ok["requests"]
         ],
         "oauth_scopes": lambda: ok["scopes"],
+        "oauth_egress_entries": lambda: ok["entries"],
     }.get(kind, lambda: "ok")()
 
 
@@ -672,14 +776,19 @@ def test_adapter_case_has_the_contracted_outcome(name: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "name", sorted(n for n, c in CASES.items() if c["kind"] == "connection_fold")
+    "name",
+    sorted(
+        n
+        for n, c in CASES.items()
+        if c["kind"] in ("connection_fold", "connection_fold_ext")
+    ),
 )
 def test_fold_ignores_the_order_events_arrive_in(name: str) -> None:
     case = CASES[name]
     events = case["input"]["events"]
     for order in (list(reversed(events)), events[1::2] + events[0::2]):
         shuffled = {**case["input"], "events": order}
-        assert connection.run("connection_fold", shuffled) == case["expect"]
+        assert connection.run(case["kind"], shuffled) == case["expect"]
 
 
 def test_generator_reproduces_the_committed_files() -> None:
@@ -886,3 +995,64 @@ def test_one_member_writes_from_two_feeds() -> None:
     ):
         events = CASES[name]["input"]["events"]
         assert events[-1]["feed"] == bob["feeds"][1], name
+
+
+NEW_KINDS = {
+    "a2a": "record_ext_a2a_unsigned_valid",
+    "mcp-stdio": "record_ext_stdio_valid",
+    "http-api": "record_ext_http_api_valid",
+    "model": "record_ext_model_valid",
+}
+
+
+@pytest.mark.parametrize("kind", sorted(NEW_KINDS))
+def test_a_reader_with_only_mcp_http_lists_every_new_kind_unsupported(kind: str) -> None:
+    value = CASES[NEW_KINDS[kind]]["input"]["value"]
+    assert value["kind"] == kind
+    assert connection.classify(value) == ("unsupported", "connection.kind_unsupported")
+    assert connection.classify(value, True) == ("ok", None)
+
+
+def test_the_extended_reader_implements_the_documented_schemes() -> None:
+    text = (Path(__file__).resolve().parents[2] / "connection.md").read_text()
+    for kind, schemes in connection.IMPLEMENTED_EXT.items():
+        assert f"| `{kind}` |" in text
+        for scheme in schemes:
+            assert f"`{scheme}`" in text
+
+
+def test_every_state_reason_is_in_the_document() -> None:
+    text = (Path(__file__).resolve().parents[2] / "connection.md").read_text()
+    row = next(line for line in text.splitlines() if line.startswith("| `reason`"))
+    assert set(re.findall(r"`([a-z_]+)`", row)) - {"reason", "needs_attention"} == set(
+        connection.REASONS
+    )
+    assert "not_signed_in" in connection.REASONS
+
+
+def test_registration_needs_the_method_none_or_no_method() -> None:
+    usable = {"status": 201, "json": {"client_id": "c"}}
+    for method, accepted in (
+        (None, True),
+        ("none", True),
+        ("client_secret_basic", False),
+        ("None", False),
+    ):
+        body = dict(usable["json"])
+        if method is not None:
+            body["token_endpoint_auth_method"] = method
+        answer = {"status": 201, "json": body}
+        result = connection_oauth.dynamic_registration(
+            {"redirect_uri": "https://astraldeep.github.io/oauth/callback", "responses": [answer]}
+        )
+        assert ("ok" in result) is accepted
+
+
+def test_the_document_states_the_carried_rules_plainly() -> None:
+    text = (Path(__file__).resolve().parents[2] / "connection.md").read_text()
+    assert "device authorization" in text.split("## 4. State", 1)[0]
+    assert "`token_endpoint_auth_method`" in text.split("### 8.6", 1)[1].split("### 8.7", 1)[0]
+    assert "may lower a connection's `flow`" in text
+    assert "flow_below_hint" in text
+    assert "not_signed_in" in text.split("### 8.10", 1)[1].split("## 9.", 1)[0]
+

@@ -9,6 +9,8 @@
 | `astralvessel ask QUESTION` | Sends one question to the node over A2A with a caller ticket and prints the answer. |
 | `astralvessel chat` | Starts a conversation with the node. Press Ctrl-D to stop. |
 | `astralvessel caller key` | Creates the private `caller-key` file and prints its public holder key. |
+| `astralvessel connections list` | Shows the node's outside connections, and whether the node is signed in to each. |
+| `astralvessel connections sign-in NAME` | Signs the node in to one connection from this machine. See [Connections](../run/connections.md). |
 | `astralvessel down` | Stops the deployment and keeps its data. `--volumes` also deletes the node's data. |
 | `astralvessel deploy FILE` | Writes the Compose file and prints the start command. `--up` starts it. |
 | `astralvessel executor` | Runs the executor. Used inside its container. |

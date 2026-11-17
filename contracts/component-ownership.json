@@ -46,7 +46,7 @@
     },
     "astralplane": {
       "canonicalUrl": "https://github.com/AstralDeep/AstralPlane.git",
-      "compositionPath": "components/AstralPlane",
+      "compositionPath": "plane",
       "role": "durable persistence, storage, migrations, recovery, and outbox",
       "mutableRoots": [
         "docs/",
