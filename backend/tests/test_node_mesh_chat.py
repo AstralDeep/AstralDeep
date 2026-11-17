@@ -1202,6 +1202,25 @@ async def test_the_vessel_tools_are_published_with_their_agent_annotation_once(t
     assert json.loads(spec.input_schema_json) == {"type": "object"}
 
 
+class SelectionCalls(CatalogCalls):
+    def __init__(self, tools, omitted):
+        super().__init__(tools)
+        self.omitted = omitted
+
+    def published_selection(self, owner_id):
+        return self.tools, self.omitted
+
+
+async def test_a_truncated_catalog_logs_the_omitted_count_once(tmp_path, caplog):
+    mesh, kernel, _, bridge = await build(tmp_path, calls=SelectionCalls(TOOLS, 26), start=False)
+    with caplog.at_level("WARNING", logger="Orchestrator.NodeMeshChat"):
+        await bridge.scan()
+        await bridge.scan()
+    lines = [r.getMessage() for r in caplog.records if "node_mesh_catalog_truncated" in r.getMessage()]
+    assert lines == ["node_mesh_catalog_truncated: omitted 26 tools"]
+    assert len(kernel.catalogs) == 1
+
+
 async def test_a_changed_tool_list_is_published_again(tmp_path):
     calls = CatalogCalls(TOOLS)
     mesh, kernel, _, bridge = await build(tmp_path, calls=calls, start=False)

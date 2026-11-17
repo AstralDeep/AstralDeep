@@ -73,14 +73,17 @@ def test_the_server_profile_still_requires_each_keycloak_setting(production, mon
     "oidc.0123456789abcdef.owner", "not-an-owner-id", "sha256:" + "A" * 64, "mesh." + "a" * 63, "mesh:" + "a" * 64,
 ])
 @pytest.mark.parametrize("environment", [None, "production", "development"])
-def test_a_configured_owner_that_is_not_a_mesh_id_exits_78_in_every_posture(personal, monkeypatch, caplog, owner, environment):
+def test_a_configured_owner_that_is_not_a_mesh_id_is_ignored_with_a_warning_in_every_posture(personal, monkeypatch, caplog, owner, environment):
     if environment is None:
         monkeypatch.delenv("ASTRAL_ENV", raising=False)
     else:
         monkeypatch.setenv("ASTRAL_ENV", environment)
     monkeypatch.setenv(ni.OWNER_ENV, owner)
-    caplog.set_level(logging.ERROR, logger="orchestrator.session_store")
-    assert f"{ni.OWNER_ENV} must be the owner's mesh id" in refused(caplog)
+    caplog.set_level(logging.WARNING, logger="shared.node_identity")
+    assert_production_posture()
+    assert ni.LEGACY_OWNER_RETIRED in caplog.text
+    assert owner not in caplog.text
+    assert ni.bound_owner() is None
     assert not (personal / ni.OWNER_FILE).exists()
 
 
@@ -96,13 +99,33 @@ def test_a_configured_mesh_owner_in_either_form_passes(personal, monkeypatch, ow
     assert not (personal / ni.OWNER_FILE).exists()
 
 
-def test_a_legacy_owner_file_is_not_a_boot_failure_and_is_left_alone(personal, monkeypatch):
+@pytest.mark.parametrize("environment", [None, "development"])
+def test_a_legacy_owner_file_is_moved_aside_at_startup_and_never_a_boot_failure(personal, monkeypatch, caplog, environment):
+    from tests.helpers.owner_file import seed_owner
+
+    if environment is None:
+        monkeypatch.delenv("ASTRAL_ENV", raising=False)
+    else:
+        monkeypatch.setenv("ASTRAL_ENV", environment)
+    stored = seed_owner("oidc.0123456789abcdef.owner")
+    caplog.set_level(logging.WARNING, logger="shared.node_identity")
+    assert_production_posture()
+    assert ni.LEGACY_OWNER_RETIRED in caplog.text
+    assert not (personal / ni.OWNER_FILE).exists()
+    (kept,) = personal.glob(ni.OWNER_FILE + ".legacy-*")
+    assert kept.read_bytes() == stored
+    assert_production_posture()
+    assert len(list(personal.glob(ni.OWNER_FILE + ".legacy-*"))) == 1
+
+
+def test_a_legacy_owner_file_that_cannot_be_moved_refuses_to_start(personal, monkeypatch, caplog):
     from tests.helpers.owner_file import seed_owner
 
     monkeypatch.delenv("ASTRAL_ENV", raising=False)
-    stored = seed_owner("oidc.0123456789abcdef.owner")
-    assert_production_posture()
-    assert (personal / ni.OWNER_FILE).read_bytes() == stored
+    seed_owner("oidc.0123456789abcdef.owner")
+    monkeypatch.setattr(ni.os, "link", lambda *a, **k: (_ for _ in ()).throw(PermissionError("no")))
+    assert "cannot be retired" in refused(caplog)
+    assert (personal / ni.OWNER_FILE).exists()
 
 
 @pytest.mark.parametrize("name,value", [
