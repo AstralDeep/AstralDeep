@@ -1,3 +1,4 @@
+# uv pip compile node-requirements.in --generate-hashes --no-header --python-version 3.11 --python-platform aarch64-apple-darwin --exclude-newer 2026-11-12 -o node-requirements.macos-arm64.lock
 a2a-sdk==1.3.0 \
     --hash=sha256:73694717de50f36aaebd57b8fc6636ecaa825eb0d4437984fa2cd17f703a6808 \
     --hash=sha256:b94a73b5dc7ff1afe5f11d324480f83386a64d02b8a6b719baf013595284cc6c

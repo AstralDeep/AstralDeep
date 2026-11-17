@@ -17,7 +17,7 @@ case "$PWD" in *"relocated copy"*) ;; *) echo "not run from the spaced path" >&2
 """
 
 
-def fake_pack(tmp_path, behaviour="echo PASS child; exit 0", launcher_ok=True):
+def fake_pack(tmp_path, behaviour="echo PASS child; exit 0", launcher_ok=True, flags=3, baked=True):
     stage = tmp_path / "stage"
     (stage / "python" / "bin").mkdir(parents=True)
     python = stage / "python" / "bin" / "python3.11"
@@ -25,6 +25,10 @@ def fake_pack(tmp_path, behaviour="echo PASS child; exit 0", launcher_ok=True):
     python.chmod(0o755)
     (stage / "launcher").mkdir()
     (stage / "launcher" / "astral_node_launch.py").write_text("ok" if launcher_ok else "fail")
+    (stage / "launcher" / "__pycache__").mkdir()
+    if baked:
+        (stage / "launcher" / "__pycache__" / "astral_node_launch.cpython-311.pyc").write_bytes(
+            b"\xa7\r\r\n" + flags.to_bytes(4, "little") + b"body")
     manifest = pm.write_manifest(stage, {"version": "1.0", "platform": "macos-arm64"})
     out = tmp_path / "out"
     out.mkdir()
@@ -103,3 +107,10 @@ def test_the_real_launcher_probe_runs_the_launcher_with_isolated_flags(tmp_path,
 def test_the_child_script_checks_the_interpreter_and_every_pack_module():
     assert "inside(sys.executable)" in rc.CHILD_SCRIPT and "sys.dont_write_bytecode" in rc.CHILD_SCRIPT
     assert {"astral_kernel", "rote", "astral_exec"} <= set(rc.MODULES + rc.BACKEND_MODULES)
+
+
+def test_a_pack_without_baked_or_with_unchecked_bytecode_is_reported(tmp_path):
+    out, _ = fake_pack(tmp_path / "none", baked=False)
+    assert any("no baked bytecode under launcher" in failure for failure in rc.check_pack(out))
+    out, _ = fake_pack(tmp_path / "timestamp", flags=0)
+    assert any("not checked-hash" in failure for failure in rc.check_pack(out))

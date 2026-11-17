@@ -135,6 +135,8 @@ def load_manifest(path: Path, descriptor: dict) -> dict:
         raise VerifyError(f"the manifest is unreadable: {error}") from error
     if manifest.get("version") != descriptor["version"] or manifest.get("platform") != descriptor["platform"]:
         raise VerifyError("the manifest does not match the descriptor")
+    if manifest.get("installed_bytes") != descriptor["installed_bytes"]:
+        raise VerifyError("the manifest size does not match the descriptor")
     return manifest
 
 
@@ -155,7 +157,7 @@ def install(location: str, pinned: str | None, into: Path) -> dict:
     staging.mkdir(parents=True)
     try:
         archive = staging / "pack.tar.gz"
-        archive.write_bytes(fetch(sibling(location, descriptor["archive"]["file"])))
+        archive.write_bytes(fetch(sibling(location, descriptor["archive"]["file"]), descriptor["archive"]["size"]))
         if archive.stat().st_size != descriptor["archive"]["size"]:
             raise VerifyError("the archive size does not match the descriptor")
         if pack_manifest.sha256_file(archive) != descriptor["archive"]["sha256"]:
@@ -181,7 +183,7 @@ def install(location: str, pinned: str | None, into: Path) -> dict:
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("descriptor", help="path or address of node-pack.json")
-    parser.add_argument("--sha256", help="SHA-256 the descriptor must have")
+    parser.add_argument("--sha256", required=True, help="SHA-256 the descriptor must have")
     parser.add_argument("--into", type=Path, required=True, help="empty or missing directory to receive the tree")
     arguments = parser.parse_args(argv)
     try:

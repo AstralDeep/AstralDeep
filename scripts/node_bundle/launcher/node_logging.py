@@ -3,6 +3,7 @@
 The launcher starts it before the orchestrator runs, so the log keeps filling while the supervising app is closed and the node keeps running.
 """
 
+import errno
 import os
 import re
 import threading
@@ -36,6 +37,8 @@ class RotatingFile:
         self.path = directory / name
         self.max_bytes = max_bytes
         self.backups = backups
+        self.failures: list[str] = []
+        self.reported = 0
         self.handle = self._open()
 
     def _open(self):
@@ -43,12 +46,23 @@ class RotatingFile:
         return os.fdopen(descriptor, "a", encoding="utf-8", errors="replace", buffering=1)
 
     def write(self, text: str) -> None:
-        if self.handle.tell() + len(text.encode("utf-8", "replace")) > self.max_bytes:
-            self.rotate()
-        self.handle.write(text)
+        try:
+            if self.handle is None:
+                self.handle = self._open()
+            if self.handle.tell() + len(text.encode("utf-8", "replace")) > self.max_bytes:
+                self.rotate()
+            self.handle.write(text)
+            if len(self.failures) > self.reported:
+                self.handle.write(f"[log write failed: {', '.join(self.failures[self.reported:])}]\n")
+                self.reported = len(self.failures)
+        except OSError as error:
+            code = errno.errorcode.get(error.errno or 0, "EIO")
+            if code not in self.failures:
+                self.failures.append(code)
 
     def rotate(self) -> None:
-        self.handle.close()
+        handle, self.handle = self.handle, None
+        handle.close()
         for index in range(self.backups, 0, -1):
             source = self.path if index == 1 else self.path.with_name(f"{self.path.name}.{index - 1}")
             if source.exists():

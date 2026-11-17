@@ -48,10 +48,19 @@ def test_a_good_pack_installs_and_reports_its_identity(tmp_path):
 
 def test_the_command_line_prints_the_result_and_reports_failures(tmp_path, capsys):
     path, _ = make_pack(tmp_path)
-    verify.main([str(path), "--into", str(tmp_path / "into")])
+    digest = pm.sha256_file(path)
+    verify.main([str(path), "--sha256", digest, "--into", str(tmp_path / "into")])
     assert json.loads(capsys.readouterr().out)["version"].startswith("3.11.18")
     with pytest.raises(SystemExit, match="node pack: .*not empty"):
+        verify.main([str(path), "--sha256", digest, "--into", str(tmp_path / "into")])
+
+
+def test_the_command_line_refuses_to_run_without_a_pinned_digest(tmp_path, capsys):
+    path, _ = make_pack(tmp_path)
+    with pytest.raises(SystemExit) as refusal:
         verify.main([str(path), "--into", str(tmp_path / "into")])
+    assert refusal.value.code == 2 and "--sha256" in capsys.readouterr().err
+    assert not (tmp_path / "into").exists()
 
 
 def test_a_pinned_digest_that_does_not_match_is_refused(tmp_path):
@@ -98,7 +107,7 @@ def test_an_archive_with_the_wrong_size_or_digest_is_refused(tmp_path):
     archive = path.parent / descriptor["archive"]["file"]
     original = archive.read_bytes()
     archive.write_bytes(original + b"x")
-    with pytest.raises(verify.VerifyError, match="size"):
+    with pytest.raises(verify.VerifyError, match="larger than"):
         verify.install(str(path), None, tmp_path / "one")
     archive.write_bytes(bytes([original[0] ^ 1]) + original[1:])
     with pytest.raises(verify.VerifyError, match="SHA-256"):
@@ -222,3 +231,10 @@ def test_a_descriptor_can_be_read_through_a_file_address(tmp_path):
     path, descriptor = make_pack(tmp_path)
     result = verify.install(path.as_uri(), None, tmp_path / "into")
     assert result["version"] == descriptor["version"]
+
+
+def test_an_installed_size_that_disagrees_with_the_manifest_is_refused(tmp_path):
+    path, descriptor = make_pack(tmp_path)
+    rewrite(path, installed_bytes=descriptor["installed_bytes"] + 1)
+    with pytest.raises(verify.VerifyError, match="manifest size"):
+        verify.install(str(path), None, tmp_path / "into")

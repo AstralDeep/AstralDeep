@@ -15,6 +15,8 @@ import verify
 
 SPACED_NAME = "relocated copy"
 CHILD_ENV = {"PATH": "/usr/bin:/bin"}
+BAKED_ROOTS = ("python/lib/python3.11", "app/backend", "launcher")
+CHECKED_HASH_FLAGS = 0b11
 MODULES = ("astral_kernel", "rote", "astralplane", "astralprojection", "astralprims", "lets")
 BACKEND_MODULES = ("astral_exec", "orchestrator.orchestrator")
 CHILD_TIMEOUT = 300
@@ -70,6 +72,21 @@ def bytecode_files(root: Path) -> set[str]:
     return {path.relative_to(root).as_posix() for path in root.rglob("__pycache__/*")}
 
 
+def baked_bytecode_problems(root: Path) -> list[str]:
+    problems = []
+    for relative in BAKED_ROOTS:
+        if not (root / relative).is_dir():
+            continue
+        caches = sorted((root / relative).rglob("__pycache__/*.pyc"))
+        if not caches:
+            problems.append(f"no baked bytecode under {relative}")
+        problems += [
+            f"bytecode is not checked-hash: {cache.relative_to(root).as_posix()}"
+            for cache in caches if int.from_bytes(cache.read_bytes()[4:8], "little") != CHECKED_HASH_FLAGS
+        ]
+    return problems
+
+
 def run_child(root: Path, modules: tuple, backend_modules: tuple) -> subprocess.CompletedProcess:
     return subprocess.run(
         [str(root / "python" / "bin" / "python3.11"), "-I", "-B", "-c", CHILD_SCRIPT, str(root),
@@ -89,10 +106,13 @@ def run_launcher_help(root: Path) -> subprocess.CompletedProcess:
 def check_pack(source: Path, modules: tuple = MODULES, backend_modules: tuple = BACKEND_MODULES) -> list[str]:
     with tempfile.TemporaryDirectory(prefix="node-pack-relocation-") as scratch:
         root, manifest = locate_pack(source, Path(scratch))
+        problems = baked_bytecode_problems(root)
+        print(f"{'PASS' if not problems else 'FAIL'} baked bytecode is present and checked-hash")
         cached = bytecode_files(root)
         child = run_child(root, modules, backend_modules)
         print(child.stdout, end="")
-        failures = [] if child.returncode == 0 else [f"child exited {child.returncode}: {child.stderr.strip()[-400:]}"]
+        failures = problems[: verify.PROBLEM_LIMIT]
+        failures += [] if child.returncode == 0 else [f"child exited {child.returncode}: {child.stderr.strip()[-400:]}"]
         launcher = run_launcher_help(root)
         print(f"{'PASS' if launcher.returncode == 0 else 'FAIL'} launcher --help")
         if launcher.returncode != 0:

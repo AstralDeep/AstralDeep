@@ -1,5 +1,6 @@
 """Checks secret redaction and size rotation of the node log."""
 
+import errno
 import os
 import time
 
@@ -78,3 +79,63 @@ def test_log_pump_redacts_buffered_input_without_replacing_test_descriptors(tmp_
         assert "[redacted]" in text
     finally:
         sink.handle.close()
+
+
+class FlakyHandle:
+    def __init__(self, real):
+        self.real = real
+
+    def tell(self):
+        return self.real.tell()
+
+    def write(self, text):
+        if "bad" in text:
+            raise OSError(errno.ENOSPC, "no space")
+        return self.real.write(text)
+
+    def close(self):
+        self.real.close()
+
+
+def test_a_failing_log_write_is_recorded_once_by_code_and_the_pump_keeps_draining(tmp_path, monkeypatch):
+    read_end, write_end = os.pipe()
+    os.write(write_end, b"first\nbad one\nbad two\nlast\n")
+    real_open = nl.RotatingFile._open
+    monkeypatch.setattr(nl.RotatingFile, "_open", lambda self: FlakyHandle(real_open(self)))
+    monkeypatch.setattr(nl.os, "pipe", lambda: (read_end, write_end))
+    monkeypatch.setattr(nl.os, "dup2", lambda source, target: None)
+
+    class ImmediateThread:
+        def __init__(self, *, target, name, daemon):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr(nl.threading, "Thread", ImmediateThread)
+    sink = nl.capture_output(tmp_path / "logs", [])
+    sink.handle.close()
+    text = sink.path.read_text()
+    assert sink.failures == ["ENOSPC"]
+    assert "first" in text and "last" in text and "bad" not in text.replace("[log write failed", "")
+    assert text.count("[log write failed: ENOSPC]") == 1
+
+
+def test_a_failed_rotation_is_recorded_and_writing_resumes_on_the_next_line(tmp_path, monkeypatch):
+    sink = nl.RotatingFile(tmp_path / "logs", "node.log", max_bytes=10, backups=2)
+    sink.write("12345678\n")
+    real_replace = os.replace
+    calls = []
+
+    def replace(source, target):
+        calls.append(source)
+        if len(calls) == 1:
+            raise OSError(errno.EACCES, "denied")
+        real_replace(source, target)
+
+    monkeypatch.setattr(nl.os, "replace", replace)
+    sink.write("abcdefgh\n")
+    assert sink.failures == ["EACCES"] and sink.handle is None
+    sink.write("recovered\n")
+    sink.handle.close()
+    assert "recovered" in sink.path.read_text()

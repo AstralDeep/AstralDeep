@@ -94,6 +94,7 @@ def write_archive(root: Path, archive: Path) -> dict:
     ):
         for name in names:
             path = root / name
+            bundle.inodes.clear()
             info = bundle.gettarinfo(str(path), arcname=name)
             info.uid = info.gid = 0
             info.uname = info.gname = ""

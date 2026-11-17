@@ -37,10 +37,12 @@ def assembly(tmp_path, monkeypatch):
                  "lib/python3.11/lib-dynload/_tkinter.so", "share/a", "include/a",
                  "lib/python3.11/__pycache__/stale.pyc"):
         write(runtime, "python/" + name)
+    write(runtime, "python/lib/python3.11/site-packages/pip-24.0.dist-info/METADATA")
+    write(runtime, "python/lib/python3.11/site-packages/pipdeptree-1.0.dist-info/METADATA")
     write(runtime, "python/lib/python3.11/site-packages/kept/__init__.py")
     write(runtime, "python/lib/python3.11/site-packages/kept-1.0.dist-info/direct_url.json", b"{}")
     write(runtime, "python/lib/python3.11/site-packages/kept-1.0.dist-info/RECORD",
-          b"kept/__init__.py,,\nkept-1.0.dist-info/direct_url.json,,\n")
+          b"kept/__init__.py,,\nkept-1.0.dist-info/direct_url.json,,\n../../../bin/pip3,sha256=zz,9\n")
     archive = tmp_path / "python.tar.gz"
     with tarfile.open(archive, "w:gz") as bundle:
         bundle.add(runtime / "python", arcname="python")
@@ -68,13 +70,15 @@ def assembly(tmp_path, monkeypatch):
         "artifacts": [{"path": wheel.name, "bytes": 7, "sha256": pm.sha256_file(wheel)}],
     }).encode())
     mailbox = write(tmp_path, "mailbox/astral-mailbox-macos-aarch64", mode=0o755)
-    monkeypatch.setattr(ap, "load_pins", lambda: settings)
+    monkeypatch.setattr(ap, "load_pins", lambda *a: settings)
     monkeypatch.setattr(ap, "download_python", lambda *a: archive)
     monkeypatch.setattr(ap, "git", lambda *a: "1700000000")
 
     def export_deep(repo, destination):
         destination.mkdir(parents=True)
         write(destination, "config/astral-composition.json", json.dumps({"components": components}).encode())
+        write(destination, "scripts/node_bundle/node-requirements.macos-arm64.lock", b"node-lock")
+        write(destination, "scripts/node_bundle/build-requirements.lock", b"build-lock")
         for path in ("backend/orchestrator/orchestrator.py", "backend/data/private.bin", "backend/requirements.txt",
                      "backend/tests/test_x.py", "backend/agents/tests/test_y.py", "backend/__pycache__/stale.pyc",
                      "backend/astral_exec/run.py", "scripts/node/node.py", "pyproject.toml", ".gitmodules",
@@ -90,14 +94,16 @@ def assembly(tmp_path, monkeypatch):
     monkeypatch.setattr(ap, "export_component", export_component)
     commands = []
     failure = {"step": None}
-    installed = [["kept", "1.0"]]
+    installed = []
 
     def external(command, **kwargs):
         commands.append((command, kwargs.get("env")))
         if failure["step"] is not None and failure["step"] in command:
             raise subprocess.CalledProcessError(1, command)
         if "importlib.metadata" in " ".join(command):
-            return SimpleNamespace(stdout=json.dumps(installed))
+            site = Path(command[0]).parent.parent / "lib" / "python3.11" / "site-packages"
+            listing = [info.name[: -len(".dist-info")].rsplit("-", 1) for info in site.glob("*.dist-info")]
+            return SimpleNamespace(stdout=json.dumps(sorted(listing + installed)))
         if "wheel" in command:
             write(Path(command[command.index("-w") + 1]), "external-1.0-py3-none-any.whl")
         if "build" in command:
@@ -132,7 +138,8 @@ def test_assembly_seals_only_verified_runtime_and_source_inputs(assembly):
     assert descriptor["manifest_sha256"] == pm.sha256_file(output / "node-pack-manifest.json")
     assert manifest["files"] and manifest["deep"]["commit"] == "2" * 40
     assert set(manifest["components"]) == set(ap.COMPONENT_BUILD_ORDER)
-    assert manifest["installed_distributions"] == [{"name": "kept", "version": "1.0"}]
+    assert manifest["installed_distributions"] == [{"name": "kept", "version": "1.0"},
+                                                   {"name": "pipdeptree", "version": "1.0"}]
     assert manifest["kernel"]["commit"] == assembly.settings["kernel"]["commit"]
     assert manifest["kernel"]["mailbox"]["sha256"] == pm.sha256_file(assembly.mailbox)
     assert manifest["version"] == "3.11.18-22222222-1111111"
@@ -141,10 +148,13 @@ def test_assembly_seals_only_verified_runtime_and_source_inputs(assembly):
     assert "app/backend/orchestrator/orchestrator.py" in names and "app/backend/astral_exec/run.py" in names
     assert "bin/astral-mailbox" in names and "launcher/astral_node_launch.py" in names
     assert not any("/tests/" in path or "/data/" in path or "__pycache__" in path for path in names)
-    assert not any(path.startswith("python/lib/python3.11/site-packages/pip") for path in names)
+    site = "python/lib/python3.11/site-packages/"
+    assert not any(path.startswith((site + "pip/", site + "pip-")) for path in names)
+    assert site + "pipdeptree-1.0.dist-info/METADATA" in names
     assert not any(path.endswith("direct_url.json") for path in names)
     assert "python/bin/helper" not in names
-    assert "kept-1.0.dist-info/direct_url.json" not in (work / "stage" / "python/lib/python3.11/site-packages/kept-1.0.dist-info/RECORD").read_text()
+    record = (work / "stage" / "python/lib/python3.11/site-packages/kept-1.0.dist-info/RECORD").read_text()
+    assert record == "kept/__init__.py,,\n"
     commands = [command for command, _ in assembly.commands]
     build_step = next(i for i, command in enumerate(commands) if "build" in command)
     install = next(i for i, command in enumerate(commands) if "install" in command and "--lock" in command)

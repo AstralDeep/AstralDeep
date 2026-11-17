@@ -3,6 +3,7 @@ It reads pins.json and the hashed locks beside it, and writes into one output di
 """
 
 import argparse
+import csv
 import json
 import os
 import re
@@ -149,8 +150,11 @@ def prune_backend(backend: Path, exclusions: list[dict]) -> None:
 def prune_python(python_root: Path) -> None:
     site = python_root / "lib" / "python3.11" / "site-packages"
     for name in PRUNED_SITE_PACKAGES:
-        for match in site.glob(f"{name}*"):
-            shutil.rmtree(match) if match.is_dir() else match.unlink()
+        for match in (site / name, *site.glob(f"{name}-*.dist-info")):
+            if match.is_dir():
+                shutil.rmtree(match)
+            elif match.exists():
+                match.unlink()
     for entry in (python_root / "bin").iterdir():
         if not entry.name.startswith("python"):
             entry.unlink()
@@ -176,6 +180,15 @@ def strip_install_origins(site_packages: Path) -> None:
         if record.is_file():
             lines = [line for line in record.read_text().splitlines() if line.split(",")[0] != f"{origin.parent.name}/direct_url.json"]
             record.write_text("\n".join(lines) + "\n")
+
+
+def prune_records(site_packages: Path) -> None:
+    for record in sorted(site_packages.glob("*.dist-info/RECORD")):
+        with record.open(newline="") as handle:
+            rows = list(csv.reader(handle))
+        kept = [row for row in rows if row and os.path.lexists(os.path.normpath(site_packages / row[0]))]
+        with record.open("w", newline="") as handle:
+            csv.writer(handle, lineterminator="\n").writerows(kept)
 
 
 def copy_launcher(stage: Path, source_root: Path) -> None:
@@ -259,15 +272,6 @@ def build_environment(epoch: str) -> dict:
 
 def assemble(platform: str, output: Path, kernel_dir: Path, work: Path, mailbox: Path | None = None,
              repo: Path = REPO) -> Path:
-    pins = load_pins()
-    if platform not in pins["platforms"]:
-        raise PackError(f"{platform} packs are not built yet")
-    target = pins["platforms"][platform]
-    require_full_pin(pins["kernel"]["commit"])
-    kernel = read_kernel_artifacts(kernel_dir, pins, target["kernel_artifacts"])
-    if mailbox is not None and not mailbox.is_file():
-        raise PackError(f"{mailbox} is not a file")
-
     stage = work / "stage"
     shutil.rmtree(stage, ignore_errors=True)
     app = stage / "app"
@@ -275,6 +279,15 @@ def assemble(platform: str, output: Path, kernel_dir: Path, work: Path, mailbox:
     shutil.rmtree(components_root, ignore_errors=True)
 
     deep_commit = export_deep(repo, components_root)
+    recipe = components_root / "scripts" / "node_bundle"
+    pins = load_pins(recipe / "pins.json")
+    if platform not in pins["platforms"]:
+        raise PackError(f"{platform} packs are not built yet")
+    target = pins["platforms"][platform]
+    require_full_pin(pins["kernel"]["commit"])
+    kernel = read_kernel_artifacts(kernel_dir, pins, target["kernel_artifacts"])
+    if mailbox is not None and not mailbox.is_file():
+        raise PackError(f"{mailbox} is not a file")
     environment = build_environment(git(repo, "log", "-1", "--format=%ct", deep_commit))
     composition = json.loads((components_root / "config" / "astral-composition.json").read_text())
     component_inputs = {}
@@ -291,8 +304,8 @@ def assemble(platform: str, output: Path, kernel_dir: Path, work: Path, mailbox:
     python_root = stage / "python"
     python = python_root / "bin" / "python3.11"
 
-    node_lock = HERE / target["node_lock"]
-    build_lock = HERE / "build-requirements.lock"
+    node_lock = recipe / target["node_lock"]
+    build_lock = recipe / "build-requirements.lock"
     tooling = work / "build-venv"
     shutil.rmtree(tooling, ignore_errors=True)
     run([python, "-m", "venv", tooling], env=environment)
@@ -315,10 +328,12 @@ def assemble(platform: str, output: Path, kernel_dir: Path, work: Path, mailbox:
          *sorted(wheelhouse.glob("*.whl")), kernel["wheel"]], env=environment)
     run([python, installer, "install", "--root", components_root, "--lock", lock], env=environment)
     run([python, installer, "verify", "--root", components_root, "--lock", lock], env=environment)
+    prune_python(python_root)
+    site_packages = python_root / "lib" / "python3.11" / "site-packages"
+    strip_install_origins(site_packages)
+    prune_records(site_packages)
     distributions = installed_distributions(python)
     verify_exclusions(distributions, pins["excluded_packages"])
-    prune_python(python_root)
-    strip_install_origins(python_root / "lib" / "python3.11" / "site-packages")
 
     for relative in APP_PARTS:
         source = components_root / relative

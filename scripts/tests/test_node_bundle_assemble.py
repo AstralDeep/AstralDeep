@@ -2,11 +2,14 @@
 
 import hashlib
 import json
+import os
 import subprocess
 import sys
+import tarfile
 
 import pytest
 from node_bundle_support import assemble as ap
+from node_bundle_support import manifest as pm
 
 
 def repository(path, files=None):
@@ -141,6 +144,30 @@ def test_install_origins_are_removed_and_dropped_from_the_record(tmp_path):
     assert (dist / "RECORD").read_text() == "pkg/__init__.py,sha256=x,1\n"
 
 
+def test_records_drop_lines_for_files_the_pack_no_longer_holds(tmp_path):
+    dist = tmp_path / "pkg-1.0.dist-info"
+    dist.mkdir()
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "__init__.py").write_text("")
+    (dist / "RECORD").write_text(
+        'pkg/__init__.py,sha256=a,1\n"pkg/odd,name.py",sha256=b,2\n../../../bin/pkg-cli,sha256=c,3\n'
+        "pkg/__pycache__/x.cpython-311.pyc,,\npkg-1.0.dist-info/RECORD,,\n")
+    (dist / "METADATA").write_text("")
+    ap.prune_records(tmp_path)
+    assert (dist / "RECORD").read_text() == "pkg/__init__.py,sha256=a,1\npkg-1.0.dist-info/RECORD,,\n"
+
+
+def test_packaging_tools_are_pruned_by_exact_name_and_their_own_metadata_only(tmp_path):
+    site = tmp_path / "lib" / "python3.11" / "site-packages"
+    for name in ("pip", "pip-24.0.dist-info", "pipdeptree", "pipdeptree-1.0.dist-info", "wheel", "wheel-0.45.dist-info",
+                 "wheelhouse", "setuptools-80.dist-info"):
+        (site / name).mkdir(parents=True)
+    (site / "distutils-precedence.pth").write_text("")
+    (tmp_path / "bin").mkdir()
+    ap.prune_python(tmp_path)
+    assert sorted(path.name for path in site.iterdir()) == ["pipdeptree", "pipdeptree-1.0.dist-info", "wheelhouse"]
+
+
 def test_every_launcher_module_is_copied_into_the_pack(tmp_path):
     ap.copy_launcher(tmp_path, ap.HERE / "launcher")
     copied = sorted(path.name for path in (tmp_path / "launcher").iterdir())
@@ -185,7 +212,7 @@ def test_baked_bytecode_is_hash_checked_relocatable_and_leaves_no_cache_on_a_no_
         [sys.executable, "-I", "-B", "-c", "import sys; sys.path.insert(0, sys.argv[1]); import mod, extra",
          str(stage / "app" / "backend")], capture_output=True, text=True, check=False)
     assert result.returncode == 0, result.stderr
-    assert not (stage / "app" / "backend" / "__pycache__" / "extra.cpython-311.pyc").exists() or sys.version_info < (3, 11)
+    assert not (stage / "app" / "backend" / "__pycache__" / "extra.cpython-311.pyc").exists()
     assert len(sorted(stage.rglob("*.pyc"))) == 4
 
 
@@ -214,3 +241,15 @@ def test_kernel_receipts_are_checked_for_commit_kind_target_and_wheel_digest(tmp
     path.unlink()
     with pytest.raises(ap.PackError, match="readable"):
         ap.read_kernel_artifacts(tmp_path, pins, spec)
+
+
+def test_the_archive_holds_hard_linked_files_as_regular_members(tmp_path):
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    (stage / "one.txt").write_text("same")
+    os.link(stage / "one.txt", stage / "two.txt")
+    pm.write_manifest(stage, {"version": "1"})
+    pm.write_archive(stage, tmp_path / "pack.tar.gz")
+    with tarfile.open(tmp_path / "pack.tar.gz") as bundle:
+        kinds = {member.name: member.type for member in bundle.getmembers()}
+    assert kinds["one.txt"] == kinds["two.txt"] == tarfile.REGTYPE
