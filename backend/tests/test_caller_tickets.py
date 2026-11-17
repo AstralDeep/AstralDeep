@@ -614,3 +614,135 @@ def test_a2a_tasks_are_scoped_to_the_ticket_and_not_shared_across_tickets():
     second = A2APrincipal(caller_tickets.claims_for("mesh.owner", NS(id="b", label="y", tools=[]), "astral-a2a"), "")
     assert (first.user_name, second.user_name) == ("caller:a", "caller:b")
     assert A2APrincipal({"sub": "u"}, "t").user_name == "sub:u"
+
+
+async def test_a_name_two_agents_share_cannot_be_covered_and_runs_nothing(tmp_path, monkeypatch):
+    async with served(tmp_path, monkeypatch) as door:
+        door.host.agent_cards["other-1"] = AgentCard(name="Other", description="x", agent_id="other-1", skills=[skill("read_value")])
+        door.host.agents["other-1"] = door.host.local_agents["other-1"] = object()
+        ticket = door.mint(["read_value"])
+        for name, code in (("read_value", "caller.tool_unavailable"), ("weather-1__read_value", "caller.tool_not_covered")):
+            response = await door.call_tool(ticket, name)
+            assert (response.status_code, code_of(response)) == (403, code), name
+        with pytest.raises(ak.KernelError):
+            door.mint(["weather-1__read_value"])
+        assert door.host.calls == []
+
+
+async def test_a_covered_call_after_a_restart_is_refused_until_the_catalog_is_republished(tmp_path, monkeypatch):
+    async with served(tmp_path, monkeypatch) as door:
+        ticket = door.mint(["read_value"])
+        door.mesh.node._published_definitions = {}
+        refused = await door.call_tool(ticket, "read_value")
+        assert (refused.status_code, code_of(refused)) == (403, "caller.tool_changed")
+        assert door.host.calls == []
+        await door.mesh.node.publish_tool_catalog(door.host.published(node_identity.bound_mesh_owner()))
+        assert (await door.call_tool(ticket, "read_value")).status_code == 200
+
+
+async def test_the_ticketed_principal_carries_no_scope_claim_and_the_tool_list_decides(tmp_path, monkeypatch):
+    async with served(tmp_path, monkeypatch) as door:
+        ticket = door.mint(["write_value"])
+        assert tool_names(await door.call_mcp(ticket, "tools/list")) == ["write_value"]
+        assert (await door.call_tool(ticket, "write_value")).status_code == 200
+        claims = door.host.calls[-1]["claims"]
+        assert not {"scope", "scp", "_framework_scopes"} & set(claims)
+        refused = await door.call_tool(ticket, "read_value")
+        assert (refused.status_code, code_of(refused)) == (403, "caller.tool_not_covered")
+
+
+def ticketed_orchestrator(orchestrator_factory, covered: str = "read_value") -> Orchestrator:
+    orch = orchestrator_factory()
+    orch.tool_permissions.is_tool_allowed = lambda *_: True
+    orch.tool_permissions.get_enabled_scope_names = lambda *_: ["tools:read", "tools:write"]
+    orch.tool_permissions.get_tool_scope = lambda _agent, tool: "tools:write" if tool == "write_value" else "tools:read"
+    orch.tool_permissions.get_tool_scope_map = lambda _agent: {"read_value": "tools:read", "write_value": "tools:write", "peer_tool": "tools:read"}
+    orch.local_agents[AGENT] = object()
+    orch.agent_cards[AGENT] = AgentCard(
+        name="Weather", description="reads", agent_id=AGENT,
+        skills=[skill("read_value"), skill("write_value", "tools:write")],
+    )
+    orch.local_agents["peer-1"] = object()
+    orch.agent_cards["peer-1"] = AgentCard(name="Peer", description="x", agent_id="peer-1", skills=[skill("peer_tool")])
+    return orch
+
+
+def ticket_claims() -> Dict[str, Any]:
+    return caller_tickets.claims_for(OWNER_ID, NS(id="c1", label="Nightly", tools=["read_value"]), "astral-mcp")
+
+
+async def test_the_delegation_token_of_a_ticketed_call_names_only_that_tool(orchestrator_factory):
+    from orchestrator import delegation as dg
+
+    orch = ticketed_orchestrator(orchestrator_factory)
+    session = {**ticket_claims(), "_invocation_channel": "mcp"}
+    await orch._bind_caller_call(session, AGENT, "read_value")
+    token = await orch._mint_mcp_delegation_token(AGENT, OWNER_ID, session)
+    scopes = dg.decode_token_payload(token)["scope"].split()
+    assert scopes == ["tools:read", "tool:read_value"]
+
+
+async def test_a_ticketed_call_is_bound_to_its_tool_scope_and_definition(orchestrator_factory):
+    from orchestrator.chain_authority import machine_scope_ceiling, machine_tool_admitted
+
+    orch = ticketed_orchestrator(orchestrator_factory)
+    session = {**ticket_claims(), "_invocation_channel": "mcp"}
+    await orch._bind_caller_call(session, AGENT, "read_value")
+    assert machine_scope_ceiling(session) == frozenset({"tools:read"})
+    assert machine_tool_admitted(orch, session, AGENT, "read_value") is True
+    assert machine_tool_admitted(orch, session, AGENT, "write_value") is False
+    assert machine_tool_admitted(orch, session, "peer-1", "read_value") is False
+    orch.agent_cards[AGENT].skills[0].description = "changed"
+    assert machine_tool_admitted(orch, session, AGENT, "read_value") is False
+    unscoped = {**ticket_claims(), "_caller_bound_tool": ("a", "b")}
+    assert machine_scope_ceiling(unscoped) == frozenset()
+    assert machine_tool_admitted(orch, unscoped, "a", "b") is False
+    orch.tool_permissions.get_tool_scope = lambda *_: (_ for _ in ()).throw(RuntimeError("scope unavailable"))
+    failed = {**ticket_claims()}
+    await orch._bind_caller_call(failed, AGENT, "read_value")
+    assert machine_scope_ceiling(failed) == frozenset()
+
+
+async def test_a_chained_hop_from_a_ticketed_call_is_refused_and_the_uncovered_tool_never_runs(orchestrator_factory):
+    from orchestrator import delegation as dg
+    from shared.feature_flags import flags
+    from shared.protocol import AgentHopRequest
+
+    orch = ticketed_orchestrator(orchestrator_factory)
+    orch._execute_with_retry = AsyncMock(return_value=MCPResponse(result="ran"))
+    session = {**ticket_claims(), "_invocation_channel": "mcp"}
+    await orch._bind_caller_call(session, AGENT, "read_value")
+    invocation = object()
+    orch.ui_sessions[invocation] = session
+    token = await orch._mint_mcp_delegation_token(AGENT, OWNER_ID, session)
+    orch._register_dispatch_context(
+        "req-a", AGENT, {"user_id": OWNER_ID, "session_id": "c1", "_delegation_token": token}, invocation)
+    prior = flags._flags.get("recursive_delegation")
+    flags._flags["recursive_delegation"] = True
+    try:
+        future = asyncio.get_running_loop().create_future()
+        ws = NS(_hop_futures={"hop-1": future})
+        await orch._handle_agent_hop_request(ws, AgentHopRequest(
+            request_id="hop-1", parent_request_id="req-a", initiator_agent_id=AGENT,
+            callee_agent_id="peer-1", tool_name="peer_tool", arguments={}))
+        response = await asyncio.wait_for(future, timeout=2)
+    finally:
+        flags._flags["recursive_delegation"] = prior
+    assert response.result is None and "caller ticket" in response.error["message"]
+    orch._execute_with_retry.assert_not_awaited()
+    assert dg.decode_token_payload(token)["scope"].split() == ["tools:read", "tool:read_value"]
+
+
+async def test_the_real_dispatch_of_a_ticketed_call_sends_the_agent_a_token_for_that_tool_only(orchestrator_factory, monkeypatch):
+    monkeypatch.setenv("DELEGATION_REQUIRED", "true")
+    orch = ticketed_orchestrator(orchestrator_factory)
+    orch.delegation.agent_service_client_id = "agent-service"
+    orch._map_file_paths = lambda _chat, arguments, **_: arguments
+    orch.credential_manager.get_agent_credentials_encrypted = lambda *_: None
+    orch._execute_with_retry = AsyncMock(return_value=MCPResponse(result={"ok": True}))
+    ran = await orch.execute_mcp_tool(
+        claims=ticket_claims(), user_id=OWNER_ID, agent_id=AGENT, tool_name="read_value", arguments={})
+    assert ran.error is None and orch._execute_with_retry.await_count == 1
+    sent = orch._execute_with_retry.await_args.args[3]["_delegation_token"]
+    from orchestrator import delegation as dg
+    assert dg.decode_token_payload(sent)["scope"].split() == ["tools:read", "tool:read_value"]

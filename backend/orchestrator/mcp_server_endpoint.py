@@ -738,6 +738,7 @@ def create_mcp_router(orchestrator: Any, *, public_base_url: str) -> APIRouter:
             required_scopes = _METHOD_SCOPE.get(method, ("mcp:discover",))
             try:
                 if node_identity.is_personal():
+                    # why: _validate_headers_and_metadata already required a tools/call name here
                     claims = await authorize_mcp_caller(
                         request, body, method=method, required_scopes=required_scopes,
                         tool=payload.get("params", {}).get("name"),

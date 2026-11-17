@@ -147,6 +147,7 @@ async def dispatch_refusal(orchestrator: Any, claims: Dict[str, Any], projected:
     mesh = node_mesh.current()
     if projected is None or mesh is None:
         return TOOL_UNAVAILABLE
+    # why: the kernel covers the name the caller sent, so a collision-qualified projected name can never match a published tool
     entry = (await asyncio.to_thread(OrchestratorCalls(orchestrator).catalog, claims["sub"])).get(
         (projected.agent_id, projected.skill_id)
     )
