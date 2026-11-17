@@ -55,6 +55,9 @@ Phase R holds the work and lands before phase 8.
 | TO.6 | Complete every live sign-in and key entry, and every Touch ID prompt, during verification | Each *(live)* task |
 | TO.7 | Approve the PHI accuracy measure proposed in T5.3 | Phase 5 |
 | TO.8 | Review the phase 8 product pass findings and rule on any that change a decision | Phase 8 |
+| TO.R1 | Advance `RELEASE_TRUSTED_BUILDER_SHA` to a post-move Deep commit, then point `release-apple-evidence-normalizer.yml` and `release-readiness.yml` at `contracts/composition-manifest-v2.schema.json` | Release lane activation |
+| TO.R2 | Decide whether the bounty list in the site's `data/config.json` and the README's "five core repositories" drop AstralPlane | Before the next bounty award |
+| TO.R3 | Confirm the four archived repositories stay archived with their pointer READMEs, and that the Vessel Pages switch needs no reversal | Phase R landing |
 
 ## Phase 0: spikes
 

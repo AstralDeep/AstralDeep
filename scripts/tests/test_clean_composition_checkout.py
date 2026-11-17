@@ -165,5 +165,5 @@ def test_clean_checkout_initializes_exact_offline_composition(tmp_path: Path) ->
         timeout=30,
     )
     assert verification.returncode == 0, verification.stderr
-    assert "five exact clean component pins" in verification.stdout
+    assert "four exact clean component pins" in verification.stdout
     assert _git("status", "--porcelain", cwd=checkout, environment=environment) == ""

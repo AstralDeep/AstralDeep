@@ -17,7 +17,7 @@ classifiers = [
 ]
 
 [project.urls]
-Repository = "https://github.com/AstralDeep/AstralPlane"
+Repository = "https://github.com/AstralDeep/AstralDeep/tree/main/plane"
 
 [dependency-groups]
 ci = [
