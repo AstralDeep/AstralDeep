@@ -1,12 +1,11 @@
 """BFF auth proxy and JWT verification for the REST API: exchanges OIDC tokens with
 Keycloak without exposing the client_secret to the browser, and supplies the
-require_user_id/verify_admin dependencies most orchestrator routes use.
+require_user_id/verify_admin dependencies and the personal-node bearer and sign-in refusals.
 """
 
 import asyncio
 import os
 import logging
-import json
 import time
 from typing import Dict, List, Optional
 
@@ -19,13 +18,17 @@ from fastapi.routing import APIRoute
 from jose import jwt as jose_jwt  # noqa: F401  (read as auth.jose_jwt by human_request_authority)
 
 import shared  # noqa: F401
+from shared import node_identity
 
 logger = logging.getLogger("AuthProxy")
 
-if os.getenv("USE_MOCK_AUTH", "").lower() == "true":
-    logger.info("Mock auth ENABLED — all tokens accepted as test_user with roles [admin, user]")
-else:
-    logger.info("Mock auth disabled — Keycloak JWKS validation active")
+NODE_BEARER_REFUSED = "node.bearer_refused"
+NODE_SIGN_IN_UNAVAILABLE = "node.sign_in_unavailable"
+NODE_CALLER_SCHEME = "AstralCaller"
+
+
+def node_caller_challenge(realm: str, error: str = NODE_BEARER_REFUSED) -> str:
+    return f'{NODE_CALLER_SCHEME} realm="{realm}", error="{error}"'
 
 class _NativeCustodyRoute(APIRoute):
     def get_route_handler(self):
@@ -45,6 +48,19 @@ class _NativeCustodyRoute(APIRoute):
 
 
 auth_router = APIRouter(route_class=_NativeCustodyRoute)
+
+
+def refuse_node_bearer() -> None:
+    if node_identity.is_personal():
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=NODE_BEARER_REFUSED)
+
+
+def refuse_node_sign_in() -> None:
+    if node_identity.is_personal():
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=NODE_SIGN_IN_UNAVAILABLE)
+
+
+_SIGN_IN_CLOSED = [Depends(refuse_node_sign_in)]
 
 
 def _get_keycloak_config():
@@ -118,6 +134,7 @@ async def _audit_token_proxy(action: str, description: str) -> None:
         "set, a server-pinned client_id, and a per-IP rate limit."
     ),
     deprecated=True,
+    dependencies=_SIGN_IN_CLOSED,
 )
 async def proxy_token(request: Request):
     from orchestrator import native_session_custody
@@ -211,6 +228,7 @@ def _reject_non_first_party(payload: dict) -> None:
 
 
 async def get_current_user_payload(request: Request, credentials: HTTPAuthorizationCredentials = Depends(security)):
+    refuse_node_bearer()
     if request.method == "OPTIONS":
         return {}
         
@@ -233,55 +251,6 @@ async def get_current_user_payload(request: Request, credentials: HTTPAuthorizat
         request.state.delegation_subject_token = token
     except Exception:
         pass
-    if os.getenv("USE_MOCK_AUTH", "").lower() == "true":
-        if token == "dev-token":
-            mock_payload = {
-                "sub": "test_user",
-                "preferred_username": "test_user",
-                "email": "test_user@local",
-                "realm_access": {"roles": ["admin", "user"]},
-                "resource_access": {
-                    "astral-frontend": {"roles": ["admin", "user"]}
-                }
-            }
-            try:
-                request.state.audit_claims = mock_payload
-            except Exception:
-                pass
-            return mock_payload
-        decoded = None
-        try:
-            import base64
-            parts = token.split('.')
-            if len(parts) == 3:
-                payload_b64 = parts[1]
-                payload_b64 += '=' * ((4 - len(payload_b64) % 4) % 4)
-                payload_json = base64.b64decode(payload_b64).decode('utf-8')
-                decoded = json.loads(payload_json)
-        except Exception as e:
-            logger.debug(f"Mock JWT decode failed, falling back to default test_user: {e}")
-        if isinstance(decoded, dict):
-            _reject_non_first_party(decoded)
-            try:
-                request.state.audit_claims = decoded
-            except Exception:
-                pass
-            return decoded
-        fallback = {
-            "sub": "test_user",
-            "preferred_username": "test_user",
-            "email": "test_user@local",
-            "realm_access": {"roles": ["admin", "user"]},
-            "resource_access": {
-                "astral-frontend": {"roles": ["admin", "user"]}
-            }
-        }
-        try:
-            request.state.audit_claims = fallback
-        except Exception:
-            pass
-        return fallback
-    
     payload = await verify_production_token(token)
     try:
         request.state.audit_claims = payload
@@ -291,6 +260,7 @@ async def get_current_user_payload(request: Request, credentials: HTTPAuthorizat
 
 
 async def verify_production_token(token: str) -> dict:
+    refuse_node_bearer()
     authority, client_id, _ = _get_keycloak_config()
     if not authority or not client_id:
         raise HTTPException(status_code=500, detail="Auth not configured")
@@ -353,6 +323,7 @@ async def _capture_native_logout(request: Request):
         "be an allow-listed first-party client (KEYCLOAK_ALLOWED_AZP) because "
         "Keycloak only revokes a token for its issuing client."
     ),
+    dependencies=_SIGN_IN_CLOSED,
 )
 async def native_logout(request: Request,
                         custody=Depends(_capture_native_logout),
@@ -447,6 +418,7 @@ async def _json_body(request: Request) -> dict:
     "/api/auth/device/start",
     tags=["Auth"],
     summary="Begin a device (watch) sign-in: backend-generated QR + short code",
+    dependencies=_SIGN_IN_CLOSED,
 )
 async def device_login_start(request: Request):
     from orchestrator import device_login
@@ -470,6 +442,7 @@ async def device_login_start(request: Request):
     "/api/auth/device/poll",
     tags=["Auth"],
     summary="Poll a pending device sign-in (server-authoritative pacing)",
+    dependencies=_SIGN_IN_CLOSED,
 )
 async def device_login_poll(request: Request):
     from orchestrator import device_login
@@ -493,6 +466,7 @@ async def device_login_poll(request: Request):
     "/api/auth/device/refresh",
     tags=["Auth"],
     summary="Proxy a refresh-token grant for a device-grant client (watch)",
+    dependencies=_SIGN_IN_CLOSED,
 )
 async def device_login_refresh(request: Request):
     from orchestrator import device_login
@@ -508,6 +482,7 @@ async def get_download_user_payload(
     request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ):
+    refuse_node_bearer()
     has_token = bool(credentials) or bool(request.query_params.get("token"))
     if has_token or request.method != "GET":
         return await get_current_user_payload(request, credentials)
@@ -542,6 +517,7 @@ async def get_web_or_bearer_user_payload(
     request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ):
+    refuse_node_bearer()
     has_token = bool(credentials) or bool(request.query_params.get("token"))
     if has_token or request.method == "OPTIONS":
         return await get_current_user_payload(request, credentials)

@@ -26,9 +26,12 @@ ALICE_OWNER = canonical_owner_id("https://iam.example/realms/astral", ALICE)
 BOB = "bob-sub"
 
 
-def _jwt(claims: dict) -> str:
-    body = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
-    return f"eyJhbGciOiJub25lIn0.{body}.sig"
+_identity = None
+_AUDIENCE = ["astral-agent-service", "account"]
+
+
+def _auth(sub: str, **extra) -> dict:
+    return _identity.headers(sub, aud=_AUDIENCE, **extra)
 
 
 def _user_claims(sub: str, **extra) -> dict:
@@ -37,15 +40,11 @@ def _user_claims(sub: str, **extra) -> dict:
         "preferred_username": sub,
         "iss": "https://iam.example/realms/astral",
         "azp": "astral-frontend",
-        "aud": ["astral-agent-service", "account"],
+        "aud": _AUDIENCE,
         "realm_access": {"roles": ["user"]},
     }
     claims.update(extra)
     return claims
-
-
-def _auth(sub: str, **extra) -> dict:
-    return {"Authorization": f"Bearer {_jwt(_user_claims(sub, **extra))}"}
 
 
 def _skill(skill_id: str, scope: str = "tools:read"):
@@ -74,7 +73,7 @@ class _Permissions:
         return ()
 
     def is_tool_allowed(self, user_id, agent_id, tool_name):
-        if user_id == BOB and tool_name == "get_weather":
+        if user_id == _identity.owner(BOB) and tool_name == "get_weather":
             return False
         return True
 
@@ -109,16 +108,13 @@ def _orchestrator():
 
 
 @pytest.fixture
-def mock_env(monkeypatch):
-    monkeypatch.setenv("USE_MOCK_AUTH", "true")
-    monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://iam.example/realms/astral")
-    monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-frontend")
-    monkeypatch.delenv("KEYCLOAK_ALLOWED_AZP", raising=False)
+def server_env(monkeypatch, server_identity):
+    monkeypatch.setitem(globals(), "_identity", server_identity)
     monkeypatch.delenv("PUBLIC_BASE_URL", raising=False)
 
 
 @pytest.fixture
-def client(mock_env):
+def client(server_env):
     from orchestrator.a2a_orchestrator_executor import setup_orchestrator_a2a
 
     orch = _orchestrator()
@@ -204,7 +200,7 @@ def test_public_card_names_only_safe_public_builtins(client):
     assert "draft-secret-9" not in blob
 
 
-def test_public_card_prefers_public_base_url(mock_env, monkeypatch):
+def test_public_card_prefers_public_base_url(server_env, monkeypatch):
     from orchestrator.a2a_orchestrator_executor import build_orchestrator_a2a_card
 
     monkeypatch.setenv("PUBLIC_BASE_URL", "https://sandbox.example/")
@@ -230,18 +226,18 @@ def test_anonymous_rpc_is_refused_before_dispatch(client, method, params):
 
 
 def test_token_without_entry_role_is_refused(client):
-    headers = {"Authorization": f"Bearer {_jwt(_user_claims(ALICE, realm_access={'roles': ['viewer']}))}"}
+    headers = _auth(ALICE, realm_access={"roles": ["viewer"]}, resource_access=None)
     assert _rpc(client, headers, "tasks/list", {}).status_code == 401
 
 
 def test_delegation_token_is_refused_inbound(client):
-    headers = {"Authorization": f"Bearer {_jwt(_user_claims(ALICE, act={'sub': 'agent:weather-1'}))}"}
+    headers = _auth(ALICE, act={"sub": "agent:weather-1"})
     assert _rpc(client, headers, "tasks/list", {}).status_code == 401
-    headers = {"Authorization": f"Bearer {_jwt(_user_claims(ALICE, delegation=True))}"}
+    headers = _auth(ALICE, delegation=True)
     assert _rpc(client, headers, "tasks/list", {}).status_code == 401
 
 
-def test_undecodable_mock_token_does_not_become_test_user(client):
+def test_undecodable_token_is_refused(client):
     assert _rpc(client, {"Authorization": "Bearer garbage"}, "tasks/list", {}).status_code == 401
 
 
@@ -311,19 +307,20 @@ def test_listing_mirrors_chat_visibility_gates(client):
 
 def test_tools_call_resolves_through_projection_and_authorized_dispatch(client):
     _publish_weather(client)
+    headers = _auth(ALICE)
     resp = _send(
-        client, _auth(ALICE),
+        client, headers,
         [{"data": {"method": "tools/call", "name": "get_weather", "arguments": {"city": "Lexington"}}}],
         rpc_id="c1",
     )
     assert resp.status_code == 200, resp.text
     assert _data_part(resp.json()) == {"temp": 21}
     kwargs = client.orch.execute_authorized_tool.await_args.kwargs
-    assert kwargs["user_id"] == ALICE
+    assert kwargs["user_id"] == _identity.owner(ALICE)
     assert kwargs["agent_id"] == "weather-1"
     assert kwargs["tool_name"] == "get_weather"
     assert kwargs["channel"] == "a2a"
-    assert kwargs["delegation_subject_token"] == _auth(ALICE)["Authorization"].split(" ", 1)[1]
+    assert kwargs["delegation_subject_token"] == headers["Authorization"].split(" ", 1)[1]
 
 
 def test_tools_call_hidden_tool_is_non_disclosing_and_never_dispatched(client):
@@ -350,7 +347,6 @@ def test_tools_call_hidden_tool_is_non_disclosing_and_never_dispatched(client):
 
 @pytest.fixture
 def keycloak_env(monkeypatch):
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
     monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://iam.example/realms/astral")
     monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-frontend")
     monkeypatch.setenv("KEYCLOAK_ALLOWED_AZP", "astral-desktop")
@@ -467,7 +463,6 @@ async def test_jwks_uses_shared_ttl_cache_with_kid_miss_refetch(keycloak_env, mo
 
 @pytest.mark.asyncio
 async def test_unconfigured_keycloak_refuses(monkeypatch):
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
     monkeypatch.delenv("KEYCLOAK_AUTHORITY", raising=False)
     monkeypatch.delenv("KEYCLOAK_CLIENT_ID", raising=False)
     from shared.a2a_security import A2ASecurityValidator

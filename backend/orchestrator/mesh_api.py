@@ -1,6 +1,6 @@
-"""REST endpoints for personal-mesh enrollment: owner/member-authenticated
+"""REST endpoints for the legacy mesh enrollment: owner/member-authenticated
 invitation and membership controls plus the unauthenticated one-time redemption
-endpoint, composing mesh_enrollment.py. Mounted by orchestrator.py.
+endpoint, composing mesh_enrollment.py, all closed on a personal node. Mounted by orchestrator.py.
 """
 
 from __future__ import annotations
@@ -23,14 +23,24 @@ from orchestrator.auth import (
     verify_user,
 )
 from orchestrator.plane_repository_context import plane_source_from_orchestrator
+from shared import node_identity
 
-mesh_router = APIRouter(prefix="/api/mesh", tags=["Mesh"])
+NODE_LEGACY_ENROLLMENT_CLOSED = "node.legacy_enrollment_closed"
+
+
+def refuse_legacy_enrollment() -> None:
+    if node_identity.is_personal():
+        raise HTTPException(403, NODE_LEGACY_ENROLLMENT_CLOSED)
+
+
+mesh_router = APIRouter(prefix="/api/mesh", tags=["Mesh"], dependencies=[Depends(refuse_legacy_enrollment)])
 
 _MEMBER_KEY_HEADER = "x-astral-member-key"
 
 
 async def _owner_claims_optional(
     request: Request,
+    _closed: None = Depends(refuse_legacy_enrollment),
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ) -> dict | None:
     if _MEMBER_KEY_HEADER in request.headers:

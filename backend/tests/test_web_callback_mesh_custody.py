@@ -46,7 +46,6 @@ def runtime():
 def browser(runtime, monkeypatch, signing_key):
     for name, value in {
         "ASTRAL_ENV": "production",
-        "USE_MOCK_AUTH": "false",
         "KEYCLOAK_AUTHORITY": ISSUER,
         "KEYCLOAK_CLIENT_ID": CLIENT,
         "KEYCLOAK_CLIENT_SECRET": "synthetic-browser-secret",

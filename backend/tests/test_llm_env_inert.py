@@ -190,7 +190,6 @@ def test_production_posture_refuses_typesafe_environment(monkeypatch):
     from orchestrator import session_store
 
     monkeypatch.setenv("ASTRAL_ENV", "production")
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
     monkeypatch.setenv("WEB_SESSION_ENC_KEY", "x" * 44)
     monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", "y" * 44)
     monkeypatch.setenv("AUDIT_HMAC_SECRET", "z" * 44)

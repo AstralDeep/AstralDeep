@@ -170,10 +170,9 @@ def _annotated_schema(
 
 
 @pytest.fixture
-def endpoint(monkeypatch):
+def endpoint(monkeypatch, server_identity):
     monkeypatch.setenv("ASTRAL_ENV", "development")
-    monkeypatch.setenv("USE_MOCK_AUTH", "true")
-    monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://idp.test/realms/astral")
+    monkeypatch.setitem(globals(), "_identity", server_identity)
     orchestrator = _Orchestrator(
         {
             "reader-1": [
@@ -224,7 +223,11 @@ def endpoint(monkeypatch):
     return TestClient(app), orchestrator
 
 
-def _request(method, params=None, *, token="dev-mcp-token", headers=None, request_id=1):
+_identity = None
+
+
+def _request(method, params=None, *, token=None, headers=None, request_id=1):
+    token = _identity.mcp_token("test_user") if token is None else token
     body = {
         "jsonrpc": "2.0",
         "id": request_id,

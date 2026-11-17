@@ -32,6 +32,7 @@ from orchestrator.session_store import assert_production_posture  # noqa: E402
 POSTURE_VARIABLES = (
     "ASTRAL_ENV",
     "USE_MOCK_AUTH",
+    "ASTRAL_NODE_PROFILE",
     "TYPESAFE_API_KEY",
     "TYPESAFE_BASE_URL",
     "TYPESAFE_DEFAULT_MODEL",
@@ -47,7 +48,6 @@ POSTURE_VARIABLES = (
 
 PRODUCTION_BASE = {
     "ASTRAL_ENV": "production",
-    "USE_MOCK_AUTH": "false",
     "WEB_SESSION_ENC_KEY": "",
     "CREDENTIAL_ENCRYPTION_KEY": "",
     "AUDIT_HMAC_SECRET": "",
@@ -168,7 +168,7 @@ def test_unset_astral_env_defaults_to_production_and_refuses(monkeypatch):
     _assert_agreement(monkeypatch, env)
 
 
-def test_development_mock_auth_boots_and_is_ready(monkeypatch):
+def test_development_ignores_removed_mock_auth_with_an_advisory(monkeypatch):
     env = {
         "ASTRAL_ENV": "development",
         "USE_MOCK_AUTH": "true",
@@ -176,13 +176,21 @@ def test_development_mock_auth_boots_and_is_ready(monkeypatch):
     }
     _assert_agreement(monkeypatch, env)
     problems, advisories = doctor.evaluate_posture(env)
-    assert problems == [] and advisories == []
+    assert problems == []
+    assert any("mock auth was removed" in advisory for advisory in advisories)
+
+
+def test_personal_profile_needs_no_keycloak_in_production(monkeypatch):
+    env = dict(PRODUCTION_BASE, ASTRAL_NODE_PROFILE="personal")
+    for name in ("KEYCLOAK_AUTHORITY", "KEYCLOAK_CLIENT_ID", "KEYCLOAK_CLIENT_SECRET"):
+        env.pop(name)
+    problems, _advisories = doctor.evaluate_posture(env)
+    assert not any("KEYCLOAK" in problem for problem in problems)
 
 
 def test_development_typesafe_variables_stay_advisory(monkeypatch):
     env = {
         "ASTRAL_ENV": "development",
-        "USE_MOCK_AUTH": "true",
         "TYPESAFE_BASE_URL": "https://typesafe.example",
     }
     _assert_agreement(monkeypatch, env)

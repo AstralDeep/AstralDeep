@@ -529,7 +529,7 @@ def test_expired_delegation_chain_is_refused() -> None:
         "sub": scenario.owner_id,
         "act": {"sub": f"agent:{scenario.agent_id}-worker"},
         "scope": "tools:read",
-        "iss": "mock-astral-delegation",
+        "iss": "astral-delegation",
         "aud": "agent-service",
         "iat": 1,
         "exp": 2,

@@ -10,7 +10,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 import json
 import math
-import os
 import re
 
 from astralplane.repositories.history import SessionConsentObservation, SessionExecutionObservation
@@ -70,8 +69,7 @@ class AuthenticatedWorkRequest:
     def assert_current(self, runtime, *, now=None):
         if (self.plane_runtime is not runtime
                 or _expiry(self.claims, self.owner_id) != self.principal_expires_at
-                or (now or datetime.now(timezone.utc)) >= self.principal_expires_at
-                or os.getenv("USE_MOCK_AUTH", "").strip().lower() in {"true", "1", "yes"}):
+                or (now or datetime.now(timezone.utc)) >= self.principal_expires_at):
             _refuse()
 
 
@@ -93,8 +91,7 @@ async def _authenticate_work_request(
         if (not isinstance(request, Request) or request.method not in methods
                 or (read_only and methods != ("GET",))
                 or not isinstance(sessions, WebSessionStore)
-                or sessions._sessions.plane_runtime is not plane_runtime
-                or os.getenv("USE_MOCK_AUTH", "").strip().lower() in {"true", "1", "yes"}):
+                or sessions._sessions.plane_runtime is not plane_runtime):
             _refuse()
         snapshot = freeze_work_request(request)
         sid = _signed_selection(snapshot)

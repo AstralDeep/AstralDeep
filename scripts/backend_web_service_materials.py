@@ -457,7 +457,6 @@ def generate_materials(
     output("init_warden.py", initializer, 10001)
     runtime = {
         "ASTRAL_ENV": "production",
-        "USE_MOCK_AUTH": "false",
         "LETS_MODE": "enforce",
         "FF_LETS_EXTERNAL_WARDEN": "true",
         "KEYCLOAK_AUTHORITY": "https://ad-bwq-keycloak:8443/realms/" + realm["realm"],

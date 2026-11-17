@@ -139,7 +139,7 @@ def test_private_session_target_expiry_token_and_permission_denials(workspace, t
     assert driver.load_session(path, BASE, ASSIGNMENT, "live-monitor", root=workspace, now=NOW)["owner_sub"] == "private-owner"
     for changes, code in [({"schema_version": 2}, "schema"), ({"base_url": "https://other.example"}, "target"),
             ({"allowed_scenarios": []}, "owner_selected"), ({"expires_at": (NOW - timedelta(seconds=1)).isoformat()}, "expired"),
-            ({"expires_at": (NOW + timedelta(hours=2)).isoformat()}, "short_lived"), ({"access_token": "dev-token"}, "token_invalid"),
+            ({"expires_at": (NOW + timedelta(hours=2)).isoformat()}, "short_lived"), ({"access_token": "not-a-token"}, "token_invalid"),
             ({"owner_sub": "someone-else"}, "owner_mismatch")]:
         private_json(path, session_data(**changes))
         with pytest.raises(driver.EvidenceError, match=code):

@@ -8,7 +8,6 @@ from __future__ import annotations
 import asyncio
 from copy import deepcopy
 from dataclasses import replace
-import os
 import time
 from uuid import UUID
 
@@ -127,8 +126,7 @@ class WorkSurfaceRead:
                 or getattr(self.websocket, "client_state", None) == WebSocketState.DISCONNECTED
                 or getattr(self.websocket, "application_state", None) == WebSocketState.DISCONNECTED
                 or time.monotonic() >= self.deadline
-                or time.time() >= self.delivery.expires_at
-                or os.getenv("USE_MOCK_AUTH", "").strip().lower() in {"true", "1", "yes"}):
+                or time.time() >= self.delivery.expires_at):
             raise AssignmentError("work_authentication_required", 401)
         if self.context is not None and (
                 getattr(self.orch, "_connection_contexts", {}).get(id(self.websocket)) is not self.context

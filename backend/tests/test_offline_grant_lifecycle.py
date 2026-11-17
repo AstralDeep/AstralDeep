@@ -335,7 +335,6 @@ def test_mint_fails_safe_on_idp_rejection(
 def test_auth_logout_revokes_real_offline_grant(
     plane_runtime, grant_store, monkeypatch
 ):
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
     monkeypatch.setenv("KEYCLOAK_AUTHORITY", "http://keycloak.test/realms/astral")
     monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-frontend")
     monkeypatch.delenv("KEYCLOAK_CLIENT_SECRET", raising=False)

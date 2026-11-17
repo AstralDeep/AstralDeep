@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,8 +18,6 @@ import pytest
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
-
-os.environ["USE_MOCK_AUTH"] = "true"
 
 from audit.repository import AuditRepository  # noqa: E402
 from orchestrator.credential_manager import CredentialManager  # noqa: E402

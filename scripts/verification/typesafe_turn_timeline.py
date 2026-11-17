@@ -190,7 +190,7 @@ def _perf_windows(container: str, since: str) -> dict:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--uri", default=f"ws://127.0.0.1:{os.getenv('ORCHESTRATOR_PORT', '8001')}/ws")
-    parser.add_argument("--token", default=os.getenv("TEST_UI_TOKEN", "dev-token"))
+    parser.add_argument("--token", default=os.getenv("TEST_UI_TOKEN", ""))
     parser.add_argument("--turns", type=int, default=30)
     parser.add_argument("--timeout", type=float, default=90.0)
     parser.add_argument("--container", default="astraldeep")

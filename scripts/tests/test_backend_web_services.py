@@ -123,7 +123,7 @@ def test_materials_bind_real_tls_owner_subjects_scopes_and_fresh_keys(generated)
         for line in (root / "runtime-fragment.env").read_text().splitlines()
     )
     assert env["ASTRAL_ENV"] == "production" and env["LETS_MODE"] == "enforce"
-    assert env["USE_MOCK_AUTH"] == "false" and env["FF_LETS_EXTERNAL_WARDEN"] == "true"
+    assert "USE_" + "MOCK_AUTH" not in env and env["FF_LETS_EXTERNAL_WARDEN"] == "true"
     assert env["VOICE_SPEECH_BACKEND"] == "llm_factory"
     assert env["FF_CONVERSATIONAL_VOICE"] == "true"
     assert env["VOICE_COORDINATOR_REPLICA_ID"] == "bwq-coordinator-" + QID

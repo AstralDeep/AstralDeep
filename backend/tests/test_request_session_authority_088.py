@@ -54,8 +54,6 @@ _SESSION_OWNER_SEQUENCE = itertools.count(1)
 def session_fixture(runtime, monkeypatch, signing_key, *, owner=None):
     monkeypatch.setenv("WEB_SESSION_ENC_KEY", Fernet.generate_key().decode())
     monkeypatch.setenv("WEB_SESSION_SECRET", "synthetic-private-cookie-key")
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
-    monkeypatch.setenv("MOCK_AUTH", "false")
     monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://request-authority.invalid/realm")
     monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-web")
     monkeypatch.setenv("KEYCLOAK_CLIENT_SECRET", "synthetic-secret")
@@ -182,13 +180,6 @@ def test_only_unambiguous_signed_cookie_selects_authority(fixture, kind):
                                         {"sub": "other-owner"}, []])
 def test_missing_or_other_owner_refuses_before_remote(fixture, principal):
     unavailable(lambda: run(fixture, principal=principal))
-    assert fixture[-1] == []
-
-
-@pytest.mark.parametrize("mode", ["true", "1", "yes", " TRUE "])
-def test_mock_posture_cannot_mint_observation(fixture, monkeypatch, mode):
-    monkeypatch.setenv("USE_MOCK_AUTH", mode)
-    unavailable(lambda: run(fixture))
     assert fixture[-1] == []
 
 
