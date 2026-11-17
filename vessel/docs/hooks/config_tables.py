@@ -27,7 +27,6 @@ CHECKS = {
                     "`public_url` must be an `http://` or `https://` origin with no path.",
                     "`environment` names must be upper case, may not be set by the deployment itself and may not "
                     "look like secrets."],
-    "OwnerSection": ["Every issuer must be an `http://` or `https://` URL with a host and no commas or spaces."],
     "ToolsSection": ["Every `builtin` entry must be one of `read`, `grep`, `glob`, `list`, `bash`."],
     "DeclaredTool": ["`command` needs at least one element.",
                      "The name may not repeat another declared tool or a built-in tool."],

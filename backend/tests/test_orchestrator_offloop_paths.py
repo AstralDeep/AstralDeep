@@ -26,7 +26,8 @@ os.environ.setdefault("LLM_MODEL", "test-model")
 
 pytestmark = pytest.mark.asyncio
 
-USER_ID = "test_user"
+SUBJECT = "offloop-user"
+USER_ID = ""
 
 
 def _fresh_socket():
@@ -36,11 +37,8 @@ def _fresh_socket():
 
 
 @pytest.fixture()
-async def orch():
-    saved = {name: os.environ.get(name)
-             for name in ("USE_MOCK_AUTH", "USE_MOCK_AUTH")}
-    os.environ["USE_MOCK_AUTH"] = "true"
-    os.environ["USE_MOCK_AUTH"] = "true"
+async def orch(server_identity, monkeypatch):
+    monkeypatch.setitem(globals(), "USER_ID", server_identity.owner(SUBJECT))
     from orchestrator.orchestrator import Orchestrator
     instance = None
     try:
@@ -50,23 +48,16 @@ async def orch():
             pytest.skip(f"orchestrator/database unavailable: {exc}")
         yield instance
     finally:
-        try:
-            if instance is not None:
-                await instance._close_started_services()
-        finally:
-            for name, value in saved.items():
-                if value is None:
-                    os.environ.pop(name, None)
-                else:
-                    os.environ[name] = value
+        if instance is not None:
+            await instance._close_started_services()
 
 
 @pytest.fixture()
-async def registered_ws(orch):
+async def registered_ws(orch, server_identity):
     ws = _fresh_socket()
     orch._registered_events[id(ws)] = asyncio.Event()
     await orch.handle_ui_message(ws, json.dumps(
-        {"type": "register_ui", "token": "dev-token", "device": {}}))
+        {"type": "register_ui", "token": server_identity.token(SUBJECT), "device": {}}))
     assert ws in orch.ui_sessions
     return ws
 

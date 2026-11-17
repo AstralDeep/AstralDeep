@@ -92,7 +92,7 @@ class KernelVerifier:
         config = binding.KernelConfig(
             data_dir=str(self._data_dir / "kernel"), operations_secret=keys.operations_secret,
             wrap_secret=keys.wrap_secret, restore_marker=keys.restore_marker, device_label=self._label,
-            device_kind=binding.DeviceKind.NODE, issuers=[],
+            device_kind=binding.DeviceKind.NODE,
             network=binding.NetworkConfig(relay=binding.RelayChoice.DISABLED(), local_discovery=False,
                                           internet_lookup=False, loopback_only=self._loopback,
                                           sync_interval_ms=SYNC_INTERVAL_MS, mailbox=address))

@@ -63,6 +63,12 @@ REVIEWED_DEV_MESH_ANNOTATION_FINGERPRINT = (
     "0e39f3eb46f250cf2d1e109637fd8a2a076fca46:"
     "backend/devtools/dev_mesh.py:generic-api-key:86"
 )
+REVIEWED_NODE_PACK_REDACTION_FINGERPRINTS = {
+    "48c74313e88f26649ea4ddc3197441f8c9e27e61:scripts/tests/test_node_bundle_launcher.py:generic-api-key:82",
+    "48c74313e88f26649ea4ddc3197441f8c9e27e61:scripts/tests/test_node_bundle_logging.py:generic-api-key:11",
+    "48c74313e88f26649ea4ddc3197441f8c9e27e61:scripts/tests/test_node_bundle_logging.py:generic-api-key:12",
+    "48c74313e88f26649ea4ddc3197441f8c9e27e61:scripts/tests/test_node_bundle_logging.py:jwt:17",
+}
 REVIEWED_VESSEL_DEPLOY_FIXTURE_FINGERPRINT = (
     "46bc2006932ed18ad4632690565431d10c683aeb:"
     "tests/test_cli.py:generic-api-key:44"
@@ -257,7 +263,7 @@ def test_gitleaks_history_baseline_is_exact_fingerprint_only() -> None:
     assert len(share) == 381
     assert hashlib.sha256("\n".join(sorted(share)).encode()).hexdigest() == REVIEWED_SHARE_VECTOR_BASELINE_SHA256
     assert REVIEWED_PUBLIC_LOCAL_MESH_FINGERPRINTS <= set(fingerprints)
-    assert len(fingerprints) == 28 + len(public_mesh) + len(share) + 15
+    assert len(fingerprints) == 28 + len(public_mesh) + len(share) + 19
     assert len(fingerprints) == len(set(fingerprints))
     assert REVIEWED_074_FINGERPRINTS <= set(fingerprints)
     assert REVIEWED_079_FINGERPRINT in fingerprints
@@ -268,6 +274,7 @@ def test_gitleaks_history_baseline_is_exact_fingerprint_only() -> None:
     assert REVIEWED_VESSEL_DEPLOY_FIXTURE_FINGERPRINT in fingerprints
     assert REVIEWED_VESSEL_DEPLOY_UP_FIXTURE_FINGERPRINT in fingerprints
     assert REVIEWED_CONTEXT_TOKEN_ACCOUNTING_FINGERPRINTS <= set(fingerprints)
+    assert REVIEWED_NODE_PACK_REDACTION_FINGERPRINTS <= set(fingerprints)
     assert all(
         re.fullmatch(
             r"[0-9a-f]{40}:[^:]+:"
@@ -293,6 +300,7 @@ def test_release_tooling_job_covers_owned_scripts_with_exact_omissions() -> None
     assert omissions == {
         "scripts/windows_release_candidate.py",
         "scripts/export_work_contract.py",
+        "scripts/dev_mesh.py",
     }
     assert not any("*" in omission for omission in omissions)
 
@@ -313,6 +321,7 @@ def test_release_tooling_job_covers_owned_scripts_with_exact_omissions() -> None
         "merge_xccov_line_coverage.py",
         "check_changed_coverage.py",
         "check_doc_links.py",
+        "dev_mesh.py",
         "export_work_contract.py",
         "export_xccov_line_coverage.py",
         "extract_release_artifact.py",

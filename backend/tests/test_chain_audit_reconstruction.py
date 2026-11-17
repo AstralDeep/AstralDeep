@@ -120,7 +120,7 @@ async def test_two_hop_reconstruction_and_tamper_evidence(orch, recorder, db):
 
     root = {"sub": user, "act": {"sub": "agent:agent-a"},
             "scope": "tools:read tool:tool_b tool:tool_c",
-            "iss": "mock-astral-delegation", "aud": "agent-svc",
+            "iss": "astral-delegation", "aud": "agent-svc",
             "iat": now, "exp": now + 300, "delegation": True}
     ui_ws = MagicMock()
     ui_ws.machine_claims = None

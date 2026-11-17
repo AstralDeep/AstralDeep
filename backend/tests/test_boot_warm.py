@@ -29,24 +29,8 @@ class _LoopStopped(BaseException):
     pass
 
 
-async def test_jwks_warm_skips_under_mock_auth(monkeypatch):
-    from shared import jwks_cache
-    monkeypatch.setenv("USE_MOCK_AUTH", "true")
-    monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://idp.example/realms/x")
-    calls = []
-
-    async def _fake_get(url, **kw):
-        calls.append(url)
-        raise _LoopStopped
-
-    monkeypatch.setattr(jwks_cache, "get_jwks", _fake_get)
-    await _bare_orch()._jwks_warm_loop()
-    assert calls == []
-
-
 async def test_jwks_warm_skips_without_authority(monkeypatch):
     from shared import jwks_cache
-    monkeypatch.delenv("USE_MOCK_AUTH", raising=False)
     monkeypatch.delenv("KEYCLOAK_AUTHORITY", raising=False)
     calls = []
 
@@ -61,7 +45,6 @@ async def test_jwks_warm_skips_without_authority(monkeypatch):
 
 async def test_jwks_warm_fetches_then_refreshes(monkeypatch):
     from shared import jwks_cache
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
     monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://idp.example/realms/x")
     monkeypatch.setenv("JWKS_REFRESH_SECONDS", "0.01")
     warm_calls, refresh_calls = [], []
@@ -85,7 +68,6 @@ async def test_jwks_warm_fetches_then_refreshes(monkeypatch):
 
 async def test_jwks_warm_failure_backs_off_without_crashing(monkeypatch):
     from shared import jwks_cache
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
     monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://idp.example/realms/x")
     attempts, attempted = [], asyncio.Event()
 

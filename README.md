@@ -155,9 +155,11 @@ When the container reports healthy, open <http://localhost:8001>. Useful endpoin
 | `/readyz` | Readiness (the compose health check) |
 | `/docs` | Interactive API documentation |
 
-The example environment runs in development mode (`ASTRAL_ENV=development`) with mock
-authentication (`USE_MOCK_AUTH=true`), so no Keycloak realm is needed for local work. Mock
-authentication is refused outside development.
+The example environment runs in development mode (`ASTRAL_ENV=development`). A personal node
+(`ASTRAL_NODE_PROFILE=personal`) has no sign-in: run `python scripts/dev_mesh.py` to create a
+dev owner device, pair the node and mint a caller ticket. Server-profile work needs a real OIDC
+issuer, either the local Keycloak in `docker-compose.staging.yml` with a user you create or an
+institution realm, and you sign in yourself.
 
 ### First connection and service verification
 
@@ -203,7 +205,7 @@ Compose. [`.env.example`](.env.example) documents every setting, including the `
 feature flags that gate optional subsystems.
 
 - **Production is the default.** An unset `ASTRAL_ENV` means production. Production refuses to
-  start with missing or placeholder secrets or with mock authentication, exiting with the
+  start with missing or placeholder secrets, exiting with the
   documented configuration-error code 78.
 - **Secrets stay out of Git.** The Keycloak client secret, `CREDENTIAL_ENCRYPTION_KEY`, the
   agent API key, and similar values are supplied at deploy time only.

@@ -33,11 +33,15 @@ SANDBOX_TOKEN = "s" * 16
 KEY = "d" * 32
 
 
+MESH_OWNER = "mesh.mesh-1"
+
+
 class FakeVerifier:
     def __init__(self):
         self.calls, self.fail, self.mesh_state = [], None, "enrolled"
         self.started = self.stopped = False
         self.digest = None
+        self.mesh = "mesh-1"
         self.who = {"mesh": "mesh-1", "device": "device-1", "turn": "turn-1", "agents": ("kernel",)}
 
     async def start(self):
@@ -50,7 +54,7 @@ class FakeVerifier:
         return self.mesh_state
 
     async def mesh_id(self):
-        return "mesh-1"
+        return self.mesh
 
     async def pairing_offer(self):
         if self.mesh_state != "not_enrolled":
@@ -67,7 +71,7 @@ class FakeVerifier:
 @pytest.fixture
 def stack(package_dir, tmp_path):
     path = tmp_path / "deployment.toml"
-    path.write_text(owned(deployment_text(package_dir, mounts="", egress=False)))
+    path.write_text(deployment_text(package_dir, mounts="", egress=False))
     deployment = load_deployment(path)
     verifier = FakeVerifier()
     sandbox_app = sandbox.sandbox_app(str(deployment.agents["guide"].package.root), token=SANDBOX_TOKEN,
@@ -88,10 +92,6 @@ async def client(stack):
             yield http
 
 
-def owned(text):
-    return text.replace('client_id = "astral-app"', 'client_id = "astral-app"\nsubject = "alice"')
-
-
 def entry(deployment, tool):
     return next(t for t in catalog(deployment)["guide"]["tools"] if t["name"] == tool)
 
@@ -103,7 +103,7 @@ def call(deployment, tool="bash", arguments=None, **over):
               "influence": []}
     body = {"agent": "guide", "tool": tool, "arguments_json": arguments_json, "action_json": json.dumps(action),
             "ticket_json": json.dumps({"v": 1, "capability": "x"}), "workspace": None,
-            "owner": deployment.owner.owner_id}
+            "owner": MESH_OWNER}
     return {**body, **over}
 
 
@@ -250,7 +250,7 @@ async def test_an_agents_token_runs_only_that_agent_and_lists_only_its_tools(pac
         f'[agent]\nname = "other"\ndescription = "Another."\n[tools]\nbuiltin = ["list"]\n'
         f'[sandbox]\nworkdir = "{tmp_path}"\n')
     path = tmp_path / "deployment.toml"
-    path.write_text(owned(deployment_text(package_dir, mounts="", egress=False)) +
+    path.write_text(deployment_text(package_dir, mounts="", egress=False) +
                     f'\n[[agents]]\nid = "other"\npackage = "{other}"\n')
     deployment = load_deployment(path)
     runners = {}
@@ -350,7 +350,7 @@ async def test_a_ticket_for_another_mesh_is_refused_and_the_agent_comes_from_the
                                                  entry(deployment, "bash")["input_schema"], {})
 
 
-async def test_the_owner_and_workspace_come_from_the_deployment_and_the_verified_turn(stack, client):
+async def test_the_owner_and_workspace_come_from_the_verified_mesh_and_turn(stack, client):
     deployment, verifier, _ = stack
     ran = await client.post("/run", json=call(deployment), headers=AUTH)
     assert ran.status_code == 200 and ran.json()["workspace"] == workspace_for("mesh-1", "turn-1")
@@ -358,28 +358,24 @@ async def test_the_owner_and_workspace_come_from_the_deployment_and_the_verified
     again = await client.post("/run", json=call(deployment, workspace=workspace_for("mesh-1", "turn-1"),
                                                 owner=""), headers=AUTH)
     assert again.status_code == 200
-    for over in ({"owner": "bob"}, {"workspace": KEY}):
+    for over in ({"owner": "bob"}, {"owner": "oidc.0123456789abcdef.alice"}, {"workspace": KEY}):
         verifier.digest = None
         refused = await client.post("/run", json=call(deployment, **over), headers=AUTH)
         assert (refused.status_code, refused.json()["code"]) == (403, "request.call_mismatch")
 
 
-async def test_a_deployment_without_an_owner_runs_nothing(package_dir, tmp_path):
-    path = tmp_path / "deployment.toml"
-    path.write_text(deployment_text(package_dir, mounts="", egress=False))
-    deployment = load_deployment(path)
-    sandbox_app = sandbox.sandbox_app(str(deployment.agents["guide"].package.root), token=SANDBOX_TOKEN, confine=False)
-    runner = sandbox.RemoteRunner("http://sb", SANDBOX_TOKEN, 5, [])
-    runner._client = httpx.AsyncClient(transport=httpx.ASGITransport(app=sandbox_app), base_url="http://sb",
-                                       headers={"Authorization": "Bearer " + SANDBOX_TOKEN})
-    verifier = FakeVerifier()
-    app = executor_app(deployment, verifier, {"guide": runner}, TOKEN, {"guide": agent_token(MASTER, "guide")},
-                       Replays(tmp_path / "spent.db"))
-    async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://ex") as http:
-            refused = await http.post("/run", json=call(deployment, owner="alice"), headers=AUTH)
-            assert (refused.status_code, refused.json()["code"]) == (403, "executor.owner_unbound")
-            assert refused.json()["output"] == "refused: executor.owner_unbound"
+async def test_the_owner_is_the_mesh_the_ticket_proves(stack, client):
+    deployment, verifier, _ = stack
+    mesh = "sha256:" + "ab" * 32
+    verifier.mesh = mesh
+    verifier.who = {**verifier.who, "mesh": mesh}
+    body = call(deployment)
+    body["action_json"] = json.dumps({**json.loads(body["action_json"]), "mesh": mesh})
+    refused = await client.post("/run", json=body, headers=AUTH)
+    assert (refused.status_code, refused.json()["code"]) == (403, "request.call_mismatch")
+    verifier.digest = None
+    ran = await client.post("/run", json={**body, "owner": "mesh." + "ab" * 32}, headers=AUTH)
+    assert ran.status_code == 200
 
 
 async def test_a_ticket_for_another_agents_tool_is_refused_for_this_agent(stack, client):

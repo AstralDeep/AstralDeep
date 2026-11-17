@@ -12,7 +12,7 @@ The model, and everything the model reads, may be hostile. A prompt injection ca
 |---|---|
 | The owner's data on the node | One owner per node. The node's data directory is mode 0700, and its database and keys are mode 0600. |
 | The model key | Held only by the egress, when one is used. |
-| The node's API | Sandboxes have no route to it. Only the owner's token and the mesh reach it. |
+| The node's API | Sandboxes have no route to it. Only the mesh's devices and holders of an owner-minted caller ticket reach it. |
 | Tool effects | The executor runs a tool only for a verified ticket that covers this tool, these arguments, this agent, this owner and this workspace. A ticket runs once. |
 | Agent data | Mounted read-only. Writable mounts are not supported. |
 | Other users of the same agent | Each tool call is confined to its own turn's workspace. See [Isolation and probes](isolation.md). |

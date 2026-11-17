@@ -14,7 +14,6 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-os.environ["USE_MOCK_AUTH"] = "true"
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from orchestrator.api import async_task_router, task_router  # noqa: E402
@@ -23,20 +22,16 @@ OWNER = "owner-user-id"
 STRANGER = "stranger-user-id"
 
 
-def _token(sub: str) -> str:
-    import base64
-    import json
+_identity = None
 
-    body = base64.b64encode(json.dumps({
-        "sub": sub,
-        "preferred_username": sub,
-        "realm_access": {"roles": ["user"]},
-    }).encode()).decode().rstrip("=")
-    return f"header.{body}.signature"
+
+@pytest.fixture(autouse=True)
+def _server_identity(monkeypatch, server_identity):
+    monkeypatch.setitem(globals(), "_identity", server_identity)
 
 
 def _auth(sub: str) -> dict:
-    return {"Authorization": f"Bearer {_token(sub)}"}
+    return _identity.headers(sub)
 
 
 @pytest.mark.parametrize("base_url,expected", [
@@ -115,12 +110,13 @@ def _app(orch: MagicMock) -> TestClient:
 
 
 @pytest.fixture
-def orch() -> MagicMock:
+def orch(_server_identity) -> MagicMock:
+    owner = _identity.owner(OWNER)
     o = MagicMock()
-    o.task_manager.get_active_task.return_value = _task(OWNER)
-    o.task_manager.get_chat_tasks.return_value = [_task(OWNER)]
-    o.async_task_manager.get = AsyncMock(return_value=_bg_task(OWNER))
-    o.async_task_manager.list_for_user = AsyncMock(return_value=[_bg_task(OWNER)])
+    o.task_manager.get_active_task.return_value = _task(owner)
+    o.task_manager.get_chat_tasks.return_value = [_task(owner)]
+    o.async_task_manager.get = AsyncMock(return_value=_bg_task(owner))
+    o.async_task_manager.list_for_user = AsyncMock(return_value=[_bg_task(owner)])
     o.async_task_manager.cancel = AsyncMock(return_value=True)
     return o
 
@@ -170,7 +166,7 @@ def test_list_async_tasks_filters_by_resolved_user(orch):
     assert len(resp.json()["tasks"]) == 1
     orch.async_task_manager.list_for_user.assert_awaited_once()
     passed_user = orch.async_task_manager.list_for_user.await_args.args[0]
-    assert passed_user == OWNER
+    assert passed_user == _identity.owner(OWNER)
     assert isinstance(passed_user, str)
 
 

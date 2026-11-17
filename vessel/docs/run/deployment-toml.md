@@ -1,6 +1,6 @@
 # deployment.toml
 
-`deployment.toml` says which node to run, who owns it, and which agents the executor serves. `astralvessel up` writes one when there is none. Unknown keys are refused. Types and defaults are generated in [Configuration tables](../reference/configuration.md#deploymenttoml).
+`deployment.toml` says which node to run and which agents the executor serves. The node's owner is the mesh it joins, so the file names no owner. `astralvessel up` writes one when there is none. Unknown keys are refused. Types and defaults are generated in [Configuration tables](../reference/configuration.md#deploymenttoml).
 
 ## A complete example
 
@@ -15,11 +15,6 @@ front_address = "172.31.247.10"
 
 [node.environment]
 EXTERNAL_AGENT_ALLOWED_PRIVATE_HOSTS = "model.internal"
-
-[owner]
-issuer = "https://keycloak.example.com/realms/astral"
-client_id = "astral-app"
-subject = "the-owners-subject"
 
 [egress]
 upstream_url = "https://api.example.com/v1"
@@ -50,15 +45,9 @@ scratch = "64m"
 
 The node always runs the personal profile with SQLite in its data volume. There is no setting for PostgreSQL.
 
-## [owner]
+## An old [owner] section
 
-| Key | Meaning |
-|---|---|
-| `issuer` | The OIDC issuer the node trusts. |
-| `client_id` | The client id the owner's apps sign in with. |
-| `subject` | Binds the node to this subject now. Without it the first owner whose token verifies binds the node. |
-| `allowed_azp` | More client ids whose tokens the node accepts. |
-| `accepted_issuers` | More issuers. |
+A file written for an earlier release may still have an `[owner]` section. It loads, `up`, `check` and the other commands print a notice, and the section is ignored. The file is never rewritten. Delete the section when you like. A node whose data was bound to such an owner reports `node.legacy_owner` in `check` and keeps its data untouched.
 
 ## [egress]
 

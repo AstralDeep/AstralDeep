@@ -6,7 +6,7 @@
 
 ## The node never becomes ready
 
-Run `docker compose -f compose.generated.yml logs node`. The node exits with code 78 when a secret, the issuer or the data directory is missing or unwritable. Production is the default, so an `http` issuer needs `ASTRAL_ENV = "development"` under `[node.environment]`. Use that only for development.
+Run `docker compose -f compose.generated.yml logs node`. The node exits with code 78 when a secret or the data directory is missing or unwritable. Production is the default, so an `http` issuer needs `ASTRAL_ENV = "development"` under `[node.environment]`. Use that only for development.
 
 ## A sandbox exits at start
 
@@ -20,9 +20,17 @@ The host kernel is too old. See [Platform support](security/platforms.md).
 
 `check` prints the failing check by container. A failure in a sandbox probe means isolation does not hold on this host. Do not use the deployment until it passes.
 
-## `pair` says the node refused the owner token
+## `pair` says the node did not accept its pairing secret
 
-The token must be current, from the issuer in `[owner]`, for the one owner the node serves. A token for another owner gets HTTP 403.
+An unenrolled node writes its pairing secret on the first refusal, and `pair` retries once. Run it again. If it keeps failing, check that the node container is running and that you run `pair` from the deployment folder.
+
+## `pair` or `check` reports `node.legacy_owner`
+
+The node's data belongs to an owner who signed in through an identity provider. The node keeps that data untouched and will not join a mesh. Nothing is deleted. Start a new project for a mesh node.
+
+## `ask` says the node refused the caller ticket
+
+The ticket must be current, minted for this node, and cover A2A messages. The holder key must be the one the ticket was minted for, the `caller-key` file made by `astralvessel caller key`. If Vessel says the key file is readable by group or others, run `chmod 600 caller-key`. A bearer token is always refused.
 
 ## `pair --executor` says the node has not joined
 

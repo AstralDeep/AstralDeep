@@ -8,7 +8,6 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 import math
-import os
 import re
 import time
 from uuid import UUID
@@ -50,8 +49,7 @@ async def select_consent_session(connection: HTTPConnection, *, principal: dict,
         if (not isinstance(connection, HTTPConnection) or not isinstance(principal, dict)
                 or connection.scope.get("method") == "OPTIONS"
                 or principal.get("act") or any(principal.get(key) for key in
-                    ("machine_turn_class", "machine_class", "_machine_turn", "delegated"))
-                or os.getenv("USE_MOCK_AUTH", "").strip().lower() in {"true", "1", "yes"}):
+                    ("machine_turn_class", "machine_class", "_machine_turn", "delegated"))):
             return None
         owner = principal.get("sub")
         expiry = principal.get("exp")

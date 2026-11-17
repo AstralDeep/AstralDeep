@@ -15,6 +15,7 @@ import pytest
 from tests.test_node_mesh_kernel_integration import ak, paired, prepare_mesh, until  # noqa: F401
 
 from orchestrator.node_mesh_calls import OrchestratorCalls, definition_hash, skill_definition
+from shared import node_identity
 from shared.feature_flags import flags
 
 AGENT = "dice-roller-1"
@@ -106,10 +107,11 @@ async def node_host(orchestrator_factory, monkeypatch, tmp_path):
     orch.local_agents[agent.agent_id] = agent
     stored = orch.offline_grants
     orch.offline_grants = Grants()
-    orch.tool_permissions.set_agent_scopes(mesh_creator.owner, AGENT, {"tools:read": True})
+    owner = node_identity.owner_id_for_mesh(mesh_creator.owner)
+    orch.tool_permissions.set_agent_scopes(owner, AGENT, {"tools:read": True})
     skill = next(s for s in agent.card.skills if s.id == TOOL)
     try:
-        yield SimpleNamespace(orch=orch, agent=agent, skill=skill, owner=mesh_creator.owner, mesh_creator=mesh_creator)
+        yield SimpleNamespace(orch=orch, agent=agent, skill=skill, owner=owner, mesh_creator=mesh_creator)
     finally:
         orch.offline_grants = stored
 

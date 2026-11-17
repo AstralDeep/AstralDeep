@@ -1,6 +1,6 @@
 """MCP-only OAuth resource-server boundary, kept separate from the web/native bearer
 dependency since MCP tokens carry a distinct audience and scope set; the inbound
-bearer is discarded after validation. Used by mcp_server_endpoint.py.
+bearer is discarded after validation, and a personal node refuses it unread and names no identity server, taking an owner-minted caller ticket instead through caller_tickets.py. Used by mcp_server_endpoint.py.
 """
 
 from __future__ import annotations
@@ -12,7 +12,11 @@ from typing import Any, Callable, Iterable, Mapping, Optional
 from urllib.parse import urlsplit, urlunsplit
 
 from jose import jwt as jose_jwt
+from starlette.requests import Request
 
+from orchestrator import caller_tickets
+from orchestrator.auth import NODE_BEARER_REFUSED, node_caller_challenge
+from shared import node_identity
 from shared.jwks_cache import get_jwks
 
 
@@ -73,6 +77,12 @@ def resource_metadata_url(public_base_url: str) -> str:
 
 
 def protected_resource_metadata(public_base_url: str) -> dict[str, Any]:
+    if node_identity.is_personal():
+        return {
+            "resource": resource_identifier(public_base_url),
+            "scopes_supported": list(MCP_SCOPES),
+            "bearer_methods_supported": [],
+        }
     authority = os.getenv("KEYCLOAK_AUTHORITY", "").strip().rstrip("/")
     if not authority:
         raise RuntimeError("KEYCLOAK_AUTHORITY is required when FF_MCP_SERVER is enabled")
@@ -122,6 +132,8 @@ def challenge_header(
     error: str,
     required_scopes: Iterable[str],
 ) -> str:
+    if node_identity.is_personal():
+        return node_caller_challenge("astral-mcp", error)
     scopes = " ".join(dict.fromkeys(required_scopes))
     return (
         f'Bearer resource_metadata="{resource_metadata_url(public_base_url)}", '
@@ -154,18 +166,7 @@ def bearer_from_headers(
 
 
 async def decode_mcp_token(token: str) -> dict[str, Any]:
-    if os.getenv("USE_MOCK_AUTH", "").strip().lower() == "true":
-        # Separate from the web dev-token; keep audiences apart
-        if token != "dev-mcp-token":
-            raise ValueError("invalid MCP development token")
-        return {
-            "sub": "test_user",
-            "iss": "mock-astral-mcp",
-            "aud": MCP_AUDIENCE,
-            "scope": " ".join(MCP_SCOPES),
-            "realm_access": {"roles": ["user"]},
-        }
-
+    refuse_on_personal_node(())
     authority = os.getenv("KEYCLOAK_AUTHORITY", "").strip().rstrip("/")
     if not authority:
         raise RuntimeError("KEYCLOAK_AUTHORITY is not configured")
@@ -183,11 +184,13 @@ async def decode_mcp_token(token: str) -> dict[str, Any]:
     )
     if not isinstance(payload, dict) or not payload.get("sub"):
         raise ValueError("MCP token has no subject")
-    from shared import node_identity
-
     payload["sub"] = node_identity.canonical_owner_id(authority, payload["sub"])
-    node_identity.enforce_owner(payload["sub"])
     return payload
+
+
+def refuse_on_personal_node(required_scopes: Iterable[str]) -> None:
+    if node_identity.is_personal():
+        raise MCPAuthError(401, NODE_BEARER_REFUSED, "this node refuses bearer tokens", tuple(required_scopes))
 
 
 def require_mcp_entry_role(
@@ -202,6 +205,21 @@ def require_mcp_entry_role(
         )
 
 
+async def authorize_mcp_caller(
+    request: Request, body: bytes, *, method: str, tool: Optional[str], required_scopes: Iterable[str],
+) -> dict[str, Any]:
+    required = tuple(required_scopes)
+    try:
+        claims = await caller_tickets.verify(
+            request, body, tool=tool if method == "tools/call" else None, audience=MCP_AUDIENCE,
+        )
+        if method.startswith("resources/"):
+            raise caller_tickets.refusal(caller_tickets.TOOL_NOT_COVERED)
+    except caller_tickets.CallerRefused as exc:
+        raise MCPAuthError(exc.status, exc.code, "this node refuses the caller", required) from None
+    return claims
+
+
 async def authorize_mcp_request(
     *,
     headers: Mapping[str, str],
@@ -211,6 +229,7 @@ async def authorize_mcp_request(
     resolve_framework_bearer: Optional[Callable[[str], Any]] = None,
 ) -> dict[str, Any]:
     required = tuple(required_scopes)
+    refuse_on_personal_node(required)
     token = bearer_from_headers(
         headers,
         query_params,
@@ -252,6 +271,7 @@ __all__ = [
     "MCP_ENTRY_ROLES",
     "MCP_SCOPES",
     "MCPAuthError",
+    "authorize_mcp_caller",
     "authorize_mcp_request",
     "canonical_public_base_url",
     "challenge_header",

@@ -29,11 +29,10 @@ The generated Compose file points the node at the executor with `ASTRAL_VESSEL_E
 4. The kernel verifies the ticket offline, with the effect kind taken from the tool's scope. Otherwise a `ticket.*` or `gate.*` code.
 5. The verified mesh, device and turn equal the action's, and the ticket's last agent is the action's agent. Otherwise `ticket.unauthorized`.
 6. The ticket's mesh is the executor's own mesh. Otherwise `ticket.wrong_mesh`.
-7. The deployment names its owner (`subject` in `[owner]`). Otherwise `executor.owner_unbound`.
-8. An `owner` or `workspace` in the request equals the derived one. Otherwise `request.call_mismatch`.
-9. This ticket has not run before. Otherwise `ticket.replayed`.
+7. An `owner` or `workspace` in the request equals the derived one. Otherwise `request.call_mismatch`.
+8. This ticket has not run before. Otherwise `ticket.replayed`.
 
-The kernel's action has nine fixed fields and no owner or workspace, so a ticket cannot carry them. The executor never takes them from the request. The owner is the deployment's configured owner, bound to the mesh the ticket proves. The workspace is derived from the verified mesh and turn, and `/run` returns it so the node can end the turn. The agent is bound by the definition hash. It is the kernel's hash of the tool's name, description, input schema and annotations, with `{"agent": "<id>"}` added to the annotations. A tool published to the mesh with that annotation carries that hash in the ticket.
+The kernel's action has nine fixed fields and no owner or workspace, so a ticket cannot carry them. The executor never takes them from the request. The owner is derived from the mesh the ticket proves: `mesh.` and the mesh id's hex digest. The workspace is derived from the verified mesh and turn, and `/run` returns it so the node can end the turn. The agent is bound by the definition hash. It is the kernel's hash of the tool's name, description, input schema and annotations, with `{"agent": "<id>"}` added to the annotations. A tool published to the mesh with that annotation carries that hash in the ticket.
 
 Every refusal returns HTTP 403 with a dotted `code`, and nothing runs. 
 

@@ -320,13 +320,17 @@ def test_decode_rejects_malformed():
 def test_child_signing_key_prefers_env(monkeypatch):
     from orchestrator import delegation as dg
 
+    monkeypatch.setenv("ASTRAL_ENV", "development")
+
     monkeypatch.setenv("DELEGATION_CHILD_SIGNING_KEY", "dedicated-key")
     assert dg._child_signing_key() == b"dedicated-key"
     monkeypatch.delenv("DELEGATION_CHILD_SIGNING_KEY")
     monkeypatch.setenv("MEMORY_HMAC_KEY", "shared-key")
     assert dg._child_signing_key() == b"shared-key"
     monkeypatch.delenv("MEMORY_HMAC_KEY")
-    assert dg._child_signing_key() == b"mock-delegation-secret"
+    first = dg._child_signing_key()
+    assert len(first) == 32 and first != b"mock-delegation-secret"
+    assert dg._child_signing_key() == first
 
 
 @pytest.fixture

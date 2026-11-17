@@ -79,13 +79,11 @@ def published(name: str) -> str:
 
 
 def node_environment(deployment: Deployment) -> dict[str, str]:
-    owner, node = deployment.owner, deployment.node
+    node = deployment.node
     public = (node.public_url or f"http://127.0.0.1:{node.port}").rstrip("/")
     env = {
         "ASTRAL_NODE_PROFILE": "personal",
         "ASTRAL_NODE_DATA_DIR": f"{NODE_DATA}/node",
-        "KEYCLOAK_AUTHORITY": owner.issuer.rstrip("/"),
-        "KEYCLOAK_CLIENT_ID": owner.client_id,
         "ATTACHMENT_UPLOAD_ROOT": f"{NODE_DATA}/node/blobs",
         "PERSONAL_AGENT_ARTIFACT_ROOT": f"{NODE_DATA}/node/agents",
         "ORCHESTRATOR_HOST": "0.0.0.0",
@@ -95,16 +93,7 @@ def node_environment(deployment: Deployment) -> dict[str, str]:
         "FF_A2A_SERVER": "true",
         "PYTHON_DOTENV_DISABLED": "1",
     }
-    if owner.allowed_azp:
-        env["KEYCLOAK_ALLOWED_AZP"] = ",".join(owner.allowed_azp)
-    if owner.accepted_issuers:
-        env["ASTRAL_ACCEPTED_ISSUERS"] = ",".join(i.rstrip("/") for i in owner.accepted_issuers)
-    if owner.owner_id:
-        env["ASTRAL_NODE_OWNER"] = owner.owner_id
     merged = {**node.environment, **env}
-    if merged.get("ASTRAL_NODE_OWNER") != owner.owner_id:
-        raise SystemExit("ASTRAL_NODE_OWNER in [node.environment] must equal the owner the deployment's subject names; "
-                         "set [owner] subject instead")
     if deployment.agents:
         merged["ASTRAL_VESSEL_EXECUTOR_URL"] = f"http://{node.front_address}:{EXECUTOR_PORT}"
         merged["ASTRAL_VESSEL_EXECUTOR_AGENT_TOKENS_FILE"] = AGENT_TOKENS_PATH

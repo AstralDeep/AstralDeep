@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import asyncio
 import json
 import os
@@ -87,26 +86,24 @@ def _publish(registry, agent_id="weather-1", audiences=None, lifetime="24h", act
     )
 
 
-def _jwt(claims: dict) -> str:
-    body = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
-    return f"eyJhbGciOiJub25lIn0.{body}.sig"
+_identity = None
+
+
+@pytest.fixture(autouse=True)
+def _publication_identity(monkeypatch, server_identity):
+    monkeypatch.setitem(globals(), "_identity", server_identity)
 
 
 def _admin_headers() -> dict:
-    claims = {"sub": ADMIN, "realm_access": {"roles": ["admin"]}}
-    return {"Authorization": f"Bearer {_jwt(claims)}"}
+    return _identity.headers(ADMIN, roles=("admin",))
 
 
 def _user_headers(admin: bool = False) -> dict:
-    claims = {
-        "sub": "plain-sub",
-        "preferred_username": "plain",
-        "iss": "https://iam.example/realms/astral",
-        "azp": "astral-frontend",
-        "aud": ["astral-agent-service", "account"],
-        "realm_access": {"roles": ["admin"] if admin else ["user"]},
-    }
-    return {"Authorization": f"Bearer {_jwt(claims)}"}
+    return _identity.headers(
+        "plain-sub",
+        roles=("admin",) if admin else ("user",),
+        aud=["astral-agent-service", "account"],
+    )
 
 
 def _skill(skill_id: str, scope: str = "tools:read"):
@@ -495,10 +492,6 @@ def _executor_client(orch):
 
 
 def _tool_call(client, name="get_weather", headers=None, rpc_id="c1"):
-    claims = {
-        "sub": "caller-sub", "iss": "https://iam.example/realms/astral",
-        "azp": "astral-frontend", "aud": "account", "realm_access": {"roles": ["user"]},
-    }
     message = {
         "message_id": f"m-{rpc_id}", "role": "ROLE_USER",
         "parts": [{"data": {
@@ -509,14 +502,11 @@ def _tool_call(client, name="get_weather", headers=None, rpc_id="c1"):
         "/a2a",
         json={"jsonrpc": "2.0", "id": rpc_id, "method": "SendMessage",
               "params": {"message": message}},
-        headers={"A2A-Version": "1.0", **(headers or {"Authorization": f"Bearer {_jwt(claims)}"})},
+        headers={"A2A-Version": "1.0", **(headers or _identity.headers("caller-sub"))},
     )
 
 
 def test_dispatch_requires_current_publication_after_withdrawal(monkeypatch, publication_host):
-    monkeypatch.setenv("USE_MOCK_AUTH", "true")
-    monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://iam.example/realms/astral")
-    monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-frontend")
     orch = publication_host()
     registry = orch.a2a_publications
     record = _publish(registry)
@@ -532,7 +522,7 @@ def test_dispatch_requires_current_publication_after_withdrawal(monkeypatch, pub
     result = response.json()["result"]
     assert result.get("task", result)["status"]["state"] == "TASK_STATE_FAILED"
     orch.execute_authorized_tool.assert_awaited_once()
-    rows, _ = orch.audit_repo.list_for_user("caller-sub")
+    rows, _ = orch.audit_repo.list_for_user(_identity.owner("caller-sub"))
     assert any(row.action_type == "a2a_publication.invocation_denied" for row in rows)
 
 
@@ -548,7 +538,6 @@ async def test_startup_mounts_a2a_and_publication_routes_when_server_enabled(mon
     from tests.test_evidence_entry import lifetime_host
 
     monkeypatch.setenv("ASTRAL_ENV", "development")
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
     monkeypatch.delenv("A2A_EXTERNAL_AGENTS", raising=False)
     monkeypatch.delenv("ORCHESTRATOR_HOST", raising=False)
     monkeypatch.delenv("ASTRAL_NODE_PROFILE", raising=False)
@@ -615,7 +604,6 @@ async def test_startup_mounts_a2a_and_publication_routes_when_server_enabled(mon
 
 
 def _api_client(monkeypatch, orch):
-    monkeypatch.setenv("USE_MOCK_AUTH", "true")
     from orchestrator.a2a_publication_api import publication_router
 
     app = FastAPI()
@@ -793,7 +781,6 @@ def test_api_withdraw_twice_conflict_and_stale_confirm(monkeypatch, publication_
 
 
 def test_api_orchestrator_unavailable_returns_503(monkeypatch):
-    monkeypatch.setenv("USE_MOCK_AUTH", "true")
     from orchestrator.a2a_publication_api import publication_router
 
     app = FastAPI()
@@ -818,11 +805,11 @@ def test_api_commits_lifecycle_audit_with_publication_state(monkeypatch, publica
     assert confirmed.status_code == 200
     assert client.delete(f"/api/a2a/publications/{confirmed.json()['publication_id']}",
                          headers=headers).status_code == 200
-    rows, _ = orch.audit_repo.list_for_user(ADMIN)
+    rows, _ = orch.audit_repo.list_for_user(_identity.owner(ADMIN))
     assert sorted(row.action_type for row in rows) == [
         "a2a_publication.intent_created", "a2a_publication.published", "a2a_publication.withdrawn",
     ]
-    assert orch.audit_repo.verify_chain(ADMIN) is None
+    assert orch.audit_repo.verify_chain(_identity.owner(ADMIN)) is None
 
 
 def test_registry_audit_failure_rolls_back_and_retains_confirmation(monkeypatch, publication_host):

@@ -349,7 +349,8 @@ class Kernel:
         return SimpleNamespace(
             members=[SimpleNamespace(device_id=self.device_id, is_local=True, phi=self.phi_member, unattested=False),
                      SimpleNamespace(device_id="dev-phone", is_local=False, phi=self.phone_phi,
-                                     unattested="dev-phone" in self.unattested)]
+                                     unattested="dev-phone" in self.unattested)],
+            removed=[],
         )
 
     async def sync_state(self):

@@ -16,7 +16,6 @@ from types import SimpleNamespace
 
 import pytest
 
-os.environ.setdefault("USE_MOCK_AUTH", "true")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from orchestrator import mesh_enrollment as me  # noqa: E402

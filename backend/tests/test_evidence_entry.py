@@ -576,7 +576,6 @@ async def test_startup_constructs_evidence_service_only_when_enabled_and_starts_
 
     monkeypatch.setattr(flags, "is_enabled", lambda name: enabled and name == "observation_packing")
     monkeypatch.setenv("ASTRAL_ENV", "development")
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
     monkeypatch.delenv("A2A_EXTERNAL_AGENTS", raising=False)
     monkeypatch.setattr(session_store, "assert_production_posture", lambda: None)
     host = lifetime_host(monkeypatch)

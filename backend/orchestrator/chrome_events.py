@@ -470,13 +470,9 @@ def _surface_sections(mod) -> tuple:
 def _session_identity(orch, websocket, roles) -> dict:
     try:
         from orchestrator.web_auth import (
-            MOCK_IDENTITY,
             identity_from_claims,
-            _is_mock,
         )
 
-        if _is_mock():
-            return dict(MOCK_IDENTITY)
         return identity_from_claims(orch.ui_sessions.get(websocket) or {}, roles)
     except Exception:
         logger.debug("chrome: session identity unavailable", exc_info=True)

@@ -1,5 +1,5 @@
-# Command line entry points: up, check, down, pair, ask and chat for the owner; deploy writes Compose from a
-# deployment file; executor and sandbox run inside their containers, configured through the environment.
+# Command line entry points: up, check, down and pair for the operator, ask and chat with a caller ticket, and caller
+# key for the holder key. deploy writes Compose from a deployment file; executor and sandbox run in their containers.
 
 from __future__ import annotations
 
@@ -8,6 +8,10 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+
+from .caller import REMOVED_OPTIONS, TICKET_FILE_VARIABLE
+
+TICKET_HELP = f"a file holding the caller ticket (default: the file named by ${TICKET_FILE_VARIABLE})"
 
 
 def deploy(args: argparse.Namespace) -> None:
@@ -25,14 +29,22 @@ def deploy(args: argparse.Namespace) -> None:
         print("start it with: " + " ".join([*command, "up", "-d", "--build"]))
 
 
+class Removed(argparse.Action):
+    # An option from an earlier release: say why it is gone instead of a bare "unrecognized arguments".
+    def __call__(self, parser, namespace, values, option_string=None):
+        parser.error(f"{option_string} is gone: {REMOVED_OPTIONS[option_string]}")
+
+
+def removed(command: argparse.ArgumentParser, *names: str) -> None:
+    for name in names:
+        command.add_argument(name, action=Removed, nargs="?", help=argparse.SUPPRESS)
+
+
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(prog="astralvessel")
     sub = root.add_subparsers(dest="command", required=True)
     up = sub.add_parser("up", help="start the node, writing a deployment first if there is none; then check it")
     up.add_argument("deployment", nargs="?", help="deployment file (default: deployment.toml here)")
-    up.add_argument("--issuer", help="the owner's OIDC issuer URL")
-    up.add_argument("--client-id", help="the client id the owner's apps sign in with")
-    up.add_argument("--subject", help="bind the node to this issuer subject now, instead of at first pairing")
     up.add_argument("--image", help="the AstralDeep node image to run")
     up.add_argument("--port", type=int, help="the local port to publish the node on (default 8001)")
     up.add_argument("--upstream-url", help="a model gateway: the provider's OpenAI-compatible base URL")
@@ -46,19 +58,24 @@ def parser() -> argparse.ArgumentParser:
     check.add_argument("--isolation-only", action="store_true", help="skip the node checks, for hosts with no node")
     suite = sub.add_parser("conformance", help="run the acceptance checks against the running node")
     suite.add_argument("--deployment")
-    suite.add_argument("--token-file", help="a file holding the owner's access token (default: $ASTRAL_OWNER_TOKEN)")
+    suite.add_argument("--ticket-file", help=TICKET_HELP)
+    removed(suite, "--token-file", "--key-file")
     pair = sub.add_parser("pair", help="print the node's pairing code and payload for the AstralDeep app")
-    pair.add_argument("--label", help="a name for the offer (default: astralvessel)")
     for name, help_text in (("ask", "ask the node one question"), ("chat", "chat with the node")):
         talk = sub.add_parser(name, help=help_text)
         if name == "ask":
             talk.add_argument("question")
         talk.add_argument("--deployment")
-        talk.add_argument("--token-file", help="a file holding the owner's access token (default: $ASTRAL_OWNER_TOKEN)")
+        talk.add_argument("--ticket-file", help=TICKET_HELP)
+        removed(talk, "--token-file", "--key-file")
     pair.add_argument("--executor", action="store_true",
                       help="print the executor's offer instead, so it can check the owner's tickets")
     pair.add_argument("--deployment")
-    pair.add_argument("--token-file", help="a file holding the owner's access token (default: $ASTRAL_OWNER_TOKEN)")
+    removed(pair, "--token-file")
+    caller = sub.add_parser("caller", help="manage the holder key that signs this machine's caller requests")
+    caller_commands = caller.add_subparsers(dest="caller_command", required=True)
+    key = caller_commands.add_parser("key", help="create the private caller-key file and print its public holder key")
+    key.add_argument("--deployment", help="deployment file; the key goes in its folder (default: deployment.toml here)")
     down = sub.add_parser("down", help="stop the deployment")
     down.add_argument("deployment", nargs="?")
     down.add_argument("--volumes", action="store_true", help="also delete the node's data volume")
@@ -98,6 +115,9 @@ def main() -> None:
                     proxy_headers=False)
         return
     from . import operate
+    if args.command == "caller":
+        operate.caller_key(args)
+        return
     sys.stdout.reconfigure(line_buffering=True)  # keep our lines in order with docker's when logged
     getattr(operate, "conformance_suite" if args.command == "conformance" else args.command)(args)
 

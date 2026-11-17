@@ -203,7 +203,7 @@ def test_falsey_malformed_authorization_containers_are_rejected():
         assert not refresh_claims_match(claims, claims)
 
 
-def test_refresh_requires_exact_live_registration_and_non_mock_auth():
+def test_refresh_requires_exact_live_registration():
     async def run():
         websocket = object()
         generation = str(uuid.uuid4())
@@ -221,7 +221,6 @@ def test_refresh_requires_exact_live_registration_and_non_mock_auth():
         )
         assert ack["accepted"] is False
         assert not called
-        assert ready_for_renewal(original, generation, mock_auth=True) is False
         assert parse_refresh_frame(_frame(generation, extra=True)) is None
         wrong_socket = object()
         ack = await UIAuthRenewal(sessions, contexts, verify).handle(
@@ -280,11 +279,10 @@ def test_snapshots_and_authorization_validation_are_bounded_and_fail_closed():
     assert not ready_for_renewal(
         {**claims, "resource_access": {"astral-frontend": None}},
         claims["_auth_connection_generation"],
-        mock_auth=False,
     )
 
 
-def test_registration_negotiates_only_valid_nonmock_stable_sessions():
+def test_registration_negotiates_only_valid_stable_sessions():
     generation = str(uuid.uuid4())
     claims = _claims()
     enabled = bind_registered_session(
@@ -292,7 +290,6 @@ def test_registration_negotiates_only_valid_nonmock_stable_sessions():
         token="fresh-authenticated-token",
         capabilities=["ui_auth_refresh_v1", None, 4],
         connection_generation=generation,
-        mock_auth=False,
     )
     assert enabled is True
     assert claims["_auth_refresh_enabled"] is True
@@ -302,25 +299,16 @@ def test_registration_negotiates_only_valid_nonmock_stable_sessions():
     assert claims["_client_capabilities"] == ["ui_auth_refresh_v1"]
 
     assert bind_registered_session(
-        _claims(),
-        token="validated-token",
-        capabilities=["ui_auth_refresh_v1"],
-        connection_generation=generation,
-        mock_auth=True,
-    ) is False
-    assert bind_registered_session(
         {**_claims(), "sid": None, "session_state": None},
         token="validated-token",
         capabilities=["ui_auth_refresh_v1"],
         connection_generation=generation,
-        mock_auth=False,
     ) is False
     assert bind_registered_session(
         {},
         token="validated-token",
         capabilities=9,
         connection_generation=None,
-        mock_auth=False,
     ) is False
 
 
@@ -602,7 +590,6 @@ def test_postgres_claim_identity_resolves_registered_chat_subject_token():
         token="postgres-chat-token",
         capabilities=["ui_auth_refresh_v1"],
         connection_generation=str(generation),
-        mock_auth=False,
     )
     context = ConnectionContext(
         websocket=websocket,
@@ -992,7 +979,6 @@ def test_subject_token_resolver_rejects_replaced_socket_generation_and_fence():
 
 
 def test_authenticated_websocket_ingress_renews_expired_token_for_same_running_operation(caplog, monkeypatch):
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
     caplog.set_level("INFO", logger="Orchestrator")
     async def run():
         from orchestrator.orchestrator import Orchestrator
@@ -1085,7 +1071,6 @@ def test_registration_ready_advertises_renewal_only_on_current_socket():
             token="registered-token",
             capabilities=["ui_auth_refresh_v1"],
             connection_generation=generation,
-            mock_auth=False,
         )
         context = _context(websocket, generation)
         orchestrator = Orchestrator.__new__(Orchestrator)
@@ -1492,7 +1477,6 @@ def test_normal_admitted_chat_claim_resolves_registered_subject_token():
             token="normal-chat-token",
             capabilities=["ui_auth_refresh_v1"],
             connection_generation=str(generation),
-            mock_auth=False,
         )
         context = ConnectionContext(
             websocket=websocket,
