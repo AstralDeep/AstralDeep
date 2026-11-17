@@ -81,7 +81,7 @@ async def pending_for(node, laptop, device):
 
 
 @pytest.mark.parametrize("owner,code", [
-    ("oidc.abc.owner", "node.legacy_owner"), ("sha256:" + "7" * 64, "node.owner_mismatch"),
+    ("sha256:" + "7" * 64, "node.owner_mismatch"),
     ("mesh." + "7" * 64, "node.owner_mismatch"),
 ])
 async def test_an_environment_owner_without_the_real_principal_is_refused(turn_host, tmp_path, monkeypatch, owner, code):  # noqa: F811

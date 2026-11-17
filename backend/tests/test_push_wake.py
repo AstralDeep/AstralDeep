@@ -398,7 +398,7 @@ async def test_each_institution_owner_gets_a_trigger_that_wakes_for_that_owner_o
     nmc.install(None)
 
 
-async def test_a_legacy_personal_owner_never_wakes_from_an_unavailable_mesh_binding(tmp_path, monkeypatch):
+async def test_a_legacy_personal_owner_is_retired_and_the_mesh_owner_binds_without_waking_an_unavailable_peer(tmp_path, monkeypatch):
     fake.Kernel.instances.clear()
     monkeypatch.setenv(ni.PROFILE_ENV, "personal")
     monkeypatch.setenv(ni.DATA_DIR_ENV, str(tmp_path))
@@ -410,7 +410,7 @@ async def test_a_legacy_personal_owner_never_wakes_from_an_unavailable_mesh_bind
     transport = FakeTransport()
     wake = pw.WakeGateway(targets=Targets(APNS), adapters={"apns": adapter(transport)}, limiter=pw.WakeLimiter(min_interval_seconds=0))
     monkeypatch.setattr(pw, "gateway_for", lambda orch: wake)
-    await nmc.start_for(SimpleNamespace(history=History()))
+    await nmc.start_for(SimpleNamespace(history=History(), agent_cards={}))
     kernel = fake.Kernel.instances[-1]
     mesh_id = "sha256:" + "e" * 64
     kernel.join(mesh_id)
@@ -420,8 +420,10 @@ async def test_a_legacy_personal_owner_never_wakes_from_an_unavailable_mesh_bind
     await nmc.active().scan()
     kernel.peers = [peer(PHONE, connected=False, pending_out=1)]
     kernel.notify()
-    assert ni.bound_owner() == "oidc.abc.owner" and (tmp_path / ni.OWNER_FILE).read_bytes() == stored
-    assert (await node_mesh.current().status())["owner_binding"] == {"state": "refused", "code": "node.legacy_owner"}
+    assert ni.bound_owner() == ni.owner_id_for_mesh(mesh_id)
+    (kept,) = tmp_path.glob(ni.OWNER_FILE + ".legacy-*")
+    assert kept.read_bytes() == stored
+    assert (await node_mesh.current().status())["owner_binding"] == {"state": "ready", "code": None}
     assert not transport.calls
     async with asyncio.timeout(5):
         await nmc.stop_all()

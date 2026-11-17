@@ -371,7 +371,7 @@ async def test_preserved_oidc_owner_is_never_reassigned_from_mesh_membership(per
     monkeypatch.setattr(node_identity, "bound_owner", lambda: legacy)
 
     def refuse_legacy():
-        raise node_identity.LegacyOwner("legacy")
+        raise node_identity.OwnerMismatch("legacy")
 
     monkeypatch.setattr(node_identity, "bound_mesh_owner", refuse_legacy)
     personal.state.owner = legacy
