@@ -24037,7 +24037,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
     def _trace_frame(self, websocket, data: str, *, ok: bool, error: str = "") -> None:
         try:
-            if not os.path.exists("/app/.frame_trace"):
+            trace_dir = os.getenv("ASTRAL_FRAME_TRACE_DIR", "").strip()
+            if not trace_dir or not os.path.exists(os.path.join(trace_dir, ".frame_trace")):
                 return
             ftype = "?"
             trace_data = "[REDACTED]"
@@ -24069,7 +24070,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 ok,
                 error,
             )
-            with open("/app/frame_trace.jsonl", "a", encoding="utf-8") as fh:
+            with open(os.path.join(trace_dir, "frame_trace.jsonl"), "a", encoding="utf-8") as fh:
                 fh.write(
                     json.dumps(
                         {

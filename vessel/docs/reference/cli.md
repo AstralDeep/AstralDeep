@@ -2,8 +2,8 @@
 
 | Command | Does |
 |---|---|
-| `astralvessel up` | Writes a deployment if there is none, writes Compose, starts the containers, waits, runs the probes and the node checks. |
-| `astralvessel check` | Runs the isolation probes and the node checks again. |
+| `astralvessel up` | Writes a deployment if there is none, installs the node pack, starts the processes, waits, runs the isolation checks and the node checks. A container deployment starts its containers instead. |
+| `astralvessel check` | Runs the isolation checks, one line per case, and the node checks again. Exits 1 on a failed case. |
 | `astralvessel conformance` | Runs the acceptance checks against the running node. |
 | `astralvessel pair` | Prints the node's pairing code and payload, with no sign-in. `--executor` prints the executor's. |
 | `astralvessel ask QUESTION` | Sends one question to the node over A2A with a caller ticket and prints the answer. |
@@ -11,7 +11,7 @@
 | `astralvessel caller key` | Creates the private `caller-key` file and prints its public holder key. |
 | `astralvessel connections list` | Shows the node's outside connections, and whether the node is signed in to each. |
 | `astralvessel connections sign-in NAME` | Signs the node in to one connection from this machine. See [Connections](../run/connections.md). |
-| `astralvessel down` | Stops the deployment. `--volumes` also deletes the data volumes. |
+| `astralvessel down` | Stops the deployment and keeps its data. `--volumes` also deletes the node's data. |
 | `astralvessel deploy FILE` | Writes the Compose file and prints the start command. `--up` starts it. |
 | `astralvessel executor` | Runs the executor. Used inside its container. |
 | `astralvessel sandbox PACKAGE` | Runs one sandbox. Used inside its container. |
@@ -20,7 +20,9 @@
 
 | Option | Meaning |
 |---|---|
-| `--image REF` | The node image. |
+| `--image REF` | The node image. Container mode only, so a new folder refuses it. |
+| `--bundle PATH_OR_URL`, `--bundle-sha256 DIGEST` | The node pack to run. A pack on this machine needs no digest. |
+| `--foreground` | Supervise the processes in this terminal, with no systemd or launchd. |
 | `--port N` | The local port to publish. Default 8001. |
 | `--upstream-url URL`, `--api-key env:NAME` | Add the model gateway. |
 | `--example` | Add the example agent. |

@@ -1,0 +1,250 @@
+{
+  "format": "astral.nodepack-pins/v1",
+  "pack_format": 1,
+  "deep": {
+    "repository": "https://github.com/AstralDeep/AstralDeep.git"
+  },
+  "kernel": {
+    "repository": "https://github.com/AstralDeep/AstralKernel.git",
+    "commit": "583463312ca1fd44fad630525928f471866da422"
+  },
+  "platforms": {
+    "macos-arm64": {
+      "python": {
+        "version": "3.11.18",
+        "release": "20261110",
+        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261110/cpython-3.11.18%2B20261110-aarch64-apple-darwin-install_only_stripped.tar.gz",
+        "sha256": "3afb0567b2a2b30b3a7341bd143cb4e8a69f3d8e95d4641218eaa45f0fabbd07"
+      },
+      "node_lock": "node-requirements.macos-arm64.lock",
+      "kernel_artifacts": {
+        "kind": "macos-python",
+        "target": "aarch64-apple-darwin",
+        "manifest": "macos-build-manifest.json",
+        "wheel_pattern": "astral_kernel-*-macosx_*_arm64.whl"
+      },
+      "natives": {
+        "sources_lock": "natives/sources.lock.json"
+      }
+    },
+    "linux-aarch64": {
+      "python": {
+        "version": "3.11.18",
+        "release": "20261110",
+        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261110/cpython-3.11.18%2B20261110-aarch64-unknown-linux-gnu-install_only_stripped.tar.gz",
+        "sha256": "7e71f26a003949b57757e287f4f4b6689da07e7a229f5bbee7919c19ed77155d"
+      },
+      "node_lock": "node-requirements.linux-aarch64.lock",
+      "kernel_artifacts": {
+        "kind": "linux",
+        "target": "linux/arm64",
+        "binding": "linux-aarch64",
+        "manifest": "linux-build-manifest.json",
+        "wheel_pattern": "astral_kernel-*-manylinux_2_36_aarch64.whl"
+      },
+      "linux": {
+        "glibc_floor": "2.36",
+        "natives": {
+          "source_image": "debian:bookworm@sha256:268fb24c39bca92d326dd83ea3abebe4a3f7751c804ffef23bb6d857dd343ff8",
+          "packages": [
+            "poppler-utils",
+            "libmagic1",
+            "libmagic-mgc",
+            "libgcc-s1",
+            "libstdc++6",
+            "libcrypt1",
+            "zlib1g",
+            "fonts-urw-base35"
+          ],
+          "binaries": [
+            "pdftoppm",
+            "pdfinfo"
+          ],
+          "libraries": [
+            "libmagic.so.1"
+          ],
+          "data": {
+            "magic.mgc": "/usr/lib/file/magic.mgc"
+          },
+          "fonts": {
+            "directory": "/usr/share/fonts/opentype/urw-base35",
+            "conf_directory": "/etc/fonts/conf.d",
+            "patterns": [
+              "30-metric-aliases.conf",
+              "61-urw-*.conf"
+            ]
+          }
+        },
+        "known_limits": [
+          "Non-embedded CJK fonts render without glyphs: poppler reads its CJK maps from a fixed system path that a relocated pack cannot redirect, so poppler-data is not shipped."
+        ]
+      }
+    },
+    "linux-x86_64": {
+      "python": {
+        "version": "3.11.18",
+        "release": "20261110",
+        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261110/cpython-3.11.18%2B20261110-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz",
+        "sha256": "3288c54cea3db350052019b3f8b558dd8a3da8afa6fda573f5fd2bcb37635b4a"
+      },
+      "node_lock": "node-requirements.linux-x86_64.lock",
+      "kernel_artifacts": {
+        "kind": "linux",
+        "target": "linux/amd64",
+        "binding": "linux-x86_64",
+        "manifest": "linux-build-manifest.json",
+        "wheel_pattern": "astral_kernel-*-manylinux_2_36_x86_64.whl"
+      },
+      "linux": {
+        "glibc_floor": "2.36",
+        "natives": {
+          "source_image": "debian:bookworm@sha256:268fb24c39bca92d326dd83ea3abebe4a3f7751c804ffef23bb6d857dd343ff8",
+          "packages": [
+            "poppler-utils",
+            "libmagic1",
+            "libmagic-mgc",
+            "libgcc-s1",
+            "libstdc++6",
+            "libcrypt1",
+            "zlib1g",
+            "fonts-urw-base35"
+          ],
+          "binaries": [
+            "pdftoppm",
+            "pdfinfo"
+          ],
+          "libraries": [
+            "libmagic.so.1"
+          ],
+          "data": {
+            "magic.mgc": "/usr/lib/file/magic.mgc"
+          },
+          "fonts": {
+            "directory": "/usr/share/fonts/opentype/urw-base35",
+            "conf_directory": "/etc/fonts/conf.d",
+            "patterns": [
+              "30-metric-aliases.conf",
+              "61-urw-*.conf"
+            ]
+          }
+        },
+        "known_limits": [
+          "Non-embedded CJK fonts render without glyphs: poppler reads its CJK maps from a fixed system path that a relocated pack cannot redirect, so poppler-data is not shipped."
+        ]
+      }
+    }
+  },
+  "backend_exclusions": [
+    {
+      "path": "tests",
+      "reason": "Test suites are not needed to run a node."
+    },
+    {
+      "path": "voice_agent",
+      "reason": "The LiveKit voice worker. The Mac app runs speech on the device."
+    },
+    {
+      "path": "data",
+      "reason": "Runtime data directory. A node keeps its data under its own home."
+    },
+    {
+      "path": "tmp",
+      "reason": "Scratch directory for generated drafts."
+    },
+    {
+      "path": "requirements.txt",
+      "reason": "Dependencies are installed from the hashed lock."
+    },
+    {
+      "path": "requirements-document-worker.txt",
+      "reason": "Dependencies are installed from the hashed lock."
+    },
+    {
+      "path": "requirements-gaiakeep.txt",
+      "reason": "Dependencies are installed from the hashed lock."
+    },
+    {
+      "path": "start-docker.sh",
+      "reason": "The container entry point. The app starts the node itself."
+    },
+    {
+      "path": "pytest.ini",
+      "reason": "Test configuration."
+    },
+    {
+      "path": "coverage.json",
+      "reason": "Test coverage data."
+    }
+  ],
+  "excluded_packages": [
+    {
+      "name": "livekit-api",
+      "reason": "Voice control plane for the server. A node has no hosted voice."
+    },
+    {
+      "name": "SimpleITK",
+      "reason": "Medical imaging reader. The tool reports itself unavailable."
+    },
+    {
+      "name": "aicspylibczi",
+      "reason": "Medical imaging reader. The tool reports itself unavailable."
+    },
+    {
+      "name": "nibabel",
+      "reason": "Medical imaging reader. The tool reports itself unavailable."
+    },
+    {
+      "name": "openslide-python",
+      "reason": "Medical imaging reader. The tool reports itself unavailable."
+    },
+    {
+      "name": "openslide-bin",
+      "reason": "Medical imaging reader. The tool reports itself unavailable."
+    },
+    {
+      "name": "pydicom",
+      "reason": "Medical imaging reader. The tool reports itself unavailable."
+    },
+    {
+      "name": "tifffile",
+      "reason": "Medical imaging reader. The tool reports itself unavailable."
+    },
+    {
+      "name": "plotly",
+      "reason": "Nothing imports it."
+    },
+    {
+      "name": "scipy",
+      "reason": "Nothing imports it."
+    },
+    {
+      "name": "reportlab",
+      "reason": "Nothing imports it."
+    },
+    {
+      "name": "pytest",
+      "reason": "Test tooling."
+    },
+    {
+      "name": "pytest-asyncio",
+      "reason": "Test tooling."
+    }
+  ],
+  "kept_server_parts": [
+    {
+      "name": "psycopg2-binary",
+      "reason": "Plane imports the PostgreSQL client library at import time. It is a client only, and the node runs on SQLite with no database server."
+    }
+  ],
+  "spacy_model": {
+    "name": "en_core_web_lg",
+    "version": "3.8.0",
+    "requires_spacy": ">=3.8.0,<3.9.0",
+    "url": "https://github.com/explosion/spacy-models/releases/download/en_core_web_lg-3.8.0/en_core_web_lg-3.8.0-py3-none-any.whl",
+    "size": 400658291,
+    "sha256": "293e9547a655b25499198ab15a525b05b9407a75f10255e405e8c3854329ab63"
+  },
+  "known_limits": [
+    "Non-embedded CJK text renders without glyphs: poppler-data cannot be relocated, because poppler reads its data directory from a compiled-in path."
+  ]
+}

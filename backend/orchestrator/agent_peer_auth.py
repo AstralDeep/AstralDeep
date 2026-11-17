@@ -19,8 +19,6 @@ _STATIC_TRUSTED_HOSTS = frozenset(
         "localhost",
         "127.0.0.1",
         "::1",
-        "host.docker.internal",
-        "gateway.docker.internal",
     }
 )
 

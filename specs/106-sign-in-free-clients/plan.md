@@ -12,8 +12,10 @@ planned and nothing is built.
 ## Preconditions
 
 1. **Spec 105 is merged.** Met on 2026-11-15. This plan edits 105's contracts.
-2. **Plane on SQLite is enabled in Deep.** Phase 4 needs it. **Today** Deep still calls
-   `create_postgres_runtime` and expects PostgreSQL's registry (research C86 to C88, C199).
+2. **Plane on SQLite is enabled in Deep.** Phase 4 needs it. Met on 2026-11-17: the personal profile
+   composes the SQLite Plane and a pack-launched node boots with no PostgreSQL setting, serves `/readyz`,
+   writes `plane.sqlite3` at 0600 and serves a development-mesh ticketed request
+   (`backend/tests/test_personal_sqlite_boot.py`). Spec sections 10.1 and 10.2 still carry stale "today" lines for the owner to revise.
 3. **One question only the owner can answer** (spec section 16). The owner deferred it until phase 0
    reports.
 

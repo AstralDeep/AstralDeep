@@ -1,0 +1,4 @@
+hatchling==1.27.0
+setuptools==83.0.0
+uv-build==0.13.6
+wheel==0.45.1

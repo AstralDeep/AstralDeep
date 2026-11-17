@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from orchestrator.node_mailbox import MailboxError, MailboxProcess, MailboxSettings
+from orchestrator import node_stdio_exec
 from orchestrator.node_mesh import MeshSettings, NodeMesh, NodeMeshError
 from shared import node_identity
 
@@ -173,6 +174,7 @@ class InstitutionMeshes:
             kwargs: Dict[str, Any] = {
                 "data_dir": directory,
                 "settings": self._settings,
+                "sandbox": node_stdio_exec.default_backend(directory),
             }
             if self._binding is not None:
                 kwargs["binding"] = self._binding

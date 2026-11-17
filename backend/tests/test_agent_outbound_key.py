@@ -45,11 +45,17 @@ def _key(monkeypatch):
         "http://127.0.0.1:8005",
         "http://127.0.0.2:8005",
         "http://[::1]:8005",
-        "http://host.docker.internal:8771",
-        "http://gateway.docker.internal:8771",
     ],
 )
 def test_key_is_sent_to_trusted_destinations(url):
+    assert agent_auth_headers(url) == {AGENT_KEY_HEADER: KEY}
+
+
+@pytest.mark.parametrize("host", ["host.docker.internal", "gateway.docker.internal"])
+def test_docker_aliases_get_no_key_until_declared(monkeypatch, host):
+    url = f"http://{host}:8771"
+    assert agent_auth_headers(url) == {}
+    monkeypatch.setenv("AGENT_KEY_TRUSTED_HOSTS", "host.docker.internal,gateway.docker.internal,")
     assert agent_auth_headers(url) == {AGENT_KEY_HEADER: KEY}
 
 

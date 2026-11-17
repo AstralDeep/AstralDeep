@@ -1,0 +1,50 @@
+# uv pip compile build-requirements.in --generate-hashes --no-header --python-version 3.11 -o build-requirements.lock
+hatchling==1.27.0 \
+    --hash=sha256:971c296d9819abb3811112fc52c7a9751c8d381898f36533bb16f9791e941fd6 \
+    --hash=sha256:d3a2f3567c4f926ea39849cdf924c7e99e6686c9c8e288ae1037c8fa2a5d937b
+    # via -r build-requirements.in
+packaging==26.3 \
+    --hash=sha256:94edc256424af38762eb31306eed28beb9f0efc50a8837492c9d6fd6004aed79 \
+    --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c
+    # via hatchling
+pathspec==1.1.1 \
+    --hash=sha256:17db5ecd524104a120e173814c90367a96a98d07c45b2e10c2f3919fff91bf5a \
+    --hash=sha256:a00ce642f577bf7f473932318056212bc4f8bfdf53128c78bbd5af0b9b20b189
+    # via hatchling
+pluggy==1.7.0 \
+    --hash=sha256:7dd7b0d8832ba3cb632c306926ded123429211b83641b35dc5c41ad2d34f9bec \
+    --hash=sha256:d1eaa46ebb595891b860ab086b4d09c8588af65ebd4361b8e8f4bb8920b90ba8
+    # via hatchling
+setuptools==83.0.0 \
+    --hash=sha256:025bccbbf0fa05b6192bc64ae1e7b16e001fd6d6d4d5de03c97b1c1ade523bef \
+    --hash=sha256:29b23c360f22f414dc7336bb39178cc7bcbf6021ed2733cde173f09dba19abb3
+    # via -r build-requirements.in
+trove-classifiers==2026.9.21.13 \
+    --hash=sha256:0a9ebc8d4e2f3e8a22848c5258033035bec17a3012ac3fea16dbaa764489eb71 \
+    --hash=sha256:8b1ff4f9c191b1040b71c37f1e445ab99732911e3cd91de52838453a854d7a17
+    # via hatchling
+uv-build==0.13.6 \
+    --hash=sha256:0a4fcd8dc390738607d722c207dc1433e344e6689d6eed6d6d777866c4084cca \
+    --hash=sha256:16f8f00defc3bd2afab1f985022e7492702fd714ef9d3e9215c76c6a2c6488f4 \
+    --hash=sha256:2a2350fbea9a3cf578481b5efc2d333f0477f26696aa615d312866acd170acf6 \
+    --hash=sha256:491b2ac4eb4f7a00cf7deacc847c3562d4bef1d8ab753c753678555f2d31e919 \
+    --hash=sha256:7ebe6657b95821dbd5cb0c73fe4c66d7a66f64b29d6df508478caa09768d0f1d \
+    --hash=sha256:806a7ba7998abc2f4002cd964545e9bf65a1534137c170b239a16a2bf8ac0a5f \
+    --hash=sha256:8a03355d73117d136dbf6a34e20429755598a73d752dc6ae3aa5894942b6fd4b \
+    --hash=sha256:8abef2980c5731151d51e9ff5a88bbf72c2658f711931a30cc7e571d4e0e9652 \
+    --hash=sha256:9d2022b84fb5d93e31c0b2c19ccba8f58bb964cf0952d967d7efa8a6abdc8bde \
+    --hash=sha256:aa801f10feb6e7b1f8c83ab7166864fa5f798bd79333b0648320ff12f0ea8824 \
+    --hash=sha256:abe216bc7f0c3d7d6ed3f275b5530876c77c2076cf0cd7966307da070ca0357a \
+    --hash=sha256:b23bbf1393acb47c1bd434f79daa91c158a14a504894485b5a9948f68d63170b \
+    --hash=sha256:bcadad3992227236f48b05168a5cf38d3310e5881e8d0cc378da0d557dff9715 \
+    --hash=sha256:c265a975d285acd84a94c4f5317e65f8e3bb7f862b9be5d1c541311b3b879108 \
+    --hash=sha256:c3e6410430cd8168bf5a4ad8daf27756cd6233343734c988a5656fd8c53fcb1f \
+    --hash=sha256:ca63ce8511f001c7a1a4f1569215338e6a69e12ebe9da5b5f5707963596cba45 \
+    --hash=sha256:dd9098705921a420cef4e74ae1551798e48bc235455104711cf09ca4b2d5aaab \
+    --hash=sha256:f704473ddae37ad2953bb4bb9ffa33500404ea0209143008b4f094cd850b09a4 \
+    --hash=sha256:f921d0ae27495b897cce614db1612060603a9d519e146a3fdc5ffd3a99841c92
+    # via -r build-requirements.in
+wheel==0.45.1 \
+    --hash=sha256:661e1abd9198507b1409a20c02106d9670b2576e916d58f520316666abca6729 \
+    --hash=sha256:708e7481cc80179af0e556bbf0cc00b8444c7321e2700b8d8580231d13017248
+    # via -r build-requirements.in

@@ -60,6 +60,8 @@ services:
       HOST_PROC: /host/proc
       HOST_SYS: /host/sys
       GAIAKEEP_ISSUE_LOG_DIRECTORY: /app/gaia-issue-log
+      AGENT_KEY_TRUSTED_HOSTS: host.docker.internal,gateway.docker.internal,${AGENT_KEY_TRUSTED_HOSTS:-}
+      ASTRAL_FRAME_TRACE_DIR: /app
       OPENAI_BASE_URL: ""
       OPENAI_API_KEY: ""
       # The shared env_file may contain worker-native speech credentials.

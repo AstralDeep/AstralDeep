@@ -22,7 +22,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
-from orchestrator import node_connection_keystore, node_mesh_calls, node_mesh_keys, node_stdio_launcher
+from orchestrator import node_connection_keystore, node_mesh_calls, node_mesh_keys, node_stdio_exec, node_stdio_launcher
 from orchestrator.node_mailbox import MailboxError, MailboxProcess, MailboxSettings
 from shared import dev_mesh_keys, node_identity
 
@@ -1133,8 +1133,9 @@ async def start_configured(data_dir: Optional[Path] = None) -> Optional[NodeMesh
     if not enabled():
         return None
     try:
+        mesh_dir = data_dir or node_identity.data_dir()
         mesh = NodeMesh(
-            data_dir=data_dir or node_identity.data_dir(), settings=MeshSettings.from_env()
+            data_dir=mesh_dir, settings=MeshSettings.from_env(), sandbox=node_stdio_exec.default_backend(mesh_dir)
         )
     except MeshUnavailable as exc:
         logger.warning("node_mesh_unavailable: %s", exc.code)

@@ -20,7 +20,8 @@ from orchestrator.orchestrator import Orchestrator
 from tests.helpers.remote_plane_runtime import make_remote_plane_source
 
 _REAL_EXISTS = os.path.exists
-_MARKER = "/app/.frame_trace"
+_TRACE_DIR = "/trace"
+_MARKER = "/trace/.frame_trace"
 
 
 @pytest.fixture(autouse=True)
@@ -302,6 +303,7 @@ def _set_marker(monkeypatch, present: bool):
 
 
 def test_trace_frame_is_off_without_the_marker(monkeypatch):
+    monkeypatch.setenv("ASTRAL_FRAME_TRACE_DIR", _TRACE_DIR)
     _set_marker(monkeypatch, False)
     sink: list = []
     monkeypatch.setattr(oo, "open", _fake_open(sink), raising=False)
@@ -311,6 +313,7 @@ def test_trace_frame_is_off_without_the_marker(monkeypatch):
 
 
 def test_trace_frame_appends_a_typed_record_when_armed(monkeypatch):
+    monkeypatch.setenv("ASTRAL_FRAME_TRACE_DIR", _TRACE_DIR)
     _set_marker(monkeypatch, True)
     sink: list = []
     monkeypatch.setattr(oo, "open", _fake_open(sink), raising=False)
@@ -318,14 +321,27 @@ def test_trace_frame_appends_a_typed_record_when_armed(monkeypatch):
     ws = _WS()
     Orchestrator._trace_frame(None, ws, json.dumps({"type": "ui_upsert"}), ok=True)
 
-    assert sink[0][0] == "open" and sink[0][1] == "/app/frame_trace.jsonl"
+    assert sink[0][0] == "open" and sink[0][1] == "/trace/frame_trace.jsonl"
     rec = json.loads(sink[1])
     assert rec["type"] == "ui_upsert"
     assert rec["sock"] == "_WS" and rec["sock_id"] == id(ws)
     assert rec["ok"] is True and rec["error"] == ""
 
 
+def test_trace_frame_is_off_with_no_trace_directory_and_touches_nothing(monkeypatch, tmp_path):
+    monkeypatch.delenv("ASTRAL_FRAME_TRACE_DIR", raising=False)
+    monkeypatch.chdir(tmp_path)
+    checked: list = []
+    monkeypatch.setattr(os.path, "exists", lambda path: checked.append(path) or True)
+    sink: list = []
+    monkeypatch.setattr(oo, "open", _fake_open(sink), raising=False)
+
+    Orchestrator._trace_frame(None, _WS(), json.dumps({"type": "ui_render"}), ok=True)
+    assert sink == [] and checked == [] and list(tmp_path.iterdir()) == []
+
+
 def test_trace_frame_records_an_unparsable_frame_as_unknown_type(monkeypatch):
+    monkeypatch.setenv("ASTRAL_FRAME_TRACE_DIR", _TRACE_DIR)
     _set_marker(monkeypatch, True)
     sink: list = []
     monkeypatch.setattr(oo, "open", _fake_open(sink), raising=False)

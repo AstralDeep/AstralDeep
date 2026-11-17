@@ -167,6 +167,12 @@ def test_next_steps_describe_pairing_without_a_sign_in(tmp_path):
     assert "Sign in" not in out and "issuer" not in out
 
 
+def test_next_steps_name_the_pack_launcher_and_no_container(tmp_path):
+    out = run(tmp_path / "home").stdout
+    assert "astral_node_launch.py" in out
+    assert "docker" not in out.lower()
+
+
 def test_unknown_options_and_help(tmp_path):
     bad = subprocess.run(["bash", str(SCRIPT), "--nope"], capture_output=True, text=True, check=False)
     assert bad.returncode == 2

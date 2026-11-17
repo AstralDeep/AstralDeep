@@ -141,16 +141,34 @@ def reap_strays() -> None:
             pass
 
 
+def process_confinement(package: AgentPackage, process: Any, env: Any = None) -> Confinement:
+    # Host paths stand in for the container's mounts: VESSEL_READS lists the granted folders, and VESSEL_WORKDIR names
+    # the one the agent's working directory maps to.
+    sandbox = package.manifest.sandbox
+    env = os.environ if env is None else env
+    workdir = env.get("VESSEL_WORKDIR") or sandbox.workdir
+    granted = [part for part in env.get("VESSEL_READS", "").split(os.pathsep) if part]
+    scratch = os.path.join(process.data_dir, "exec")
+    os.makedirs(scratch, mode=0o700, exist_ok=True)
+    readable = tuple(dict.fromkeys((workdir, str(package.root), *granted)))
+    return Confinement(readable=readable, scratch_root=os.path.realpath(scratch), process=process)
+
+
 def sandbox_app(package_path: str | None = None, token: str | None = None, *, confine: bool | None = None,
-                scratch_root: str = SCRATCH_ROOT) -> Starlette:
+                scratch_root: str = SCRATCH_ROOT, process: Any = None) -> Starlette:
     package = load_package(package_path or os.environ["VESSEL_PACKAGE"])
     secret = token or os.environ["VESSEL_SANDBOX_TOKEN"]
     if len(secret) < 16:
         raise ValueError("VESSEL_SANDBOX_TOKEN must be at least 16 characters")
+    if process is None and os.environ.get("VESSEL_MODE") == "process":
+        from .execmode import ProcessExec
+        process = ProcessExec.from_environment()
     if confine is None:
         confine = os.environ.get("VESSEL_UNCONFINED") != "1"
     confinement = None
-    if confine:
+    if process is not None:
+        confinement = process_confinement(package, process)
+    elif confine:
         # Without Landlock, concurrent calls for different users could see each other; refuse to start.
         if landlock.abi_version() < landlock.REQUIRED_ABI:
             raise SystemExit(f"this kernel lacks Landlock ABI {landlock.REQUIRED_ABI}; per-call isolation is "
@@ -158,6 +176,7 @@ def sandbox_app(package_path: str | None = None, token: str | None = None, *, co
         os.makedirs(scratch_root, mode=0o711, exist_ok=True)
         confinement = confinement_for(package, scratch_root)
     turn_disk = int(os.environ.get("VESSEL_TURN_DISK") or 0)
+    process_mode = process is not None
     user_disk = int(os.environ.get("VESSEL_USER_DISK") or 0)
     if confinement is not None and turn_disk:
         confinement = replace(confinement, max_file_bytes=turn_disk)
@@ -266,7 +285,8 @@ def sandbox_app(package_path: str | None = None, token: str | None = None, *, co
             measured.pop(key, None)
             stopped.pop(key, None)
         await asyncio.to_thread(sweep_workspaces, confinement, set(started))
-        reap_strays()
+        if not process_mode:
+            reap_strays()
         # Check again with no await before the call starts: the turn may have ended or begun emptying meanwhile.
         while workspace in removing:
             await removing[workspace].wait()
@@ -296,7 +316,8 @@ def sandbox_app(package_path: str | None = None, token: str | None = None, *, co
         finally:
             if not task.done():
                 task.cancel()  # whatever went wrong here, the call does not run on unwatched
-            reap_strays()
+            if not process_mode:
+                reap_strays()
         files = [f.wire() for f in runner.take_files(workspace)] if workspace else []
         return JSONResponse({"output": output, "error": error, "files": files})
 
@@ -325,8 +346,14 @@ def sandbox_app(package_path: str | None = None, token: str | None = None, *, co
         return JSONResponse({"ok": True})
 
     async def health(_request: Request) -> JSONResponse:
-        return JSONResponse({"ok": True, "agent": package.manifest.agent.name, "profile": profile,
-                             "loaded": package.loaded_digest(), "confined": confinement is not None})
+        body = {"ok": True, "agent": package.manifest.agent.name, "profile": profile,
+                "loaded": package.loaded_digest(), "confined": confinement is not None}
+        if process_mode:
+            # Confined means nothing untrusted runs unconfined: with no backend, bash and declared tools are refused.
+            backend, refusal = await asyncio.to_thread(process.backend)
+            body["backend"] = backend.name if backend is not None else None
+            body["unavailable"] = refusal.text if refusal is not None else None
+        return JSONResponse(body)
 
     return Starlette(routes=[Route("/run", run, methods=["POST"]), Route("/end", end, methods=["POST"]),
                              Route("/health", health)])

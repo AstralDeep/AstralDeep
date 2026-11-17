@@ -106,7 +106,7 @@ if ! has_key DATABASE_URL; then
 else
   echo "  1. DATABASE_URL is set."
 fi
-echo "  2. Start the orchestrator with that file, for example: docker run --env-file $env_file -v $data_dir:$data_dir -p 8001:8001 <image>"
+echo "  2. Start the orchestrator from the node pack: run <pack>/launcher/astral_node_launch.py with the pack's own Python, --env-file $env_file and --port 8001."
 echo "  3. Pair it from the same machine. Read the secret in $data_dir/pairing-secret and call POST /api/node/mesh/offer on 127.0.0.1:8001 with it in the Astral-Pairing-Secret header."
 echo "  4. Scan the code or payload it returns with your Mac or iPhone app and approve. The mesh you pair becomes the node's owner."
 echo "  5. Keep $data_dir and $env_file private and back them up. The signing key is the node's identity."

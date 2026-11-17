@@ -65,6 +65,12 @@ The top level of `deployment.toml`.
 
 <!-- config: astralvessel.deployment.EgressSection -->
 
+### RuntimeSection
+
+`[runtime]`
+
+<!-- config: astralvessel.deployment.RuntimeSection -->
+
 ### NodeSection
 
 `[node]`
