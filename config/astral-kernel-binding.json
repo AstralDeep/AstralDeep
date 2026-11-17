@@ -14,21 +14,21 @@
     "linux-aarch64": {
       "wheel": {
         "file": "astral_kernel-0.2.0-py3-none-manylinux_2_36_aarch64.whl",
-        "sha256": "035bb2e4d4e7d7cdff1a5f4c3a345f62175f66cd73064c724e4ea9537195a0c9"
+        "sha256": "162060a95b7ccb34ed81ca4a477b95fff45a3da7ed4f732e8c0e28a9e10beca4"
       },
       "mailbox": {
         "file": "astral-mailbox-linux-aarch64",
-        "sha256": "b48242c0be78050e936999e13912ca4be004cd0e7d4534f1a5ef226711f982a4"
+        "sha256": "3d944e85130abb30a685fc693b251f9823dc078b47cb1317c4305997d2a7c1dd"
       }
     },
     "linux-x86_64": {
       "wheel": {
         "file": "astral_kernel-0.2.0-py3-none-manylinux_2_36_x86_64.whl",
-        "sha256": "85ff3be7f895f0b255b84ec2b9dc0762f43a46ac20ac7514be0621877f9d3dd6"
+        "sha256": "c2792d4cbc2d59355f84c23fbbbca3c9aebd0e824158d32b8faf43b92e089424"
       },
       "mailbox": {
         "file": "astral-mailbox-linux-x86_64",
-        "sha256": "451c74248d29c8b5dd2bfa9e1b4cba5fef189aad6a9b2bd9cfd2d44b98bb97cd"
+        "sha256": "079c01ce76b8ca2dbf1f97588e19716f2e64511a53589e7e93162899d6522a56"
       }
     }
   }
