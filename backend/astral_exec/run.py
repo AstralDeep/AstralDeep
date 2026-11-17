@@ -91,11 +91,9 @@ def main(args: Sequence[str]) -> int:
     if command == "rlimit":
         return rlimit(rest)
     if command == "conformance":
-        print(
-            "run.py conformance: the conformance suite is not yet available",
-            file=sys.stderr,
-        )
-        return 2
+        from astral_exec.conformance import main as conformance
+
+        return conformance(rest)
     print(USAGE, file=sys.stderr)
     return 2
 

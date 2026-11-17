@@ -226,7 +226,14 @@ def test_a_linux_call_with_hosts_binds_the_proxy_socket_and_closes_it_after(
         (minimal_policy(workspace=WORKSPACE), darwin_facts()),
         (darwin_policy(), good_facts()),
         (darwin_policy(), {"platform": "darwin"}),
-        (loaded(minimal_policy()), good_facts()),
+        pytest.param(
+            loaded(minimal_policy()),
+            good_facts(),
+            marks=pytest.mark.skipif(
+                sys.platform != "darwin",
+                reason="a Linux host legitimately starts the linux backend",
+            ),
+        ),
     ],
     ids=[
         "parse_only",
@@ -481,6 +488,10 @@ def test_the_real_trampoline_refuses_a_limit_the_kernel_rejects():
     assert (code, status, out) == (1, b"fail ValueError", b"")
 
 
+@pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="the rlimit trampoline is the macOS launcher, and Linux ends a tool at its hard CPU limit with SIGKILL instead of SIGXCPU",
+)
 def test_the_cpu_limit_kills_a_busy_tool_without_any_launcher():
     code, status, _out, _err = real_trampoline(
         [PYTHON, "-I", "-c", "while True: pass"], {}, cpu=1
@@ -810,15 +821,18 @@ def _gone(pid):
     return False
 
 
-def test_run_py_dispatches_and_names_the_missing_conformance_suite(monkeypatch, capsys):
+def test_run_py_dispatches_each_command(monkeypatch, capsys):
+    from astral_exec import conformance
+
     seen = []
     monkeypatch.setattr(launch, "main", lambda args: seen.append(args) or 7)
     assert run_command.main(["launch", "--policy", "p"]) == 7
     assert seen == [["--policy", "p"]]
-    assert run_command.main(["conformance", "--json"]) == 2
+    monkeypatch.setattr(conformance, "main", lambda args: seen.append(args) or 5)
+    assert run_command.main(["conformance", "--json"]) == 5
+    assert seen[-1] == ["--json"]
     with pytest.raises(SystemExit):
         run_command.main(["rlimit", "--core", "0"])
-    assert "not yet available" in capsys.readouterr().err
     for args in ([], ["other"]):
         assert run_command.main(args) == 2
         assert "usage" in capsys.readouterr().err
@@ -1061,13 +1075,13 @@ def test_a_failed_teardown_turns_a_finished_call_into_a_launch_failure():
 
 def test_run_py_runs_as_a_script_with_only_its_parent_on_the_path(monkeypatch, capsys):
     script = os.path.join(os.path.dirname(launch.__file__), "run.py")
-    monkeypatch.setattr(sys, "argv", [script, "conformance"])
+    monkeypatch.setattr(sys, "argv", [script, "conformance", "--backend", "container"])
     monkeypatch.setattr(sys, "path", list(sys.path))
     with pytest.raises(SystemExit) as stopped:
         runpy.run_path(script, run_name="__main__")
     assert stopped.value.code == 2
     assert sys.path[0] == os.path.dirname(os.path.dirname(script))
-    assert "not yet available" in capsys.readouterr().err
+    assert "container" in capsys.readouterr().err
 
 
 def test_a_cpu_limit_signal_is_a_time_limit():
@@ -1209,7 +1223,7 @@ def test_a_stop_signal_during_teardown_still_finishes_the_sweep():
     try:
         with pytest.raises(launch._Stopped):
             supervise(proc, fake)
-        assert proc.returncode == -signal.SIGKILL
+        assert proc.wait(timeout=30) == -signal.SIGKILL
     finally:
         for sig, handler in previous.items():
             signal.signal(sig, handler)
@@ -1260,6 +1274,10 @@ def test_the_profile_is_written_under_the_data_directory_outside_exec(
     assert not os.path.exists(seen[0])
 
 
+@pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="the nproc backstop and its libproc process count exist only on the macOS launcher",
+)
 def test_a_fork_loop_cannot_grow_past_the_nproc_backstop():
     base = watchdog.user_process_count()
     code = (
