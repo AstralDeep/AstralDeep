@@ -39,17 +39,47 @@ async def settled(condition, what):
     await wait_until(safe, what)
 
 
-async def test_an_unadopted_node_ends_a_request_with_phi_group_not_ready_and_runs_no_model_turn(turn_host, model_server, tmp_path, monkeypatch):  # noqa: F811
+async def test_an_unadopted_node_answers_a_plain_turn_and_ends_an_uncertain_one_with_phi_group_not_ready(model_server, tmp_path, monkeypatch):  # noqa: F811
+    FakeModel.tool = None
+    async with dev_node(tmp_path, monkeypatch, adopt=False) as mesh:
+        owner_device = (await mesh.owner.kernel.mesh_status()).device_id
+        mesh.owner.kernel.set_model_provider(ak.ModelProviderConfig(
+            name="local", base_url=f"http://127.0.0.1:{model_server}/v1", models=["model-1"], api_keys=["fixture-key"], fallback_order=0,
+            self_hosted=True, strict_tools=False, recipients=[owner_device, mesh.node_device],
+        ))
+        await settled(lambda: any(p.name == "local" for p in mesh.node.kernel.model_providers()), "the provider to reach the node")
+        assert await mesh.node.phi_member() is False
+
+        async def request(text):
+            chat, request_id = mesh.owner.send_request(mesh.node_device, text)
+            await settled(lambda: mesh.node.kernel.request(request_id), "the request to reach the node")
+            return chat, request_id
+
+        _, plain = await request("Please summarise the weekly report")
+        assert (await asyncio.wait_for(mesh.node.answer_request(plain, mesh.node.kernel), 30)).status == "completed"
+        _, uncertain = await request("Appointment on 2024-03-15 was moved")
+        with pytest.raises(node_mesh.NodeMeshError) as refused:
+            await mesh.node.answer_request(uncertain, mesh.node.kernel)
+        assert refused.value.code == "phi.group_not_ready"
+        seen = len(FakeModel.seen)
+        assert seen == 1
+
+
+async def test_the_bridge_answers_a_plain_request_on_an_unadopted_node_and_refuses_an_uncertain_one_with_the_phi_code(turn_host, model_server, tmp_path, monkeypatch):  # noqa: F811
     host = turn_host
+    FakeModel.tool = None
     async with paired(tmp_path, monkeypatch, creator=host.mesh_creator, calls=OrchestratorCalls(host.orch), history=host.orch.history,
                       kernel_answers=True, adopt=False) as (node, laptop, device, bridge):
-        await setup_native(host, node, laptop, device, bridge, model_server, monkeypatch)
-        await grant(node, laptop, dice_grant(host))
+        completed = await setup_native(host, node, laptop, device, bridge, model_server, monkeypatch)
         assert await node.phi_member() is False
-        _, request = await ask(node, laptop, device)
-        await until(lambda: laptop.request(request).state == ak.RequestState.REFUSED, "the node to refuse the unprotected turn")
-        assert laptop.request(request).code == "phi.group_not_ready"
-        assert not FakeModel.seen and not any(host.dispatched.values())
+        _, plain = await ask(node, laptop, device, "Please summarise the weekly report")
+        await until(lambda: laptop.request(plain).state == ak.RequestState.ANSWERED, "the plain turn to be answered")
+        assert completed[0][1].status == "completed"
+        seen = len(FakeModel.seen)
+        _, uncertain = await ask(node, laptop, device, "Appointment on 2024-03-15 was moved")
+        await until(lambda: laptop.request(uncertain).state == ak.RequestState.REFUSED, "the uncertain turn to be refused")
+        assert laptop.request(uncertain).code == "phi.group_not_ready"
+        assert len(FakeModel.seen) == seen
 
 
 def test_a_sink_failure_that_names_a_phi_code_surfaces_that_code():
@@ -60,18 +90,6 @@ def test_a_sink_failure_that_names_a_phi_code_surfaces_that_code():
     assert node_mesh._code_with_phi(excluded) == "phi.device_excluded"
     assert node_mesh._code_with_phi(other) == "engine.sink"
     assert node_mesh._code_with_phi(ak.KernelError.State(code="phi.group_not_ready", message="m")) == "phi.group_not_ready"
-
-
-async def test_the_refusal_code_follows_the_nodes_standing_in_the_group(tmp_path, monkeypatch):
-    async with dev_node(tmp_path, monkeypatch, adopt=False) as mesh:
-        assert await mesh.node.phi_refusal() == "phi.group_not_ready"
-        await settled(mesh.owner.phi_markers_synced, "the PHI markers to sync")
-        mesh.owner.adopt_phi_group()
-        await settled(mesh.node.phi_member, "the node to join the PHI group")
-        assert await mesh.node.phi_refusal() is None
-        mesh.owner.exclude_phi_device(mesh.node_device)
-        await settled(lambda: mesh.node.kernel.phi_group().local_code, "the exclusion to reach the node")
-        assert await mesh.node.phi_refusal() == "phi.device_excluded"
 
 
 class Lifecycle:
@@ -196,3 +214,54 @@ def test_the_policy_message_is_the_contract_message_and_the_reason_is_pinned():
     assert constants["agent_server_reasons"] == [phi_node_policy.REASON]
     assert constants["messages"][phi_node_policy.REASON] == phi_node_policy.MESSAGE
     assert phi_node_policy.CODE in constants["messages"]
+
+
+class Proc:
+    def __init__(self):
+        self.stopped = False
+
+    def poll(self):
+        return 0 if self.stopped else None
+
+    def terminate(self, reason):
+        self.stopped = True
+
+
+class Supervisor:
+    def __init__(self):
+        self.spawned = []
+
+    def spawn(self, **kwargs):
+        proc = Proc()
+        self.spawned.append((kwargs["owner"].owner_id, kwargs["argv"][-1], proc))
+        return proc
+
+
+def test_generated_agents_started_before_the_node_joined_the_group_are_stopped_and_return_when_it_leaves():
+    supervisor = Supervisor()
+    agents = start.GeneratedAgents(supervisor, "python")
+    agents.register("made", "/agents/made/made_agent.py", "/agents/made", 8010)
+    agents.register("held", "/agents/held/held_agent.py", "/agents/held", 8011)
+    agents.hold("held")
+    agents.launch("made")
+    agents.reconcile(False)
+    assert [(name, port) for name, port, _ in supervisor.spawned] == [("made", "8010"), ("held", "8011")]
+    first = supervisor.spawned[0][2]
+    agents.reconcile(True)
+    assert first.stopped and supervisor.spawned[1][2].stopped
+    agents.reconcile(True)
+    assert len(supervisor.spawned) == 2
+    agents.reconcile(False)
+    assert [(name, port) for name, port, _ in supervisor.spawned[2:]] == [("made", "8010"), ("held", "8011")]
+    agents.reconcile(False)
+    assert len(supervisor.spawned) == 4
+
+
+def test_a_generated_agent_that_crashed_is_not_restarted_by_the_policy_check():
+    supervisor = Supervisor()
+    agents = start.GeneratedAgents(supervisor, "python")
+    agents.register("made", "/agents/made/made_agent.py", "/agents/made", 8010)
+    agents.launch("made")
+    supervisor.spawned[0][2].stopped = True
+    agents.reconcile(False)
+    assert len(supervisor.spawned) == 1

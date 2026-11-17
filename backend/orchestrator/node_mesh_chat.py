@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from orchestrator import push_wake
-from orchestrator.node_mesh import MeshUnavailable, NodeMesh, NodeMeshError, RequestReference, StepRecord
+from orchestrator.node_mesh import PHI_CODES, MeshUnavailable, NodeMesh, NodeMeshError, RequestReference, StepRecord
 from orchestrator import vessel_executor
 from orchestrator.node_mesh_calls import CallRefused, OrchestratorCalls, dotted
 
@@ -511,9 +511,6 @@ class MeshChatBridge:
     async def _answer_kernel(self, request: Any) -> None:
         kernel, owner = self._mesh.kernel, self._owner
         try:
-            refusal = await self._mesh.phi_refusal()
-            if refusal is not None:
-                raise NodeMeshError(refusal)
             await self._mesh.personal_request_context(RequestReference.capture(request), owner, kernel)
             if self._owner != owner:
                 raise NodeMeshError("node.owner_mismatch")
@@ -536,9 +533,10 @@ class MeshChatBridge:
             if current.state.name == "PENDING":
                 await self._refuse(request, exc.code if isinstance(exc, NodeMeshError) else "node.turn_failed")
             elif current.state.name == "CLAIMED":
-                await self._refuse(request, "node.outcome_unknown")
+                code = exc.code if isinstance(exc, NodeMeshError) and exc.code in PHI_CODES else "node.outcome_unknown"
+                await self._refuse(request, code)
             else:
-                logger.warning("node_mesh_request_outcome_unknown: %s", type(exc).__name__)
+                logger.warning("node_mesh_request_outcome_unknown: %s", exc.code if isinstance(exc, NodeMeshError) else type(exc).__name__)
 
     async def _interrupt_native(self, task: asyncio.Task, request_id: str, kernel: Any) -> None:
         delay = 0.001

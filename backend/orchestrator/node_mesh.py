@@ -824,12 +824,6 @@ class NodeMesh:
         roster = await asyncio.to_thread(self.kernel.roster)
         return any(device.is_local and device.phi for device in roster.members)
 
-    async def phi_refusal(self) -> Optional[str]:
-        if await self.phi_member():
-            return None
-        group = await asyncio.to_thread(self.kernel.phi_group)
-        return group.local_code or "phi.group_not_ready"
-
     async def peer_standing(self, device_id: str) -> Optional[PeerStanding]:
         roster = await asyncio.to_thread(self.kernel.roster)
         for device in roster.members:
