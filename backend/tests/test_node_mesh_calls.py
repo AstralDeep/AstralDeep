@@ -303,8 +303,6 @@ async def test_a_real_orchestrator_publishes_its_owner_visible_bundled_dice_tool
     monkeypatch.setenv("ASTRAL_NODE_PROFILE", "personal")
     monkeypatch.setenv("ASTRAL_NODE_DATA_DIR", str(tmp_path / "node-data"))
     monkeypatch.setenv("ASTRAL_NODE_OWNER", "oidc.0123456789abcdef.owner")
-    monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://auth.example.test/realms/astral")
-    monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-desktop")
     monkeypatch.setenv("AUDIT_HMAC_SECRET", "node-catalog-test-audit")
     monkeypatch.setenv("AGENT_KEY_PATH", str(tmp_path / "agent.pem"))
     monkeypatch.setenv("AGENT_API_KEY", key)

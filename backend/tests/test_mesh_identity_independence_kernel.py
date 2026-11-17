@@ -9,9 +9,7 @@ from tests.test_institution_kernel_integration import make_runtime
 from tests.test_node_mesh_kernel_integration import ak, open_device, until
 
 
-async def test_local_mesh_creation_does_not_depend_on_an_identity_provider(tmp_path, monkeypatch):
-    monkeypatch.delenv("KEYCLOAK_AUTHORITY", raising=False)
-    monkeypatch.delenv("KEYCLOAK_CLIENT_ID", raising=False)
+async def test_local_mesh_creation_does_not_depend_on_an_identity_provider(tmp_path):
     kernel = open_device(tmp_path / "offline", "offline", 1, None)
     kit = kernel.create_mesh()
     pending = await kernel.mesh_status()
