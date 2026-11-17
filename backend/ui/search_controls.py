@@ -14,7 +14,7 @@ def render_search_controls(sources: List[Dict[str, Any]]) -> str:
         elif state_val == "offline":
             controls.append(f"<!-- Source {source.get('id', 'unknown')} unavailable -->")
         else:
-            name = source.get('name', 'Unknown')
-            source_id = source.get('id', 'unknown')
+            name = str(source.get('name', 'Unknown'))
+            source_id = str(source.get('id', 'unknown'))
             controls.append(f"<button data-source='{source_id}'>Open {name}</button>")
     return "\n".join(controls)
