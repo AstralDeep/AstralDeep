@@ -53,6 +53,8 @@ def _facts(facts: Any) -> dict[str, Any]:
         raise ContextError("facts.mode must be enforce or shadow")
     if not _is_int(out.get("landlock_abi")) or out["landlock_abi"] < 0:
         raise ContextError("facts.landlock_abi must be a non-negative integer")
+    if not _is_int(out.get("euid")) or out["euid"] < 0:
+        raise ContextError("facts.euid must be a non-negative integer")
     for key in ("bwrap", "userns", "sandbox_exec", "app_sandboxed"):
         if not isinstance(out.get(key), bool):
             raise ContextError(f"facts.{key} must be a boolean")
@@ -116,30 +118,46 @@ def _parse_mountinfo(text: str) -> list[tuple[str, str, str]]:
     return mounts
 
 
-def _translate(data_dir: str, mounts: list[tuple[str, str, str]]) -> tuple[str, str]:
-    covering = max(
-        (mount for mount in mounts if _under(mount[2], data_dir)),
-        key=lambda mount: len(mount[2]),
-        default=None,
-    )
+def _translate(path: str, mounts: list[tuple[str, str, str]]) -> tuple[str, str]:
+    covering = None
+    for mount in mounts:
+        if _under(mount[2], path) and (
+            covering is None or len(mount[2]) >= len(covering[2])
+        ):
+            covering = mount
     if covering is None:
-        raise OSError("no mount covers the data directory")
+        raise OSError("no mount covers the path")
     device, root, point = covering
-    remainder = data_dir if point == "/" else data_dir[len(point) :]
+    remainder = path if point == "/" else path[len(point) :]
     in_fs = (root.rstrip("/") + "/" + remainder.lstrip("/")).rstrip("/") or "/"
     return device, in_fs
 
 
-def mount_exposes_data_dir(text: str, roots: tuple[str, ...], data_dir: str) -> bool:
+def mount_exposes_data_dir(
+    text: str, roots: tuple[str, ...], data_dir: str, workspace: str | None = None
+) -> bool:
     mounts = _parse_mountinfo(text)
-    device, in_fs = _translate(data_dir, mounts)
+    device, data_fs = _translate(data_dir, mounts)
+    every = (*roots, workspace) if workspace else roots
     for mount_device, mount_root, mount_point in mounts:
         if (
             mount_device == device
-            and any(_under(root, mount_point) for root in roots)
-            and _overlaps(mount_root, in_fs)
+            and any(_under(root, mount_point) for root in every)
+            and _overlaps(mount_root, data_fs)
         ):
             return True
+    for root in roots:
+        root_device, root_fs = _translate(root, mounts)
+        if root_device == device and _overlaps(root_fs, data_fs):
+            return True
+    if workspace:
+        root_device, root_fs = _translate(workspace, mounts)
+        exec_root = data_fs.rstrip("/") + f"/{EXEC_SUBDIRECTORY}/"
+        return (
+            root_device == device
+            and _overlaps(root_fs, data_fs)
+            and not root_fs.startswith(exec_root)
+        )
     return False
 
 
@@ -149,9 +167,9 @@ def _mountinfo_refuses(document: dict[str, Any], data_dir: str) -> bool:
     try:
         with open(MOUNTINFO, encoding="utf-8") as handle:
             text = handle.read()
-        roots = (*LINUX_BASE, *document["reads"], document["workspace"])
-        return mount_exposes_data_dir(text, roots, data_dir)
-    except OSError:
+        roots = (*LINUX_BASE, *document["reads"])
+        return mount_exposes_data_dir(text, roots, data_dir, document["workspace"])
+    except (OSError, ValueError):
         return True
 
 
@@ -202,6 +220,8 @@ def _decide(
             return refuse("exec.backend_unavailable", "bwrap_missing")
         if not checked["userns"]:
             return refuse("exec.backend_unavailable", "userns_denied")
+        if checked["euid"] == 0:
+            return refuse("exec.backend_unavailable", "root_node")
         return Backend("linux")
     if platform == "darwin":
         if not checked["sandbox_exec"]:

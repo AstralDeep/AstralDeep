@@ -103,11 +103,26 @@ EPERM = seccomp.RET_ERRNO | seccomp.EPERM
 ENOSYS = seccomp.RET_ERRNO | seccomp.ENOSYS
 
 
+AF_UNIX, AF_INET, AF_INET6, AF_NETLINK, AF_VSOCK = 1, 2, 10, 16, 40
+SOCK_STREAM, SOCK_DGRAM, SOCK_RAW = 1, 2, 3
+SOCK_NONBLOCK, SOCK_CLOEXEC = 0x800, 0x80000
+
+
+def _seccomp_plan(*, hosts=True, processes=1, **changes):
+    document = minimal_policy(
+        hosts=[{"host": "api.example.com", "port": 443}] if hosts else [],
+        limits={**minimal_policy()["limits"], "processes": processes},
+    )
+    built = linux.plan(Policy.parse(document, "linux"), "/run/x.sock")["seccomp"]
+    return {**built, **changes}
+
+
 @pytest.mark.parametrize("machine", ARCHES)
 def test_the_seccomp_filter_denies_ipc_and_bounds_sockets(machine):
     nr = seccomp.numbers(machine)
     arch = seccomp.AUDIT_ARCH[machine]
-    program = seccomp.build(machine, deny_fork=True, inet_stream_sockets=True)
+    plan = _seccomp_plan()
+    program = seccomp.build(machine, plan)
     assert len(program) % 8 == 0
 
     def verdict(number, arg0=0, arg1=0, use_arch=arch):
@@ -115,48 +130,96 @@ def test_the_seccomp_filter_denies_ipc_and_bounds_sockets(machine):
 
     assert verdict(99999) == seccomp.RET_ALLOW
     assert verdict(99999, use_arch=0x1234) == seccomp.RET_KILL_PROCESS
-    for name in seccomp.DENIED_SYSCALLS:
+    for name in plan["deny_syscalls"]:
         assert verdict(nr[name]) == EPERM, name
-    assert verdict(nr["socket"], seccomp.AF_UNIX, seccomp.SOCK_STREAM) == EPERM
-    assert (
-        verdict(nr["socket"], seccomp.AF_INET, seccomp.SOCK_STREAM) == seccomp.RET_ALLOW
-    )
-    assert verdict(nr["socket"], seccomp.AF_INET, 2) == EPERM
-    assert verdict(nr["socket"], seccomp.AF_INET6, 1 | 0x80000) == seccomp.RET_ALLOW
-    assert verdict(nr["socket"], seccomp.AF_INET6, 2 | 0x80000) == EPERM
-    assert verdict(nr["socket"], 16, seccomp.SOCK_STREAM) == seccomp.RET_ALLOW
+    for name in ("io_uring_setup", "io_uring_enter", "io_uring_register"):
+        assert verdict(nr[name]) == EPERM, name
+    sock = nr["socket"]
+    assert verdict(sock, AF_INET, SOCK_STREAM) == seccomp.RET_ALLOW
+    assert verdict(sock, AF_INET6, SOCK_STREAM) == seccomp.RET_ALLOW
+    assert verdict(sock, AF_INET6, SOCK_STREAM | SOCK_CLOEXEC) == seccomp.RET_ALLOW
+    both = SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK
+    assert verdict(sock, AF_INET, both) == seccomp.RET_ALLOW
+    assert verdict(sock, AF_INET, SOCK_DGRAM) == EPERM
+    assert verdict(sock, AF_INET6, SOCK_RAW | SOCK_CLOEXEC) == EPERM
+    assert verdict(sock, AF_INET, SOCK_STREAM | 0x10) == EPERM
+    for domain in (AF_UNIX, AF_NETLINK, AF_VSOCK, 17, 0):
+        assert verdict(sock, domain, SOCK_STREAM) == EPERM, domain
+    assert verdict(nr["socketpair"], AF_UNIX, SOCK_STREAM) == seccomp.RET_ALLOW
     assert verdict(nr["clone3"]) == ENOSYS
     assert verdict(nr["clone"], seccomp.CLONE_THREAD | 0x100) == seccomp.RET_ALLOW
     assert verdict(nr["clone"], 0x100) == EPERM
 
 
-def test_the_seccomp_filter_without_hosts_denies_every_inet_socket():
-    nr = seccomp.numbers("x86_64")
-    program = seccomp.build("x86_64", deny_fork=True, inet_stream_sockets=False)
-    data = _seccomp_data(nr["socket"], seccomp.AUDIT_ARCH["x86_64"], seccomp.AF_INET, 1)
-    assert _run_bpf(program, data) == EPERM
+@pytest.mark.parametrize("machine", ARCHES)
+def test_the_seccomp_filter_without_hosts_denies_every_socket(machine):
+    nr = seccomp.numbers(machine)
+    program = seccomp.build(machine, _seccomp_plan(hosts=False))
+    arch = seccomp.AUDIT_ARCH[machine]
+    for domain in (AF_INET, AF_INET6, AF_UNIX, AF_NETLINK):
+        data = _seccomp_data(nr["socket"], arch, domain, SOCK_STREAM)
+        assert _run_bpf(program, data) == EPERM
+    pair = _seccomp_data(nr["socketpair"], arch, AF_UNIX, SOCK_STREAM)
+    assert _run_bpf(program, pair) == seccomp.RET_ALLOW
+
+
+def test_the_seccomp_filter_kills_the_x32_abi():
+    program = seccomp.build("x86_64", _seccomp_plan(hosts=False))
     x32 = _seccomp_data(5 | seccomp.X32_BIT, seccomp.AUDIT_ARCH["x86_64"])
     assert _run_bpf(program, x32) == seccomp.RET_KILL_PROCESS
 
 
 def test_the_seccomp_filter_allows_fork_when_not_denied():
     nr = seccomp.numbers("x86_64")
-    program = seccomp.build("x86_64", deny_fork=False, inet_stream_sockets=True)
+    program = seccomp.build("x86_64", _seccomp_plan(processes=2))
     data = _seccomp_data(nr["clone3"], seccomp.AUDIT_ARCH["x86_64"])
     assert _run_bpf(program, data) == seccomp.RET_ALLOW
+
+
+def test_the_seccomp_filter_can_deny_socketpair_when_the_plan_says_so():
+    nr = seccomp.numbers("aarch64")
+    program = seccomp.build("aarch64", _seccomp_plan(allow_socketpair=False))
+    data = _seccomp_data(nr["socketpair"], seccomp.AUDIT_ARCH["aarch64"])
+    assert _run_bpf(program, data) == EPERM
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"socket_allow": [{"domain": "AF_UNIX", "type": "SOCK_STREAM"}]},
+        {"socket_allow": [{"domain": "AF_INET", "type": "SOCK_DGRAM"}]},
+        {"socket_allow": ["AF_INET"]},
+        {"socket_allow": "all"},
+        {"deny_syscalls": ["not_a_syscall"]},
+        {"deny_syscalls": [7]},
+        {"fork_syscalls": ["not_a_syscall"]},
+    ],
+)
+def test_a_plan_the_filter_cannot_express_fails_closed(changes):
+    with pytest.raises(OSError):
+        seccomp.build("aarch64", _seccomp_plan(**changes))
+
+
+def test_the_filter_reads_the_denied_calls_from_the_plan():
+    nr = seccomp.numbers("aarch64")
+    plan = _seccomp_plan(deny_syscalls=["setsid"])
+    program = seccomp.build("aarch64", plan)
+    arch = seccomp.AUDIT_ARCH["aarch64"]
+    assert _run_bpf(program, _seccomp_data(nr["setsid"], arch)) == EPERM
+    assert _run_bpf(program, _seccomp_data(nr["msgget"], arch)) == seccomp.RET_ALLOW
 
 
 def test_seccomp_numbers_refuse_an_unknown_machine():
     with pytest.raises(OSError):
         seccomp.numbers("riscv64")
     with pytest.raises(OSError):
-        seccomp.build("riscv64", True, True)
+        seccomp.build("riscv64", _seccomp_plan())
 
 
 def test_seccomp_install_runs_prctl_twice_with_the_program():
     calls = []
     seccomp.install(
-        {"deny_fork": True, "inet_stream_sockets": False},
+        _seccomp_plan(),
         machine="x86_64",
         prctl=lambda *args: calls.append(args) or 0,
     )
@@ -168,7 +231,11 @@ LANDLOCK_PLAN = {
     "exec_read": ["/usr", "/bin"],
     "device_files": ["/dev/null", "/dev/zero"],
     "workspace": "/ws",
+    "tcp_connect": [],
+    "tcp_bind": [],
+    "scopes": ["abstract_unix_socket", "signal"],
 }
+SCOPES = landlock.scope_bits(LANDLOCK_PLAN["scopes"])
 
 
 def test_landlock_rights_builders():
@@ -178,7 +245,8 @@ def test_landlock_rights_builders():
     assert landlock.workspace_rights(fs) == fs & ~(
         landlock.EXECUTE | landlock.MAKE_SOCK
     )
-    assert landlock.ruleset_attr(fs) == struct.pack("QQQ", fs, 3, 3)
+    assert landlock.ruleset_attr(fs, SCOPES) == struct.pack("QQQ", fs, 3, 3)
+    assert landlock.ruleset_attr(fs, 2) == struct.pack("QQQ", fs, 3, 2)
     rows = landlock.grants(LANDLOCK_PLAN, fs)
     assert rows[0] == ("/usr", landlock.READ_RIGHTS)
     assert ("/dev/null", landlock.DEVICE_RIGHTS) in rows
@@ -211,8 +279,7 @@ def test_landlock_apply_adds_every_rule_and_restricts():
     closed = []
     opened = {"/usr": 10, "/bin": 11, "/dev/null": 12, "/dev/zero": 13, "/ws": 14}
     landlock.apply(
-        LANDLOCK_PLAN,
-        hosted=True,
+        {**LANDLOCK_PLAN, "tcp_connect": [3128], "tcp_bind": []},
         kernel=kernel,
         open_path=lambda path: opened[path],
         isdir=lambda path: path != "/dev/null",
@@ -222,9 +289,39 @@ def test_landlock_apply_adds_every_rule_and_restricts():
     assert kinds.count(landlock.RULE_PATH_BENEATH) == 5
     assert kinds.count(landlock.RULE_NET_PORT) == 1
     net_rule = kernel.rules[-1][2]
-    assert net_rule == struct.pack("=QQ", landlock.NET_CONNECT_TCP, landlock.PROXY_PORT)
+    assert net_rule == struct.pack("=QQ", landlock.NET_CONNECT_TCP, 3128)
     assert kernel.restricted == 7
     assert closed[-1] == 7
+
+
+def test_landlock_apply_reads_ports_and_scopes_from_the_plan():
+    kernel = _FakeKernel()
+    plan = {
+        **LANDLOCK_PLAN,
+        "tcp_connect": [3128, 8443],
+        "tcp_bind": [9000],
+        "scopes": ["signal"],
+    }
+    landlock.apply(
+        plan,
+        kernel=kernel,
+        open_path=lambda path: 10,
+        isdir=lambda path: True,
+        close=lambda fd: None,
+    )
+    ports = [
+        struct.unpack("=QQ", rule)
+        for _r, kind, rule in kernel.rules
+        if kind == landlock.RULE_NET_PORT
+    ]
+    assert ports == [
+        (landlock.NET_CONNECT_TCP, 3128),
+        (landlock.NET_CONNECT_TCP, 8443),
+        (landlock.NET_BIND_TCP, 9000),
+    ]
+    assert struct.unpack("QQQ", kernel.created)[2] == landlock.SCOPES["signal"]
+    with pytest.raises(OSError, match="scope"):
+        landlock.apply({**plan, "scopes": ["ptrace"]}, kernel=_FakeKernel())
 
 
 def test_landlock_apply_masks_a_file_grant_and_skips_a_missing_path():
@@ -237,7 +334,6 @@ def test_landlock_apply_masks_a_file_grant_and_skips_a_missing_path():
 
     landlock.apply(
         LANDLOCK_PLAN,
-        hosted=False,
         kernel=kernel,
         open_path=opener,
         isdir=lambda path: False,
@@ -252,7 +348,7 @@ def test_landlock_apply_masks_a_file_grant_and_skips_a_missing_path():
 
 def test_landlock_apply_refuses_an_old_abi():
     with pytest.raises(OSError):
-        landlock.apply(LANDLOCK_PLAN, hosted=False, kernel=_FakeKernel(abi=5))
+        landlock.apply(LANDLOCK_PLAN, kernel=_FakeKernel(abi=5))
 
 
 def test_the_forwarder_relays_bytes_between_the_two_sockets():
@@ -618,6 +714,7 @@ class _FakeLibc:
 
     def syscall(self, *args):
         self.calls.append(("syscall", args[0]))
+        self.syscall_args = args
         return self._syscall
 
 
@@ -669,6 +766,7 @@ def test_inner_remounts_the_workspace_noexec_and_checks_it(monkeypatch):
     libc = _FakeLibc()
     inner._remount_noexec(libc, "/ws")
     assert libc.calls == [("syscall", inner.MOUNT_SETATTR)]
+    assert libc.syscall_args[3] == inner.AT_RECURSIVE == 0x8000
     with pytest.raises(OSError):
         inner._remount_noexec(_FakeLibc(syscall=-1), "/ws")
     monkeypatch.setattr(inner.os, "statvfs", lambda path: _Statvfs(0))
@@ -751,7 +849,10 @@ def test_the_forwarder_child_keeps_only_stdio_and_its_listener(monkeypatch):
 
     module = _ForwarderModule()
     monkeypatch.setattr(inner, "os", FakeOs())
+    limits = []
+    monkeypatch.setattr(inner.resource, "setrlimit", lambda *a: limits.append(a))
     inner._forwarder_child(module, module.listener, "/run/astral/egress.sock")
+    assert limits == [(inner.resource.RLIMIT_CORE, (0, 0))]
     closed = [entry[1] for entry in actions if entry[0] == "close"]
     assert ("open", inner.DEVNULL) in actions
     assert [entry[2] for entry in actions if entry[0] == "dup2"] == [0, 1, 2]
@@ -767,7 +868,7 @@ def _pipe_with(payload):
 
 
 def test_inner_run_applies_every_step_in_order_before_exec(monkeypatch):
-    from astral_exec import inner, landlock, seccomp
+    from astral_exec import constants, inner, landlock, seccomp
 
     steps = []
     plan = linux.plan(Policy.parse(HOSTED, "linux"), "/run/x.sock")
@@ -785,7 +886,7 @@ def test_inner_run_applies_every_step_in_order_before_exec(monkeypatch):
         lambda mod, listen, path: steps.append(("fwd", listen, path)),
     )
     monkeypatch.setattr(
-        landlock, "apply", lambda p, hosted: steps.append(("landlock", hosted))
+        landlock, "apply", lambda p: steps.append(("landlock", p["tcp_connect"]))
     )
     monkeypatch.setattr(seccomp, "install", lambda p: steps.append("seccomp"))
     monkeypatch.setattr(
@@ -807,9 +908,10 @@ def test_inner_run_applies_every_step_in_order_before_exec(monkeypatch):
     Options.env_fd = env_fd
     inner._run(Options, ["/bin/true"])
     os.close(status_write)
-    assert os.read(status_read, 16) == inner.READY
+    assert os.read(status_read, 16) == constants.TRAMPOLINE_READY
     os.close(status_read)
     names = [step if isinstance(step, str) else step[0] for step in steps]
+    assert names[:3] == ["ns", "noexec", "ns"]
     assert names.index("ns") < names.index("noexec") < names.index("fwd")
     assert names.index("fwd") < names.index("landlock") < names.index("seccomp")
     assert names.index("seccomp") < names.index("rlimit") < names.index("exec")
@@ -819,7 +921,7 @@ def test_inner_run_applies_every_step_in_order_before_exec(monkeypatch):
     assert ("close", 3, status_write) in steps
     assert ("close", status_write + 1, 65536) in steps
     assert steps[-1] == ("exec", "/bin/true", {"A": "1"})
-    assert ("landlock", True) in steps
+    assert ("landlock", [3128]) in steps
 
 
 def test_inner_run_rejects_an_environment_that_is_not_an_object(monkeypatch):
@@ -1111,3 +1213,326 @@ def test_select_refuses_a_data_directory_bind_under_the_workspace(monkeypatch):
     outcome = select_module.select(policy, good_facts(), DATA_DIR)
     assert isinstance(outcome, Refusal)
     assert outcome.code == "exec.policy_overlaps_data"
+
+
+def test_a_failed_namespace_entry_reports_userns_denied_and_stops(monkeypatch):
+    from astral_exec import constants, inner
+
+    read_fd, write_fd = os.pipe()
+    plan = linux.plan(Policy.parse(minimal_policy(), "linux"), None)
+
+    class Options:
+        package_fd = 0
+        status_fd = write_fd
+
+    Options.plan_fd = _pipe_with(plan)
+    Options.env_fd = _pipe_with({})
+    monkeypatch.setattr(inner.ctypes, "CDLL", lambda *a, **k: _FakeLibc(unshare=-1))
+    monkeypatch.setattr(
+        inner.os, "_exit", lambda code: (_ for _ in ()).throw(SystemExit(code))
+    )
+    with pytest.raises(SystemExit) as caught:
+        inner._run(Options, ["/bin/true"])
+    assert caught.value.code == 126
+    os.close(write_fd)
+    assert os.read(read_fd, 64) == b"fail " + constants.NAMESPACE_DENIED.encode()
+    os.close(read_fd)
+
+
+def test_a_refused_uid_map_write_is_a_namespace_denial(monkeypatch):
+    from astral_exec import inner
+
+    def refused(path, mode):
+        raise PermissionError(path)
+
+    monkeypatch.setattr(inner, "open", refused, raising=False)
+    with pytest.raises(inner._NamespaceDenied):
+        inner._enter_namespaces(_FakeLibc())
+
+
+def test_the_probe_mode_enters_both_namespaces_and_remounts(monkeypatch):
+    from astral_exec import inner
+
+    steps = []
+    monkeypatch.setattr(inner.ctypes, "CDLL", lambda *a, **k: _FakeLibc())
+    monkeypatch.setattr(inner, "_enter_namespaces", lambda libc: steps.append("ns"))
+    monkeypatch.setattr(
+        inner, "_remount_noexec", lambda libc, ws: steps.append(("noexec", ws))
+    )
+    assert inner.main(["--probe", "/ws"]) == 0
+    assert steps == ["ns", ("noexec", "/ws"), "ns"]
+    monkeypatch.setattr(
+        inner,
+        "_remount_noexec",
+        lambda libc, ws: (_ for _ in ()).throw(OSError("denied")),
+    )
+    assert inner.main(["--probe", "/ws"]) == 126
+
+
+class _Accepting:
+    def __init__(self, events):
+        self.events = list(events)
+
+    def accept(self):
+        event = self.events.pop(0)
+        if isinstance(event, BaseException):
+            raise event
+        return event, None
+
+
+def test_the_forwarder_retries_transient_accept_errors_and_stops_on_a_dead_listener():
+    import errno
+
+    left, right = socket.socketpair()
+    listener = _Accepting(
+        [
+            OSError(errno.ECONNABORTED, "aborted"),
+            OSError(errno.EMFILE, "fds"),
+            left,
+            OSError(errno.EBADF, "closed"),
+        ]
+    )
+    pauses = []
+    forwarder.serve(
+        listener,
+        "/x",
+        connect=lambda path: (_ for _ in ()).throw(OSError("no upstream")),
+        pause=pauses.append,
+    )
+    assert pauses == [forwarder.ACCEPT_BACKOFF_SECONDS] * 2
+    right.close()
+
+
+def test_the_forwarder_refuses_connections_past_the_relay_cap(monkeypatch):
+    import errno
+
+    monkeypatch.setattr(forwarder, "MAX_RELAYS", 1)
+    first_down, first_peer = socket.socketpair()
+    second_down, second_peer = socket.socketpair()
+    up, up_peer = socket.socketpair()
+    release = threading.Event()
+    monkeypatch.setattr(forwarder, "relay", lambda down, upstream: release.wait(5))
+    listener = _Accepting([first_down, second_down, OSError(errno.EBADF, "closed")])
+    forwarder.serve(listener, "/x", connect=lambda path: up)
+    assert second_peer.recv(8) == b""
+    release.set()
+    for end in (first_peer, second_peer, up, up_peer, first_down):
+        end.close()
+
+
+class _QuietWatch:
+    started = True
+
+    def sample(self):
+        return 1, 0
+
+    def end(self):
+        return set()
+
+
+def _supervised(code, status, **options):
+    import subprocess
+    import sys
+
+    proc = subprocess.Popen(
+        [sys.executable, "-I", "-B", "-c", code],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    status_read, status_write = os.pipe()
+    os.write(status_write, status)
+    os.close(status_write)
+    env_read, env_write = os.pipe()
+    os.close(env_read)
+    limits = minimal_policy()["limits"]
+    return launch._supervise(
+        proc,
+        status_read,
+        env_write,
+        {},
+        limits,
+        60000,
+        "feedface",
+        None,
+        watch_factory=lambda root, marker: _QuietWatch(),
+        log=launch._log("sha256:x"),
+        **options,
+    )
+
+
+def test_a_tool_that_prints_a_bwrap_error_and_fails_is_still_a_tool_exit():
+    code = "import sys; sys.stderr.write('bwrap: fake failure'); sys.exit(1)"
+    outcome = _supervised(code, b"exec", backend_failed=None)
+    assert (outcome.code, outcome.exit_code) == (None, 1)
+    assert outcome.stderr == b"bwrap: fake failure"
+
+
+def test_an_inner_namespace_failure_is_a_userns_refusal_not_a_launch_failure():
+    outcome = _supervised(
+        "pass",
+        b"fail userns_denied",
+        backend_failed=None,
+        status_refusals=launch._LINUX_STATUS_REFUSALS,
+    )
+    assert outcome.code == "exec.backend_unavailable"
+    assert outcome.exit_code is None
+    assert outcome.refusal is not None and outcome.refusal.reason == "userns_denied"
+
+
+def test_another_inner_failure_stays_a_launch_failure():
+    outcome = _supervised(
+        "pass",
+        b"fail OSError: boom",
+        backend_failed=None,
+        status_refusals=launch._LINUX_STATUS_REFUSALS,
+    )
+    assert outcome.code == "exec.launch_failed"
+
+
+def test_a_supervision_error_is_a_launch_failure(monkeypatch, tmp_path):
+    import types
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    policy = loaded(minimal_policy(workspace=str(workspace)))
+    monkeypatch.setattr(launch.sys, "executable", "/usr/bin/python3")
+    call = launch._linux_call(
+        policy, ["/bin/true"], {}, Backend("linux", "/usr/bin/bwrap"), None
+    )
+    monkeypatch.setattr(
+        launch, "_linux_spawn", lambda *a: (types.SimpleNamespace(pid=1), -1, -1, -1)
+    )
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("supervision broke")
+
+    monkeypatch.setattr(launch, "_supervise", broken)
+    outcome = launch._launch_linux(call, True, None, launch._log("sha256:x"))
+    assert outcome == launch.Outcome("exec.launch_failed", None)
+
+
+def test_a_failed_pipe_closes_the_script_and_package_descriptors(monkeypatch, tmp_path):
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    policy = loaded(minimal_policy(workspace=str(workspace)))
+    monkeypatch.setattr(launch.sys, "executable", "/usr/bin/python3")
+    call = launch._linux_call(
+        policy, ["/bin/true"], {}, Backend("linux", "/usr/bin/bwrap"), None
+    )
+    before = set(os.listdir("/dev/fd"))
+
+    def broken():
+        raise OSError("no pipes")
+
+    monkeypatch.setattr(launch.os, "pipe", broken)
+    with pytest.raises(OSError):
+        launch._linux_spawn(call, True, None)
+    assert set(os.listdir("/dev/fd")) <= before | {"3"}
+
+
+def test_a_late_pipe_failure_closes_every_earlier_descriptor(monkeypatch, tmp_path):
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    policy = loaded(minimal_policy(workspace=str(workspace)))
+    monkeypatch.setattr(launch.sys, "executable", "/usr/bin/python3")
+    call = launch._linux_call(
+        policy, ["/bin/true"], {}, Backend("linux", "/usr/bin/bwrap"), None
+    )
+    before = set(os.listdir("/dev/fd"))
+    real = os.pipe
+    made = []
+
+    def third_fails():
+        if len(made) == 2:
+            raise OSError("no pipes")
+        pair = real()
+        made.append(pair)
+        return pair
+
+    monkeypatch.setattr(launch.os, "pipe", third_fails)
+    with pytest.raises(OSError):
+        launch._linux_spawn(call, True, None)
+    assert set(os.listdir("/dev/fd")) <= before | {"3"}
+
+
+def test_a_read_root_inside_a_bind_that_reaches_the_data_directory_is_refused():
+    text = (
+        "1 0 0:1 / / rw - overlay overlay rw\n"
+        "2 1 0:1 /var/lib/node /opt/mnt rw - overlay overlay rw\n"
+    )
+    roots = (*MOUNTINFO_ROOTS, "/opt/mnt/sub")
+    assert mount_exposes_data_dir(text, roots, "/var/lib/node") is True
+    assert mount_exposes_data_dir(text, MOUNTINFO_ROOTS, "/var/lib/node") is False
+
+
+def test_a_read_root_inside_a_bind_of_unrelated_files_is_allowed():
+    text = (
+        "1 0 0:1 / / rw - overlay overlay rw\n"
+        "2 1 0:1 /srv/shared /opt/mnt rw - overlay overlay rw\n"
+    )
+    roots = (*MOUNTINFO_ROOTS, "/opt/mnt/sub")
+    assert mount_exposes_data_dir(text, roots, "/var/lib/node") is False
+
+
+def test_stacked_mounts_resolve_to_the_visible_one():
+    text = (
+        "1 0 0:1 / / rw - overlay overlay rw\n"
+        "2 1 0:2 / /srv rw - ext4 /dev/a rw\n"
+        "3 1 0:3 / /srv rw - ext4 /dev/b rw\n"
+        "4 1 0:2 / /opt/reads rw - ext4 /dev/a rw\n"
+    )
+    assert mount_exposes_data_dir(text, MOUNTINFO_ROOTS, "/srv/node") is False
+    covered = text.replace("3 1 0:3", "3 1 0:2")
+    assert mount_exposes_data_dir(covered, MOUNTINFO_ROOTS, "/srv/node") is True
+
+
+def test_the_workspace_may_sit_under_the_exec_directory_but_not_elsewhere_in_data():
+    text = "1 0 0:1 / / rw - overlay overlay rw\n"
+    inside = "/var/lib/node/exec/call"
+    assert (
+        mount_exposes_data_dir(text, MOUNTINFO_ROOTS, "/var/lib/node", inside) is False
+    )
+    beside = "/var/lib/node/state"
+    assert (
+        mount_exposes_data_dir(text, MOUNTINFO_ROOTS, "/var/lib/node", beside) is True
+    )
+    bound = text + "2 1 0:1 /var/lib /work rw - overlay overlay rw\n"
+    assert (
+        mount_exposes_data_dir(bound, MOUNTINFO_ROOTS, "/var/lib/node", "/work") is True
+    )
+    assert (
+        mount_exposes_data_dir(
+            bound, MOUNTINFO_ROOTS, "/var/lib/node", "/work/node/exec/call"
+        )
+        is False
+    )
+
+
+def test_select_fails_closed_when_the_mount_table_is_not_text(monkeypatch):
+    def undecodable(path, encoding):
+        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "bad byte")
+
+    outcome = _linux_select(monkeypatch, undecodable)
+    assert isinstance(outcome, Refusal)
+    assert outcome.code == "exec.policy_overlaps_data"
+
+
+def test_select_refuses_a_root_node_before_any_mount_read(monkeypatch):
+    import sys
+
+    select_module = sys.modules["astral_exec.select"]
+    monkeypatch.setattr(select_module.sys, "platform", "linux")
+    monkeypatch.setattr(
+        select_module,
+        "open",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("no mount read")),
+        raising=False,
+    )
+    outcome = select_module.select(
+        loaded(minimal_policy()), good_facts(euid=0), DATA_DIR
+    )
+    assert isinstance(outcome, Refusal)
+    assert outcome.code == "exec.backend_unavailable"
+    assert outcome.reason == "root_node"

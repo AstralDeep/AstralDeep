@@ -4,9 +4,11 @@ inner.py binds the listener and forks this before it restricts the tool, so the 
 
 from __future__ import annotations
 
+import errno
 import selectors
 import socket
 import threading
+import time
 from collections.abc import Callable
 
 from .constants import PROXY_PORT
@@ -14,6 +16,15 @@ from .constants import PROXY_PORT
 LISTEN_HOST = "127.0.0.1"
 BACKLOG = 64
 CHUNK = 65536
+MAX_RELAYS = 64
+ACCEPT_BACKOFF_SECONDS = 0.05
+_TRANSIENT = (
+    errno.ECONNABORTED,
+    errno.EMFILE,
+    errno.ENFILE,
+    errno.ENOBUFS,
+    errno.ENOMEM,
+)
 
 
 def build_listener(host: str = LISTEN_HOST, port: int = PROXY_PORT) -> socket.socket:
@@ -61,22 +72,35 @@ def serve(
     listener: socket.socket,
     socket_path: str,
     connect: Callable[[str], socket.socket] | None = None,
+    pause: Callable[[float], None] = time.sleep,
 ) -> None:
     connect = connect or _connect_unix
+    slots = threading.BoundedSemaphore(MAX_RELAYS)
+
+    def run(downstream: socket.socket, upstream: socket.socket) -> None:
+        try:
+            relay(downstream, upstream)
+        finally:
+            slots.release()
+
     while True:
         try:
             downstream, _address = listener.accept()
-        except OSError:
+        except OSError as error:
+            if error.errno in _TRANSIENT:
+                pause(ACCEPT_BACKOFF_SECONDS)
+                continue
             return
+        if not slots.acquire(blocking=False):
+            downstream.close()
+            continue
         try:
             upstream = connect(socket_path)
         except OSError:
             downstream.close()
+            slots.release()
             continue
-        thread = threading.Thread(
-            target=relay, args=(downstream, upstream), daemon=True
-        )
-        thread.start()
+        threading.Thread(target=run, args=(downstream, upstream), daemon=True).start()
 
 
 def _connect_unix(socket_path: str) -> socket.socket:

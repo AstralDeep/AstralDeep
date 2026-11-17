@@ -209,7 +209,10 @@ class LinuxWatch:
             stack += kids[pid]
         if self._hosted:
             direct = [
-                child for tool in tool_layer for child in kids.get(tool, []) if child in tree
+                child
+                for tool in tool_layer
+                for child in kids.get(tool, [])
+                if child in tree
             ]
             if direct:
                 del tree[min(direct, key=lambda pid: (tree[pid].start, pid))]

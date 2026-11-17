@@ -31,9 +31,10 @@ from .constants import (
     OUTPUT_LIMIT_BYTES,
     REFUSED_EXIT_STATUS,
     SANDBOX_EXEC,
+    NAMESPACE_DENIED,
     TRAMPOLINE_READY,
 )
-from .errors import ContextError, ExecRefused, PolicyError, Refusal
+from .errors import ContextError, ExecRefused, PolicyError, Refusal, refuse
 from .facts import probe
 from .fold import contains
 from .policy import Policy
@@ -106,11 +107,12 @@ def _seatbelt_failed(proc: subprocess.Popen, stderr: bytes) -> bool:
     )
 
 
-def _linux_failed(proc: subprocess.Popen, stderr: bytes) -> bool:
-    return proc.returncode != 0 and stderr.startswith(b"bwrap:")
-
-
 _LINUX_SIGNAL_CODES = {128 + signal.SIGXFSZ: "exec.file_limit"}
+_LINUX_STATUS_REFUSALS = {
+    b"fail " + NAMESPACE_DENIED.encode(): refuse(
+        "exec.backend_unavailable", NAMESPACE_DENIED
+    )
+}
 
 
 class _Stopped(BaseException):
@@ -471,8 +473,9 @@ def _supervise(
     log: _DigestLog | None = None,
     *,
     extra_sends: Sequence[tuple[int, bytes]] = (),
-    backend_failed: Callable[[subprocess.Popen, bytes], bool] = _seatbelt_failed,
+    backend_failed: Callable[[subprocess.Popen, bytes], bool] | None = _seatbelt_failed,
     signal_codes: Mapping[int, str] = _SIGNAL_CODES,
+    status_refusals: Mapping[bytes, Refusal] | None = None,
 ) -> Outcome:
     log = log if log is not None else _log("none")
     deadline = time.monotonic() + wall_ms / 1000
@@ -513,7 +516,7 @@ def _supervise(
         if streams is not None:
             streams.close()
         else:
-            for fd in (status_fd, env_fd):
+            for fd in (status_fd, env_fd, *(fd for fd, _payload in extra_sends)):
                 try:
                     os.close(fd)
                 except OSError:
@@ -522,10 +525,16 @@ def _supervise(
         return Outcome("exec.launch_failed", None)
     stdout, stderr = streams.output("stdout"), streams.output("stderr")
     truncated = tuple(sorted(streams.truncated))
+    refusal = (status_refusals or {}).get(streams.output("status"))
+    if refusal is not None:
+        log.info("exec refused code=%s reason=%s", refusal.code, refusal.reason)
+        return Outcome(
+            refusal.code, None, stdout, stderr, refusal=refusal, truncated=truncated
+        )
     if streams.output("status") != TRAMPOLINE_READY:
         log.warning("exec trampoline refused: %r", streams.output("status")[:64])
         return Outcome("exec.launch_failed", None, stdout, stderr, truncated=truncated)
-    if backend_failed(proc, stderr):
+    if backend_failed is not None and backend_failed(proc, stderr):
         log.warning("exec backend failed exit=%s", proc.returncode)
         return Outcome("exec.launch_failed", None, stdout, stderr, truncated=truncated)
     if not ended or not reaped:
@@ -544,7 +553,12 @@ def _close(fd: int | None) -> None:
 
 
 def _linux_command(
-    call: _LinuxCall, script_fd: int, pkg_fd: int, plan_fd: int, env_fd: int, status_fd: int
+    call: _LinuxCall,
+    script_fd: int,
+    pkg_fd: int,
+    plan_fd: int,
+    env_fd: int,
+    status_fd: int,
 ) -> list[str]:
     return [
         call.bwrap,
@@ -575,13 +589,22 @@ def _linux_spawn(
     if capture:
         stdin = subprocess.DEVNULL if data is None else subprocess.PIPE
     output = subprocess.PIPE if capture else None
-    script_fd = os.open(INNER_PY, os.O_RDONLY | os.O_CLOEXEC)
-    pkg_fd = os.open(PACKAGE_PARENT, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
-    plan_read, plan_write = os.pipe()
-    env_read, env_write = os.pipe()
-    status_read, status_write = os.pipe()
-    child_fds = (script_fd, pkg_fd, plan_read, env_read, status_write)
+    child_fds: list[int] = []
+    parent_fds: list[int] = []
     try:
+        script_fd = os.open(INNER_PY, os.O_RDONLY | os.O_CLOEXEC)
+        child_fds.append(script_fd)
+        pkg_fd = os.open(PACKAGE_PARENT, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        child_fds.append(pkg_fd)
+        plan_read, plan_write = os.pipe()
+        child_fds.append(plan_read)
+        parent_fds.append(plan_write)
+        env_read, env_write = os.pipe()
+        child_fds.append(env_read)
+        parent_fds.append(env_write)
+        status_read, status_write = os.pipe()
+        child_fds.append(status_write)
+        parent_fds.append(status_read)
         command = _linux_command(
             call, script_fd, pkg_fd, plan_read, env_read, status_write
         )
@@ -594,10 +617,10 @@ def _linux_spawn(
             stderr=output,
             start_new_session=True,
             close_fds=True,
-            pass_fds=child_fds,
+            pass_fds=tuple(child_fds),
         )
     except BaseException:
-        for fd in (plan_write, env_write, status_read):
+        for fd in parent_fds:
             _close(fd)
         raise
     finally:
@@ -646,21 +669,26 @@ def _launch_linux(
         return Outcome("exec.launch_failed", None)
     log.info("exec launch backend=linux pid=%d", proc.pid)
     hosted = bool(call.document["hosts"])
-    outcome = _supervise(
-        proc,
-        status_fd,
-        env_fd,
-        call.env,
-        call.document["limits"],
-        call.document["time"]["wall_ms"],
-        call.marker,
-        data,
-        watch_factory=lambda root, marker: LinuxWatch(root, hosted=hosted),
-        log=log,
-        extra_sends=((plan_fd, plan_bytes),),
-        backend_failed=_linux_failed,
-        signal_codes=_LINUX_SIGNAL_CODES,
-    )
+    try:
+        outcome = _supervise(
+            proc,
+            status_fd,
+            env_fd,
+            call.env,
+            call.document["limits"],
+            call.document["time"]["wall_ms"],
+            call.marker,
+            data,
+            watch_factory=lambda root, marker: LinuxWatch(root, hosted=hosted),
+            log=log,
+            extra_sends=((plan_fd, plan_bytes),),
+            backend_failed=None,
+            signal_codes=_LINUX_SIGNAL_CODES,
+            status_refusals=_LINUX_STATUS_REFUSALS,
+        )
+    except Exception as error:
+        log.warning("exec launch failed at supervision: %s", type(error).__name__)
+        return Outcome("exec.launch_failed", None)
     log.info("exec outcome code=%s exit=%s", outcome.code, outcome.exit_code)
     return outcome
 

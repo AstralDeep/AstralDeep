@@ -1,4 +1,4 @@
-"""The inner launcher that runs inside bubblewrap: it enters a nested user and mount namespace to remount the workspace noexec, starts the egress forwarder when the policy allows hosts, then applies Landlock, seccomp and the resource limits before it reports ready and execs the tool.
+"""The inner launcher that runs inside bubblewrap: it enters a nested user and mount namespace to remount the workspace noexec, enters a second one so the kernel locks that flag, starts the egress forwarder when the policy allows hosts, then applies Landlock, seccomp and the resource limits before it reports ready and execs the tool.
 launch.py runs it as the bwrap command through inherited descriptors, and it reuses the package's seccomp, landlock and forwarder builders rather than duplicating them.
 """
 
@@ -15,11 +15,15 @@ from typing import Any
 CLONE_NEWNS = 0x00020000
 CLONE_NEWUSER = 0x10000000
 MOUNT_ATTR_NOEXEC = 0x08
+AT_RECURSIVE = 0x8000
 AT_FDCWD = -100
 MOUNT_SETATTR = 442
-READY = b"exec"
 DEVNULL = "/dev/null"
 _EARLY_RLIMITS = ("RLIMIT_NOFILE", "RLIMIT_FSIZE", "RLIMIT_CORE")
+
+
+class _NamespaceDenied(OSError):
+    pass
 
 
 class _MountAttr(ctypes.Structure):
@@ -50,13 +54,17 @@ def _read_json(fd: int) -> Any:
 def _enter_namespaces(libc: ctypes.CDLL) -> None:
     uid, gid = os.getuid(), os.getgid()
     if libc.unshare(CLONE_NEWUSER | CLONE_NEWNS) != 0:
-        raise OSError(ctypes.get_errno(), "unshare failed")
-    with open("/proc/self/setgroups", "w") as handle:
-        handle.write("deny")
-    with open("/proc/self/uid_map", "w") as handle:
-        handle.write(f"{uid} {uid} 1")
-    with open("/proc/self/gid_map", "w") as handle:
-        handle.write(f"{gid} {gid} 1")
+        raise _NamespaceDenied(ctypes.get_errno(), "unshare failed")
+    try:
+        for name, text in (
+            ("setgroups", "deny"),
+            ("uid_map", f"{uid} {uid} 1"),
+            ("gid_map", f"{gid} {gid} 1"),
+        ):
+            with open(f"/proc/self/{name}", "w") as handle:
+                handle.write(text)
+    except OSError as error:
+        raise _NamespaceDenied(error.errno, "namespace mapping failed") from error
 
 
 def _remount_noexec(libc: ctypes.CDLL, workspace: str) -> None:
@@ -65,7 +73,7 @@ def _remount_noexec(libc: ctypes.CDLL, workspace: str) -> None:
         MOUNT_SETATTR,
         AT_FDCWD,
         workspace.encode(),
-        0,
+        AT_RECURSIVE,
         ctypes.byref(attr),
         ctypes.sizeof(attr),
     )
@@ -76,6 +84,7 @@ def _remount_noexec(libc: ctypes.CDLL, workspace: str) -> None:
 
 
 def _forwarder_child(forwarder: Any, listener: Any, socket_path: str) -> None:
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     null = os.open(DEVNULL, os.O_RDWR)
     for standard in (0, 1, 2):
         os.dup2(null, standard)
@@ -112,27 +121,31 @@ def _apply_limits(plan: dict[str, Any]) -> None:
 
 def _run(options: Any, argv: list[str]) -> None:
     sys.path.insert(0, f"/proc/self/fd/{options.package_fd}")
-    from astral_exec import forwarder, landlock, seccomp
+    from astral_exec import constants, forwarder, landlock, seccomp
 
     plan = _read_json(options.plan_fd)
     env = _read_json(options.env_fd)
     if not isinstance(env, dict):
         raise ValueError("the tool environment must be an object")
     libc = ctypes.CDLL(None, use_errno=True)
-    _enter_namespaces(libc)
-    workspace = plan["landlock"]["workspace"]
-    _remount_noexec(libc, workspace)
+    try:
+        _enter_namespaces(libc)
+        workspace = plan["landlock"]["workspace"]
+        _remount_noexec(libc, workspace)
+        _enter_namespaces(libc)
+    except _NamespaceDenied:
+        _fail(options.status_fd, constants.NAMESPACE_DENIED)
     egress = plan["egress"]
     hosted = egress is not None
     if hosted:
         _start_forwarder(forwarder, egress["listen"], egress["socket"])
-    landlock.apply(plan["landlock"], hosted)
+    landlock.apply(plan["landlock"])
     seccomp.install(plan["seccomp"])
     _apply_limits(plan["rlimits"])
     signal.signal(signal.SIGXFSZ, signal.SIG_DFL)
     signal.signal(signal.SIGPIPE, signal.SIG_DFL)
     os.set_inheritable(options.status_fd, False)
-    os.write(options.status_fd, READY)
+    os.write(options.status_fd, constants.TRAMPOLINE_READY)
     os.closerange(3, options.status_fd)
     os.closerange(options.status_fd + 1, 65536)
     memory = plan["rlimits"]["RLIMIT_AS"]
@@ -140,8 +153,22 @@ def _run(options: Any, argv: list[str]) -> None:
     os.execve(argv[0], argv, env)
 
 
+def probe(workspace: str) -> int:
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        _enter_namespaces(libc)
+        _remount_noexec(libc, workspace)
+        _enter_namespaces(libc)
+    except BaseException:  # noqa: BLE001
+        return 126
+    return 0
+
+
 def main(raw: list[str]) -> int:
     import argparse
+
+    if raw[:1] == ["--probe"] and len(raw) == 2:
+        return probe(raw[1])
 
     split = raw.index("--")
     parser = argparse.ArgumentParser(prog="astral_exec.inner")

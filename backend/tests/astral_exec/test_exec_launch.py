@@ -51,6 +51,7 @@ def darwin_facts(**overrides):
         landlock_abi=0,
         bwrap=False,
         userns=False,
+        euid=501,
         sandbox_exec=True,
         app_sandboxed=False,
     )

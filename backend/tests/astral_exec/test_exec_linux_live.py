@@ -93,6 +93,13 @@ os.close(fd)
 r["unix_socket"] = err(lambda: socket.socket(socket.AF_UNIX, socket.SOCK_STREAM))
 r["inet_stream"] = err(lambda: socket.socket(socket.AF_INET, socket.SOCK_STREAM))
 r["inet_dgram"] = err(lambda: socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
+r["netlink"] = err(lambda: socket.socket(socket.AF_NETLINK, socket.SOCK_RAW))
+r["vsock"] = err(lambda: socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM))
+_libc = ctypes.CDLL(None, use_errno=True)
+_buf = ctypes.create_string_buffer(120)
+r["io_uring_setup"] = (
+    "allowed" if _libc.syscall(425, 4, _buf) >= 0 else ctypes.get_errno()
+)
 try:
     a, b = socket.socketpair()
     a.close(); b.close()
@@ -152,6 +159,9 @@ def test_the_confined_tool_is_boxed_in_every_dimension(tmp_path):
     assert result["unix_socket"] == errno.EPERM
     assert result["inet_stream"] == errno.EPERM
     assert result["inet_dgram"] == errno.EPERM
+    assert result["netlink"] == errno.EPERM
+    assert result["vsock"] == errno.EPERM
+    assert result["io_uring_setup"] == errno.EPERM
     assert result["socketpair"] == "allowed"
     assert result["signal_launcher"] in (errno.EPERM, errno.ESRCH)
     assert result["fork"] == errno.EPERM
@@ -175,6 +185,14 @@ def test_the_tool_sees_only_its_own_namespace_in_proc(tmp_path):
     assert 1 in result["pids"]
     assert len(result["pids"]) < 20
     assert result["init"] == "/usr/bin/bwrap"
+
+
+def test_a_tool_that_prints_a_bwrap_error_and_fails_is_a_tool_exit(tmp_path):
+    policy, workspace, read_dir, data = _policy(tmp_path)
+    argv = ["/bin/sh", "-c", "echo 'bwrap: not really' >&2; exit 1"]
+    outcome = launch._run(policy, argv, {}, facts=probe())
+    assert outcome.code is None and outcome.exit_code == 1
+    assert b"bwrap:" in outcome.stderr
 
 
 def test_a_missing_tool_is_a_launch_failure_not_an_exit(tmp_path):
@@ -324,6 +342,9 @@ def other_port():
 
 r["tcp_8001"] = err(other_port)
 r["udp"] = err(lambda: socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
+r["raw"] = err(lambda: socket.socket(socket.AF_INET, socket.SOCK_RAW))
+r["netlink"] = err(lambda: socket.socket(socket.AF_NETLINK, socket.SOCK_RAW))
+r["unix"] = err(lambda: socket.socket(socket.AF_UNIX, socket.SOCK_STREAM))
 print(json.dumps(r))
 """
 
@@ -360,6 +381,9 @@ def test_the_egress_forwarder_reaches_the_host_socket_and_blocks_other_ports(tmp
     assert result["forward"] == "PONG:ping"
     assert result["tcp_8001"] in (errno.EACCES, errno.EPERM)
     assert result["udp"] == errno.EPERM
+    assert result["raw"] == errno.EPERM
+    assert result["netlink"] == errno.EPERM
+    assert result["unix"] == errno.EPERM
 
 
 @pytest.mark.parametrize(
