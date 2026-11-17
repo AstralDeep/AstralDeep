@@ -226,7 +226,14 @@ def test_a_linux_call_with_hosts_binds_the_proxy_socket_and_closes_it_after(
         (minimal_policy(workspace=WORKSPACE), darwin_facts()),
         (darwin_policy(), good_facts()),
         (darwin_policy(), {"platform": "darwin"}),
-        (loaded(minimal_policy()), good_facts()),
+        pytest.param(
+            loaded(minimal_policy()),
+            good_facts(),
+            marks=pytest.mark.skipif(
+                sys.platform != "darwin",
+                reason="a Linux host legitimately starts the linux backend",
+            ),
+        ),
     ],
     ids=[
         "parse_only",
@@ -481,6 +488,10 @@ def test_the_real_trampoline_refuses_a_limit_the_kernel_rejects():
     assert (code, status, out) == (1, b"fail ValueError", b"")
 
 
+@pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="the rlimit trampoline is the macOS launcher, and Linux ends a tool at its hard CPU limit with SIGKILL instead of SIGXCPU",
+)
 def test_the_cpu_limit_kills_a_busy_tool_without_any_launcher():
     code, status, _out, _err = real_trampoline(
         [PYTHON, "-I", "-c", "while True: pass"], {}, cpu=1
@@ -1212,7 +1223,7 @@ def test_a_stop_signal_during_teardown_still_finishes_the_sweep():
     try:
         with pytest.raises(launch._Stopped):
             supervise(proc, fake)
-        assert proc.returncode == -signal.SIGKILL
+        assert proc.wait(timeout=30) == -signal.SIGKILL
     finally:
         for sig, handler in previous.items():
             signal.signal(sig, handler)
@@ -1263,6 +1274,10 @@ def test_the_profile_is_written_under_the_data_directory_outside_exec(
     assert not os.path.exists(seen[0])
 
 
+@pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="the nproc backstop and its libproc process count exist only on the macOS launcher",
+)
 def test_a_fork_loop_cannot_grow_past_the_nproc_backstop():
     base = watchdog.user_process_count()
     code = (

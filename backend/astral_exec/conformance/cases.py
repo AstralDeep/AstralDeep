@@ -23,6 +23,7 @@ from .context import (
     SECRET_NAME,
     Context,
     Failed,
+    Refused,
     Run,
     processes_matching,
     process_table,
@@ -474,7 +475,7 @@ def _(ctx: Context) -> None:
 @case("proxy.https_through_proxy")
 def _(ctx: Context) -> None:
     if ctx.fixtures.cert is None:
-        raise Failed(f"no TLS fixture: {ctx.fixtures.cert_error}")
+        raise Refused(f"tls_fixture_unavailable: {ctx.fixtures.cert_error}")
     run, _upstream = hosted(ctx)
     expect(run, "https_via_proxy", {"ok:fixture-ok"})
     expect(run, "https_by_environment", {"ok:fixture-ok"})

@@ -8,6 +8,7 @@ import ast
 import json
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -18,6 +19,7 @@ import pytest
 from astral_exec import conformance, run
 from astral_exec.conformance import cases as cases_module
 from astral_exec.conformance import context as context_module
+from astral_exec.conformance import fixtures as fixtures_module
 from astral_exec.conformance.fixtures import PUBLIC, Fixtures, Upstream
 from astral_exec.errors import Refusal
 from astral_exec.facts import Facts
@@ -307,5 +309,38 @@ def test_every_fixture_counts_what_reaches_it_and_the_upstream_maps_ports(tmp_pa
             ("other.example.com", 80),
         ]
         assert set(upstream.options) == {"resolver", "connector"}
+    finally:
+        fixtures.stop()
+
+
+def test_a_missing_openssl_refuses_the_tls_case_with_its_reason(monkeypatch, tmp_path):
+    monkeypatch.setattr(fixtures_module.shutil, "which", lambda name: None)
+    fixtures = Fixtures(tmp_path, tmp_path)
+    try:
+        assert fixtures.cert is None
+        tls_case = next(
+            c for c in cases_module.CASES if c.name == "proxy.https_through_proxy"
+        )
+        ctx = context_module.Context.__new__(context_module.Context)
+        ctx.fixtures = fixtures
+        result = conformance.execute(tls_case, ctx, None)
+        assert result.result == conformance.REFUSED
+        assert result.detail.startswith("tls_fixture_unavailable")
+    finally:
+        fixtures.stop()
+
+
+@pytest.mark.skipif(
+    shutil.which("openssl") is None,
+    reason="this test needs the openssl CLI to make the certificate",
+)
+def test_with_openssl_the_tls_fixture_has_a_certificate(tmp_path):
+    fixtures = Fixtures(tmp_path, tmp_path)
+    try:
+        assert (
+            fixtures.cert is not None
+            and fixtures.cert.exists()
+            and fixtures.cert_error is None
+        )
     finally:
         fixtures.stop()

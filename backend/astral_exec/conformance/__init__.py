@@ -20,7 +20,7 @@ from astral_exec.errors import Refusal
 from astral_exec.facts import probe
 from astral_exec.select import select
 from . import cases as cases_module
-from .context import Context, Failed
+from .context import Context, Failed, Refused
 from .fixtures import Fixtures
 
 PASS, FAIL, REFUSED = "PASS", "FAIL", "REFUSED"
@@ -89,6 +89,8 @@ def execute(case: cases_module.Case, ctx: Context, refusal: Refusal | None) -> R
         return Result(case.name, REFUSED, refusal.message)
     try:
         case.run(ctx)
+    except Refused as refused:
+        return Result(case.name, REFUSED, str(refused))
     except Failed as failure:
         return Result(case.name, FAIL, str(failure))
     except Exception as error:

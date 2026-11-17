@@ -45,6 +45,10 @@ class Failed(Exception):
     pass
 
 
+class Refused(Exception):
+    pass
+
+
 @dataclass
 class Run:
     outcome: Outcome
