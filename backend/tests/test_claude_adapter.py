@@ -11,7 +11,7 @@ def test_claude_adapter_isolation():
         # Verify trust_env is disabled
         assert client.trust_env is False
         # Verify proxies are disabled for egress compliance
-        assert client.proxies == {}
+        assert client.proxies is None
 
 def test_claude_adapter_egress_compliance():
     """Verify adapter configuration meets security gate requirements."""
@@ -19,4 +19,5 @@ def test_claude_adapter_egress_compliance():
     client = adapter._get_client()
     assert client.verify is True
     assert client.trust_env is False
+    assert client.proxies is None
     client.close()
