@@ -119,7 +119,11 @@ def test_allowed_host_tunnels_to_the_fixture(running, fixture, family):
         conn.sendall(_connect("api.example.com:443"))
         assert _read_head(conn).startswith(b"HTTP/1.1 200")
         conn.sendall(b"hello")
-        assert conn.recv(4096) == b"echo:hello"
+        got = b""
+        while not got.endswith(b"echo:hello"):
+            chunk = conn.recv(4096)
+            assert chunk
+            got += chunk
     assert fixture.calls == [(PUBLIC, 443)]
 
 
@@ -141,8 +145,11 @@ def test_early_client_bytes_after_the_head_reach_the_upstream(running, fixture):
     proxy = running()
     with _open(proxy) as conn:
         conn.sendall(_connect("api.example.com:443") + b"early")
-        assert _read_head(conn).startswith(b"HTTP/1.1 200")
-        assert conn.recv(4096) == b"echo:early"
+        data = _read_head(conn)
+        assert data.startswith(b"HTTP/1.1 200")
+        while not data.endswith(b"echo:early"):
+            data += conn.recv(4096)
+        assert data.endswith(b"\r\n\r\necho:early")
 
 
 @pytest.mark.parametrize(
