@@ -79,10 +79,12 @@ async def test_a_legacy_owner_is_neither_hashed_nor_shown(env, source):
     assert response.status_code == 200
     assert response.json()["owner_hash"] is None and LEGACY not in response.text
     if source == "file":
-        assert (ni.data_dir() / ni.OWNER_FILE).read_bytes() == stored
+        assert not (ni.data_dir() / ni.OWNER_FILE).exists()
+        (kept,) = ni.data_dir().glob(ni.OWNER_FILE + ".legacy-*")
+        assert kept.read_bytes() == stored
 
 
-@pytest.mark.parametrize("stored", [LEGACY, "mesh." + "5" * 64])
+@pytest.mark.parametrize("stored", ["mesh." + "5" * 64])
 async def test_a_configured_mesh_owner_over_a_different_owner_file_hashes_nothing(env, stored):
     before = seed_owner(stored)
     env.monkeypatch.setenv(ni.OWNER_ENV, MESH)

@@ -250,7 +250,7 @@ async def test_gate_two_meshes_on_one_machine_stay_isolated(tmp_path, monkeypatc
             await other_node.stop()
 
 
-async def test_gate_a_legacy_owner_node_keeps_its_owner_and_data_and_serves_no_ticket(tmp_path, monkeypatch, plane_runtime):
+async def test_gate_a_legacy_owner_is_retired_and_pairing_binds_the_mesh_while_its_data_stays(tmp_path, monkeypatch, plane_runtime):
     async with served(tmp_path, monkeypatch, bind=False) as door:
         history = history_manager(plane_runtime)
         chat = history.create_chat(user_id=LEGACY_OWNER)
@@ -259,14 +259,14 @@ async def test_gate_a_legacy_owner_node_keeps_its_owner_and_data_and_serves_no_t
         before = history.get_chat(chat, LEGACY_OWNER)
         assert [m["content"] for m in before["messages"]] == ["a question from before the cut", "an answer from before the cut"]
         stored = seed_owner(LEGACY_OWNER)
-        ticket = door.mint(["read_value"])
-        assert await door.mesh.node.refresh_personal_owner() is None
-        assert (await door.mesh.node.status())["owner_binding"] == {"state": "refused", "code": "node.legacy_owner"}
-        response = await door.call_tool(ticket, "read_value")
-        assert (response.status_code, code_of(response)) == (503, "node.owner_unbound")
-        assert door.host.calls == []
+        mesh_owner = node_identity.owner_id_for_mesh(door.mesh.owner.mesh_id)
+        assert await door.mesh.node.refresh_personal_owner() == mesh_owner
+        assert (await door.mesh.node.status())["owner_binding"] == {"state": "ready", "code": None}
         owner_file = tmp_path / "node" / node_identity.OWNER_FILE
-        assert owner_file.read_bytes() == stored and not stored.decode().startswith(OWNER_FILE_PREFIX)
+        assert owner_file.read_text() == mesh_owner
+        (kept,) = owner_file.parent.glob(node_identity.OWNER_FILE + ".legacy-*")
+        assert kept.read_bytes() == stored and not stored.decode().startswith(OWNER_FILE_PREFIX)
+        assert history.get_recent_chats(limit=50, user_id=mesh_owner, include_archived=True) == []
         assert history.get_chat(chat, LEGACY_OWNER) == before
         recent = history.get_recent_chats(limit=50, user_id=LEGACY_OWNER, include_archived=True)
         assert [item["id"] for item in recent] == [chat]

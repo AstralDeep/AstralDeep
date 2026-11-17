@@ -23,7 +23,7 @@ scripts/node/install-personal-node.sh
 
 The old `--issuer`, `--client-id` and `--owner-subject` options were removed. The installer refuses them and says what replaced them.
 
-It creates `~/.astral-node/data` and `~/.astral-node/node.env`, both private to you. It generates the node key and the encryption secrets. It keeps any value that already exists and it never prints a secret. An env file from the sign-in era keeps its `ASTRAL_NODE_OWNER` line untouched. The node reports that owner as a legacy owner and keeps your data. The production posture refuses to start while the line is set, so remove it yourself before you pair.
+It creates `~/.astral-node/data` and `~/.astral-node/node.env`, both private to you. It generates the node key and the encryption secrets. It keeps any value that already exists and it never prints a secret. An env file from the sign-in era keeps its `ASTRAL_NODE_OWNER` line untouched. The node ignores that owner when it starts and keeps your data.
 
 The node stores its data in a SQLite file named `plane.sqlite3` in the node data directory. The file is mode 0600 and needs no database server. Pass `--database-url postgresql://...` to use PostgreSQL instead. A `sqlite:///absolute/path.db` URL picks another SQLite file. The shared multi-user deployment stays on PostgreSQL and refuses a SQLite URL.
 
@@ -45,7 +45,7 @@ Start the orchestrator with that env file. For the container image use `--env-fi
 
 The node binds to the mesh it joins. Its owner id is derived from the mesh id. The binding is a file named `owner` in the data directory. After that the node serves only that mesh.
 
-A node from the sign-in era may hold an owner id that starts with `oidc.`. The node reports it as a legacy owner and refuses to pair until you resolve it. Its data stays where it is.
+A node from the sign-in era may hold an owner id that starts with `oidc.`. When the node starts it moves the owner file aside as `owner.legacy-<UTC timestamp>` in the same folder and logs `node.legacy_owner_retired`. The node then binds to your mesh when you pair it. Its data stays where it is.
 
 Existing data keyed on a bare subject is not migrated. A node starts clean.
 

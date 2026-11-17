@@ -263,7 +263,7 @@ def test_a_personal_node_with_no_keycloak_setting_starts_in_production(monkeypat
     assert observed == ["constructed", "started"]
 
 
-@pytest.mark.parametrize("change", ["placeholder_audit", "missing_session_key", "missing_credential_key", "legacy_owner", "malformed_owner"])
+@pytest.mark.parametrize("change", ["placeholder_audit", "missing_session_key", "missing_credential_key"])
 def test_a_personal_node_with_env_unset_still_refuses_before_durable_construction(monkeypatch, tmp_path, change):
     node_identity = _personal_node(monkeypatch, tmp_path)
     monkeypatch.delenv("ASTRAL_ENV", raising=False)
@@ -271,11 +271,7 @@ def test_a_personal_node_with_env_unset_still_refuses_before_durable_constructio
         monkeypatch.setenv("AUDIT_HMAC_SECRET", "dev-audit-hmac-secret-change-me-in-prod")
     elif change == "missing_session_key":
         monkeypatch.delenv("WEB_SESSION_ENC_KEY")
-    elif change == "missing_credential_key":
-        monkeypatch.delenv("CREDENTIAL_ENCRYPTION_KEY")
-    elif change == "legacy_owner":
-        monkeypatch.setenv(node_identity.OWNER_ENV, "oidc.0123456789abcdef.owner")
     else:
-        monkeypatch.setenv(node_identity.OWNER_ENV, "sha256:" + "a" * 63)
+        monkeypatch.delenv("CREDENTIAL_ENCRYPTION_KEY")
     _entrypoint_refuses(monkeypatch)
     assert not (tmp_path / "node" / node_identity.OWNER_FILE).exists()

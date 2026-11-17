@@ -20,11 +20,18 @@ def skill(skill_id, **fields):
 
 class Orch:
     def __init__(self, response=None, error=None, authority="authority"):
-        self.tool_permissions = SimpleNamespace(get_tool_scope=lambda agent, tool: {"write_note": "tools:write"}.get(tool, "tools:read"))
+        self.tool_permissions = SimpleNamespace(
+            get_tool_scope=lambda agent, tool: {"write_note": "tools:write"}.get(tool, "tools:read"),
+            is_tool_allowed=lambda owner, agent, tool: True,
+        )
+        self.drafts = set()
         self.authority = authority
         self.response = response
         self.error = error
         self.events = []
+
+    def _is_draft_agent(self, agent_id):
+        return agent_id in self.drafts
 
     async def derive_machine_authority(self, **kwargs):
         self.events.append(("derive", kwargs))
@@ -252,8 +259,8 @@ async def test_the_runner_publishes_only_owner_visible_bundled_and_vessel_tools(
 
     published = calls.published_tools(OWNER)
 
-    assert [tool["name"] for tool in published] == ["lookup", "roll_dice"]
-    dice = published[1]
+    assert [tool["name"] for tool in published] == ["roll_dice", "lookup"]
+    dice = published[0]
     assert dice["annotations"] == {"readOnlyHint": True}
     assert dice["effect"] == "outward_read"
     assert (await calls.resolve(OWNER, "roll_dice")).definition == nmcalls.definition_hash(
@@ -323,6 +330,68 @@ async def test_a_real_orchestrator_publishes_its_owner_visible_bundled_dice_tool
         tool["name"], tool["description"], tool["input_schema"], tool["annotations"]
     )
     assert calls.published_tools("oidc.abc.other") == []
+
+
+def many_tools(monkeypatch, orch, count=90, agents=("dice-roller-1", "general-1", "weather-1")):
+    pairs = [(agents[i % len(agents)], skill(f"tool_{i:03d}", description=f"t{i}")) for i in range(count)]
+    orch.local_agents = {agent: object() for agent in agents}
+    orch.tool_permissions.get_tool_scope = lambda agent, tool: "tools:read"
+    monkeypatch.setattr(tool_visibility, "eligible_tool_pairs", lambda _orch, owner: list(pairs))
+    monkeypatch.setattr(nmcalls.vessel_executor, "published_tools", lambda _orch: [])
+    return pairs
+
+
+def test_ninety_tools_publish_as_the_first_sixty_four_by_agent_then_name(monkeypatch):
+    orch = Orch()
+    pairs = many_tools(monkeypatch, orch)
+    calls = nmcalls.OrchestratorCalls(orch)
+
+    tools, omitted = calls.published_selection(OWNER)
+
+    expected = sorted(((a, s.id) for a, s in pairs))[:64]
+    by_name = {s.id: a for a, s in pairs}
+    assert [(by_name[t["name"]], t["name"]) for t in tools] == expected
+    assert (len(tools), omitted) == (64, 26)
+    reversed_pairs = list(reversed(pairs))
+    monkeypatch.setattr(tool_visibility, "eligible_tool_pairs", lambda _orch, owner: list(reversed_pairs))
+    assert calls.published_tools(OWNER) == tools
+
+
+def test_the_allowlist_publishes_exactly_the_named_tools_within_the_cap(monkeypatch):
+    orch = Orch()
+    pairs = many_tools(monkeypatch, orch)
+    calls = nmcalls.OrchestratorCalls(orch)
+    chosen = [(a, s.id) for a, s in pairs[:3]]
+    monkeypatch.setenv(nmcalls.ALLOWLIST_ENV, " , ".join(f"{a}__{n}" for a, n in chosen) + ", ghost-1__nothing")
+    tools, omitted = calls.published_selection(OWNER)
+    assert sorted(t["name"] for t in tools) == sorted(n for _, n in chosen) and omitted == 0
+    monkeypatch.setenv(nmcalls.ALLOWLIST_ENV, ",".join(f"{a}__{s.id}" for a, s in pairs))
+    tools, omitted = calls.published_selection(OWNER)
+    assert (len(tools), omitted) == (64, 26)
+    monkeypatch.setenv(nmcalls.ALLOWLIST_ENV, "  ")
+    assert len(calls.published_selection(OWNER)[0]) == 64
+
+
+def test_draft_and_disallowed_tools_never_publish_even_when_allowlisted(monkeypatch):
+    orch = Orch()
+    pairs = many_tools(monkeypatch, orch, count=6, agents=("dice-roller-1", "general-1"))
+    orch.drafts = {"general-1"}
+    blocked = pairs[0][1].id
+    orch.tool_permissions.is_tool_allowed = lambda owner, agent, tool: tool != blocked
+    monkeypatch.setenv(nmcalls.ALLOWLIST_ENV, ",".join(f"{a}__{s.id}" for a, s in pairs))
+    tools, _ = nmcalls.OrchestratorCalls(orch).published_selection(OWNER)
+    assert [t["name"] for t in tools] == [s.id for a, s in pairs if a == "dice-roller-1" and s.id != blocked]
+
+
+def test_a_permission_check_that_raises_excludes_the_tool(monkeypatch):
+    orch = Orch()
+    many_tools(monkeypatch, orch, count=2)
+
+    def broken(owner, agent, tool):
+        raise RuntimeError("down")
+
+    orch.tool_permissions.is_tool_allowed = broken
+    assert nmcalls.OrchestratorCalls(orch).published_tools(OWNER) == []
 
 
 def grant(tool, scope="*", *, agent="kernel", consented=True):

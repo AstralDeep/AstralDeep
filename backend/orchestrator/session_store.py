@@ -178,12 +178,10 @@ def _personal_node_problems(node_identity) -> list:
             f"{node_identity.DATA_DIR_ENV} is writable by this process and the key "
             f"file is mode 0600."
         )
-    owner = os.getenv(node_identity.OWNER_ENV, "").strip()
-    if owner and not node_identity.is_mesh_owner(owner):
-        problems.append(
-            f"{node_identity.OWNER_ENV} must be the owner's mesh id, sha256:<64 hex> "
-            f"or mesh.<64 hex>. Unset it to let the node bind the mesh it joins."
-        )
+    try:
+        node_identity.retire_legacy_owner()
+    except node_identity.NodeIdentityError as exc:
+        problems.append(f"The legacy owner binding cannot be retired ({exc}).")
     return problems
 
 

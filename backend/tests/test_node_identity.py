@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import stat
 
 import pytest
@@ -256,16 +257,71 @@ def test_binding_stores_the_mesh_owner_id_and_never_the_wire_form(node):
     assert (node / ni.OWNER_FILE).read_text() == STORED
 
 
-def test_a_legacy_owner_file_is_kept_and_refused_as_legacy(node):
+def legacy_files(node):
+    return sorted(node.glob(ni.OWNER_FILE + ".legacy-*"))
+
+
+def test_a_legacy_owner_file_is_moved_aside_and_pairing_binds_the_mesh(node, caplog):
     stored = seed_owner(LEGACY)
-    with pytest.raises(ni.LegacyOwner):
-        ni.bind_mesh_owner(MESH)
-    with pytest.raises(ni.LegacyOwner):
-        ni.bound_mesh_owner()
+    with caplog.at_level("WARNING", logger="shared.node_identity"):
+        assert ni.bound_mesh_owner() is None
+    assert not (node / ni.OWNER_FILE).exists()
+    (kept,) = legacy_files(node)
+    assert kept.read_bytes() == stored
+    assert [r.getMessage().split(":")[0] for r in caplog.records] == [ni.LEGACY_OWNER_RETIRED]
+    assert LEGACY not in caplog.text
+    assert ni.bind_mesh_owner(MESH) == STORED
+    assert (node / ni.OWNER_FILE).read_text() == STORED
+    ni.enforce_owner(STORED)
     with pytest.raises(ni.OwnerMismatch):
         ni.enforce_owner(LEGACY)
-    assert ni.bound_owner() == LEGACY
+
+
+def test_retiring_a_legacy_owner_is_idempotent_and_keeps_the_mode(node, caplog):
+    seed_owner(LEGACY)
+    (node / ni.OWNER_FILE).chmod(0o640)
+    assert ni.retire_legacy_owner() is True
+    caplog.clear()
+    with caplog.at_level("WARNING", logger="shared.node_identity"):
+        assert ni.retire_legacy_owner() is False
+    assert not caplog.records
+    (kept,) = legacy_files(node)
+    assert stat.S_IMODE(kept.stat().st_mode) == 0o640
+    assert re.fullmatch(r"owner\.legacy-\d{8}T\d{6}Z(-\d+)?", kept.name)
+
+
+def test_a_second_legacy_file_in_the_same_second_gets_its_own_name(node, monkeypatch):
+    monkeypatch.setattr(ni, "datetime", type("D", (), {"now": staticmethod(lambda tz=None: __import__("datetime").datetime(2026, 1, 2, 3, 4, 5, tzinfo=tz))}))
+    seed_owner(LEGACY)
+    ni.retire_legacy_owner()
+    seed_owner(LEGACY + "-2")
+    ni.retire_legacy_owner()
+    assert [p.name for p in legacy_files(node)] == ["owner.legacy-20260102T030405Z", "owner.legacy-20260102T030405Z-1"]
+
+
+def test_a_mesh_owner_file_is_untouched_by_retirement(node):
+    stored = seed_owner(MESH)
+    assert ni.retire_legacy_owner() is False
     assert (node / ni.OWNER_FILE).read_bytes() == stored
+    assert not legacy_files(node)
+
+
+def test_retirement_does_nothing_without_a_file_and_off_the_personal_profile(node, monkeypatch):
+    assert ni.retire_legacy_owner() is False
+    seed_owner(LEGACY)
+    monkeypatch.setenv(ni.PROFILE_ENV, "institution")
+    assert ni.retire_legacy_owner() is False
+    assert (node / ni.OWNER_FILE).exists()
+    with pytest.raises(ni.OwnerMismatch):
+        ni.bound_mesh_owner()
+
+
+def test_retirement_failures_surface_as_identity_errors(node, monkeypatch):
+    seed_owner(LEGACY)
+    monkeypatch.setattr(ni.os, "link", lambda *a, **k: (_ for _ in ()).throw(PermissionError("no")))
+    with pytest.raises(ni.NodeIdentityError):
+        ni.retire_legacy_owner()
+    assert (node / ni.OWNER_FILE).exists()
 
 
 def test_a_wire_form_owner_file_reads_as_the_same_mesh_owner_and_is_never_rewritten(node):
@@ -290,14 +346,14 @@ def test_a_configured_mesh_owner_in_either_form_admits_only_that_mesh(node, monk
 
 
 @pytest.mark.parametrize("configured", [MESH, STORED])
-@pytest.mark.parametrize("stored,refusal", [(LEGACY, ni.LegacyOwner), (OTHER, ni.OwnerMismatch), ("mesh." + "b" * 64, ni.OwnerMismatch)])
-def test_a_configured_mesh_owner_cannot_hide_a_different_owner_file(node, monkeypatch, configured, stored, refusal):
+@pytest.mark.parametrize("stored", [OTHER, "mesh." + "b" * 64])
+def test_a_configured_mesh_owner_cannot_hide_a_different_owner_file(node, monkeypatch, configured, stored):
     before = seed_owner(stored)
     monkeypatch.setenv(ni.OWNER_ENV, configured)
     for attempt in (ni.bound_mesh_owner, lambda: ni.bind_mesh_owner(MESH), lambda: ni.enforce_owner(STORED)):
-        with pytest.raises(refusal) as refused:
+        with pytest.raises(ni.OwnerMismatch) as refused:
             attempt()
-        assert refusal is ni.LegacyOwner or type(refused.value) is ni.OwnerMismatch
+        assert type(refused.value) is ni.OwnerMismatch
     assert (node / ni.OWNER_FILE).read_bytes() == before
 
 
@@ -309,11 +365,14 @@ def test_a_configured_owner_in_either_form_agrees_with_its_own_file(node, monkey
     assert (node / ni.OWNER_FILE).read_bytes() == stored
 
 
-def test_a_configured_legacy_owner_is_refused_as_legacy(node, monkeypatch):
+def test_a_configured_legacy_owner_is_ignored_with_the_warning_code(node, monkeypatch, caplog):
     monkeypatch.setenv(ni.OWNER_ENV, LEGACY)
-    with pytest.raises(ni.LegacyOwner):
-        ni.bind_mesh_owner(MESH)
-    assert not (node / ni.OWNER_FILE).exists()
+    with caplog.at_level("WARNING", logger="shared.node_identity"):
+        assert ni.bound_owner() is None
+        assert ni.bind_mesh_owner(MESH) == STORED
+    assert [r.getMessage().split(":")[0] for r in caplog.records] == [ni.LEGACY_OWNER_RETIRED]
+    assert LEGACY not in caplog.text
+    assert (node / ni.OWNER_FILE).read_text() == STORED
 
 
 def test_enforcing_an_owner_compares_with_the_bound_mesh_owner_and_never_binds(node):
@@ -364,12 +423,13 @@ def test_principal_hash_is_stable():
     assert ni.owner_principal_hash("o").startswith("sha256:")
 
 
-def test_mesh_owner_binding_cannot_hide_an_existing_file_behind_environment(node, monkeypatch):
-    seed_owner("oidc.old.owner")
+def test_a_configured_mesh_owner_binds_after_the_legacy_file_is_retired(node, monkeypatch):
+    stored = seed_owner("oidc.old.owner")
     monkeypatch.setenv(ni.OWNER_ENV, MESH)
-    with pytest.raises(ni.LegacyOwner):
-        ni.bind_mesh_owner(MESH)
-    assert (node / ni.OWNER_FILE).read_text() == "oidc.old.owner"
+    assert ni.bind_mesh_owner(MESH) == STORED
+    assert (node / ni.OWNER_FILE).read_text() == STORED
+    (kept,) = legacy_files(node)
+    assert kept.read_bytes() == stored
 
 
 def test_concurrent_owner_binding_publishes_one_complete_owner_and_preserves_the_winner(node, monkeypatch):
