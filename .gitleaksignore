@@ -202,3 +202,8 @@ f2213f62924eda00368413a6c78cc1d9299dfd6c:specs/105-decentralized-personal-mesh/c
 46bc2006932ed18ad4632690565431d10c683aeb:tests/test_cli.py:generic-api-key:44
 # Imported Vessel history, tests/test_cli.py line 53: the same sequential hex test fixture placed in the environment by a second deploy test.
 46bc2006932ed18ad4632690565431d10c683aeb:tests/test_cli.py:generic-api-key:53
+# Node pack log-redaction tests: fake secret values, a dummy unsigned JWT and placeholder assignments the redactor must strip. They hold no credential.
+48c74313e88f26649ea4ddc3197441f8c9e27e61:scripts/tests/test_node_bundle_launcher.py:generic-api-key:82
+48c74313e88f26649ea4ddc3197441f8c9e27e61:scripts/tests/test_node_bundle_logging.py:generic-api-key:11
+48c74313e88f26649ea4ddc3197441f8c9e27e61:scripts/tests/test_node_bundle_logging.py:generic-api-key:12
+48c74313e88f26649ea4ddc3197441f8c9e27e61:scripts/tests/test_node_bundle_logging.py:jwt:17
