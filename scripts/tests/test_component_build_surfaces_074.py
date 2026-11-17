@@ -272,7 +272,7 @@ def test_store_and_signing_workflows_require_explicit_release_events() -> None:
         encoding="utf-8"
     )
     windows_triggers = windows.partition("\npermissions:\n")[0]
-    assert 'tags: ["v*"]' in windows_triggers
+    assert 'tags: ["v[0-9]*"]' in windows_triggers
     assert "workflow_dispatch:" in windows_triggers
     assert "branches:" not in windows_triggers
     assert "pull_request:" not in windows_triggers
