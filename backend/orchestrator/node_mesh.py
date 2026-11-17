@@ -22,7 +22,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
-from orchestrator import node_connection_keystore, node_mesh_calls, node_mesh_keys
+from orchestrator import node_connection_keystore, node_mesh_calls, node_mesh_keys, node_stdio_launcher
 from orchestrator.node_mailbox import MailboxError, MailboxProcess, MailboxSettings
 from shared import dev_mesh_keys, node_identity
 
@@ -391,7 +391,9 @@ class NodeMesh:
         binding: Any = None,
         mailbox: Optional[MailboxProcess] = None,
         mailbox_address: Optional[str] = None,
+        sandbox: Optional[node_stdio_launcher.SandboxBackend] = None,
     ):
+        self._launcher = node_stdio_launcher.NodeStdioLauncher(sandbox)
         self._mailbox_address = mailbox_address
         self._data_dir = Path(data_dir)
         self._settings = settings or MeshSettings()
@@ -424,6 +426,10 @@ class NodeMesh:
     @property
     def binding(self) -> Any:
         return self._binding
+
+    @property
+    def stdio_refusal(self) -> Optional[str]:
+        return self._launcher.refusal
 
     @property
     def started(self) -> bool:
@@ -513,10 +519,14 @@ class NodeMesh:
             kernel.set_keystore(node_connection_keystore.host_keystore(
                 binding, node_connection_keystore.NodeKeystore(self._data_dir / KERNEL_DIR, keys.wrap_secret),
             ))
+            self.set_launcher(kernel)
         except BaseException:
             await kernel.close()
             raise
         return kernel
+
+    def set_launcher(self, kernel: Any) -> None:
+        kernel.set_launcher(node_stdio_launcher.host_launcher(self._binding, self._launcher))
 
     def _supervises_mailbox(self) -> bool:
         return self._mailbox is not None or self._settings.mailbox.enabled
@@ -650,7 +660,10 @@ class NodeMesh:
                 try:
                     await self._kernel.close()
                 finally:
-                    await self._stop_mailbox()
+                    try:
+                        await asyncio.to_thread(self._launcher.stop_all)
+                    finally:
+                        await self._stop_mailbox()
 
     async def _state(self) -> Any:
         return await self._request_call(self.kernel.mesh_status)
