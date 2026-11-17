@@ -4,20 +4,24 @@ It drives the real kernel binding, the dev mesh of tests/helpers/dev_mesh.py and
 from __future__ import annotations
 
 import shutil
+from unittest.mock import AsyncMock
 
 import astral_kernel as ak
 import pytest
 
 from devtools import dev_mesh
 from orchestrator import node_mesh
+from orchestrator import delegation as dg
 from shared import node_identity
+from shared.protocol import MCPResponse
 from tests import fake_astral_kernel
 from tests import test_node_bearer_refusal as refusal
 from tests import test_node_route_census as census
 from tests.helpers.dev_mesh import DevMesh, dev_node, node_settings, publish_catalog, until
 from tests.helpers.owner_file import seed_owner
-from tests.helpers.voice_plane_runtime import isolated_plane_runtime
+from tests.helpers.voice_plane_runtime import history_manager, isolated_plane_runtime
 from tests.test_caller_tickets import AGENT, Host, code_of, code_of_or_none, enrolled, served, tool_names
+from tests.test_caller_tickets import ticketed_orchestrator, ticket_claims  # noqa: F401
 from tests.test_caller_tickets import test_the_real_dispatch_of_a_ticketed_call_sends_the_agent_a_token_for_that_tool_only as real_dispatch
 from tests.test_node_posture import personal, production, refused  # noqa: F401
 
@@ -147,6 +151,31 @@ async def test_gate_a_ticketed_call_reaches_the_agent_through_the_real_dispatch_
     await real_dispatch(orchestrator_factory, monkeypatch)
 
 
+async def test_gate_the_real_orchestrator_behind_the_mcp_endpoint_sends_the_agent_a_token_for_the_covered_tool_only(
+        orchestrator_factory, tmp_path, monkeypatch):
+    monkeypatch.setenv("DELEGATION_REQUIRED", "true")
+    orch = ticketed_orchestrator(orchestrator_factory)
+    orch.delegation.agent_service_client_id = "agent-service"
+    orch._map_file_paths = lambda _chat, arguments, **_: arguments
+    orch.credential_manager.get_agent_credentials_encrypted = lambda *_: None
+    orch._execute_with_retry = AsyncMock(return_value=MCPResponse(result={"ok": True}))
+    async with served(tmp_path, monkeypatch, host=orch) as door:
+        ticket = door.mint(["read_value"], label="Real host")
+        ran = await door.call_tool(ticket, "read_value")
+        assert ran.status_code == 200, ran.text
+        assert orch._execute_with_retry.await_count == 1
+        owner = node_identity.bound_mesh_owner()
+        args = orch._execute_with_retry.await_args.args
+        assert args[1:3] == (AGENT, "read_value")
+        sent = args[3]["_delegation_token"]
+        payload = dg.decode_token_payload(sent)
+        assert payload["scope"].split() == ["tools:read", "tool:read_value"]
+        assert payload["sub"] == owner
+        other = await door.call_tool(ticket, "write_value")
+        assert (other.status_code, code_of(other)) == (403, "caller.tool_not_covered")
+        assert orch._execute_with_retry.await_count == 1
+
+
 async def test_gate_a_mesh_devices_request_reaches_the_node_with_the_mesh_owner(tmp_path, monkeypatch):
     async with dev_node(tmp_path, monkeypatch) as mesh:
         bound = node_identity.bound_owner()
@@ -190,7 +219,8 @@ async def test_gate_a_dev_mesh_is_refused_outside_development_and_serves_no_tick
 def test_gate_a_placeholder_secret_exits_78_on_a_personal_node_with_no_environment(personal, monkeypatch, caplog, name, value):  # noqa: F811
     monkeypatch.delenv("ASTRAL_ENV", raising=False)
     monkeypatch.setenv(name, value)
-    assert f"{name} is" in refused(caplog)
+    logged = refused(caplog)
+    assert f"{name} is" in logged and value not in logged
 
 
 async def test_gate_two_meshes_on_one_machine_stay_isolated(tmp_path, monkeypatch):
@@ -220,10 +250,14 @@ async def test_gate_two_meshes_on_one_machine_stay_isolated(tmp_path, monkeypatc
             await other_node.stop()
 
 
-async def test_gate_a_legacy_owner_node_keeps_its_owner_and_data_and_serves_no_ticket(tmp_path, monkeypatch):
+async def test_gate_a_legacy_owner_node_keeps_its_owner_and_data_and_serves_no_ticket(tmp_path, monkeypatch, plane_runtime):
     async with served(tmp_path, monkeypatch, bind=False) as door:
-        marker = tmp_path / "node" / "legacy-rows.bin"
-        marker.write_bytes(b"rows from before the cut")
+        history = history_manager(plane_runtime)
+        chat = history.create_chat(user_id=LEGACY_OWNER)
+        history.add_message(chat, "user", "a question from before the cut", LEGACY_OWNER)
+        history.add_message(chat, "assistant", "an answer from before the cut", LEGACY_OWNER)
+        before = history.get_chat(chat, LEGACY_OWNER)
+        assert [m["content"] for m in before["messages"]] == ["a question from before the cut", "an answer from before the cut"]
         stored = seed_owner(LEGACY_OWNER)
         ticket = door.mint(["read_value"])
         assert await door.mesh.node.refresh_personal_owner() is None
@@ -233,7 +267,9 @@ async def test_gate_a_legacy_owner_node_keeps_its_owner_and_data_and_serves_no_t
         assert door.host.calls == []
         owner_file = tmp_path / "node" / node_identity.OWNER_FILE
         assert owner_file.read_bytes() == stored and not stored.decode().startswith(OWNER_FILE_PREFIX)
-        assert marker.read_bytes() == b"rows from before the cut"
+        assert history.get_chat(chat, LEGACY_OWNER) == before
+        recent = history.get_recent_chats(limit=50, user_id=LEGACY_OWNER, include_archived=True)
+        assert [item["id"] for item in recent] == [chat]
 
 
 async def test_gate_a_node_keeps_its_binding_and_serves_a_device_restored_from_the_recovery_words(tmp_path, monkeypatch):
@@ -254,13 +290,14 @@ async def test_gate_a_node_keeps_its_binding_and_serves_a_device_restored_from_t
         await door.mesh.owner.approve_offer(await phone.pairing_offer())
         await until(phone.enrolled, "the phone to join")
         await phone.stop()
-        del phone
+        copied_id = phone.device_id
         shutil.copytree(tmp_path / "phone", tmp_path / "restored")
         fresh = dev_mesh.DevDevice("second-phone", tmp_path / "restored")
         try:
             assert (await fresh.kernel.mesh_status()).state == ak.EnrollmentState.RESTORED
             result = fresh.kernel.recover_with_words(kits[0].words, None)
             assert result.mesh_id == door.mesh.owner.mesh_id
+            assert fresh.device_id != copied_id and result.device_id == fresh.device_id
             await fresh.start()
             await until(lambda: any(m.device_id == fresh.device_id for m in door.mesh.node.kernel.roster().members),
                         "the node to learn the restored device")
