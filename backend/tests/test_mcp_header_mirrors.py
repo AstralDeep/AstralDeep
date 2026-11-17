@@ -11,8 +11,7 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
+import pytest_asyncio
 
 from orchestrator.mcp_projection import (
     MirrorParam,
@@ -30,16 +29,13 @@ from orchestrator.work_admission import (
     OwnerScope,
     WorkAdmissionCoordinator,
 )
+from shared import node_identity
 from shared.protocol import AgentCard, AgentSkill, MCPResponse
+from tests.helpers.dev_mesh import MCP_BASE, MCP_META, SignedClient, door_for, shared_node
 
 
-BASE = "http://mcp.test"
-META = {
-    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
-    "io.modelcontextprotocol/clientCapabilities": {},
-    "io.modelcontextprotocol/clientInfo": {"name": "test-host", "version": "1"},
-}
-UNSUPPORTED_DISPOSITION = "Tool declares an unsupported x-mcp-header mirror contract"
+BASE = MCP_BASE
+META = MCP_META
 
 
 class _Permissions:
@@ -51,6 +47,9 @@ class _Permissions:
 
     def get_enabled_scope_names(self, user_id, agent_id):
         return ["tools:read"] if self.allowed else []
+
+    def get_tool_scope(self, agent_id, tool_name):
+        return "tools:read"
 
     def list_disabled_agents(self, _user_id):
         return ()
@@ -72,7 +71,7 @@ class _Orchestrator:
         self.history = SimpleNamespace(db=SimpleNamespace())
         self.tool_permissions = _Permissions()
         self.security_flags = {}
-        self.local_agents = {}
+        self.local_agents = {agent_id: object() for agent_id in skills_by_agent}
         self.agents = {agent_id: object() for agent_id in skills_by_agent}
         self.agent_cards = {
             agent_id: AgentCard(
@@ -169,13 +168,9 @@ def _annotated_schema(
     return schema
 
 
-@pytest.fixture
-def endpoint(monkeypatch, server_identity):
-    monkeypatch.setenv("ASTRAL_ENV", "development")
-    monkeypatch.setitem(globals(), "_identity", server_identity)
-    orchestrator = _Orchestrator(
-        {
-            "reader-1": [
+def _endpoint_skills():
+    return {
+            "weather-1": [
                 _skill("geo", _annotated_schema()),
                 _skill("metrics", {
                     "type": "object",
@@ -217,17 +212,25 @@ def endpoint(monkeypatch, server_identity):
                        }),
             ]
         }
-    )
-    app = FastAPI()
-    install_mcp_server(app, orchestrator, public_base_url=BASE)
-    return TestClient(app), orchestrator
 
 
-_identity = None
+module_loop = pytest.mark.asyncio(loop_scope="module")
 
 
-def _request(method, params=None, *, token=None, headers=None, request_id=1):
-    token = _identity.mcp_token("test_user") if token is None else token
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def mesh(tmp_path_factory):
+    async with shared_node(tmp_path_factory, _Orchestrator(_endpoint_skills())) as served:
+        yield served
+
+
+@pytest_asyncio.fixture(loop_scope="module")
+async def endpoint(mesh):
+    orchestrator = _Orchestrator(_endpoint_skills())
+    async with door_for(mesh, orchestrator, lambda app, host: install_mcp_server(app, host, public_base_url=BASE)) as door:
+        yield SignedClient(door, door.mint(["geo", "metrics", "optional_geo"])), orchestrator
+
+
+def _request(method, params=None, *, headers=None, request_id=1):
     body = {
         "jsonrpc": "2.0",
         "id": request_id,
@@ -235,7 +238,6 @@ def _request(method, params=None, *, token=None, headers=None, request_id=1):
         "params": {**(params or {}), "_meta": dict(META)},
     }
     merged = {
-        "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
         "MCP-Protocol-Version": "2026-07-28",
         "Mcp-Method": method,
@@ -244,17 +246,17 @@ def _request(method, params=None, *, token=None, headers=None, request_id=1):
     return body, merged
 
 
-def _call(client, name, arguments, *, headers=None):
+async def _call(client, name, arguments, *, headers=None):
     body, request_headers = _request(
         "tools/call",
         {"name": name, "arguments": arguments},
         headers={"Mcp-Name": name, **(headers or {})},
     )
-    return client.post("/mcp", json=body, headers=request_headers)
+    return await client.post("/mcp", json=body, headers=request_headers)
 
 
 def test_supported_scalar_annotation_is_advertised_with_mirror_params():
-    orchestrator = _Orchestrator({"reader-1": [_skill("geo", _annotated_schema())]})
+    orchestrator = _Orchestrator({"weather-1": [_skill("geo", _annotated_schema())]})
     tools = project_tools(orchestrator, "u1")
     assert [tool.name for tool in tools] == ["geo"]
     assert tools[0].mirror_params == (
@@ -319,14 +321,14 @@ def test_supported_scalar_annotation_is_advertised_with_mirror_params():
     ],
 )
 def test_prohibited_annotation_locations_withhold_the_tool(schema):
-    orchestrator = _Orchestrator({"reader-1": [_skill("geo", schema)]})
+    orchestrator = _Orchestrator({"weather-1": [_skill("geo", schema)]})
     assert project_tools(orchestrator, "u1") == ()
     assert has_unsupported_mirrors(orchestrator, "u1", "geo") is True
 
 
 def test_output_schema_annotation_withholds_the_tool():
     orchestrator = _Orchestrator({
-        "reader-1": [
+        "weather-1": [
             _skill(
                 "geo",
                 _annotated_schema(),
@@ -358,7 +360,7 @@ def test_output_schema_annotation_withholds_the_tool():
 )
 def test_invalid_annotation_values_withhold_the_tool(header):
     orchestrator = _Orchestrator(
-        {"reader-1": [_skill("geo", _annotated_schema(annotation=header))]}
+        {"weather-1": [_skill("geo", _annotated_schema(annotation=header))]}
     )
     assert project_tools(orchestrator, "u1") == ()
     assert has_unsupported_mirrors(orchestrator, "u1", "geo") is True
@@ -370,7 +372,7 @@ def test_invalid_annotation_values_withhold_the_tool(header):
 )
 def test_non_scalar_annotated_properties_withhold_the_tool(prop_type):
     orchestrator = _Orchestrator(
-        {"reader-1": [_skill("geo", _annotated_schema(prop_type=prop_type))]}
+        {"weather-1": [_skill("geo", _annotated_schema(prop_type=prop_type))]}
     )
     assert project_tools(orchestrator, "u1") == ()
     assert has_unsupported_mirrors(orchestrator, "u1", "geo") is True
@@ -381,13 +383,13 @@ def test_untyped_annotated_property_withholds_the_tool():
         "type": "object",
         "properties": {"region": {"x-mcp-header": "Mcp-Param-Region"}},
     }
-    orchestrator = _Orchestrator({"reader-1": [_skill("geo", schema)]})
+    orchestrator = _Orchestrator({"weather-1": [_skill("geo", schema)]})
     assert project_tools(orchestrator, "u1") == ()
 
 
 def test_nullable_scalar_annotation_is_supported():
     schema = _annotated_schema(prop_type=["string", "null"])
-    orchestrator = _Orchestrator({"reader-1": [_skill("geo", schema)]})
+    orchestrator = _Orchestrator({"weather-1": [_skill("geo", schema)]})
     tools = project_tools(orchestrator, "u1")
     assert tools[0].mirror_params == (
         MirrorParam(argument="region", header="Mcp-Param-Region"),
@@ -402,7 +404,7 @@ def test_duplicate_header_names_withhold_the_tool():
             "b": {"type": "string", "x-mcp-header": "Mcp-Param-Region"},
         },
     }
-    orchestrator = _Orchestrator({"reader-1": [_skill("census", schema)]})
+    orchestrator = _Orchestrator({"weather-1": [_skill("census", schema)]})
     assert project_tools(orchestrator, "u1") == ()
     assert has_unsupported_mirrors(orchestrator, "u1", "census") is True
 
@@ -415,7 +417,7 @@ def test_case_variant_duplicate_header_names_withhold_the_tool():
             "b": {"type": "string", "x-mcp-header": "mcp-param-region"},
         },
     }
-    orchestrator = _Orchestrator({"reader-1": [_skill("census", schema)]})
+    orchestrator = _Orchestrator({"weather-1": [_skill("census", schema)]})
     assert project_tools(orchestrator, "u1") == ()
     assert has_unsupported_mirrors(orchestrator, "u1", "census") is True
 
@@ -428,7 +430,7 @@ def test_multiple_distinct_mirror_params_are_supported():
             "b": {"type": "string", "x-mcp-header": "Mcp-Param-Two"},
         },
     }
-    orchestrator = _Orchestrator({"reader-1": [_skill("pair", schema)]})
+    orchestrator = _Orchestrator({"weather-1": [_skill("pair", schema)]})
     tools = project_tools(orchestrator, "u1")
     assert tools[0].mirror_params == (
         MirrorParam(argument="a", header="Mcp-Param-One"),
@@ -439,28 +441,33 @@ def test_multiple_distinct_mirror_params_are_supported():
 
 def test_unannotated_tool_keeps_empty_mirror_spec():
     schema = {"type": "object", "properties": {"value": {"type": "string"}}}
-    orchestrator = _Orchestrator({"reader-1": [_skill("plain", schema)]})
+    orchestrator = _Orchestrator({"weather-1": [_skill("plain", schema)]})
     tools = project_tools(orchestrator, "u1")
     assert tools[0].mirror_params == ()
     assert tools[0].mirrors_supported is True
     assert has_unsupported_mirrors(orchestrator, "u1", "plain") is False
 
 
-def test_matching_mirror_header_dispatches(endpoint):
+@module_loop
+async def test_matching_mirror_header_dispatches(endpoint):
     client, orchestrator = endpoint
-    response = _call(client, "geo", {"region": "eu-west"}, headers={"Mcp-Param-Region": "eu-west"})
+    response = await _call(client, "geo", {"region": "eu-west"}, headers={"Mcp-Param-Region": "eu-west"})
     assert response.status_code == 200
     result = response.json()["result"]
     assert result["isError"] is False
     assert result["structuredContent"] == {"echo": {"region": "eu-west"}}
     assert orchestrator.calls[0]["arguments"] == {"region": "eu-west"}
+    claims = orchestrator.calls[0]["claims"]
+    assert claims["sub"] == node_identity.bound_mesh_owner()
+    assert claims["_caller_id"] == client.ticket.id
 
 
 @pytest.mark.parametrize("other", ["eu-west", "us-east"])
-def test_duplicate_mirror_headers_are_refused_before_dispatch(endpoint, other):
+@module_loop
+async def test_duplicate_mirror_headers_are_refused_before_dispatch(endpoint, other):
     client, orchestrator = endpoint
     body, headers = _request("tools/call", {"name": "geo", "arguments": {"region": "eu-west"}})
-    response = client.post(
+    response = await client.post(
         "/mcp", json=body,
         headers=[*headers.items(), ("Mcp-Name", "geo"),
                  ("Mcp-Param-Region", "eu-west"), ("mcp-param-region", other)],
@@ -476,20 +483,21 @@ def test_projection_rejects_mirror_counts_beyond_browser_preflight_capacity(coun
         f"arg{index}": {"type": "string", "x-mcp-header": f"Mcp-Param-{index}"}
         for index in range(count)
     }}
-    orchestrator = _Orchestrator({"reader-1": [_skill("geo", schema)]})
+    orchestrator = _Orchestrator({"weather-1": [_skill("geo", schema)]})
     assert bool(project_tools(orchestrator, "u1")) is advertised
 
 
 @pytest.mark.parametrize("length,advertised", [(128, True), (129, False)])
 def test_projection_rejects_header_names_beyond_browser_preflight_capacity(length, advertised):
     schema = _annotated_schema(annotation="Mcp-Param-" + "a" * (length - 10))
-    orchestrator = _Orchestrator({"reader-1": [_skill("geo", schema)]})
+    orchestrator = _Orchestrator({"weather-1": [_skill("geo", schema)]})
     assert bool(project_tools(orchestrator, "u1")) is advertised
 
 
-def test_missing_mirror_header_is_refused_before_dispatch(endpoint):
+@module_loop
+async def test_missing_mirror_header_is_refused_before_dispatch(endpoint):
     client, orchestrator = endpoint
-    response = _call(client, "geo", {"region": "eu-west"})
+    response = await _call(client, "geo", {"region": "eu-west"})
     assert response.status_code == 400
     assert response.json()["error"]["code"] == -32020
     assert orchestrator.calls == []
@@ -499,9 +507,10 @@ def test_missing_mirror_header_is_refused_before_dispatch(endpoint):
     )
 
 
-def test_mismatched_mirror_value_is_refused_before_dispatch(endpoint):
+@module_loop
+async def test_mismatched_mirror_value_is_refused_before_dispatch(endpoint):
     client, orchestrator = endpoint
-    response = _call(
+    response = await _call(
         client,
         "geo",
         {"region": "eu-west"},
@@ -522,9 +531,10 @@ def test_mismatched_mirror_value_is_refused_before_dispatch(endpoint):
         "=?base64?ZXUtd2VzdA==?==",
     ],
 )
-def test_malformed_mirror_values_are_refused_before_dispatch(endpoint, value):
+@module_loop
+async def test_malformed_mirror_values_are_refused_before_dispatch(endpoint, value):
     client, orchestrator = endpoint
-    response = _call(
+    response = await _call(
         client,
         "geo",
         {"region": "eu-west"},
@@ -535,10 +545,11 @@ def test_malformed_mirror_values_are_refused_before_dispatch(endpoint, value):
     assert orchestrator.calls == []
 
 
-def test_base64_sentinel_mirror_value_matches_utf8_argument(endpoint):
+@module_loop
+async def test_base64_sentinel_mirror_value_matches_utf8_argument(endpoint):
     client, orchestrator = endpoint
     encoded = base64.b64encode("café".encode()).decode()
-    response = _call(
+    response = await _call(
         client,
         "geo",
         {"region": "café"},
@@ -548,10 +559,11 @@ def test_base64_sentinel_mirror_value_matches_utf8_argument(endpoint):
     assert orchestrator.calls[0]["arguments"] == {"region": "café"}
 
 
-def test_base64_sentinel_mirror_value_matches_numeric_argument(endpoint):
+@module_loop
+async def test_base64_sentinel_mirror_value_matches_numeric_argument(endpoint):
     client, orchestrator = endpoint
     encoded = base64.b64encode(b"42").decode()
-    response = _call(
+    response = await _call(
         client,
         "metrics",
         {"count": 42},
@@ -562,9 +574,10 @@ def test_base64_sentinel_mirror_value_matches_numeric_argument(endpoint):
 
 
 @pytest.mark.parametrize("header_name", ["MCP-PARAM-REGION", "mcp-param-region", "Mcp-Param-Region"])
-def test_mirror_header_name_matching_is_case_insensitive(endpoint, header_name):
+@module_loop
+async def test_mirror_header_name_matching_is_case_insensitive(endpoint, header_name):
     client, orchestrator = endpoint
-    response = _call(
+    response = await _call(
         client,
         "geo",
         {"region": "eu-west"},
@@ -574,31 +587,35 @@ def test_mirror_header_name_matching_is_case_insensitive(endpoint, header_name):
     assert orchestrator.calls[0]["arguments"] == {"region": "eu-west"}
 
 
-def test_absent_optional_argument_requires_header_absence(endpoint):
+@module_loop
+async def test_absent_optional_argument_requires_header_absence(endpoint):
     client, orchestrator = endpoint
-    response = _call(client, "optional_geo", {})
+    response = await _call(client, "optional_geo", {})
     assert response.status_code == 200
     assert orchestrator.calls[0]["arguments"] == {}
 
 
-def test_null_argument_requires_header_absence(endpoint):
+@module_loop
+async def test_null_argument_requires_header_absence(endpoint):
     client, orchestrator = endpoint
-    response = _call(client, "optional_geo", {"region": None})
+    response = await _call(client, "optional_geo", {"region": None})
     assert response.status_code == 200
     assert orchestrator.calls[0]["arguments"] == {"region": None}
 
 
-def test_header_for_absent_argument_is_refused(endpoint):
+@module_loop
+async def test_header_for_absent_argument_is_refused(endpoint):
     client, orchestrator = endpoint
-    response = _call(client, "optional_geo", {}, headers={"Mcp-Param-Region": "eu-west"})
+    response = await _call(client, "optional_geo", {}, headers={"Mcp-Param-Region": "eu-west"})
     assert response.status_code == 400
     assert response.json()["error"]["code"] == -32020
     assert orchestrator.calls == []
 
 
-def test_header_for_null_argument_is_refused(endpoint):
+@module_loop
+async def test_header_for_null_argument_is_refused(endpoint):
     client, orchestrator = endpoint
-    response = _call(
+    response = await _call(
         client,
         "optional_geo",
         {"region": None},
@@ -609,9 +626,10 @@ def test_header_for_null_argument_is_refused(endpoint):
     assert orchestrator.calls == []
 
 
-def test_integer_boolean_and_number_mirrors(endpoint):
+@module_loop
+async def test_integer_boolean_and_number_mirrors(endpoint):
     client, orchestrator = endpoint
-    ok = _call(
+    ok = await _call(
         client,
         "metrics",
         {"count": 42, "enabled": True, "ratio": 3.5},
@@ -629,15 +647,16 @@ def test_integer_boolean_and_number_mirrors(endpoint):
         {"Mcp-Param-Count": "42", "Mcp-Param-Enabled": "1", "Mcp-Param-Ratio": "3.5"},
         {"Mcp-Param-Count": "42", "Mcp-Param-Enabled": "true", "Mcp-Param-Ratio": "3.50"},
     ):
-        refused = _call(client, "metrics", {"count": 42, "enabled": True, "ratio": 3.5}, headers=wrong)
+        refused = await _call(client, "metrics", {"count": 42, "enabled": True, "ratio": 3.5}, headers=wrong)
         assert refused.status_code == 400
         assert refused.json()["error"]["code"] == -32020
     assert len(orchestrator.calls) == 1
 
 
-def test_non_scalar_argument_on_annotated_property_is_refused(endpoint):
+@module_loop
+async def test_non_scalar_argument_on_annotated_property_is_refused(endpoint):
     client, orchestrator = endpoint
-    response = _call(
+    response = await _call(
         client,
         "geo",
         {"region": {"nested": "eu-west"}},
@@ -648,21 +667,29 @@ def test_non_scalar_argument_on_annotated_property_is_refused(endpoint):
     assert orchestrator.calls == []
 
 
-def test_tools_list_omits_unsupported_annotated_tools(endpoint):
+@module_loop
+async def test_tools_list_omits_unsupported_annotated_tools(endpoint):
     client, _ = endpoint
     body, headers = _request("tools/list")
-    response = client.post("/mcp", json=body, headers=headers)
+    response = await client.post("/mcp", json=body, headers=headers)
     names = [tool["name"] for tool in response.json()["result"]["tools"]]
     assert names == ["geo", "metrics", "optional_geo"]
 
 
-def test_unsupported_annotation_call_returns_explicit_disposition(endpoint):
+def _challenge_error(response):
+    return response.headers["www-authenticate"].rpartition('error="')[2].rstrip('"')
+
+
+@module_loop
+async def test_unsupported_annotation_call_is_refused_at_the_ticket_door(endpoint):
     client, orchestrator = endpoint
-    response = _call(client, "census", {"a": "x"}, headers={"Mcp-Param-Region": "x"})
-    assert response.status_code == 200
-    result = response.json()["result"]
-    assert result["isError"] is True
-    assert result["content"] == [{"type": "text", "text": UNSUPPORTED_DISPOSITION}]
+    covering = SignedClient(client.door, client.door.mint(["census", "surveyor"]))
+    for name, arguments, headers in (
+        ("census", {"a": "x"}, {"Mcp-Param-Region": "x"}),
+        ("surveyor", {"outer": {"inner": "x"}}, {}),
+    ):
+        response = await _call(covering, name, arguments, headers=headers)
+        assert (response.status_code, _challenge_error(response)) == (403, "caller.tool_unavailable")
     assert orchestrator.calls == []
     assert (
         orchestrator.work_admission.inspect_admission_class(AdmissionClass.MCP).active_count
@@ -670,29 +697,18 @@ def test_unsupported_annotation_call_returns_explicit_disposition(endpoint):
     )
 
 
-def test_nested_annotation_call_returns_explicit_disposition(endpoint):
+@module_loop
+async def test_unknown_tool_is_not_covered_by_the_ticket(endpoint):
     client, orchestrator = endpoint
-    response = _call(client, "surveyor", {"outer": {"inner": "x"}})
-    assert response.status_code == 200
-    result = response.json()["result"]
-    assert result["isError"] is True
-    assert result["content"] == [{"type": "text", "text": UNSUPPORTED_DISPOSITION}]
+    response = await _call(client, "nonexistent", {})
+    assert (response.status_code, _challenge_error(response)) == (403, "caller.tool_not_covered")
     assert orchestrator.calls == []
 
 
-def test_unknown_tool_keeps_generic_unavailable_disposition(endpoint):
-    client, orchestrator = endpoint
-    response = _call(client, "nonexistent", {})
-    assert response.status_code == 200
-    result = response.json()["result"]
-    assert result["isError"] is True
-    assert result["content"] == [{"type": "text", "text": "Tool is unavailable or no longer authorized"}]
-    assert orchestrator.calls == []
-
-
-def test_preflight_reflects_mirror_header_namespace(endpoint):
+@module_loop
+async def test_preflight_reflects_mirror_header_namespace(endpoint):
     client, _ = endpoint
-    preflight = client.options(
+    preflight = await client.options(
         "/mcp",
         headers={
             "Origin": BASE,
@@ -709,9 +725,10 @@ def test_preflight_reflects_mirror_header_namespace(endpoint):
         assert fixed in allowed
 
 
-def test_preflight_without_requested_headers_lists_fixed_set(endpoint):
+@module_loop
+async def test_preflight_without_requested_headers_lists_fixed_set(endpoint):
     client, _ = endpoint
-    preflight = client.options(
+    preflight = await client.options(
         "/mcp",
         headers={
             "Origin": BASE,
@@ -727,9 +744,10 @@ def test_preflight_without_requested_headers_lists_fixed_set(endpoint):
     "requested",
     ["mcp-param evil", "mcp-paramx", "mcp-param-", "authorization", "x" * 129],
 )
-def test_preflight_ignores_non_mirror_lookalikes(endpoint, requested):
+@module_loop
+async def test_preflight_ignores_non_mirror_lookalikes(endpoint, requested):
     client, _ = endpoint
-    preflight = client.options(
+    preflight = await client.options(
         "/mcp",
         headers={
             "Origin": BASE,
@@ -742,9 +760,10 @@ def test_preflight_ignores_non_mirror_lookalikes(endpoint, requested):
     )
 
 
-def test_browser_preflight_then_mirrored_call_from_same_origin(endpoint):
+@module_loop
+async def test_browser_preflight_then_mirrored_call_from_same_origin(endpoint):
     client, orchestrator = endpoint
-    preflight = client.options(
+    preflight = await client.options(
         "/mcp",
         headers={
             "Origin": BASE,
@@ -762,7 +781,7 @@ def test_browser_preflight_then_mirrored_call_from_same_origin(endpoint):
             "Origin": BASE,
         },
     )
-    response = client.post("/mcp", json=body, headers=headers)
+    response = await client.post("/mcp", json=body, headers=headers)
     assert response.status_code == 200
     assert response.json()["result"]["isError"] is False
     assert orchestrator.calls[0]["arguments"] == {"region": "eu-west"}
