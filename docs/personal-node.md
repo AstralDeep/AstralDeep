@@ -6,25 +6,24 @@ A personal node is one AstralDeep orchestrator that serves one owner. It runs on
 
 Set `ASTRAL_NODE_PROFILE=personal` and the node starts with a different posture.
 
-- Keycloak only proves who you are. The node needs no Keycloak client secret and makes no token exchange per tool call.
+- The node needs no sign-in and no Keycloak. Your owner is the mesh you pair it with.
 - The node has its own Ed25519 signing key. It creates the key on first start in the node data directory. The file is mode 0600 and the key is never logged.
-- The node accepts tokens only from the issuers you list, and only for one owner.
 - Tool delegation tokens are signed by the node. They last at most 300 seconds, name the agent in the `act` claim, and carry `aud` set to the agent audience and to this node's id. Another node refuses them.
 - The node publishes its public keys at `/.well-known/astral-node/jwks.json`.
 
-Everything else still fails closed. A missing secret, a missing issuer or an unwritable key directory stops the start with exit code 78. Mock auth is refused outside development.
+Everything else still fails closed. A missing secret or an unwritable key directory stops the start with exit code 78. Mock auth no longer exists.
 
 ## Install
 
 Run the installer once. It is safe to run again.
 
 ```
-scripts/node/install-personal-node.sh \
-  --issuer https://keycloak.example/realms/astral \
-  --client-id astral-app
+scripts/node/install-personal-node.sh
 ```
 
-It creates `~/.astral-node/data` and `~/.astral-node/node.env`, both private to you. It generates the node key and the encryption secrets. It keeps any value that already exists and it never prints a secret.
+The old `--issuer`, `--client-id` and `--owner-subject` options were removed. The installer refuses them and says what replaced them.
+
+It creates `~/.astral-node/data` and `~/.astral-node/node.env`, both private to you. It generates the node key and the encryption secrets. It keeps any value that already exists and it never prints a secret. An env file from the sign-in era keeps its `ASTRAL_NODE_OWNER` line untouched. The node reports that owner as a legacy owner and keeps your data.
 
 The node stores its data in a SQLite file named `plane.sqlite3` in the node data directory. The file is mode 0600 and needs no database server. Pass `--database-url postgresql://...` to use PostgreSQL instead. A `sqlite:///absolute/path.db` URL picks another SQLite file. The shared multi-user deployment stays on PostgreSQL and refuses a SQLite URL.
 
@@ -39,35 +38,29 @@ Start the orchestrator with that env file. For the container image use `--env-fi
 | `ASTRAL_NODE_PROFILE` | `personal` selects this profile |
 | `ASTRAL_NODE_DATA_DIR` | Where the node key, owner binding and SQLite database live |
 | `DATABASE_URL` | Optional. `sqlite:///absolute/path.db` or a PostgreSQL URL. Unset means SQLite in the node data directory |
-| `KEYCLOAK_AUTHORITY` | The first accepted issuer |
-| `ASTRAL_ACCEPTED_ISSUERS` | More accepted issuers, comma separated |
-| `KEYCLOAK_CLIENT_ID` and `KEYCLOAK_ALLOWED_AZP` | The client ids whose tokens are accepted. A token with no `azp` is refused |
 | `ORCHESTRATOR_HOST` | The address the server binds. A personal node defaults to `127.0.0.1`. Every other profile defaults to `0.0.0.0`. Use an IP address or `localhost` |
-| `ASTRAL_NODE_OWNER` | Optional. The owner id to bind at install time |
-| `JWKS_STALE_GRACE_SECONDS` | How long the last good issuer keys serve when the issuer is unreachable. Default 86400 |
+| `ASTRAL_NODE_OWNER` | Optional. The owner's mesh id. Leave it unset and the node binds the mesh it joins |
 
 ## Who owns the node
 
-An owner id is `oidc.<first 16 hex of sha256 of the issuer>.<subject>`. The same subject from a different issuer is a different owner.
+The node binds to the mesh it joins. Its owner id is derived from the mesh id. The binding is a file named `owner` in the data directory. After that the node serves only that mesh.
 
-The node binds to one owner. The installer can bind it with `--owner-subject`. Otherwise the first owner whose token the node verifies binds it. The binding is a file named `owner` in the data directory. After that the node refuses every token for any other owner.
+A node from the sign-in era may hold an owner id that starts with `oidc.`. The node reports it as a legacy owner and refuses to pair until you resolve it. Its data stays where it is.
 
 Existing data keyed on a bare subject is not migrated. A node starts clean.
 
 ## Pair a device
 
-1. The new device makes its device key and shows it to the app that is signed in.
-2. The signed-in app calls `POST /api/node/pairing` with `label`, `device_key`, optional `scopes` and optional `ttl_seconds`. The node returns a short code such as `K7QM-4T2X`, a payload for a QR code, and the invitation.
-3. The new device scans the QR code. Or it sends the code to `POST /api/node/pairing/resolve` and gets the same payload. A code works once and expires with the offer.
-4. The device checks the node id and node key in the payload, signs the challenge with its device key, and finishes with `POST /api/mesh/enrollment/redeem`.
+Pairing needs no sign-in.
 
-Pairing offers are held in node memory. A restart drops the short codes. The invitation payload in the QR code stays valid until it expires.
+1. Start the node. While it is not enrolled it writes a secret to `pairing-secret` in the data directory. The file is mode 0600.
+2. On the same machine, call `POST /api/node/mesh/offer` on `127.0.0.1` with the secret in the `Astral-Pairing-Secret` header. The call is refused from any other address and when a `Forwarded` or `X-Forwarded-For` header is present.
+3. The answer holds a short code, a payload for a QR code and an expiry. Scan it with your Mac or iPhone app and approve.
+4. Once the node is enrolled, the same call returns the enrolled state and the secret is deleted.
 
-`GET /api/node/descriptor` is public. It returns the node id, the node public key, the accepted issuers, a hash of the owner, the capabilities and the transport addresses. The address list is empty until the transport is configured.
+The node replaces the secret after each offer it serves. It serves at most 5 offers a minute.
 
-## When Keycloak is unreachable
-
-A signed-in session keeps working. The node serves the last good issuer keys for the grace period and it signs delegation locally. A new sign-in needs the issuer.
+`GET /api/node/descriptor` is public. It returns the node id, the node public key, a hash of the owner, the capabilities and the transport addresses. The address list is empty until the transport is configured.
 
 ## Emergency stop
 
@@ -79,7 +72,7 @@ A personal node joins its owner's mesh as a peer when the pinned kernel binding 
 
 The node's mesh keys live in `<node data>/mesh` at mode 0600 and are created once. The node signs in software, reports that it is not hardware backed, and never signs an owner consent.
 
-To join, call `POST /api/node/pairing` as the owner. The response carries a `mesh` block with a code, a payload, the node's endpoint address and its mailbox address. Approve the offer on the Mac or iPhone. After that, `GET /api/node/descriptor` reports `mesh.mesh_id`, `mesh.member_id` and the mailbox address.
+To join, request an offer as described under Pair a device. Approve the offer on the Mac or iPhone. After that, `GET /api/node/descriptor` reports `mesh.mesh_id`, `mesh.member_id` and the mailbox address.
 
 The node supervises one mailbox for its own mesh and holds at most one mesh. The node's own kernel uses that mailbox, and devices of the mesh set its address and exchange events through it when they are never online together.
 
