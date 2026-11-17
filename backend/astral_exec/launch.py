@@ -29,6 +29,7 @@ from .constants import (
     LINUX_BASE,
     MESSAGES,
     OUTPUT_LIMIT_BYTES,
+    PROXY_PORT,
     REFUSED_EXIT_STATUS,
     SANDBOX_EXEC,
     NAMESPACE_DENIED,
@@ -38,6 +39,7 @@ from .errors import ContextError, ExecRefused, PolicyError, Refusal, refuse
 from .facts import probe
 from .fold import contains
 from .policy import Policy
+from .proxy import Proxy
 from .select import Backend, select
 from .watchdog import LinuxWatch, Watch, user_process_count
 
@@ -152,14 +154,27 @@ def _checked_stdin(stdin: Any) -> bytes | None:
     return None if stdin is None else bytes(stdin)
 
 
-def _seatbelt_call(policy: Policy, argv: Any, env: Any) -> _Call:
+def _proxied_env(env: Any, document: dict[str, Any], port: int | None) -> dict[str, str]:
+    child_env = _checked_env(env)
+    if document["hosts"] and port is not None:
+        url = f"http://127.0.0.1:{port}"
+        for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
+            child_env[name] = url
+            child_env[name.lower()] = url
+        child_env["NO_PROXY"] = child_env["no_proxy"] = ""
+    return child_env
+
+
+def _seatbelt_call(
+    policy: Policy, argv: Any, env: Any, proxy_port: int | None
+) -> _Call:
     document = policy.document
-    if document["hosts"]:
+    if document["hosts"] and proxy_port is None:
         raise ContextError("a policy with hosts needs an egress proxy")
     marker = secrets.token_hex(16)
-    child_env = _checked_env(env)
+    child_env = _proxied_env(env, document, proxy_port)
     child_env[LAUNCH_MARKER] = marker
-    profile = seatbelt.render(policy, {"proxy_port": None})
+    profile = seatbelt.render(policy, {"proxy_port": proxy_port})
     return _Call(document, _checked_argv(argv), child_env, marker, profile)
 
 
@@ -180,7 +195,7 @@ def _linux_call(
         document,
         built,
         _checked_argv(argv),
-        _checked_env(env),
+        _proxied_env(env, document, PROXY_PORT),
         secrets.token_hex(16),
         chosen.bwrap,
     )
@@ -701,31 +716,49 @@ def _launch(
     facts: Mapping[str, Any] | None,
     capture: bool,
     egress_socket: str | None = None,
+    proxy_options: Mapping[str, Any] | None = None,
 ) -> Outcome:
     digest = policy.digest() if isinstance(policy, Policy) else "none"
     log = _log(digest)
+    proxy = None
     try:
-        if not isinstance(policy, Policy) or policy.loaded_for is None:
-            raise ContextError("run needs a policy loaded with Policy.load")
-        chosen = select(
-            policy, probe() if facts is None else facts, policy.loaded_for[1]
-        )
-        if isinstance(chosen, Refusal):
-            log.info("exec refused code=%s", chosen.code)
-            return Outcome(chosen.code, None, refusal=chosen)
-        data = _checked_stdin(stdin)
-        if chosen == Backend("seatbelt"):
-            call = _seatbelt_call(policy, argv, env)
-        elif chosen.name == "linux":
-            linux_call = _linux_call(policy, argv, env, chosen, egress_socket)
-        else:
-            raise ContextError(f"this launcher cannot start the {chosen.name} backend")
-    except Exception as error:
-        log.warning("exec launch failed before start: %s", type(error).__name__)
-        return Outcome("exec.launch_failed", None)
-    if chosen.name == "linux":
-        return _launch_linux(linux_call, capture, data, log)
-    return _launch_seatbelt(policy, call, capture, data, log)
+        try:
+            if not isinstance(policy, Policy) or policy.loaded_for is None:
+                raise ContextError("run needs a policy loaded with Policy.load")
+            chosen = select(
+                policy, probe() if facts is None else facts, policy.loaded_for[1]
+            )
+            if isinstance(chosen, Refusal):
+                log.info("exec refused code=%s", chosen.code)
+                return Outcome(chosen.code, None, refusal=chosen)
+            data = _checked_stdin(stdin)
+            hosts = policy.document["hosts"]
+            if chosen == Backend("seatbelt"):
+                if hosts:
+                    proxy = Proxy(hosts, "tcp", **(proxy_options or {}))
+                    proxy.start()
+                call = _seatbelt_call(
+                    policy, argv, env, proxy.address if proxy is not None else None
+                )
+            elif chosen.name == "linux":
+                if hosts and egress_socket is None:
+                    proxy = Proxy(hosts, "unix", **(proxy_options or {}))
+                    proxy.start()
+                    egress_socket = str(proxy.address)
+                linux_call = _linux_call(policy, argv, env, chosen, egress_socket)
+            else:
+                raise ContextError(
+                    f"this launcher cannot start the {chosen.name} backend"
+                )
+        except Exception as error:
+            log.warning("exec launch failed before start: %s", type(error).__name__)
+            return Outcome("exec.launch_failed", None)
+        if chosen.name == "linux":
+            return _launch_linux(linux_call, capture, data, log)
+        return _launch_seatbelt(policy, call, capture, data, log)
+    finally:
+        if proxy is not None:
+            proxy.close()
 
 
 def _run(
@@ -737,8 +770,11 @@ def _run(
     facts: Mapping[str, Any] | None = None,
     capture: bool = True,
     egress_socket: str | None = None,
+    proxy_options: Mapping[str, Any] | None = None,
 ) -> Outcome:
-    return _launch(policy, argv, env, stdin, facts, capture, egress_socket)
+    return _launch(
+        policy, argv, env, stdin, facts, capture, egress_socket, proxy_options
+    )
 
 
 def run(

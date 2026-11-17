@@ -130,6 +130,95 @@ def test_a_workspace_holding_the_data_directory_is_refused(spawns):
     assert spawns == []
 
 
+HOSTED = [{"host": "api.example.com", "port": 443}]
+
+
+def test_a_proxy_that_cannot_start_is_a_launch_failure(spawns, monkeypatch):
+    def refuse(self):
+        raise OSError("no port")
+
+    monkeypatch.setattr(launch.Proxy, "start", refuse)
+    outcome = launch._run(
+        darwin_policy(hosts=HOSTED), ["/bin/echo"], {}, None, facts=darwin_facts()
+    )
+    assert outcome.code == "exec.launch_failed" and spawns == []
+
+
+def test_a_seatbelt_call_with_hosts_gets_the_proxy_port_and_it_is_closed_after(
+    monkeypatch,
+):
+    seen = {}
+
+    def fake(policy, call, capture, data, log):
+        seen["profile"] = call.profile
+        seen["env"] = call.env
+        return Outcome(None, 0)
+
+    closed = []
+    real_close = launch.Proxy.close
+    monkeypatch.setattr(launch, "_launch_seatbelt", fake)
+    monkeypatch.setattr(
+        launch.Proxy, "close", lambda self: (closed.append(1), real_close(self))
+    )
+    outcome = launch._run(
+        darwin_policy(hosts=HOSTED), ["/bin/echo"], {"KEEP": "1"}, None, facts=darwin_facts()
+    )
+    assert outcome.code is None
+    port = int(seen["env"]["HTTPS_PROXY"].rsplit(":", 1)[1])
+    assert f'(allow network-outbound (remote ip "localhost:{port}"))' in seen["profile"]
+    assert seen["env"]["KEEP"] == "1" and seen["env"]["no_proxy"] == ""
+    assert seen["env"]["http_proxy"] == seen["env"]["ALL_PROXY"] == f"http://127.0.0.1:{port}"
+    assert closed == [1]
+
+
+@pytest.mark.parametrize("platform", ["darwin", "linux"])
+def test_a_stop_signal_while_building_the_call_still_closes_the_proxy(
+    monkeypatch, platform
+):
+    closed = []
+    real_close = launch.Proxy.close
+    monkeypatch.setattr(
+        launch.Proxy, "close", lambda self: (closed.append(1), real_close(self))
+    )
+
+    def stop(*args, **kwargs):
+        raise launch._Stopped(signal.SIGTERM)
+
+    monkeypatch.setattr(launch, f"_{'seatbelt' if platform == 'darwin' else 'linux'}_call", stop)
+    policy = (
+        darwin_policy(hosts=HOSTED)
+        if platform == "darwin"
+        else loaded(minimal_policy(hosts=HOSTED))
+    )
+    facts = darwin_facts() if platform == "darwin" else good_facts()
+    with pytest.raises(launch._Stopped):
+        launch._run(policy, ["/bin/echo"], {}, None, facts=facts)
+    assert closed == [1]
+
+
+def test_a_linux_call_with_hosts_binds_the_proxy_socket_and_closes_it_after(
+    monkeypatch,
+):
+    seen = {}
+
+    def fake(call, capture, data, log):
+        seen["env"] = call.env
+        bwrap = call.plan["bwrap"]
+        seen["path"] = bwrap[bwrap.index(constants.EGRESS_SOCKET) - 1]
+        seen["exists"] = os.path.exists(seen["path"])
+        return Outcome(None, 0)
+
+    monkeypatch.setattr(launch, "_launch_linux", fake)
+    monkeypatch.setattr(launch.sys, "executable", "/usr/bin/python3")
+    outcome = launch._run(
+        loaded(minimal_policy(hosts=HOSTED)), ["/bin/echo"], {}, None, facts=good_facts()
+    )
+    assert outcome.code is None
+    assert seen["env"]["HTTPS_PROXY"] == "http://127.0.0.1:3128"
+    assert seen["exists"] is True
+    assert not os.path.exists(seen["path"])
+
+
 @pytest.mark.parametrize(
     ("policy", "facts"),
     [
@@ -138,7 +227,6 @@ def test_a_workspace_holding_the_data_directory_is_refused(spawns):
         (darwin_policy(), good_facts()),
         (darwin_policy(), {"platform": "darwin"}),
         (loaded(minimal_policy()), good_facts()),
-        (darwin_policy(hosts=[{"host": "api.example.com", "port": 443}]), None),
     ],
     ids=[
         "parse_only",
@@ -146,7 +234,6 @@ def test_a_workspace_holding_the_data_directory_is_refused(spawns):
         "other_platform_facts",
         "bad_facts",
         "linux_backend",
-        "hosts_without_proxy",
     ],
 )
 def test_anything_but_the_seatbelt_backend_is_a_launch_failure(spawns, policy, facts):
