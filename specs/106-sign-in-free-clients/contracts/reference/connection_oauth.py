@@ -1,4 +1,4 @@
-"""Reference for the pure decisions of the MCP over HTTP adapter: the challenge parser, metadata URLs and checks, server selection, registration, scopes, the RFC 9207 table, step-up and the bearer target.
+"""Reference for the pure decisions of the MCP over HTTP adapter: the challenge parser, metadata URLs and checks, server selection, registration, the egress hosts a writer lists, scopes, the RFC 9207 table, step-up and the bearer target.
 It takes already fetched results as data, reuses the URL rules of connection.py, and vectors/connection-oauth-v1.json pins it for every other implementation.
 """
 
@@ -16,6 +16,13 @@ OIDC_WELL_KNOWN = "/.well-known/openid-configuration"
 APPLICATION_TYPES = ("native", "web")
 CLIENT_NAME = "Astral"
 REGISTERED = (200, 201)
+REGISTERED_METHOD = "none"
+AS_ENDPOINTS = (
+    "authorization_endpoint",
+    "token_endpoint",
+    "registration_endpoint",
+    "device_authorization_endpoint",
+)
 STEP_UPS_BETWEEN_SUCCESSES = 1
 CODES = (
     "connection.resource_metadata_offsite",
@@ -303,6 +310,8 @@ def dynamic_registration(case_input: dict[str, Any]) -> dict[str, Any]:
             and isinstance(body, dict)
             and isinstance(body.get("client_id"), str)
             and body["client_id"]
+            and body.get("token_endpoint_auth_method", REGISTERED_METHOD)
+            == REGISTERED_METHOD
         ):
             return {
                 "ok": {
@@ -314,6 +323,27 @@ def dynamic_registration(case_input: dict[str, Any]) -> dict[str, Any]:
         if not (index == 0 and answer is not None and answer.get("status") == 400):
             break
     return {"error": "connection.registration_refused", "requests": requests}
+
+
+def egress_entries(case_input: dict[str, Any]) -> dict[str, Any]:
+    local = case_input["local"]
+    endpoint = connection.split_url(case_input["endpoint"], "endpoint")
+    if endpoint is None:
+        raise _fail("connection.malformed", "endpoint")
+    found = {connection.entry_for(endpoint)}
+    issuer = case_input["issuer"]
+    urls = [issuer] if issuer is not None else []
+    urls += [
+        case_input["metadata"][field]
+        for field in AS_ENDPOINTS
+        if isinstance(case_input["metadata"].get(field), str)
+    ]
+    for url in urls:
+        parsed = connection.secure_url(url, "fetch", local)
+        if parsed is None:
+            raise _fail("connection.egress_refused", url)
+        found.add(connection.entry_for(parsed))
+    return {"entries": sorted(found, key=lambda e: connection.parse_entry(e, True))}
 
 
 def choose_scopes(challenge: Any, scopes_supported: Any) -> list[str]:
@@ -401,6 +431,7 @@ def run(kind: str, case_input: dict[str, Any]) -> dict[str, Any]:
                 case_input["client_id"], case_input["metadata"]
             )
         },
+        "oauth_egress_entries": lambda: egress_entries(case_input),
         "oauth_scopes": lambda: {
             "scopes": choose_scopes(
                 case_input["challenge"], case_input["scopes_supported"]
