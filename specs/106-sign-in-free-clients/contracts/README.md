@@ -13,6 +13,8 @@ These documents fix the formats that spec 106 revises or adds. Each one has a Py
 | [phi-detector.md](phi-detector.md) | `astral.phi-detector/v1` | The PHI detector floor: input limits, normalization and the skeleton fold, the pattern dialect, the rule table and its tiers, failure reasons, parity with today's Python rules, and the on-device filter request | `vectors/phi-detector-v1.json` | `reference/phi_detector.py`, `reference/phi_rules.json`, `reference/phi_fold.json`, `reference/html_entities.json`, `reference/phi_filter.json`, `reference/generate_phi_vectors.py`, `reference/generate_phi_fold.py`, `reference/generate_html_entities.py` |
 | [phi-destinations.md](phi-destinations.md) | `astral.phi-destination/v1` | The PHI group on the roster's PHI entries, approver keys and approvals, upgrade markers, inclusion, exclusion and the keeper, canonical destinations, the view and its codes, and the chat PHI key | `vectors/phi-destination-v1.json` | `reference/phi_destinations.py`, `reference/generate_phi_destination_vectors.py` |
 | [labels-v2.md](labels-v2.md) | `astral.labels/v2` | The 105 label contract with the outside-service flag and the refusal of PHI to an unapproved outside service | `vectors/labels-v2.json` | `reference/labels_v2.py`, `reference/generate_phi_destination_vectors.py` |
+| [contacts.md](contacts.md) | `astral.contacts/v1` | Contacts and grants carried on `settings.set`: the key grammar, the invitation, the roster digest and comparison code, the contact record and its fold with roster marks, how a verified contact follows the other mesh's roster and which rejected entries downgrade it, the grant record and its fold, revocation and rotation, the consent digests and every code | `vectors/contacts-v1.json` | `reference/contacts.py`, `reference/generate_contact_vectors.py` |
+| [share.md](share.md) | `astral.share/v1` | The share session on ALPN `astral/share/1`: the session kinds and messages, admission, the served types and body fields over a chat including surface-bound tool results, the wraps of content keys, the share envelope and its header key, the receiver steps, the chunk policy, PHI gates, liveness and every code | `vectors/share-v1.json` | `reference/share.py`, `reference/generate_share_vectors.py` |
 
 A change to a format raises its version. A document, its vectors and its reference module change together, and the reference tests pass before the change merges.
 
@@ -20,7 +22,7 @@ A change to a format raises its version. A document, its vectors and its referen
 
 The contracts in [spec 105](../../105-decentralized-personal-mesh/contracts/README.md) are history. Where a contract here covers the same ground, this folder wins. The 105 reference helpers for canonical JSON, hashes, signatures and test keys are still imported by the references here, and every other 105 contract applies until a document here replaces it.
 
-Existing roster v2 stores keep working unchanged. Nothing in this folder adds an event type or a body field that the deployed kernel cannot read. The connection contract adds a `consent` field to some `settings.set` bodies, which deployed kernels accept and fold as an unread setting. The PHI destination contract changes no roster format. It writes `phi_authority`, `phi_approval`, `epoch` and `wrap` entries that deployed kernels already fold the same way, and one `settings.set` key, `phi.capable/<device id>`, that they fold as an unread setting.
+Existing roster v2 stores keep working unchanged. Nothing in this folder adds an event type or a body field that the deployed kernel cannot read. The connection contract adds a `consent` field to some `settings.set` bodies, which deployed kernels accept and fold as an unread setting. The PHI destination contract changes no roster format. It writes `phi_authority`, `phi_approval`, `epoch` and `wrap` entries that deployed kernels already fold the same way, and one `settings.set` key, `phi.capable/<device id>`, that they fold as an unread setting. The contacts contract adds four families of `settings.set` keys, `contact/`, `contact.roster/`, `share/` and `share.revoked/`, and the consent kinds `contact` and `share`, which deployed kernels fold as unread settings and never read. The share contract adds no event type or body field. It adds the ALPN `astral/share/1`, which a deployed kernel refuses with `net.unknown_alpn`, and member sync is unchanged.
 
 ## Running the checks
 
@@ -33,6 +35,8 @@ python specs/106-sign-in-free-clients/contracts/reference/generate_exec_vectors.
 python specs/106-sign-in-free-clients/contracts/reference/generate_connection_vectors.py --check
 python specs/106-sign-in-free-clients/contracts/reference/generate_phi_vectors.py --check
 python specs/106-sign-in-free-clients/contracts/reference/generate_phi_destination_vectors.py --check
+python specs/106-sign-in-free-clients/contracts/reference/generate_contact_vectors.py --check
+python specs/106-sign-in-free-clients/contracts/reference/generate_share_vectors.py --check
 python -m pytest specs/106-sign-in-free-clients/contracts/reference/tests -q
 ruff check specs/106-sign-in-free-clients/contracts
 python3.14 specs/106-sign-in-free-clients/contracts/reference/generate_label_classes.py --check

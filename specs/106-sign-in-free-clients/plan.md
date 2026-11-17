@@ -318,8 +318,8 @@ a contact event treated as an owner instruction. Failure: a contact offline at r
 - A contact's event is labeled untrusted.
 
 **Live.** Two owner-controlled meshes on separate devices, comparing the code in person.
-**Open item.** The spec does not say how this coexists with `backend/orchestrator/artifact_share.py`
-and `FF_ARTIFACT_SHARING`. T6.11 decides.
+**Snapshot links.** How this coexists with `backend/orchestrator/artifact_share.py` and
+`FF_ARTIFACT_SHARING` is decided in task 13 of the phase 6 plan (T6.11).
 
 ## Phase 7: Keycloak removal
 
