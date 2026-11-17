@@ -31,3 +31,12 @@ def test_every_locked_requirement_carries_a_hash():
 
 def test_the_pin_file_round_trips_as_json():
     assert json.loads(ap.PINS.read_text())["format"] == "astral.nodepack-pins/v1"
+
+
+def test_the_container_entry_point_is_left_out_and_nothing_a_user_runs_names_docker():
+    pins = ap.load_pins()
+    left_out = {entry["path"] for entry in pins["backend_exclusions"]}
+    assert "start-docker.sh" in left_out
+    for path in sorted((ap.HERE / "launcher").glob("*.py")) + sorted((ap.REPO / "scripts" / "node").glob("*")):
+        text = path.read_text(errors="replace").lower()
+        assert "start-docker" not in text and "docker" not in text, path.name

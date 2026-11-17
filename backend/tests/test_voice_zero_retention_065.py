@@ -294,6 +294,7 @@ def test_frame_trace_is_metadata_only_even_for_content_bearing_render(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     sink = _NonClosingStringIO()
+    monkeypatch.setenv("ASTRAL_FRAME_TRACE_DIR", "/trace")
     monkeypatch.setattr("orchestrator.orchestrator.os.path.exists", lambda _path: True)
     monkeypatch.setattr("builtins.open", lambda *_args, **_kwargs: sink)
     frame = {
