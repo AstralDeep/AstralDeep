@@ -267,7 +267,9 @@ def build(deployment: Deployment | None = None) -> Starlette:
                                                os.environ.get("VESSEL_PACKAGES_ROOT"))
     master = os.environ["VESSEL_SANDBOX_TOKEN"]
     template = os.environ.get("VESSEL_SANDBOX_URL_TEMPLATE", f"http://sandbox-{{id}}:{SANDBOX_PORT}")
-    runners = {agent_id: RemoteRunner(template.format(id=agent_id), sandbox_token(master, agent_id),
+    ports = json.loads(os.environ.get("VESSEL_SANDBOX_PORTS") or "{}")
+    runners = {agent_id: RemoteRunner(template.format(id=agent_id, port=ports.get(agent_id, SANDBOX_PORT)),
+                                      sandbox_token(master, agent_id),
                                       agent.package.manifest.sandbox.tool_timeout_seconds,
                                       list(agent.package.manifest.output.files))
                for agent_id, agent in deployment.agents.items()}
