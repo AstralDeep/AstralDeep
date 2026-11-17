@@ -76,7 +76,8 @@ class A2APrincipal(User):
     @property
     def user_name(self) -> str:
         # Namespaced so it can't collide with the SDK's shared '' owner
-        return f"sub:{self.sub}"
+        caller = self.claims.get(caller_tickets.CALLER_ID)
+        return f"caller:{caller}" if caller else f"sub:{self.sub}"
 
 
 def a2a_task_owner(context: ServerCallContext) -> str:

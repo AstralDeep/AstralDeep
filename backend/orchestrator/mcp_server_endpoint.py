@@ -915,14 +915,17 @@ def create_mcp_router(orchestrator: Any, *, public_base_url: str) -> APIRouter:
                             params["name"],
                             claims,
                         )
-                        if projected is None and caller_tickets.covered(claims) is not None:
-                            result_code = caller_tickets.TOOL_UNAVAILABLE.replace(".", "_")
+                        refused_code = (
+                            await caller_tickets.dispatch_refusal(orchestrator, claims, projected)
+                            if caller_tickets.covered(claims) is not None else None
+                        )
+                        if refused_code is not None:
+                            result_code = refused_code.replace(".", "_")
                             return _with_origin(
                                 _json_error(
                                     request_id, MCP_INVALID_REQUEST, "MCP authorization failed", 403,
                                     headers={"WWW-Authenticate": challenge_header(
-                                        base_url, error=caller_tickets.TOOL_UNAVAILABLE,
-                                        required_scopes=required_scopes,
+                                        base_url, error=refused_code, required_scopes=required_scopes,
                                     )},
                                 ),
                                 origin,

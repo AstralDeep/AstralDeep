@@ -7,7 +7,6 @@ import asyncio
 import hashlib
 from typing import Any, Dict, Optional, Tuple
 
-import astral_kernel as ak
 from starlette.requests import Request
 
 from orchestrator import node_mesh
@@ -17,6 +16,7 @@ BEARER_REFUSED = "node.bearer_refused"
 MESH_UNAVAILABLE = "node.mesh_unavailable"
 OWNER_UNBOUND = "node.owner_unbound"
 TOOL_UNAVAILABLE = "caller.tool_unavailable"
+TOOL_CHANGED = "caller.tool_changed"
 TOOL_NOT_COVERED = "caller.tool_not_covered"
 MESH_MISMATCH = "caller.mesh_mismatch"
 A2A_MESSAGE = "a2a.message"
@@ -33,7 +33,7 @@ UNAUTHORIZED = frozenset({
 FORBIDDEN = frozenset({
     "caller.mesh_mismatch", "caller.wrong_node", "caller.device_removed", "caller.wrong_minter",
     "caller.stopped", "caller.expired", "caller.not_yet_valid", "caller.revoked", "caller.proof_mismatch",
-    "caller.proof_stale", "caller.replayed", "caller.tool_not_covered", "caller.tool_changed", TOOL_UNAVAILABLE,
+    "caller.proof_stale", "caller.replayed", "caller.tool_not_covered", TOOL_CHANGED, TOOL_UNAVAILABLE,
 })
 UNAVAILABLE = frozenset({"caller.replay_full", "mesh.not_enrolled", node_mesh.DEVELOPMENT_MESH})
 
@@ -103,16 +103,15 @@ async def verify(request: Request, body: bytes, *, tool: Optional[str], audience
     if mesh is None or not mesh.started:
         raise refusal(MESH_UNAVAILABLE)
     owner = await _bound(mesh)
-    call = ak.CallerRequest(
-        authorization=authorization,
-        proof=request.headers.get(PROOF_HEADER),
-        method=request.method,
-        target=request_target(request),
-        body_sha256="sha256:" + hashlib.sha256(body).hexdigest(),
-        tool=tool,
-    )
     try:
-        verified = await mesh.verify_caller(call)
+        verified = await mesh.verify_caller(
+            authorization=authorization,
+            proof=request.headers.get(PROOF_HEADER),
+            method=request.method,
+            target=request_target(request),
+            body_sha256="sha256:" + hashlib.sha256(body).hexdigest(),
+            tool=tool,
+        )
     except node_mesh.MeshUnavailable:
         raise refusal(MESH_UNAVAILABLE) from None
     except node_mesh.NodeMeshError as exc:
@@ -140,3 +139,17 @@ async def read_bounded(request: Request, limit: int) -> bytes:
     body = b"".join(chunks)
     request._body = body  # why: the A2A SDK reads this same request next
     return body
+
+
+async def dispatch_refusal(orchestrator: Any, claims: Dict[str, Any], projected: Any) -> Optional[str]:
+    from orchestrator.node_mesh_calls import OrchestratorCalls
+
+    mesh = node_mesh.current()
+    if projected is None or mesh is None:
+        return TOOL_UNAVAILABLE
+    entry = (await asyncio.to_thread(OrchestratorCalls(orchestrator).catalog, claims["sub"])).get(
+        (projected.agent_id, projected.skill_id)
+    )
+    if entry is None:
+        return TOOL_UNAVAILABLE
+    return None if mesh.published_definition(projected.skill_id) == entry.definition else TOOL_CHANGED

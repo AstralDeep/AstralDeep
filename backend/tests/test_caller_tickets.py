@@ -12,54 +12,82 @@ from types import SimpleNamespace as NS
 from typing import Any, AsyncIterator, Dict, List, Optional
 from unittest.mock import AsyncMock
 
+import astral_kernel as ak
 import httpx
 import pytest
 from fastapi import FastAPI
 
 from audit import hooks as audit_hooks
-from audit.hooks import ToolDispatchAudit, actor_principal_from_claims
+from audit.hooks import actor_principal_from_claims
 from devtools import dev_mesh
 from orchestrator import caller_tickets, node_mesh
-from orchestrator.a2a_orchestrator_executor import setup_orchestrator_a2a
+from orchestrator.a2a_orchestrator_executor import public_catalog_agent_ids, setup_orchestrator_a2a
+from orchestrator.a2a_publication_wiring import registered_audiences
 from orchestrator.mcp_server_endpoint import install_mcp_server
+from orchestrator.node_mesh_calls import OrchestratorCalls
+from orchestrator.orchestrator import Orchestrator
 from shared import node_identity
 from shared.a2a_publication import A2APublicationRegistry
-from shared.protocol import MCPResponse
+from shared.protocol import AgentCard, AgentSkill, MCPResponse
 from tests.helpers.dev_mesh import DevMesh, dev_node, node_settings, now_ms, publish_catalog, until, wait_for_caller_pause
 from tests.test_mcp_endpoint_064 import META, _Orchestrator
 
 BASE = "http://mcp.test"
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "dev_mesh.py"
-READ = {
-    "name": "read_value", "description": "returns a value", "effect": "mesh_read", "annotations": {},
-    "input_schema": {"type": "object", "properties": {"value": {"type": "string"}}},
-}
-WRITE = {
-    "name": "write_value", "description": "stores a value", "effect": "mesh_write", "annotations": {},
-    "input_schema": {"type": "object", "properties": {"value": {"type": "string"}}},
-}
-GHOST = {
-    "name": "ghost_tool", "description": "has no live skill", "effect": "mesh_read", "annotations": {},
-    "input_schema": {"type": "object", "properties": {}},
-}
-CATALOG = [READ, WRITE, GHOST]
+AGENT = "weather-1"
+OWNER_ID = node_identity.owner_id_for_mesh("sha256:" + "0" * 64)
+UNSUPPORTED_MIRROR = {"type": "object", "properties": {"bad": {"type": "object", "x-mcp-header": "Mcp-Param-Bad"}}}
+
+
+def skill(name: str, scope: str = "tools:read", schema: Optional[dict] = None) -> AgentSkill:
+    return AgentSkill(
+        id=name, name=name, description=f"{name} description", scope=scope,
+        input_schema=schema or {"type": "object", "properties": {"value": {"type": "string"}}},
+    )
+
+
+class Permissions:
+    def __init__(self, host: "Host"):
+        self.host = host
+
+    def is_tool_allowed(self, user_id, agent_id, tool_name):
+        return True
+
+    def get_tool_scope(self, agent_id, tool_name):
+        card = self.host.agent_cards[agent_id]
+        return next(item.scope for item in card.skills if item.id == tool_name)
+
+    def get_enabled_scope_names(self, user_id, agent_id):
+        return ["tools:read"]
+
+    def _is_safe_agent(self, agent_id):
+        return True
+
+    def list_disabled_agents(self, _user_id):
+        return ()
 
 
 class Host(_Orchestrator):
     def __init__(self):
         super().__init__()
-        self.audited: List[Any] = []
+        self.agents = {AGENT: object()}
+        self.local_agents = {AGENT: object()}
+        self.agent_cards = {AGENT: AgentCard(
+            name="Weather", description="reads", agent_id=AGENT,
+            skills=[skill("read_value"), skill("write_value", "tools:write"), skill("ghost_tool", schema=UNSUPPORTED_MIRROR)],
+        )}
+        self.tool_permissions = Permissions(self)
         self.a2a_agent_owners = {}
-        self.a2a_publications = A2APublicationRegistry(catalog=lambda: [], audiences=lambda agent_id: ())
+        self.a2a_publications = A2APublicationRegistry(
+            catalog=lambda: public_catalog_agent_ids(self), audiences=lambda agent_id: registered_audiences(self, agent_id),
+        )
         self.execute_authorized_tool = AsyncMock(return_value=MCPResponse(result={"echo": "a2a"}))
 
+    def published(self, owner: str) -> List[dict]:
+        return OrchestratorCalls(self).published_tools(owner)
+
     async def execute_mcp_tool(self, **kwargs):
-        claims = {**kwargs["claims"], "_invocation_channel": "mcp"}
-        async with ToolDispatchAudit(
-            claims=claims, agent_id=kwargs["agent_id"], tool_name=kwargs["tool_name"], chat_id=None,
-            args_meta=kwargs["arguments"], invocation_channel="mcp",
-        ):
-            self.calls.append(kwargs)
+        self.calls.append(kwargs)
         return MCPResponse(result={"echo": kwargs["arguments"].get("value", "")})
 
 
@@ -121,14 +149,16 @@ def code_of(response: httpx.Response) -> str:
 
 
 @asynccontextmanager
-async def served(tmp_path, monkeypatch, *, bind: bool = True, catalog=CATALOG) -> AsyncIterator[Door]:
+async def served(tmp_path, monkeypatch, *, bind: bool = True) -> AsyncIterator[Door]:
     async with dev_node(tmp_path, monkeypatch, bind=bind) as mesh:
         previous = node_mesh.current()
         node_mesh.install(mesh.node)
         try:
-            await publish_catalog(mesh, catalog)
-            await wait_for_caller_pause(mesh)
+            node_identity.load_node_identity()
             host = Host()
+            owner = node_identity.owner_id_for_mesh((await mesh.node.status())["mesh_id"])
+            await publish_catalog(mesh, host.published(owner))
+            await wait_for_caller_pause(mesh)
             app = FastAPI()
             install_mcp_server(app, host, public_base_url=BASE)
             setup_orchestrator_a2a(app, host)
@@ -149,7 +179,7 @@ def a2a_tools(response: httpx.Response) -> set:
     return {tool["name"] for part in parts if "data" in part for tool in part["data"].get("tools", [])}
 
 
-async def test_a_covered_tool_runs_is_audited_with_the_caller_and_the_list_shows_only_covered_tools(tmp_path, monkeypatch, audit):
+async def test_a_covered_tool_runs_and_the_list_shows_only_covered_tools(tmp_path, monkeypatch):
     async with served(tmp_path, monkeypatch) as door:
         ticket = door.mint(["read_value", "ghost_tool"], label="Nightly job")
         listed = await door.call_mcp(ticket, "tools/list")
@@ -160,10 +190,32 @@ async def test_a_covered_tool_runs_is_audited_with_the_caller_and_the_list_shows
         assert response.json()["result"]["structuredContent"] == {"echo": "v"}
         call = door.host.calls[-1]
         owner = node_identity.bound_mesh_owner()
-        assert (call["user_id"], call["agent_id"], call["tool_name"]) == (owner, "reader-1", "read_value")
+        assert (call["user_id"], call["agent_id"], call["tool_name"]) == (owner, AGENT, "read_value")
         assert call["claims"]["sub"] == owner and call["claims"]["_caller_id"] == ticket.id
-        discovered = await door.call_mcp(ticket, "server/discover")
-        assert discovered.status_code == 200
+        assert (await door.call_mcp(ticket, "server/discover")).status_code == 200
+
+
+async def test_the_audited_dispatch_records_the_caller_id_and_label(tmp_path, monkeypatch, audit):
+    async with served(tmp_path, monkeypatch) as door:
+        ticket = door.mint(["read_value"], label="Nightly job")
+        assert (await door.call_tool(ticket, "read_value")).status_code == 200
+        claims = door.host.calls[-1]["claims"]
+    owner = claims["sub"]
+    orchestrator = Orchestrator.__new__(Orchestrator)
+    invocation = object()
+    orchestrator.ui_sessions = {invocation: {**claims, "_invocation_channel": "mcp"}}
+
+    async def emit_hook(*_args, **_kwargs):
+        return None
+
+    async def dispatch(*_args, **_kwargs):
+        return MCPResponse(result={"ok": True})
+
+    orchestrator.hooks = NS(emit=emit_hook)
+    orchestrator._execute_with_retry = dispatch
+    await Orchestrator._execute_with_retry_audited(
+        orchestrator, invocation, AGENT, "read_value", {"value": "v"}, user_id=owner,
+    )
     start, end = audit.events
     for event in (start, end):
         assert (event.actor_user_id, event.auth_principal) == (owner, f"caller:{ticket.id}")
@@ -273,14 +325,30 @@ async def test_a_raised_stop_refuses_tickets_minted_before_it(tmp_path, monkeypa
         assert (response.status_code, code_of(response)) == (403, "caller.stopped")
 
 
-async def test_a_changed_tool_definition_is_refused(tmp_path, monkeypatch):
+async def test_a_changed_tool_definition_is_refused_before_and_after_the_node_republishes(tmp_path, monkeypatch):
     async with served(tmp_path, monkeypatch) as door:
         ticket = door.mint(["read_value"])
         assert (await door.call_tool(ticket, "read_value")).status_code == 200
-        changed = {**READ, "description": "returns a different value"}
-        await door.mesh.node.publish_tool_catalog([changed, WRITE, GHOST])
+        door.host.agent_cards[AGENT].skills[0].description = "returns a different value"
+        calls = len(door.host.calls)
+        stale = await door.call_tool(ticket, "read_value")
+        assert (stale.status_code, code_of(stale)) == (403, "caller.tool_changed")
+        owner = node_identity.bound_mesh_owner()
+        await door.mesh.node.publish_tool_catalog(door.host.published(owner))
+        republished = await door.call_tool(ticket, "read_value")
+        assert (republished.status_code, code_of(republished)) == (403, "caller.tool_changed")
+        assert len(door.host.calls) == calls
+
+
+async def test_a_name_that_now_resolves_to_an_agent_outside_the_published_catalog_is_unavailable(tmp_path, monkeypatch):
+    async with served(tmp_path, monkeypatch) as door:
+        ticket = door.mint(["read_value"])
+        door.host.agent_cards["custom-1"] = AgentCard(name="Custom", description="x", agent_id="custom-1", skills=[skill("read_value")])
+        door.host.agents = {"custom-1": object()}
+        door.host.local_agents = {}
         response = await door.call_tool(ticket, "read_value")
-        assert (response.status_code, code_of(response)) == (403, "caller.tool_changed")
+        assert (response.status_code, code_of(response)) == (403, "caller.tool_unavailable")
+        assert door.host.calls == []
 
 
 async def test_a_removed_minting_device_refuses_its_tickets(tmp_path, monkeypatch):
@@ -314,7 +382,7 @@ async def test_a_ticket_for_another_node_is_refused(tmp_path, monkeypatch):
             await door.mesh.owner.approve_offer(offer["payload"])
             await until(lambda: enrolled(second), "the second node to join")
             device = (await second.status())["member_id"]
-            await publish_catalog(DevMesh(second, door.mesh.owner, device, door.mesh.opened_ms), CATALOG)
+            await publish_catalog(DevMesh(second, door.mesh.owner, device, door.mesh.opened_ms), Host().published(OWNER_ID))
             ticket = door.mint(["read_value"], node=device)
             response = await door.call_tool(ticket, "read_value")
             assert (response.status_code, code_of(response)) == (403, "caller.wrong_node")
@@ -331,6 +399,10 @@ async def test_a2a_needs_a2a_message_and_lists_only_covered_tools(tmp_path, monk
         tools_only = door.mint(["read_value"])
         refused = await door.send_a2a(tools_only)
         assert (refused.status_code, code_of(refused)) == (403, "caller.tool_not_covered")
+        owner = node_identity.bound_mesh_owner()
+        registry = door.host.a2a_publications
+        intent = registry.create_intent(agent_id=AGENT, audiences=["tools:read"], lifetime="open", actor=owner)
+        registry.confirm(intent_id=intent.intent_id, confirmation_token=intent.confirmation_token, actor=owner)
         ticket = door.mint(["read_value", "ghost_tool"], a2a=True)
         listed = await door.send_a2a(ticket)
         assert listed.status_code == 200, listed.text
@@ -381,12 +453,22 @@ async def test_a_mesh_that_cannot_verify_refuses_as_unavailable(tmp_path, monkey
     async with served(tmp_path, monkeypatch) as door:
         ticket = door.mint(["read_value"])
 
-        async def unavailable(_request):
+        async def unavailable(**_request):
             raise node_mesh.MeshUnavailable("mesh_not_started")
 
         monkeypatch.setattr(door.mesh.node, "verify_caller", unavailable)
         response = await door.call_tool(ticket, "read_value")
         assert (response.status_code, code_of(response)) == (503, "node.mesh_unavailable")
+        binding = door.mesh.node._binding
+        door.mesh.node._binding = NS(KernelError=ak.KernelError)
+        try:
+            with pytest.raises(node_mesh.MeshUnavailable):
+                await node_mesh.NodeMesh.verify_caller(
+                    door.mesh.node,
+                    authorization="x", proof=None, method="POST", target="/mcp", body_sha256="sha256:" + "0" * 64, tool=None,
+                )
+        finally:
+            door.mesh.node._binding = binding
 
 
 async def test_a_legacy_owner_binding_refuses(tmp_path, monkeypatch):
@@ -409,7 +491,7 @@ async def test_a_production_node_holding_a_dev_mesh_serves_no_ticket(tmp_path, m
             assert (response.status_code, code_of(response)) == (503, "node.development_mesh")
 
 
-async def test_a_ticket_for_another_mesh_is_refused_by_the_kernel(tmp_path, monkeypatch):
+async def test_a_verified_mesh_that_is_not_the_bound_owners_mesh_is_refused(tmp_path, monkeypatch):
     async with served(tmp_path, monkeypatch) as door:
         ticket = door.mint(["read_value"])
         body, extra = door.mcp("tools/list")
@@ -487,7 +569,7 @@ async def test_the_script_creates_pairs_and_mints_a_ticket_the_node_accepts(tmp_
         await owner.start()
         try:
             mesh = DevMesh(node, owner, device, opened)
-            await publish_catalog(mesh, CATALOG)
+            await publish_catalog(mesh, Host().published(OWNER_ID))
         finally:
             await owner.stop()
             del owner
@@ -523,3 +605,12 @@ def test_an_unreadable_owner_binding_is_no_owner_for_the_admission_check(monkeyp
 
     monkeypatch.setattr(node_identity, "bound_mesh_owner", unreadable)
     assert node_mesh_admission._bound_mesh_owner() is None
+
+
+def test_a2a_tasks_are_scoped_to_the_ticket_and_not_shared_across_tickets():
+    from orchestrator.a2a_orchestrator_executor import A2APrincipal
+
+    first = A2APrincipal(caller_tickets.claims_for("mesh.owner", NS(id="a", label="x", tools=[]), "astral-a2a"), "")
+    second = A2APrincipal(caller_tickets.claims_for("mesh.owner", NS(id="b", label="y", tools=[]), "astral-a2a"), "")
+    assert (first.user_name, second.user_name) == ("caller:a", "caller:b")
+    assert A2APrincipal({"sub": "u"}, "t").user_name == "sub:u"

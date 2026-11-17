@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
-from orchestrator import node_mesh_keys
+from orchestrator import node_mesh_calls, node_mesh_keys
 from orchestrator.node_mailbox import MailboxError, MailboxProcess, MailboxSettings
 from shared import dev_mesh_keys, node_identity
 
@@ -347,6 +347,7 @@ class NodeMesh:
         self._pairing_checks: set = set()
         self._offer_lock = asyncio.Lock()
         self._served: List[float] = []
+        self._published_definitions: Dict[str, str] = {}
 
     @property
     def kernel(self) -> Any:
@@ -887,14 +888,23 @@ class NodeMesh:
             raise MeshUnavailable("host_call_claim_unsupported")
         return await self._request_call(claim, request_id, current_definition, effect_kind)
 
-    async def verify_caller(self, request: Any) -> Any:
+    async def verify_caller(
+        self, *, authorization: str, proof: Optional[str], method: str, target: str, body_sha256: str, tool: Optional[str],
+    ) -> Any:
         if self._quarantined:
             raise NodeMeshError(DEVELOPMENT_MESH)
         kernel = self.kernel
+        verify = getattr(kernel, "verify_caller_request", None)
+        request_type = getattr(self._binding, "CallerRequest", None)
+        if not callable(verify) or request_type is None:
+            raise MeshUnavailable("caller_tickets_unsupported")
+        request = request_type(
+            authorization=authorization, proof=proof, method=method, target=target, body_sha256=body_sha256, tool=tool,
+        )
 
         def check() -> Any:
             refuse_development_mesh(kernel.roster())
-            return kernel.verify_caller_request(request)
+            return verify(request)
 
         try:
             return await self._request_call(check)
@@ -902,6 +912,9 @@ class NodeMesh:
             if exc.code == DEVELOPMENT_MESH:
                 await self._quarantine()
             raise
+
+    def published_definition(self, name: str) -> Optional[str]:
+        return self._published_definitions.get(name)
 
     async def mint_ticket(
         self, request_id: str, *, call_id: str, tool: str, arguments_json: str,
@@ -986,7 +999,14 @@ class NodeMesh:
             )
             for tool in tools
         ]
-        return await self._request_call(publish, specs)
+        event = await self._request_call(publish, specs)
+        self._published_definitions = {
+            tool["name"]: node_mesh_calls.definition_hash(
+                tool["name"], tool["description"], tool["input_schema"], tool["annotations"],
+            )
+            for tool in tools
+        }
+        return event
 
     async def _request_call(self, function: Callable[..., Any], *arguments: Any) -> Any:
         try:
