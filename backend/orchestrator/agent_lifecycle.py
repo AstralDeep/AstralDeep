@@ -239,6 +239,19 @@ async def publish_agent_lifecycle(
     return delivered
 
 
+class DraftLaunchRefused(RuntimeError):
+    pass
+
+
+def draft_confinement(limits_applied: bool) -> Dict[str, Any]:
+    limits = "with process resource limits only" if limits_applied else "with no resource limits"
+    return {
+        "confined": False,
+        "resource_limits": limits_applied,
+        "notice": f"This agent runs unconfined {limits}. It can read and write files and reach the network as you can.",
+    }
+
+
 class RevisionActivationError(RuntimeError):
     @property
     def code(self) -> str:
@@ -5176,6 +5189,7 @@ class AgentLifecycleManager:
         await asyncio.to_thread(self._append_log, draft_id, f"Starting agent on port {port}...")
 
         sandbox_kwargs: Dict[str, Any] = {}
+        limits_applied = False
         try:
             from orchestrator import sandbox as _sandbox
             if _sandbox.sandbox_enabled():
@@ -5185,11 +5199,21 @@ class AgentLifecycleManager:
                 preexec = _sandbox.make_preexec(limits)
                 if preexec is not None:
                     sandbox_kwargs["preexec_fn"] = preexec
+                    limits_applied = True
                 sandbox_kwargs["env"] = _sandbox.sandbox_env(None, tmpdir)
                 logger.info("C-S6 sandbox: launching draft %s with %s", draft_id, limits)
         except Exception:
-            logger.exception("C-S6 sandbox setup failed; launching unsandboxed")
-            sandbox_kwargs = {}
+            logger.exception("Resource limit setup failed for draft %s; refusing to start it", draft_id)
+            error_msg = "Agent start refused: its resource limits could not be set up"
+            await asyncio.to_thread(
+                self.db.update_draft_agent, draft_id, status=ERROR, error_message=error_msg
+            )
+            await self._send_progress(websocket, draft_id, "error", error_msg, ERROR)
+            await asyncio.to_thread(self._append_log, draft_id, f"ERROR: {error_msg}")
+            raise DraftLaunchRefused(error_msg) from None
+        confinement = draft_confinement(limits_applied)
+        logger.warning("Draft agent %s: %s", draft_id, confinement["notice"])
+        await asyncio.to_thread(self._append_log, draft_id, confinement["notice"])
 
         process_id = uuid.uuid4()
         try:
@@ -5290,7 +5314,8 @@ class AgentLifecycleManager:
                                        TESTING)
             await asyncio.to_thread(self._append_log, draft_id, f"Agent started on port {port} (discovery pending)")
 
-        return await asyncio.to_thread(self.db.get_draft_agent, draft_id)
+        started = await asyncio.to_thread(self.db.get_draft_agent, draft_id)
+        return {**started, "confinement": confinement} if started else started
 
     async def stop_draft_agent(self, draft_id: str) -> None:
         draft = await asyncio.to_thread(self.db.get_draft_agent, draft_id)
