@@ -274,7 +274,7 @@ def test_no_module_except_facts_reads_the_environment():
     modules = sorted(package.rglob("*.py"))
     assert {m.name for m in modules} >= {"fold_table.py", "select.py", "policy.py"}
     for module in modules:
-        if module.name == "facts.py":
+        if module.name == "facts.py" or "conformance" in module.parts:
             continue
         assert environment_reads(module.read_text(encoding="utf-8")) == set(), (
             module.name

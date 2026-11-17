@@ -454,17 +454,6 @@ def test_run_py_tears_down_its_child_when_terminated(tmp_path, call):
         launcher.stdout.close()
 
 
-def test_run_py_conformance_is_refused_until_the_suite_exists():
-    done = subprocess.run(
-        [PYTHON, "-I", "-B", str(RUN_PY), "conformance", "--json"],
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
-    )
-    assert done.returncode == 2 and "not yet available" in done.stderr
-
-
 MARKED_TOOL = ["/bin/sh", "-c", 'echo "$ASTRAL_EXEC_MARKER"; exec /bin/sleep 600']
 
 

@@ -810,15 +810,18 @@ def _gone(pid):
     return False
 
 
-def test_run_py_dispatches_and_names_the_missing_conformance_suite(monkeypatch, capsys):
+def test_run_py_dispatches_each_command(monkeypatch, capsys):
+    from astral_exec import conformance
+
     seen = []
     monkeypatch.setattr(launch, "main", lambda args: seen.append(args) or 7)
     assert run_command.main(["launch", "--policy", "p"]) == 7
     assert seen == [["--policy", "p"]]
-    assert run_command.main(["conformance", "--json"]) == 2
+    monkeypatch.setattr(conformance, "main", lambda args: seen.append(args) or 5)
+    assert run_command.main(["conformance", "--json"]) == 5
+    assert seen[-1] == ["--json"]
     with pytest.raises(SystemExit):
         run_command.main(["rlimit", "--core", "0"])
-    assert "not yet available" in capsys.readouterr().err
     for args in ([], ["other"]):
         assert run_command.main(args) == 2
         assert "usage" in capsys.readouterr().err
@@ -1061,13 +1064,13 @@ def test_a_failed_teardown_turns_a_finished_call_into_a_launch_failure():
 
 def test_run_py_runs_as_a_script_with_only_its_parent_on_the_path(monkeypatch, capsys):
     script = os.path.join(os.path.dirname(launch.__file__), "run.py")
-    monkeypatch.setattr(sys, "argv", [script, "conformance"])
+    monkeypatch.setattr(sys, "argv", [script, "conformance", "--backend", "container"])
     monkeypatch.setattr(sys, "path", list(sys.path))
     with pytest.raises(SystemExit) as stopped:
         runpy.run_path(script, run_name="__main__")
     assert stopped.value.code == 2
     assert sys.path[0] == os.path.dirname(os.path.dirname(script))
-    assert "not yet available" in capsys.readouterr().err
+    assert "container" in capsys.readouterr().err
 
 
 def test_a_cpu_limit_signal_is_a_time_limit():
