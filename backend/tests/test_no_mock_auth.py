@@ -24,6 +24,7 @@ ALLOWED: dict[str, tuple[tuple[str, ...], str]] = {
     "backend/tests/test_install_doctor.py": (("USE_MOCK_AUTH",), "proves the doctor agrees with the boot refusal"),
     "backend/tests/test_node_posture.py": (("USE_MOCK_AUTH",), "proves a personal node refuses the leftover setting"),
     "backend/tests/test_node_bearer_refusal.py": (FORBIDDEN, "proves the removed flag and literal tokens change nothing"),
+    "backend/tests/test_docker_free_gates.py": (("USE_MOCK_AUTH",), "proves a production boot with the flag set false still refuses a placeholder secret"),
     "backend/tests/test_node_delegation.py": (("USE_MOCK_AUTH", "dev-token"), "proves the removed flag and literal token are refused"),
 }
 

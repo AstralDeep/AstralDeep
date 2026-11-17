@@ -1,0 +1,376 @@
+{
+  "exclude": [
+    "specs/**",
+    "**/tests/**",
+    "**/*Tests/**",
+    "**/src/test/**",
+    "**/src/androidTest/**",
+    "docs/superpowers/**",
+    "provenance/**",
+    "**/provenance/**",
+    ".gitleaksignore",
+    "scripts/check_no_keycloak.py",
+    "scripts/no_keycloak.json"
+  ],
+  "pending": [
+    {
+      "path": ".env.example",
+      "until": "T8"
+    },
+    {
+      "path": ".github/workflows/release-readiness.yml",
+      "until": "T8.6",
+      "bound_by": ".github/workflows/release-readiness-protected.yml"
+    },
+    {
+      "path": ".gitignore",
+      "until": "T10"
+    },
+    {
+      "path": "AGENTS.md",
+      "until": "T10"
+    },
+    {
+      "path": "README.md",
+      "until": "T10"
+    },
+    {
+      "path": "backend/clinical_diagnostic/README.md",
+      "until": "T9"
+    },
+    {
+      "path": "backend/orchestrator/a2a_orchestrator_executor.py",
+      "until": "T6"
+    },
+    {
+      "path": "backend/orchestrator/agent_identity.py",
+      "until": "T9"
+    },
+    {
+      "path": "backend/orchestrator/api.py",
+      "until": "T9"
+    },
+    {
+      "path": "backend/orchestrator/attachments/account_lifecycle.py",
+      "until": "T9"
+    },
+    {
+      "path": "backend/orchestrator/attachments/models.py",
+      "until": "T9"
+    },
+    {
+      "path": "backend/orchestrator/auth.py",
+      "until": "T6"
+    },
+    {
+      "path": "backend/orchestrator/computer_managed_policy.py",
+      "until": "T9"
+    },
+    {
+      "path": "backend/orchestrator/connection_guide.py",
+      "until": "T9"
+    },
+    {
+      "path": "backend/orchestrator/delegation.py",
+      "until": "T6"
+    },
+    {
+      "path": "backend/orchestrator/device_login.py",
+      "until": "T5"
+    },
+    {
+      "path": "backend/orchestrator/framework_operation_authority.py",
+      "until": "T9"
+    },
+    {
+      "path": "backend/orchestrator/human_request_authority.py",
+      "until": "T9"
+    },
+    {
+      "path": "backend/orchestrator/institution_meshes.py",
+      "until": "T6"
+    },
+    {
+      "path": "backend/orchestrator/mcp_authz.py",
+      "until": "T6"
+    },
+    {
+      "path": "backend/orchestrator/mesh_admission.py",
+      "until": "T5"
+    },
+    {
+      "path": "backend/orchestrator/mesh_api.py",
+      "until": "T9"
+    },
+    {
+      "path": "backend/orchestrator/mesh_push_registry.py",
+      "until": "T9"
+    },
+    {
+      "path": "backend/orchestrator/native_session_custody.py",
+      "until": "T5"
+    },
+    {
+      "path": "backend/orchestrator/notification_api.py",
+      "until": "T9"
+    },
+    {
+      "path": "backend/orchestrator/offline_grant.py",
+      "until": "T5"
+    },
+    {
+      "path": "backend/orchestrator/orchestrator.py",
+      "until": "T9"
+    },
+    {
+      "path": "backend/orchestrator/push_api.py",
+      "until": "T9"
+    },
+    {
+      "path": "backend/orchestrator/push_destinations.py",
+      "until": "T9"
+    },
+    {
+      "path": "backend/orchestrator/sandbox.py",
+      "until": "T9"
+    },
+    {
+      "path": "backend/orchestrator/session_store.py",
+      "until": "T5"
+    },
+    {
+      "path": "backend/orchestrator/ui_auth_renewal.py",
+      "until": "T5"
+    },
+    {
+      "path": "backend/orchestrator/voice_control_binding.py",
+      "until": "T9"
+    },
+    {
+      "path": "backend/orchestrator/web_auth.py",
+      "until": "T5"
+    },
+    {
+      "path": "backend/scheduler/runner.py",
+      "until": "T9"
+    },
+    {
+      "path": "backend/security_benchmark/README.md",
+      "until": "T9"
+    },
+    {
+      "path": "backend/security_benchmark/drivers/real_dispatch.py",
+      "until": "T6"
+    },
+    {
+      "path": "backend/shared/__init__.py",
+      "until": "T9"
+    },
+    {
+      "path": "backend/shared/a2a_bridge.py",
+      "until": "T6"
+    },
+    {
+      "path": "backend/shared/a2a_security.py",
+      "until": "T6"
+    },
+    {
+      "path": "backend/shared/auth_clients.py",
+      "until": "T6"
+    },
+    {
+      "path": "backend/shared/institution_profile.py",
+      "until": "T6"
+    },
+    {
+      "path": "backend/shared/jwks_cache.py",
+      "until": "T6"
+    },
+    {
+      "path": "backend/shared/node_identity.py",
+      "until": "T7"
+    },
+    {
+      "path": "backend/shared/token_verify.py",
+      "until": "T6"
+    },
+    {
+      "path": "backend/verification/__main__.py",
+      "until": "T9"
+    },
+    {
+      "path": "backend/verification/config.py",
+      "until": "T9"
+    },
+    {
+      "path": "backend/verification/drivers/external.py",
+      "until": "T6"
+    },
+    {
+      "path": "backend/verification/drivers/fixture_identity.py",
+      "until": "T6"
+    },
+    {
+      "path": "docker-compose.staging.yml",
+      "until": "T8.6",
+      "bound_by": "scripts/run_candidate_staging.py"
+    },
+    {
+      "path": "docs/byo-client-agents.md",
+      "until": "T10"
+    },
+    {
+      "path": "docs/institution-node.md",
+      "until": "T10"
+    },
+    {
+      "path": "docs/keycloak-android-client-setup.md",
+      "until": "T10"
+    },
+    {
+      "path": "docs/keycloak-move.md",
+      "until": "T10"
+    },
+    {
+      "path": "docs/keycloak-orcid-identity.md",
+      "until": "T10"
+    },
+    {
+      "path": "docs/keycloak-realm-settings.md",
+      "until": "T10"
+    },
+    {
+      "path": "docs/keycloak-windows-client-setup.md",
+      "until": "T10"
+    },
+    {
+      "path": "docs/keycloak_agent_delegation_setup.md",
+      "until": "T10"
+    },
+    {
+      "path": "docs/lets-external-warden.md",
+      "until": "T10"
+    },
+    {
+      "path": "docs/mcp-openai-tunnel-qualification.md",
+      "until": "T10"
+    },
+    {
+      "path": "docs/mcp-server-endpoint.md",
+      "until": "T10"
+    },
+    {
+      "path": "docs/personal-node.md",
+      "until": "T10"
+    },
+    {
+      "path": "docs/production-deployment.md",
+      "until": "T10"
+    },
+    {
+      "path": "docs/remote-compute-agents.md",
+      "until": "T10"
+    },
+    {
+      "path": "plane/README.md",
+      "until": "T18"
+    },
+    {
+      "path": "plane/docs/credentials-and-grants.md",
+      "until": "T18"
+    },
+    {
+      "path": "plane/src/astralplane/repositories/identity.py",
+      "until": "T18"
+    },
+    {
+      "path": "scripts/backend_web_image_gate.sh",
+      "until": "T8"
+    },
+    {
+      "path": "scripts/backend_web_service_materials.py",
+      "until": "T8.6",
+      "bound_by": "scripts/initialize_backend_web_services.py"
+    },
+    {
+      "path": "scripts/initialize_backend_web_services.py",
+      "until": "T8.6",
+      "bound_by": "scripts/produce_backend_web_qualification.py"
+    },
+    {
+      "path": "scripts/install_doctor.py",
+      "until": "T8"
+    },
+    {
+      "path": "scripts/node/install-personal-node.sh",
+      "until": "T8"
+    },
+    {
+      "path": "scripts/probe_backend_web_auth.py",
+      "until": "T8.6",
+      "bound_by": "scripts/produce_backend_web_qualification.py"
+    },
+    {
+      "path": "scripts/produce_backend_web_qualification.py",
+      "until": "T8.6",
+      "bound_by": ".github/workflows/backend-web-qualification-protected.yml"
+    },
+    {
+      "path": "scripts/run_backend_web_qualification.py",
+      "until": "T8.6",
+      "bound_by": "scripts/produce_backend_web_qualification.py"
+    },
+    {
+      "path": "scripts/run_candidate_staging.py",
+      "until": "T8.6",
+      "bound_by": ".github/workflows/release-readiness.yml"
+    },
+    {
+      "path": "scripts/validate_backend_web_evidence.py",
+      "until": "T8.6",
+      "bound_by": ".github/workflows/backend-web-readiness.yml"
+    },
+    {
+      "path": "scripts/validate_release_evidence.py",
+      "until": "T8.6",
+      "bound_by": ".github/workflows/release-readiness.yml"
+    },
+    {
+      "path": "scripts/verification/complete_089_qualification.py",
+      "until": "T9"
+    },
+    {
+      "path": "scripts/wait_backend_web_services.py",
+      "until": "T8.6",
+      "bound_by": "scripts/initialize_backend_web_services.py"
+    },
+    {
+      "path": "sdk/MESH.md",
+      "until": "T9"
+    },
+    {
+      "path": "sdk/README.md",
+      "until": "T9"
+    },
+    {
+      "path": "sdk/astral_sdk/__main__.py",
+      "until": "T9"
+    },
+    {
+      "path": "sdk/astral_sdk/client.py",
+      "until": "T9"
+    },
+    {
+      "path": "tooling/sandbox-qualification/README.md",
+      "until": "T9"
+    },
+    {
+      "path": "vessel/astralvessel/deployment.py",
+      "until": "T17"
+    },
+    {
+      "path": "vessel/docs/changelog.md",
+      "until": "T17"
+    }
+  ]
+}
