@@ -15,6 +15,7 @@ import pytest
 from node_bundle_support import BUNDLE
 from node_bundle_support import assemble as ap
 from node_bundle_support import astral_node_launch as launch
+from node_bundle_support import relocation_check
 
 LINUX = BUNDLE / "linux"
 sys.path.insert(0, str(LINUX))
@@ -420,15 +421,24 @@ def test_the_built_manifest_records_the_glibc_floor_and_nothing_needs_more():
     assert required <= (2, 36)
 
 
+def assemble_kernel_files():
+    return ap.KERNEL_FILES
+
+
 @needs_pack
-def test_the_built_pack_ships_exactly_the_bound_kernel_wheel_and_mailbox(pack):
+def test_the_built_pack_records_the_bound_kernel_wheel_and_mailbox_and_every_search_path_patch(pack):
     manifest = json.loads((PACK_DIR / "node-pack-manifest.json").read_text())
     platform = manifest["platform"]
     bound = BINDING["artifacts"][platform]
     assert manifest["kernel"]["commit"] == BINDING["source"]["commit"]
     assert manifest["kernel"]["wheel"] == bound["wheel"]
     assert manifest["kernel"]["mailbox"] == bound["mailbox"]
-    assert hashlib.sha256((pack / "bin" / "astral-mailbox").read_bytes()).hexdigest() == bound["mailbox"]["sha256"]
+    patches = manifest["kernel_search_path_patch"]
+    assert set(patches) == set(assemble_kernel_files())
+    assert patches["bin/astral-mailbox"]["received_sha256"] == bound["mailbox"]["sha256"]
+    for name, record in patches.items():
+        assert hashlib.sha256((pack / name).read_bytes()).hexdigest() == record["shipped_sha256"]
+        assert (record["received_sha256"] != record["shipped_sha256"]) == bool(elfaudit.read_dynamic(pack / name).runpath)
     assert any(entry["name"] == "astral-kernel" for entry in manifest["installed_distributions"])
 
 
@@ -493,7 +503,7 @@ def test_the_pack_relocates_in_a_clean_bookworm_slim_image_with_no_python_on_the
     slim = bl.dockerfile_args()["BOOKWORM_SLIM"]
     if not docker_image_present(slim):
         pytest.skip(f"the clean image {slim} is not present locally and the test must not pull it")
-    bl.check_relocation(json.loads((PACK_DIR / "node-pack-manifest.json").read_text())["platform"], "node-pack-test-", slim, PACK_DIR, 900)
+    bl.check_relocation(json.loads((PACK_DIR / "node-pack-manifest.json").read_text())["platform"], os.environ.get(bl.NAME_PREFIX_ENV, "node-pack-test-"), slim, PACK_DIR, 900)
 
 
 def tar_with(path: Path, members: list[tuple[str, bytes | None, str | None]]) -> tarfile.TarFile:
@@ -586,3 +596,21 @@ def test_a_library_missing_from_the_image_is_left_for_the_audit_to_refuse(monkey
 
 def test_container_build_paths_are_distinctive_enough_for_the_leak_scan_not_to_match_source_text():
     assert bl.BUILD_ROOT == "/astral-node-build"
+
+
+def test_loaded_library_trace_flags_only_libraries_from_outside_the_pack(tmp_path):
+    inside = tmp_path / "python" / "lib" / "libgcc_s.so.1"
+    inside.parent.mkdir(parents=True)
+    inside.write_bytes(b"x")
+    trace = "\n".join(f"  1: calling init: {path}" for path in (
+        inside, "/lib/aarch64-linux-gnu/libc.so.6", "/lib/ld-linux-aarch64.so.1", "/usr/lib/aarch64-linux-gnu/libz.so.1",
+    ))
+    assert relocation_check.foreign_libraries(trace, tmp_path) == ["/usr/lib/aarch64-linux-gnu/libz.so.1"]
+    assert relocation_check.foreign_libraries("", tmp_path) == []
+
+
+def test_the_default_kernel_directory_comes_from_the_environment_first(monkeypatch, tmp_path):
+    monkeypatch.setenv(bl.KERNEL_ARTIFACTS_ENV, str(tmp_path))
+    assert bl.default_kernel_dir() == tmp_path
+    monkeypatch.delenv(bl.KERNEL_ARTIFACTS_ENV)
+    assert bl.default_kernel_dir() in (None, bl.DEFAULT_KERNEL_DIR)

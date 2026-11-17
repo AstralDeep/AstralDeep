@@ -24,6 +24,8 @@ DOCKERFILE = HERE / "Dockerfile"
 SOURCE_ENV_PREFIX = "NODE_BUNDLE_SOURCE_"
 BUILD_ROOT = "/astral-node-build"
 KERNEL_ARTIFACTS_ENV = "ASTRAL_KERNEL_ARTIFACTS"
+NAME_PREFIX_ENV = "NODE_PACK_NAME_PREFIX"
+DEFAULT_KERNEL_DIR = REPO / "build" / "kernel-binding"
 RECEIPT_NAME = "node-pack-build.json"
 ARG_PATTERN = re.compile(r"^ARG (\w+)=(\S+)$", re.MULTILINE)
 RELOCATION_SCRIPT = r"""
@@ -131,7 +133,7 @@ def build(platform: str, out: Path, kernel_dir: Path, names: str, timeout: int,
     with tempfile.TemporaryDirectory(prefix="node-pack-linux-") as scratch:
         source = Path(scratch) / "deep"
         clone_source(repo, commit, source)
-        tag = f"{names}node-pack-builder:{platform.removeprefix('linux-')}"
+        tag = f"{names}builder:{platform.removeprefix('linux-')}"
         image_id = build_image(platform, tag)
         assemble_in_container(platform, tag, names, source, kernel_dir, out, dict(environment), timeout)
     check_relocation(platform, names, args["BOOKWORM_SLIM"], out, timeout)
@@ -144,18 +146,24 @@ def build(platform: str, out: Path, kernel_dir: Path, names: str, timeout: int,
     return out / "node-pack.json"
 
 
+def default_kernel_dir() -> Path | None:
+    if KERNEL_ARTIFACTS_ENV in os.environ:
+        return Path(os.environ[KERNEL_ARTIFACTS_ENV])
+    return DEFAULT_KERNEL_DIR if DEFAULT_KERNEL_DIR.is_dir() else None
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--platform", choices=sorted(PLATFORMS), required=True)
     parser.add_argument("--out", type=Path, required=True)
-    parser.add_argument("--kernel-dir", type=Path,
-                        default=Path(os.environ[KERNEL_ARTIFACTS_ENV]) if KERNEL_ARTIFACTS_ENV in os.environ else None,
-                        help=f"Kernel artifacts folder holding the bound wheel, mailbox and receipt, or set {KERNEL_ARTIFACTS_ENV}")
-    parser.add_argument("--name-prefix", default="", help="prefix for the image tag and container names")
+    parser.add_argument("--kernel-dir", type=Path, default=default_kernel_dir(),
+                        help=f"Kernel artifacts folder holding the bound wheel, mailbox and receipt; defaults to {KERNEL_ARTIFACTS_ENV} or build/kernel-binding")
+    parser.add_argument("--name-prefix", default=os.environ.get(NAME_PREFIX_ENV, "node-pack-"),
+                        help=f"prefix for the image tag and container names, or set {NAME_PREFIX_ENV}")
     parser.add_argument("--timeout", type=int, default=2400, help="seconds allowed for each container run")
     arguments = parser.parse_args(argv)
     if arguments.kernel_dir is None:
-        sys.exit(f"linux pack: pass --kernel-dir or set {KERNEL_ARTIFACTS_ENV}")
+        sys.exit(f"linux pack: pass --kernel-dir, set {KERNEL_ARTIFACTS_ENV}, or run make kernel-artifacts for build/kernel-binding")
     try:
         descriptor = build(arguments.platform, arguments.out, arguments.kernel_dir, arguments.name_prefix,
                            arguments.timeout)

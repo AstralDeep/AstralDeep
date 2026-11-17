@@ -318,11 +318,15 @@ def check_binding(kernel: dict, entries: dict, mailbox: Path | None) -> Path:
     return mailbox
 
 
+KERNEL_FILES = ("bin/astral-mailbox", "python/lib/python3.11/site-packages/astral_kernel/libastral_kernel_ffi.so")
+
+
 def seal_linux(stage: Path, spec: dict) -> dict:
     sys.path.insert(0, str(HERE / "linux"))
     import elfaudit
     import natives
 
+    received = {name: pack_manifest.sha256_file(stage / name) for name in KERNEL_FILES if (stage / name).is_file()}
     bundled = natives.bundle(stage, spec["natives"], platform_module.machine())
     floor = tuple(int(part) for part in spec["glibc_floor"].split("."))
     problems, newest = elfaudit.audit_tree(stage, floor)
@@ -332,6 +336,10 @@ def seal_linux(stage: Path, spec: dict) -> dict:
         "glibc_floor": spec["glibc_floor"],
         "glibc_required": ".".join(map(str, newest)),
         "natives": {**bundled, "source_image": spec["natives"]["source_image"]},
+        "kernel_search_path_patch": {
+            name: {"received_sha256": digest, "shipped_sha256": pack_manifest.sha256_file(stage / name)}
+            for name, digest in received.items()
+        },
     }
 
 

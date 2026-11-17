@@ -4,6 +4,8 @@ It proves the interpreter, the native libraries and the node's own modules resol
 
 import argparse
 import json
+import os
+import re
 import shutil
 import subprocess
 import sys
@@ -12,6 +14,9 @@ from pathlib import Path
 
 import manifest as pack_manifest
 import verify
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "linux"))
+import elfaudit  # noqa: E402
 
 SPACED_NAME = "relocated copy"
 CHILD_ENV = {"PATH": "/usr/bin:/bin"}
@@ -61,6 +66,10 @@ kind = magic.from_buffer(b"%PDF-1.4\n1 0 obj\n", mime=True)
 print("magic:", kind)
 sys.exit(0 if kind == "application/pdf" else 1)
 """
+
+
+LOADED_PATTERN = re.compile(r"calling init: (\S+)")
+LOAD_PROBE = "import astral_kernel, PIL._imaging, bcrypt, cryptography.hazmat.bindings._rust, psycopg2, numpy"
 
 
 class RelocationError(Exception):
@@ -134,6 +143,33 @@ def native_problems(root: Path) -> list[str]:
     return problems
 
 
+def foreign_libraries(trace: str, root: Path) -> list[str]:
+    found = []
+    for path in sorted(set(LOADED_PATTERN.findall(trace))):
+        name = os.path.basename(path)
+        inside = os.path.realpath(path).startswith(str(root.resolve()) + os.sep)
+        if not inside and name not in elfaudit.SYSTEM_LIBRARIES and not name.startswith("ld-linux"):
+            found.append(path)
+    return found
+
+
+def loaded_library_problems(root: Path) -> list[str]:
+    environment = {**CHILD_ENV, "LD_DEBUG": "libs"}
+    runs = {
+        "interpreter": [str(root / "python" / "bin" / "python3.11"), "-I", "-B", "-c", LOAD_PROBE],
+        "mailbox": [str(root / "bin" / "astral-mailbox"), "--help"],
+    }
+    problems = []
+    for label, command in runs.items():
+        if not Path(command[0]).is_file():
+            continue
+        result = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=CHILD_TIMEOUT, check=False)
+        if label == "interpreter" and result.returncode != 0:
+            problems.append(f"loading the native modules failed: {result.stderr.strip()[-300:]}")
+        problems += [f"{label} loaded {path} from outside the pack" for path in foreign_libraries(result.stderr, root)]
+    return problems
+
+
 def check_pack(source: Path, modules: tuple = MODULES, backend_modules: tuple = BACKEND_MODULES) -> list[str]:
     with tempfile.TemporaryDirectory(prefix="node-pack-relocation-") as scratch:
         root, manifest = locate_pack(source, Path(scratch))
@@ -149,7 +185,7 @@ def check_pack(source: Path, modules: tuple = MODULES, backend_modules: tuple = 
         if launcher.returncode != 0:
             failures.append(f"launcher --help exited {launcher.returncode}: {launcher.stderr.strip()[-400:]}")
         if (root / "native").is_dir():
-            native = native_problems(root)
+            native = native_problems(root) + loaded_library_problems(root)
             print(f"{'PASS' if not native else 'FAIL'} native tools and libmagic run from the pack")
             failures += native
         caches = sorted(bytecode_files(root) - cached)
