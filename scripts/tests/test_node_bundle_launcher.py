@@ -3,9 +3,8 @@
 import argparse
 import sys
 
-import node_bundle_support  # noqa: F401
-import astral_node_launch as launch
 import pytest
+from node_bundle_support import astral_node_launch as launch
 
 
 def write_env(tmp_path, text):
@@ -75,7 +74,7 @@ def test_main_starts_the_orchestrator_with_logging_and_a_pinned_host(tmp_path, m
     (tmp_path / "app" / "backend" / "orchestrator").mkdir(parents=True)
     monkeypatch.setattr(launch.runpy, "run_path", lambda path, run_name: calls.update(path=path, run_name=run_name))
     monkeypatch.setattr(launch, "pin_bind_host", lambda host: calls.update(host=host))
-    import node_logging
+    from node_bundle_support import node_logging
 
     monkeypatch.setattr(node_logging, "capture_output", lambda directory, secrets: calls.update(log=directory, secrets=secrets))
     monkeypatch.chdir(tmp_path)

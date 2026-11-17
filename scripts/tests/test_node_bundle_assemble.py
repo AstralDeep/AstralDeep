@@ -5,9 +5,8 @@ import json
 import subprocess
 import sys
 
-import node_bundle_support  # noqa: F401
-import assemble as ap
 import pytest
+from node_bundle_support import assemble as ap
 
 
 def repository(path, files=None):

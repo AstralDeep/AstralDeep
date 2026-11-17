@@ -4,10 +4,9 @@ import json
 import os
 import tarfile
 
-import node_bundle_support  # noqa: F401
-import manifest as pm
 import pytest
-import verify
+from node_bundle_support import manifest as pm
+from node_bundle_support import verify
 
 INPUTS = {"version": "1", "platform": "macos-arm64"}
 
@@ -83,7 +82,7 @@ def test_unsupported_file_types_are_refused(tmp_path):
 
 
 def test_archive_is_deterministic_and_unpacks_to_a_verifiable_tree(tmp_path):
-    root, manifest = sealed(tmp_path)
+    root, _ = sealed(tmp_path)
     first = pm.write_archive(root, tmp_path / "one.tar.gz")
     os.utime(root / "app" / "a.py", (12345, 12345))
     second = pm.write_archive(root, tmp_path / "two.tar.gz")
@@ -108,6 +107,6 @@ def test_descriptor_binds_archive_and_manifest_hashes(tmp_path):
 
 
 def test_a_version_the_installer_would_refuse_is_not_sealed(tmp_path):
-    root, manifest = sealed(tmp_path)
+    _, manifest = sealed(tmp_path)
     with pytest.raises(ValueError, match="not installable"):
         pm.descriptor({**manifest, "version": "has space"}, {}, "0" * 64)

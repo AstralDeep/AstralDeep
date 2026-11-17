@@ -3,8 +3,7 @@
 import json
 import re
 
-import node_bundle_support  # noqa: F401
-import assemble as ap
+from node_bundle_support import assemble as ap
 
 
 def test_pins_name_a_full_kernel_commit_and_no_deep_commit():

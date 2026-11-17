@@ -3,8 +3,7 @@
 import os
 import time
 
-import node_bundle_support  # noqa: F401
-import node_logging as nl
+from node_bundle_support import node_logging as nl
 
 
 def test_secret_values_come_only_from_secret_looking_names_and_skip_short_values():
