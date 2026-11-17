@@ -8,8 +8,11 @@ import hmac
 import ipaddress
 import json
 import re
+import subprocess
 import tomllib
+from collections.abc import Callable
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -143,6 +146,17 @@ def size_bytes(text: str) -> int:
     return int(match[1]) * 1024 ** "bkmg".index(match[2] or "b")
 
 
+class RuntimeSection(Strict):
+    # How the deployment runs: as host processes from a node pack, or as the Compose containers earlier releases wrote.
+    mode: Literal["process", "container"] = "process"
+    bundle: str | None = None
+    bundle_sha256: str | None = Field(default=None, pattern=r"^[0-9a-fA-F]{64}$")
+
+
+class ContainerData(Exception):
+    code = "deployment.container_data"
+
+
 class AgentEntry(Strict):
     id: str = Field(pattern=AGENT_ID)
     package: str
@@ -154,6 +168,7 @@ class DeploymentFile(Strict):
     owner: dict | None = None
     egress: EgressSection = EgressSection()
     executor: ExecutorSection = ExecutorSection()
+    runtime: RuntimeSection | None = None
     agents: list[AgentEntry] = []
 
     @model_validator(mode="after")
@@ -190,6 +205,7 @@ class Deployment(BaseModel):
     egress: EgressSection
     executor: ExecutorSection
     agents: dict[str, Agent]
+    runtime: RuntimeSection | None = None
     notices: tuple[str, ...] = ()
 
 
@@ -205,7 +221,7 @@ def load_deployment(path: str | Path, packages_root: str | None = None) -> Deplo
         agents[entry.id] = Agent(id=entry.id, package=package, host_package=host, profile=entry.sandbox)
     notices = (LEGACY_OWNER_NOTICE,) if raw.owner is not None else ()
     return Deployment(path=path, node=raw.node, egress=raw.egress, executor=raw.executor, agents=agents,
-                      notices=notices)
+                      runtime=raw.runtime, notices=notices)
 
 
 def _check_grants(entry: AgentEntry, package: AgentPackage) -> None:
@@ -249,3 +265,28 @@ def sandbox_token(master: str, agent_id: str) -> str:
 def egress_token(master: str) -> str:
     # The token for the egress model passthrough, so nothing else on the egress network can spend the key.
     return hmac.new(master.encode(), b"egress:model", hashlib.sha256).hexdigest()
+
+
+def _docker_volumes(project: str) -> list[str]:
+    try:
+        done = subprocess.run(["docker", "volume", "ls", "-q", "--filter",
+                               f"label=com.docker.compose.project={project}"],
+                              check=True, text=True, capture_output=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return [name for name in done.stdout.split() if name.endswith(("node_data", "executor_data"))]
+
+
+def runtime_of(deployment: Deployment, volumes: Callable[[str], list[str]] = _docker_volumes) -> RuntimeSection:
+    # A file with no [runtime] section keeps the container data it was written for. Nothing is written or started
+    # until the operator says mode = "container" to keep that data or removes it.
+    if deployment.runtime is not None:
+        return deployment.runtime
+    folder = deployment.path.parent
+    found = volumes(deployment.node.project)
+    if (folder / "compose.generated.yml").exists() or found:
+        named = ", ".join(found) or "the Docker volumes node_data and executor_data"
+        raise ContainerData(f"{deployment.path} has no [runtime] section and this folder holds container data "
+                            f"({named}). Add [runtime] with mode = \"container\" to keep running it in Docker, "
+                            "or export the data first (see docs/run/migration.md). Nothing was changed.")
+    return RuntimeSection()
