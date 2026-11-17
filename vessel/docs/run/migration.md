@@ -44,3 +44,33 @@ The old `<project>_vessel_data` volume is not read. Delete it when you are sure 
 ## Isolation probes
 
 The probes now run 33 checks for the example deployment against the new containers. They check the node, the executor and the egress instead of the vessel and the search container.
+
+## From containers to processes
+
+A deployment folder written by an earlier release holds container data. Vessel never moves or deletes it for you.
+
+`astralvessel up` stops with `deployment.container_data` and names the Docker volumes. `check` and `down` keep working on the Compose deployment, so you can still inspect and stop it.
+
+You have two choices.
+
+To keep the data where it is, add this to `deployment.toml` and nothing else changes:
+
+```toml
+[runtime]
+mode = "container"
+```
+
+To move to process mode, export the data by hand. Stop the node first without `--volumes`:
+
+```bash
+astralvessel down
+mkdir -p .runtime/node-data .runtime/executor
+docker run --rm -v <project>_node_data:/from:ro -v "$PWD/.runtime/node-data":/to alpine \
+  sh -c 'cp -a /from/. /to/ && chown -R '"$(id -u):$(id -g)"' /to'
+docker run --rm -v <project>_executor_data:/from:ro -v "$PWD/.runtime/executor":/to alpine \
+  sh -c 'cp -a /from/. /to/ && chown -R '"$(id -u):$(id -g)"' /to'
+```
+
+Then add `[runtime] mode = "process"` to `deployment.toml` and run `astralvessel up`. The node reads the same database and signing key from `.runtime/node-data`. The secrets in `.generated/node.env` are reused, so what the node stored stays readable.
+
+Check the result with `astralvessel check`. Delete the Docker volumes and `compose.generated.yml` only after you are happy.

@@ -1,34 +1,55 @@
 # Platform support
 
-Sandboxes depend on Linux kernel features, so where AstralVessel can run safely is decided by the host kernel. This
-page says what is supported and what has not been checked.
+A user install runs the node and its tools as processes on your machine. It needs no container engine. Each tool call is confined by what the host operating system offers.
 
-| Platform | Status |
+This page says which hosts work and what each one gives you.
+
+| Host | Status |
 |---|---|
-| Linux 6.12 or newer, x86_64 or arm64, with Landlock ABI 6 | Supported. CI runs the tests and the isolation probes on Ubuntu 24.04 runners (x86_64). |
-| Linux older than 6.12, or with Landlock disabled | Not supported. Sandboxes refuse to start. |
-| Other CPU architectures | Not supported. The seccomp filter exists only for x86_64 and aarch64; elsewhere every confined call fails. |
-| macOS with Docker Desktop, Apple silicon | Supported. Containers run in Docker Desktop's Linux VM, whose kernel offers Landlock ABI 6. Checked on Docker Desktop 29.5 (VM kernel 6.12) with `astralvessel up --example`: all isolation probes passed. Older Docker Desktop versions may ship an older kernel; the sandbox then refuses to start and `up` shows why. |
-| Windows with Docker Desktop | **Unverified.** Containers run in Docker Desktop's Linux VM (WSL 2); whether its kernel offers Landlock ABI 6 has not been checked. |
+| macOS on Apple silicon | Supported. Tool calls run under Seatbelt (`sandbox-exec`) with a policy rendered from the agent's profile. |
+| Linux 6.12 or newer, x86_64 or arm64 | Supported. Tool calls run under bubblewrap with Landlock ABI 6 and seccomp. Needs unprivileged user namespaces. |
+| Linux older than 6.12, or with Landlock off | `read`, `glob` and `list` work. `bash` and declared tools are refused with `exec.backend_unavailable`. |
+| Other CPU architectures | Not supported. No node pack exists for them. |
+| Windows | Not supported. |
 
-Released images are built for amd64 and arm64.
+Every refusal names the missing piece: `landlock_abi`, `bwrap_missing`, `userns_denied`, `sandbox_exec_missing`, `app_sandboxed` or `platform_unsupported`. `astralvessel up` prints it.
+
+## What macOS gives you less of
+
+Seatbelt confines each call, but it has no cgroups. Memory, process and time limits apply to one call at a time. There is no cap on the total memory or CPU of an agent across calls.
+
+On Linux the agent's systemd unit also sets `MemoryMax`, `TasksMax` and `CPUQuota` when your user manager delegates those controls.
+
+## Ubuntu 24.04
+
+Ubuntu 24.04 restricts unprivileged user namespaces with an AppArmor rule. Bubblewrap cannot start under it, and the refusal reads `userns_denied`.
+
+The rule is the sysctl `kernel.apparmor_restrict_unprivileged_userns`. An administrator can allow `/usr/bin/bwrap` with an AppArmor profile, which keeps the restriction for everything else. Setting the sysctl to 0 also works and is broader.
+
+The stock 24.04 kernel is 6.8, which offers Landlock ABI 4. Install the HWE kernel to get 6.14 or newer, then reboot. Check the result with `astralvessel check`.
 
 ## Check a host
 
-Landlock ABI 6 is what the sandbox checks for. Run the same check the sandbox makes, inside the AstralVessel image:
+```bash
+astralvessel check
+```
+
+It runs the backend conformance suite from the node pack and prints one line per case. A case the host cannot run prints as skipped with the reason. A failed case exits with status 1. See [Isolation and probes](isolation.md).
+
+## Python and the node pack
+
+The `astralvessel` command needs Python 3.11 or newer. The node and every Vessel role run on the Python inside the node pack, so nothing else is installed. A Linux pack needs glibc 2.36 or newer, and the install says so when yours is older.
+
+## Container mode
+
+Container mode is the older way to run Vessel. It stays available for folders that already use it, and you opt in with `mode = "container"` under `[runtime]`.
+
+It needs Docker with the Compose v2 plugin and a Linux kernel that offers Landlock ABI 6. On a Mac that means Docker Desktop, whose Linux VM must run kernel 6.12 or newer. Windows with Docker Desktop has not been checked.
+
+Check the kernel from inside the image:
 
 ```bash
 docker run --rm astralvessel:local python -c "from astralvessel import confine; print(confine.abi_version())"
 ```
 
-It prints the kernel's Landlock ABI version; `6` or higher is required. `0` means Landlock is unavailable. If the
-deployment is already running, a sandbox that cannot confine exits at startup with:
-
-```text
-this kernel lacks Landlock ABI 6; per-call isolation is unavailable (set VESSEL_UNCONFINED=1 only for development)
-```
-
-## Python
-
-The `astralvessel` command needs Python 3.11 or newer; CI tests 3.11 and 3.12. The executor and sandbox image uses
-Python 3.11, the egress image Python 3.12. The node image brings its own Python.
+It prints the Landlock ABI. `6` or higher works and `0` means Landlock is off.

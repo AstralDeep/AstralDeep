@@ -32,6 +32,21 @@ memory = "1g"
 scratch = "64m"
 ```
 
+## [runtime]
+
+```toml
+[runtime]
+mode = "process"
+bundle = "/path/to/node-pack.json"
+bundle_sha256 = "<digest>"
+```
+
+`mode` is `process` or `container`. `up` writes `process` in a new folder. A file with no `[runtime]` section that sits beside a `compose.generated.yml` is a container deployment, and `up` stops with `deployment.container_data` until you add `mode = "container"`.
+
+`bundle` and `bundle_sha256` name the node pack. Leave them out to use the pack the release pins. A pack on this machine needs no digest.
+
+In process mode `project` only names the service units, and the container keys in `[node]` and `[executor]` are ignored.
+
 ## [node]
 
 | Key | Meaning |

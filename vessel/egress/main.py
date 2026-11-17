@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 
 import uvicorn
 
@@ -11,8 +12,10 @@ from egress.app import app
 
 
 async def main() -> None:
-    server = uvicorn.Server(uvicorn.Config(app, host="0.0.0.0", port=8080, access_log=False, log_level="info"))
-    proxy_server = await proxy.serve()
+    host = os.environ.get("EGRESS_HOST", "0.0.0.0")
+    port, proxy_port = int(os.environ.get("EGRESS_PORT", "8080")), int(os.environ.get("EGRESS_PROXY_PORT", "3128"))
+    server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, access_log=False, log_level="info"))
+    proxy_server = await proxy.serve(host, proxy_port)
     async with proxy_server:
         await server.serve()
 
