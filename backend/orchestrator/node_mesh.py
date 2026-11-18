@@ -54,6 +54,18 @@ OFFERS_PER_WINDOW = 5
 OFFER_WINDOW_SECONDS = 60.0
 
 
+async def _legacy_link_count() -> int:
+    owners = node_identity.legacy_owners()
+    if not owners:
+        return 0
+    from orchestrator import artifact_share
+
+    try:
+        return await artifact_share.get_share_store().count_for_owners(owners)
+    except RuntimeError:
+        return 0
+
+
 class NodeMeshError(Exception):
     def __init__(self, code: str, status: int = 409):
         super().__init__(code)
@@ -382,6 +394,9 @@ class StepRecord:
     receipt: Optional[str] = None
 
 
+DEFAULT_SANDBOX: Any = object()
+
+
 class NodeMesh:
     def __init__(
         self,
@@ -391,8 +406,10 @@ class NodeMesh:
         binding: Any = None,
         mailbox: Optional[MailboxProcess] = None,
         mailbox_address: Optional[str] = None,
-        sandbox: Optional[node_stdio_launcher.SandboxBackend] = None,
+        sandbox: Any = DEFAULT_SANDBOX,
     ):
+        if sandbox is DEFAULT_SANDBOX:
+            sandbox = node_stdio_exec.default_backend(Path(data_dir))
         self._launcher = node_stdio_launcher.NodeStdioLauncher(sandbox)
         self._mailbox_address = mailbox_address
         self._data_dir = Path(data_dir)
@@ -748,6 +765,7 @@ class NodeMesh:
             address = None
         mailbox = self._mailbox_snapshot()
         return {
+            "share": {"legacy_links": await _legacy_link_count()},
             "available": True,
             "state": enrollment.lower(),
             "enrolled": enrolled,
@@ -1109,7 +1127,7 @@ class NodeMesh:
             result = await asyncio.to_thread(function, *arguments)
             return await result if inspect.isawaitable(result) else result
         except self._binding.KernelError as exc:
-            raise NodeMeshError(_code_of(exc)) from exc
+            raise NodeMeshError(_code_with_phi(exc)) from exc
 
     async def sync_now(self) -> None:
         if self._quarantined:
@@ -1134,9 +1152,7 @@ async def start_configured(data_dir: Optional[Path] = None) -> Optional[NodeMesh
         return None
     try:
         mesh_dir = data_dir or node_identity.data_dir()
-        mesh = NodeMesh(
-            data_dir=mesh_dir, settings=MeshSettings.from_env(), sandbox=node_stdio_exec.default_backend(mesh_dir)
-        )
+        mesh = NodeMesh(data_dir=mesh_dir, settings=MeshSettings.from_env())
     except MeshUnavailable as exc:
         logger.warning("node_mesh_unavailable: %s", exc.code)
         return None

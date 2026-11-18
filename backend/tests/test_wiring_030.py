@@ -267,8 +267,15 @@ def test_delegation_required_in_production_posture(monkeypatch):
 
 
 def test_delegation_override_wins_both_ways(monkeypatch):
+    monkeypatch.setenv("ASTRAL_NODE_PROFILE", "server")
     assert _delegation_required(monkeypatch, "development", "true") is True
     assert _delegation_required(monkeypatch, "production", "false") is False
+
+
+def test_a_personal_node_in_production_cannot_switch_delegation_off(monkeypatch):
+    monkeypatch.setenv("ASTRAL_NODE_PROFILE", "personal")
+    assert _delegation_required(monkeypatch, "production", "false") is True
+    assert _delegation_required(monkeypatch, "development", "false") is False
 
 
 def test_visibility_policy_flips_only_listed_agents_and_is_idempotent(plane_runtime):

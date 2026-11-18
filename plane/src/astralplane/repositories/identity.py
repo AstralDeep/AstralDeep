@@ -1,5 +1,5 @@
-"""Persists detached Keycloak/OIDC identity claims and external-identity links, scoped
-to the caller-supplied OIDC subject. Does not authenticate or authorize; used by
+"""Persists detached identity claims and external-identity links, scoped
+to the caller-supplied subject. Does not authenticate or authorize; used by
 orchestrator/external_identity_links.py and repositories/agent_management.py.
 """
 

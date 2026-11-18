@@ -87,6 +87,12 @@ CURRENT_DEPENDENCY_AUTHORITIES = {
     "tooling/requirements-gaiakeep-sdk-tests.txt": "a346c3a5ad503cf1b04e61655fb6e3ec667027f8d097c92ab960b4d013fb4c78",
     "tooling/ui-ci/requirements.in": "3b298d1b5ca1a5b849ed568d3a5bda4babfaea3a1187eca7983e1cf9aa73b659",
     "tooling/ui-ci/requirements.lock.txt": "afb649d5dd7d9b74477e73b7f24972b273505a04ea2dfcd2d23defbbf71a84dc",
+    "scripts/exec_harness/Dockerfile": "b4636ddf5c80c75cb44e29cba88d4413308c824967ac50975bc8399e6be6f8a5",
+    "scripts/node_bundle/linux/Dockerfile": "12165b6182217673c434e17492c392282537f14bc1181fff52a9b8847c9edb59",
+    "tooling/contract-ref/requirements.in": "d3a35d4c88066ef69d8323917e8be4df3663acd3c71c6b49b118bfa7e73ce6f9",
+    "tooling/contract-ref/requirements.lock.txt": "98c7d84a2a18e04f5e592e7d4df8713e9608545ba361838dac11325ea17771bf",
+    "tooling/vessel-ci/requirements.in": "bfddbee7910123bcd85b33363a9346ad544f7e31717df72a5735e7596e4bac55",
+    "tooling/vessel-ci/requirements.lock.txt": "143d770408181f9cd9680db98a05e23b11405cbf76642c0be98b0b10fbb3134b",
     "uv.lock": "9ac083ef3b758ad4ceb6867290b7bd7116e0a008af86fb90d91afe6613e1d92e",
 }
 DEEP_DEPENDENCY_AUTHORITY_POLICY = {

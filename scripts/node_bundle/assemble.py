@@ -246,9 +246,15 @@ def bake_bytecode(python: Path, stage: Path) -> None:
          "-s", stage, "-p", BYTECODE_PREFIX, *roots])
 
 
+def _leak_context(window: bytes, needle: bytes) -> str:
+    start = window.index(needle)
+    around = window[max(0, start - 60):start + len(needle) + 60]
+    return "".join(chr(byte) if 32 <= byte < 127 else "." for byte in around)
+
+
 def scan_for_leaks(stage: Path, forbidden: list[Path]) -> None:
     needles = [str(path).encode() for path in forbidden]
-    longest = max(len(needle) for needle in needles)
+    longest = max(len(needle) for needle in needles) + 60
     leaks = []
     for current, _, names in os.walk(stage, followlinks=False):
         for name in names:
@@ -259,12 +265,14 @@ def scan_for_leaks(stage: Path, forbidden: list[Path]) -> None:
             with path.open("rb") as handle:
                 for block in iter(lambda: handle.read(1 << 20), b""):
                     window = tail + block
-                    if any(needle in window for needle in needles):
-                        leaks.append(path.relative_to(stage).as_posix())
+                    found = next((needle for needle in needles if needle in window), None)
+                    if found is not None:
+                        leaks.append(f"{path.relative_to(stage).as_posix()} (matched {found.decode()!r}: "
+                                     f"{_leak_context(window, found)!r})")
                         break
                     tail = window[-longest:]
     if leaks:
-        raise PackError("build paths leaked into the pack: " + ", ".join(sorted(leaks)[:10]))
+        raise PackError("build paths leaked into the pack: " + "; ".join(sorted(leaks)[:10]))
 
 
 def installed_distributions(python: Path) -> list[dict]:

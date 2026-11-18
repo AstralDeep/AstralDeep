@@ -11,12 +11,10 @@ import json
 import secrets
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
-from types import SimpleNamespace
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 import pytest
 from cryptography.fernet import Fernet, InvalidToken
-from orchestrator import remote_mcp_api
 from orchestrator import remote_mcp_connectors as connectors
 from orchestrator import remote_mcp_oauth as oauth
 from orchestrator.credential_manager import CredentialManager
@@ -976,92 +974,6 @@ def test_plane_pending_credential_take_is_atomic_across_workers(plane_template, 
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("operation", ["callback", "refresh", "registration"])
-async def test_oauth_response_preserves_settings_changed_during_provider_request(operation):
-    orch = _Orch()
-    saved = _connector(orch, client_id="" if operation == "registration" else "client-1")
-    if operation == "refresh":
-        current = connectors.get_connector(orch, "owner-1", saved["id"])
-        current.update({"refresh_token": "refresh-old", "token_endpoint": ISSUER + "/token"})
-        connectors.save_connector(orch, "owner-1", current)
-    base_requester = _Requester()
-    state = ""
-    if operation == "callback":
-        url, binding = await _authorize(orch, saved["id"], base_requester)
-        state = parse_qs(urlsplit(url).query)["state"][0]
-
-    async def requester(url, method, body, headers, maximum):
-        if url == ISSUER + ("/register" if operation == "registration" else "/token"):
-            current = connectors.get_connector(orch, "owner-1", saved["id"])
-            current.update({"enabled": False, "name": "User edited", "tools": {"echo": False}})
-            connectors.save_connector(orch, "owner-1", current)
-        return await base_requester(url, method, body, headers, maximum)
-
-    if operation == "callback":
-        await oauth.complete_authorization(orch, "code", state, binding=binding, session_owner="owner-1", requester=requester)
-    elif operation == "refresh":
-        await oauth.refresh_authorization(orch, "owner-1", saved["id"], requester=requester)
-    else:
-        await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, START, requester=requester)
-    current = connectors.get_connector(orch, "owner-1", saved["id"])
-    assert current["enabled"] is False
-    assert current["name"] == "User edited"
-    assert current["tools"] == {"echo": False}
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("operation", ["callback", "refresh", "registration"])
-@pytest.mark.parametrize("mutation", [
-    "delete", "url", "oauth_client_id", "oauth_client_secret", "oauth_token_endpoint_auth_method",
-])
-async def test_oauth_response_cannot_recreate_or_restore_changed_connector(operation, mutation):
-    orch = _Orch()
-    saved = _connector(orch, client_id="" if operation == "registration" else "client-1",
-                       client_secret="secret")
-    if operation == "refresh":
-        current = connectors.get_connector(orch, "owner-1", saved["id"])
-        current.update({"refresh_token": "refresh-old", "token_endpoint": ISSUER + "/token"})
-        connectors.save_connector(orch, "owner-1", current)
-    base_requester = _Requester(token_auth_methods=["client_secret_basic", "client_secret_post"],
-                                registered_method="client_secret_basic", registered_secret="issued-secret")
-    state = ""
-    if operation == "callback":
-        url, binding = await _authorize(orch, saved["id"], base_requester)
-        state = parse_qs(urlsplit(url).query)["state"][0]
-
-    async def requester(url, method, body, headers, maximum):
-        if url == ISSUER + ("/register" if operation == "registration" else "/token"):
-            if mutation == "delete":
-                connectors.delete_connector(orch, "owner-1", saved["id"])
-            else:
-                current = connectors.get_connector(orch, "owner-1", saved["id"])
-                if mutation == "oauth_token_endpoint_auth_method":
-                    current[mutation] = ("client_secret_post" if operation == "callback"
-                                         else "client_secret_basic")
-                else:
-                    current[mutation] = "https://new.example/mcp" if mutation == "url" else "replacement"
-                connectors.save_connector(orch, "owner-1", current)
-        return await base_requester(url, method, body, headers, maximum)
-
-    with pytest.raises((oauth.RemoteMCPOAuthError, connectors.RemoteMCPError)):
-        if operation == "callback":
-            await oauth.complete_authorization(orch, "code", state, binding=binding, session_owner="owner-1", requester=requester)
-        elif operation == "refresh":
-            await oauth.refresh_authorization(orch, "owner-1", saved["id"], requester=requester)
-        else:
-            await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, START, requester=requester)
-    if mutation == "delete":
-        assert connectors.list_connectors(orch, "owner-1") == []
-    else:
-        current = connectors.get_connector(orch, "owner-1", saved["id"])
-        expected = ("https://new.example/mcp" if mutation == "url" else
-                    "client_secret_post" if mutation == "oauth_token_endpoint_auth_method" and operation == "callback" else
-                    "client_secret_basic" if mutation == "oauth_token_endpoint_auth_method" else "replacement")
-        assert current[mutation] == expected
-        assert not current.get("access_token")
-
-
-@pytest.mark.asyncio
 async def test_refresh_success_cannot_overwrite_a_concurrently_rotated_token():
     orch = _Orch()
     saved = _connector(orch)
@@ -1167,17 +1079,6 @@ async def test_bind_refuses_when_a_concurrent_writer_changed_the_pending_record(
     with pytest.raises(oauth.RemoteMCPOAuthError, match="already opened in a browser"):
         await oauth.bind_authorization(orch, "owner-1", state)
     assert _pending_record(orch) == before
-
-
-@pytest.mark.asyncio
-async def test_begin_rejects_an_unsafe_start_url_before_contacting_the_server():
-    orch = _Orch()
-    saved = _connector(orch)
-    requester = _Requester()
-    with pytest.raises(oauth.RemoteMCPOAuthError, match="public HTTPS"):
-        await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK,
-                                        "http://astral.example/api/remote-mcp/oauth/start", requester=requester)
-    assert requester.calls == []
 
 
 @pytest.mark.asyncio
@@ -1292,122 +1193,4 @@ class _Browser:
                     self.cookies[key] = cookie_value
         return response
 
-    async def start(self, state):
-        return self.keep(await remote_mcp_api.remote_mcp_oauth_start(
-            self.request("/api/remote-mcp/oauth/start", state=state), state=state))
 
-    async def callback(self, code, state):
-        return self.keep(await remote_mcp_api.remote_mcp_oauth_callback(
-            self.request("/api/remote-mcp/oauth/callback", code=code, state=state), code=code, state=state))
-
-
-@pytest.fixture
-def browser_flow(monkeypatch):
-    from orchestrator import auth, web_auth
-
-    orch = _Orch()
-    saved = _connector(orch)
-    requester = _Requester()
-
-    async def session(request):
-        cookie = request.cookies.get("astral_session", "")
-        owner = cookie.removeprefix("session-")
-        return {"access_token": "token-" + owner, "sub": owner} if cookie else None
-
-    async def payload(_request, credentials):
-        return {"sub": credentials.credentials.removeprefix("token-"), "realm_access": {"roles": ["user"]}}
-
-    monkeypatch.setattr(web_auth, "ensure_session", session)
-    monkeypatch.setattr(web_auth, "aget_session", session)
-    monkeypatch.setattr(auth, "get_current_user_payload", payload)
-    monkeypatch.setattr(remote_mcp_api, "_get_orchestrator", lambda request: orch)
-    monkeypatch.setattr(connectors, "http_request", requester)
-
-    async def begin():
-        start_url = await oauth.begin_authorization(orch, "owner-1", saved["id"], CALLBACK, START,
-                                                    requester=requester)
-        return parse_qs(urlsplit(start_url).query)["state"][0]
-
-    return SimpleNamespace(orch=orch, saved=saved, requester=requester, begin=begin)
-
-
-@pytest.mark.asyncio
-async def test_owner_browser_completes_flow_it_started(browser_flow):
-    state = await browser_flow.begin()
-    owner = _Browser("owner-1")
-
-    started = await owner.start(state)
-    assert started.status_code == 303
-    assert parse_qs(urlsplit(started.headers["location"]).query)["state"] == [state]
-    assert list(owner.cookies) == [remote_mcp_api._binding_cookie(state)]
-    done = await owner.callback("code-1", state)
-
-    assert done.status_code == 200
-    assert owner.cookies == {}
-    stored = connectors.get_connector(browser_flow.orch, "owner-1", browser_flow.saved["id"])
-    assert stored["access_token"] == "access-1"
-    replay = await owner.callback("code-1", state)
-    assert replay.status_code == 400
-    assert len(_token_calls(browser_flow.requester)) == 1
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("victim_session", [None, "victim"])
-async def test_forwarded_provider_link_cannot_land_victim_authorization_in_initiator_connector(
-        browser_flow, victim_session):
-    state = await browser_flow.begin()
-    attacker = _Browser("owner-1")
-    assert (await attacker.start(state)).status_code == 303
-    victim = _Browser(victim_session)
-
-    landed = await victim.callback("victim-code", state)
-    late = await attacker.callback("victim-code", state)
-
-    assert landed.status_code == 400
-    assert late.status_code == 400
-    assert _token_calls(browser_flow.requester) == []
-    assert not connectors.get_connector(browser_flow.orch, "owner-1", browser_flow.saved["id"]).get("access_token")
-
-
-@pytest.mark.asyncio
-async def test_forwarded_start_link_requires_the_owner_signed_in_in_that_browser(browser_flow):
-    state = await browser_flow.begin()
-    signed_out = _Browser()
-    sign_in = await signed_out.start(state)
-    assert sign_in.status_code == 303
-    assert sign_in.headers["location"].startswith("/auth/login?next=")
-    victim = _Browser("victim")
-    refused = await victim.start(state)
-    assert refused.status_code == 400
-    assert signed_out.cookies == {} and victim.cookies == {}
-
-    owner = _Browser("owner-1")
-    assert (await owner.start(state)).status_code == 303
-    assert (await victim.callback("victim-code", state)).status_code == 400
-    assert _token_calls(browser_flow.requester) == []
-
-
-@pytest.mark.asyncio
-async def test_reopening_the_start_link_keeps_the_first_browser_flow(browser_flow):
-    state = await browser_flow.begin()
-    first = _Browser("owner-1")
-    second = _Browser("owner-1")
-    assert (await first.start(state)).status_code == 303
-
-    assert (await second.start(state)).status_code == 400
-    assert second.cookies == {}
-    assert (await first.callback("code-1", state)).status_code == 200
-    assert connectors.get_connector(browser_flow.orch, "owner-1", browser_flow.saved["id"])["access_token"] == "access-1"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("later_owner", ["owner-2", None])
-async def test_binding_cookie_is_refused_after_the_browser_switches_or_leaves_account(browser_flow, later_owner):
-    state = await browser_flow.begin()
-    browser = _Browser("owner-1")
-    assert (await browser.start(state)).status_code == 303
-    browser.owner = later_owner
-
-    assert (await browser.callback("code-1", state)).status_code == 400
-    assert _token_calls(browser_flow.requester) == []
-    assert not connectors.get_connector(browser_flow.orch, "owner-1", browser_flow.saved["id"]).get("access_token")

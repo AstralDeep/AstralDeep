@@ -92,49 +92,6 @@ async def test_shared_gate_refuses_destructive_mcp_before_transport_20_of_20():
     transport.assert_not_awaited()
 
 
-@pytest.mark.asyncio
-async def test_mcp_delegation_is_newly_minted_without_inbound_bearer(monkeypatch):
-    monkeypatch.setenv("ASTRAL_ENV", "development")
-    orchestrator = Orchestrator.__new__(Orchestrator)
-    orchestrator.agent_cards = {
-        "reader-1": AgentCard(
-            name="Reader",
-            description="",
-            agent_id="reader-1",
-            skills=[
-                AgentSkill(
-                    id="read_value",
-                    name="Read",
-                    description="",
-                    scope="tools:read",
-                )
-            ],
-        )
-    }
-    orchestrator.security_flags = {}
-    orchestrator.tool_permissions = SimpleNamespace(
-        is_tool_allowed=lambda *args: True,
-        get_enabled_scope_names=lambda *args: ["tools:read"],
-    )
-    orchestrator.delegation = SimpleNamespace(
-        agent_service_client_id="astral-agent-service"
-    )
-    claims = {"sub": "u1", "scope": "mcp:tools:invoke", "tripwire": "not-a-token"}
-    token = await Orchestrator._mint_mcp_delegation_token(
-        orchestrator,
-        "reader-1",
-        "u1",
-        claims,
-    )
-    assert token and "not-a-token" not in token
-    from orchestrator.delegation import decode_token_payload
-
-    payload = decode_token_payload(token)
-    assert payload["sub"] == "u1"
-    assert payload["act"] == {"sub": "agent:reader-1"}
-    assert "tool:read_value" in payload["scope"]
-
-
 def test_audit_marks_mcp_invocation_channel_without_argument_values():
     audit = ToolDispatchAudit(
         claims={"sub": "u1"},
@@ -340,54 +297,6 @@ async def test_execute_mcp_tool_uses_gate_dispatch_and_cap_cleanup_without_token
         tool_name="read",
         arguments={},
     ) is completed
-
-
-@pytest.mark.asyncio
-async def test_mcp_delegation_edge_paths_fail_closed(monkeypatch):
-    orchestrator = Orchestrator.__new__(Orchestrator)
-    orchestrator.agent_cards = {}
-    orchestrator.security_flags = {}
-    orchestrator.tool_permissions = SimpleNamespace(
-        is_tool_allowed=lambda *args: True,
-        get_enabled_scope_names=lambda *args: [],
-    )
-    orchestrator.delegation = SimpleNamespace(
-        agent_service_client_id="astral-agent-service"
-    )
-    assert await Orchestrator._mint_mcp_delegation_token(
-        orchestrator, "missing", "u1", {}
-    ) is None
-
-    orchestrator.agent_cards["reader-1"] = AgentCard(
-        name="Reader",
-        description="",
-        agent_id="reader-1",
-        skills=[AgentSkill(id="read", name="Read", description="")],
-    )
-    assert await Orchestrator._mint_mcp_delegation_token(
-        orchestrator, "reader-1", "u1", {}
-    ) is None
-
-    orchestrator.tool_permissions.get_enabled_scope_names = lambda *args: ["tools:read"]
-    token = await Orchestrator._mint_mcp_delegation_token(
-        orchestrator,
-        "reader-1",
-        "u1",
-        {"exp": "not-an-integer"},
-    )
-    assert token
-
-    websocket = object()
-    orchestrator.ui_sessions = {
-        websocket: {"_invocation_channel": "mcp", "sub": "u1"}
-    }
-    orchestrator._mint_mcp_delegation_token = AsyncMock(return_value="minted")
-    assert await Orchestrator._get_delegation_token(
-        orchestrator, websocket, "reader-1", "u1"
-    ) == "minted"
-    assert await Orchestrator._delegation_denied_for_permissions(
-        orchestrator, websocket, "reader-1", "u1"
-    ) is False
 
 
 def test_model_schema_adapter_only_removes_dialect_after_validation():

@@ -6,7 +6,7 @@ A personal node is one AstralDeep orchestrator that serves one owner. It runs on
 
 Set `ASTRAL_NODE_PROFILE=personal` and the node starts with a different posture.
 
-- The node needs no sign-in and no Keycloak. Your owner is the mesh you pair it with.
+- The node needs no sign-in. Your owner is the mesh you pair it with.
 - The node has its own Ed25519 signing key. It creates the key on first start in the node data directory. The file is mode 0600 and the key is never logged.
 - Tool delegation tokens are signed by the node. They last at most 300 seconds, name the agent in the `act` claim, and carry `aud` set to the agent audience and to this node's id. Another node refuses them.
 - The node publishes its public keys at `/.well-known/astral-node/jwks.json`.

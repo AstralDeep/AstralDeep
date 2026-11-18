@@ -353,7 +353,7 @@ class EvidenceContext:
                               conversation_id=chat, audience_id=f"user:{owner}")
 
     def _source_stamp(self, websocket, owner, chat, observation, parent):
-        from orchestrator import delegation, policy
+        from orchestrator import agent_authority, policy
         from orchestrator.tool_permissions import turn_permission_memo
         from personalization.phi_gate import get_phi_gate
 
@@ -366,7 +366,7 @@ class EvidenceContext:
                 raise EvidenceDenied()
         if parent is not None:
             scope = self.orchestrator.tool_permissions.get_tool_scope(observation.source_agent, observation.source_tool)
-            allowed, _reason = delegation.authorize_chained_tool_call(parent, observation.source_tool, scope)
+            allowed, _reason = agent_authority.authorize_chained_tool_call(parent, observation.source_tool, scope)
             if parent.get("sub") != owner or not allowed:
                 raise EvidenceDenied()
         blocked = self.orchestrator.security_flags.get(observation.source_agent, {}).get(observation.source_tool, {})

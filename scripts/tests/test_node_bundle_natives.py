@@ -341,6 +341,8 @@ def test_build_tools_are_linked_and_their_versions_recorded(tmp_path, monkeypatc
         (found / name).write_text(f"#!/bin/sh\necho {name} 9.9\n")
         (found / name).chmod(0o755)
     monkeypatch.setattr(bm.shutil, "which", lambda name: str(found / name))
+    monkeypatch.setattr(bm.subprocess, "run", lambda command, **kwargs: subprocess.CompletedProcess(
+        command, 0, stdout=f"{Path(command[0]).name} 9.9\n", stderr=""))
     tools = bm.link_tools(tmp_path / "tools")
     assert (tools / "cmake").resolve() == (found / "cmake").resolve()
     versions = bm.tool_versions(tools)

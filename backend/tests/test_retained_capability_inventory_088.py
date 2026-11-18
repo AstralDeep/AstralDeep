@@ -35,7 +35,7 @@ BEHAVIOR_SUITES = {
                                             "tests/test_remote_confirmation_063.py"),
     "specialist_services": ("agents/ml_services/tests/test_union_registry.py",
                             "agents/summarizer/tests/test_registry_contract.py"),
-    "identity_and_client_delivery": ("tests/test_native_work_compat_088.py",),
+    "identity_and_client_delivery": ("tests/test_node_bearer_refusal.py",),
 }
 
 

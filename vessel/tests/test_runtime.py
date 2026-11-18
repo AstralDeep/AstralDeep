@@ -15,6 +15,7 @@ import pytest
 from test_bundle import make_pack
 from test_deploy import deployment_text
 
+from astralvessel import bundle as bundle_module
 from astralvessel import runtime as rt
 from astralvessel import units
 from astralvessel.bundle import install
@@ -32,7 +33,7 @@ def bundle(tmp_path):
                                                       ("pydantic", "2.14.3"), ("starlette", "1.10.0"),
                                                       ("uvicorn", "0.54.0"), ("fastapi", "0.162.9"))]
     descriptor, digest = make_pack(tmp_path / "src", files=files)
-    installed = install(str(descriptor), digest, tmp_path / "bundles", platform="macos-arm64")
+    installed = install(str(descriptor), digest, tmp_path / "bundles", platform=bundle_module.platform_name())
     object.__setattr__(installed, "manifest", {**installed.manifest, "installed_distributions": dists})
     return installed
 

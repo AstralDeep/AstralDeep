@@ -5,6 +5,7 @@ It drives the real kernel binding through the seeded dev mesh with the fixture M
 from __future__ import annotations
 
 import json
+import re
 import stat
 from types import SimpleNamespace as NS
 
@@ -182,14 +183,12 @@ async def test_an_accessor_error_is_not_a_supported_request_runtime(tmp_path, mo
         assert refused.value.code == "node.request_runtime_unsupported"
 
 
-def test_the_personal_catalog_has_no_remote_mcp_tool_and_the_server_profile_keeps_it(monkeypatch):
+def test_the_personal_catalog_has_no_remote_mcp_tool(monkeypatch):
     host = remote_host()
     owner = node_identity.owner_id_for_mesh("sha256:" + "0" * 64)
     monkeypatch.setenv(node_identity.PROFILE_ENV, node_identity.PERSONAL)
     personal = names(OrchestratorCalls(host).published_tools(owner))
     assert AGENT and "read_value" in personal and not personal & set(REMOTE_TOOLS)
-    monkeypatch.setenv(node_identity.PROFILE_ENV, node_identity.INSTITUTION)
-    assert set(REMOTE_TOOLS) <= names(OrchestratorCalls(host).published_tools(owner))
 
 
 async def test_a_personal_node_resolves_no_withdrawn_tool(monkeypatch):
@@ -248,11 +247,11 @@ async def test_legacy_connector_rows_are_counted_by_key_name_and_their_bytes_are
         assert node_connections.legacy_count(["remote_mcp_x", 3, None]) == 1
 
 
-def test_the_binding_pin_names_the_phase_five_kernel():
+def test_the_binding_pin_names_the_composed_kernel():
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[2] / "config"
     binding = json.loads((root / "astral-kernel-binding.json").read_text())
     composition = json.loads((root / "astral-composition.json").read_text())
     assert binding["source"]["commit"] == composition["components"]["astral-kernel"]["commit"]
-    assert binding["source"]["commit"] == "eee9e02873f56fcbf1fa9e99c61d3b3cfbc9a435"
+    assert re.fullmatch(r"[0-9a-f]{40}", binding["source"]["commit"])

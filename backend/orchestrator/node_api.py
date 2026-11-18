@@ -1,5 +1,5 @@
 """REST surface of a personal node: the public v2 descriptor, which names no identity server and carries only a hash of the owner's mesh id, the node's JWKS, and the loopback pairing offer that only a holder of the node's pairing secret can read.
-node_connection_api.py adds the loopback operator routes for the node's outside connections. The offer comes from node_mesh.py, which owns the secret file, the owner approves it on an existing mesh device, and institution_api.py keeps the v1 descriptor.
+node_connection_api.py adds the loopback operator routes for the node's outside connections. The offer comes from node_mesh.py, which owns the secret file, the owner approves it on an existing mesh device.
 """
 
 from __future__ import annotations
@@ -8,7 +8,6 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
-from orchestrator import institution_api
 from orchestrator import node_connection_api
 from orchestrator import node_mesh
 from orchestrator import phi_node_policy
@@ -17,7 +16,6 @@ from shared import node_identity
 node_router = APIRouter(tags=["Node"])
 
 DESCRIPTOR_FORMAT = "astral.node.descriptor/v2"
-INSTITUTION_DESCRIPTOR_FORMAT = "astral.node.descriptor/v1"
 NODE_VERSION = "astral.node/v1"
 CAPABILITIES = (
     "chat",
@@ -31,7 +29,7 @@ NO_STORE = {"Cache-Control": "no-store"}
 
 
 def _require_node() -> node_identity.NodeIdentity:
-    if not (node_identity.is_personal() or node_identity.is_institution()):
+    if not node_identity.is_personal():
         raise HTTPException(404, "node_profile_inactive")
     try:
         return node_identity.load_node_identity()
@@ -53,8 +51,6 @@ def _owner_hash() -> str | None:
 
 def descriptor() -> dict[str, Any]:
     identity = _require_node()
-    if node_identity.is_institution():
-        return institution_api.descriptor(identity, INSTITUTION_DESCRIPTOR_FORMAT, NODE_VERSION, CAPABILITIES)
     return {
         "format": DESCRIPTOR_FORMAT,
         "version": NODE_VERSION,
@@ -155,4 +151,3 @@ async def mesh_offer(response: Response, secret: str = Depends(pairing_gate)):
 
 
 node_router.include_router(node_connection_api.connections_router)
-node_router.include_router(institution_api.institution_router)

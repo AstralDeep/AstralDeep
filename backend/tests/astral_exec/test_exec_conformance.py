@@ -344,3 +344,20 @@ def test_with_openssl_the_tls_fixture_has_a_certificate(tmp_path):
         )
     finally:
         fixtures.stop()
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+def test_the_refusal_cases_pass_on_a_machine_with_no_backend(platform):
+    facts = Facts(
+        platform=platform,
+        landlock_abi=0,
+        bwrap=False,
+        userns=False,
+        euid=1000,
+        sandbox_exec=False,
+        app_sandboxed=False,
+    )
+    facts.bwrap_path = None
+    facts.proc_children = False
+    results = conformance.run_suite(only=("refusal.",), facts=facts)
+    assert results and {result.result for result in results} == {conformance.PASS}

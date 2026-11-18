@@ -17,8 +17,8 @@ import httpx
 import pytest
 
 from orchestrator import node_mesh_calls as nmcalls
-from orchestrator import node_stdio_exec, session_store, vessel_executor as ve
-from orchestrator.session_store import assert_production_posture
+from orchestrator import node_stdio_exec, boot_posture, vessel_executor as ve
+from orchestrator.boot_posture import assert_production_posture
 from shared import node_identity as ni
 from tests.test_draft_agent_refusal import prepared
 from tests.test_node_mesh_calls import OWNER, Orch, many_tools
@@ -140,8 +140,7 @@ def production(tmp_path, monkeypatch):
         "USE_MOCK_AUTH": "false",
     }.items():
         monkeypatch.setenv(name, value)
-    for name in ("KEYCLOAK_CLIENT_SECRET", ni.OWNER_ENV, ni.ISSUERS_ENV):
-        monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv(ni.OWNER_ENV, raising=False)
     ni.reset_cache()
     yield
     ni.reset_cache()
@@ -151,5 +150,5 @@ def test_a_production_boot_with_a_placeholder_secret_still_exits_78(production, 
     assert_production_posture()
     monkeypatch.setenv("AUDIT_HMAC_SECRET", "change-me")
     with pytest.raises(SystemExit) as stopped:
-        session_store.assert_production_posture()
+        boot_posture.assert_production_posture()
     assert stopped.value.code == 78

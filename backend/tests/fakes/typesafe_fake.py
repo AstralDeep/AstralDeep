@@ -352,7 +352,7 @@ def configured_fault(environ: Optional[Mapping[str, str]] = None) -> Optional[st
     if not raw:
         return None
     try:
-        from orchestrator.session_store import is_dev_mode
+        from orchestrator.boot_posture import is_dev_mode
     except ImportError:  # pragma: no cover
         return None
     if not is_dev_mode():

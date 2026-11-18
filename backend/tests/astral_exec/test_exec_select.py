@@ -100,6 +100,7 @@ def test_constants_match_the_committed_vectors():
     assert astral_exec.constants.EXEC_SUBDIRECTORY == CONSTANTS["exec_subdirectory"]
     assert astral_exec.constants.FACT_KEYS == tuple(CONSTANTS["fact_keys"])
     assert astral_exec.constants.BACKEND_REASONS == tuple(CONSTANTS["backend_reasons"])
+    assert astral_exec.constants.AGENT_SERVER_REASONS == tuple(CONSTANTS["agent_server_reasons"])
 
 
 def test_refusal_messages_name_the_missing_piece():

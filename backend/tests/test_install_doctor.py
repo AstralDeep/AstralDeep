@@ -27,7 +27,7 @@ doctor = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = doctor
 spec.loader.exec_module(doctor)
 
-from orchestrator.session_store import assert_production_posture  # noqa: E402
+from orchestrator.boot_posture import assert_production_posture  # noqa: E402
 
 POSTURE_VARIABLES = (
     "ASTRAL_ENV",
@@ -48,13 +48,10 @@ POSTURE_VARIABLES = (
 
 PRODUCTION_BASE = {
     "ASTRAL_ENV": "production",
-    "WEB_SESSION_ENC_KEY": "",
+    "ASTRAL_NODE_PROFILE": "personal",
     "CREDENTIAL_ENCRYPTION_KEY": "",
     "AUDIT_HMAC_SECRET": "",
     "AGENT_API_KEY": "",
-    "KEYCLOAK_AUTHORITY": "https://idp.example/realms/r",
-    "KEYCLOAK_CLIENT_ID": "astral-frontend",
-    "KEYCLOAK_CLIENT_SECRET": "",
 }
 
 
@@ -111,19 +108,6 @@ def test_mock_auth_outside_development_refuses_boot(monkeypatch):
     _assert_agreement(monkeypatch, env)
 
 
-def test_missing_session_encryption_key_refuses_boot(monkeypatch):
-    env = dict(PRODUCTION_BASE)
-    del env["WEB_SESSION_ENC_KEY"]
-    _assert_agreement(monkeypatch, env)
-
-
-def test_offline_grant_fallback_satisfies_the_encryption_gate(monkeypatch):
-    env = dict(PRODUCTION_BASE)
-    del env["WEB_SESSION_ENC_KEY"]
-    env["OFFLINE_GRANT_ENC_KEY"] = "z" * 44
-    _assert_agreement(monkeypatch, env)
-
-
 def test_placeholder_audit_secret_refuses_boot(monkeypatch):
     env = dict(PRODUCTION_BASE)
     env["AUDIT_HMAC_SECRET"] = "dev-audit-hmac-secret-change-me-in-prod"
@@ -133,12 +117,6 @@ def test_placeholder_audit_secret_refuses_boot(monkeypatch):
 def test_missing_credential_encryption_key_refuses_boot(monkeypatch):
     env = dict(PRODUCTION_BASE)
     env["CREDENTIAL_ENCRYPTION_KEY"] = ""
-    _assert_agreement(monkeypatch, env)
-
-
-def test_missing_keycloak_configuration_refuses_boot(monkeypatch):
-    env = dict(PRODUCTION_BASE)
-    del env["KEYCLOAK_CLIENT_SECRET"]
     _assert_agreement(monkeypatch, env)
 
 
@@ -170,7 +148,7 @@ def test_unset_astral_env_defaults_to_production_and_refuses(monkeypatch):
 
 def test_development_ignores_removed_mock_auth_with_an_advisory(monkeypatch):
     env = {
-        "ASTRAL_ENV": "development",
+        "ASTRAL_ENV": "development", "ASTRAL_NODE_PROFILE": "personal",
         "USE_MOCK_AUTH": "true",
         "AUDIT_HMAC_SECRET": "dev-audit-hmac-secret-change-me-in-prod",
     }
@@ -180,17 +158,9 @@ def test_development_ignores_removed_mock_auth_with_an_advisory(monkeypatch):
     assert any("mock auth was removed" in advisory for advisory in advisories)
 
 
-def test_personal_profile_needs_no_keycloak_in_production(monkeypatch):
-    env = dict(PRODUCTION_BASE, ASTRAL_NODE_PROFILE="personal")
-    for name in ("KEYCLOAK_AUTHORITY", "KEYCLOAK_CLIENT_ID", "KEYCLOAK_CLIENT_SECRET"):
-        env.pop(name)
-    problems, _advisories = doctor.evaluate_posture(env)
-    assert not any("KEYCLOAK" in problem for problem in problems)
-
-
 def test_development_typesafe_variables_stay_advisory(monkeypatch):
     env = {
-        "ASTRAL_ENV": "development",
+        "ASTRAL_ENV": "development", "ASTRAL_NODE_PROFILE": "personal",
         "TYPESAFE_BASE_URL": "https://typesafe.example",
     }
     _assert_agreement(monkeypatch, env)
@@ -200,7 +170,7 @@ def test_development_typesafe_variables_stay_advisory(monkeypatch):
 
 
 def test_development_with_real_auth_boots_without_keycloak(monkeypatch):
-    env = {"ASTRAL_ENV": "development", "USE_MOCK_AUTH": "false"}
+    env = {"ASTRAL_ENV": "development", "ASTRAL_NODE_PROFILE": "personal", "USE_MOCK_AUTH": "false"}
     _assert_agreement(monkeypatch, env)
     problems, _advisories = doctor.evaluate_posture(env)
     assert problems == []
@@ -212,3 +182,17 @@ def test_dev_alias_posture_matches_the_boot_gate(monkeypatch):
     _assert_agreement(monkeypatch, env)
     problems, _advisories = doctor.evaluate_posture(env)
     assert problems == []
+
+
+def test_a_leftover_identity_setting_is_advisory_never_required():
+    env = dict(PRODUCTION_BASE, KEYCLOAK_AUTHORITY="https://idp.example/realms/r", WEB_SESSION_ENC_KEY="x")
+    env.update(CREDENTIAL_ENCRYPTION_KEY="c" * 44, AUDIT_HMAC_SECRET="a" * 40, AGENT_API_KEY="k" * 40)
+    problems, advisories = doctor.evaluate_posture(env)
+    assert problems == []
+    assert any("KEYCLOAK_AUTHORITY" in advisory and "unused" in advisory for advisory in advisories)
+
+
+def test_a_missing_or_other_profile_is_a_problem():
+    for profile in ("", "server", "institution"):
+        problems, _ = doctor.evaluate_posture(dict(PRODUCTION_BASE, ASTRAL_NODE_PROFILE=profile))
+        assert any("ASTRAL_NODE_PROFILE" in problem for problem in problems)

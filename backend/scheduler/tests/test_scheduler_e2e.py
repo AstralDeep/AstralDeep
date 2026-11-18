@@ -3,7 +3,6 @@ non-dreaming job: a valid grant intersects scopes and notifies on success, and a
 missing/invalid grant pauses without ever executing.
 """
 
-import asyncio
 import sys
 import types
 from pathlib import Path
@@ -12,7 +11,6 @@ BACKEND_DIR = Path(__file__).resolve().parents[2]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
-from scheduler.runner import JobRunner  # noqa: E402
 
 
 class _Grants:
@@ -78,26 +76,3 @@ _JOB = {
     "target_chat_id": "c1", "consented_scopes": ["tools:read", "tools:search"],
 }
 
-
-def test_grant_backed_run_intersects_scopes_and_notifies():
-    orch, calls = _orch({"tools:read": True, "tools:search": False, "tools:write": True})
-    store = _Store()
-    runner = JobRunner(orch, store, _Grants(valid=True))
-    outcome = asyncio.run(runner.run_job(dict(_JOB)))
-    assert outcome == "success"
-    assert calls["run"]["allowed_scopes"] == ["tools:read"]
-    assert calls["run"]["access_token"] == "tok-g1"
-    assert store.finished[0][1] == "success"
-    assert any(p.get("level") == "success" for p in calls["notify"])
-
-
-def test_missing_grant_skips_auth_and_pauses_without_executing():
-    orch, calls = _orch({"tools:read": True})
-    store = _Store()
-    runner = JobRunner(orch, store, _Grants(valid=False))
-    outcome = asyncio.run(runner.run_job(dict(_JOB)))
-    assert outcome == "skipped_auth"
-    assert ("j1", "paused") in store.statuses
-    assert "run" not in calls
-    assert any(p.get("level") == "warning" for p in calls["notify"])
-    assert store.finished[0][1] == "skipped_auth"

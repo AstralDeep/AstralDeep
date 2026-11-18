@@ -113,15 +113,9 @@ def test_release_spec_uses_real_auth_transport_and_candidate_ui() -> None:
     ):
         assert forbidden not in source
     for required in (
-        'input[name="username"]',
-        'input[name="password"]',
         "page.coverage.startJSCoverage",
         "page.coverage.stopJSCoverage",
         "conversation_snapshot",
-        "seedPriorPrincipalDecoy",
-        "verifyCurrentSessionOwnsWebSocket",
-        "sharedTabStaleTokenRejected",
-        "websocketPrincipalMatchesCookieSession",
         "operation_status",
         "agent_lifecycle",
         "runReloadResume",
@@ -130,7 +124,6 @@ def test_release_spec_uses_real_auth_transport_and_candidate_ui() -> None:
         "resume_latency_max_ms",
         "unnamed_visible_controls",
         "authoring_operations_failed",
-        "credential_storage_leaks",
         '"screenshot"',
         "bundle://web-raw/",
     ):

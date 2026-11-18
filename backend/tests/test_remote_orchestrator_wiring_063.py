@@ -165,15 +165,11 @@ async def _drive_start(monkeypatch, *, remote_compute: bool, gaiakeep: bool = Fa
     async def _noop_loop():
         await asyncio.sleep(3600)
 
-    async def _revoke_once():
-        return 0
-
-    from orchestrator import agent_trust, session_store, web_auth
+    from orchestrator import agent_trust, boot_posture
     from shared.feature_flags import flags
 
-    monkeypatch.setattr(session_store, "assert_production_posture", lambda: None)
+    monkeypatch.setattr(boot_posture, "assert_production_posture", lambda: None)
     monkeypatch.setattr(agent_trust, "seed_safe", _seed_safe)
-    monkeypatch.setattr(web_auth, "process_revocation_queue_once", _revoke_once)
     enabled = {"safe_agents": True, "inprocess_agents": False,
                "remote_compute": remote_compute, "gaiakeep": gaiakeep, "cresco": gaiakeep,
                "fhir": fhir}

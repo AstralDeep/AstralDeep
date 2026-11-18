@@ -1,9 +1,9 @@
-"""Proves a personal node refuses a validly signed bearer JWT from an accepted issuer at every door of the app Orchestrator.build_http_app serves, with the door's refusal code and with no key fetch or token parse, while the same token still works on the server profile.
-The doors are orchestrator/auth.py, web_auth.py, mesh_api.py, mcp_authz.py, a2a_orchestrator_executor.py, orchestrator.validate_token, shared/token_verify.py and shared/a2a_security.py, and test_node_route_census.py proves no route sits outside them."""
 
 from __future__ import annotations
 
 import json
+import socket
+import time
 from types import SimpleNamespace as NS
 
 import jose.jwt
@@ -15,20 +15,16 @@ from fastapi.testclient import TestClient
 from starlette.requests import Request
 from starlette.websockets import WebSocketDisconnect
 
-from orchestrator import a2a_orchestrator_executor as a2a, auth, mcp_authz, web_auth
+from orchestrator import a2a_orchestrator_executor as a2a, auth, mcp_authz
 from orchestrator.orchestrator import Orchestrator
 from orchestrator.voice_worker_endpoint import WORKER_CONTROL_PATH
-from shared import jwks_cache, node_identity as ni
+from shared import node_identity as ni
 from shared.a2a_security import A2ASecurityValidator
-from shared.token_verify import TokenRefused, verify_idp_token
 from tests import test_node_route_census as census
 from tests.helpers import orchestrator_app
-from tests.helpers.idp_tokens import AUTHORITY
 from tests.helpers.voice_plane_runtime import isolated_plane_runtime
 
 BEARER = "node.bearer_refused"
-SIGN_IN = "node.sign_in_unavailable"
-LEGACY = "node.legacy_enrollment_closed"
 MCP_META = {
     "io.modelcontextprotocol/protocolVersion": "2026-07-28",
     "io.modelcontextprotocol/clientCapabilities": {},
@@ -46,7 +42,6 @@ REST_DOORS = [
     ("GET", "/api/share", 401, REFUSED),
     ("GET", "/api/download/s1/f.txt", 401, REFUSED),
     ("POST", "/api/audit/session-resume-failed", 401, REFUSED),
-    ("GET", "/api/remote-mcp/oauth/start", 401, REFUSED),
     ("GET", "/api/emergency-stop", 401, REFUSED),
     ("GET", "/api/chrome/commands", 401, REFUSED),
     ("GET", "/api/work/v1/operations/op-1", 401, {"error": "work_authentication_required"}),
@@ -57,7 +52,6 @@ REST_DOORS = [
     ("GET", "/api/voice/v2/status", 401, VOICE_REFUSED),
 ]
 SIGN_IN_DOORS = [
-    ("GET", "/"),
     ("GET", "/auth/login"),
     ("GET", "/auth/callback?code=c&state=s"),
     ("GET", "/auth/session"),
@@ -97,14 +91,12 @@ def plane_runtime():
 @pytest.fixture
 def spies(monkeypatch):
     seen = {"jwks": 0, "parse": 0}
-    fetch = jwks_cache.get_jwks
 
-    async def counted(*args, **kwargs):
+    def refuse_outbound(self, *args, **kwargs):
         seen["jwks"] += 1
-        return await fetch(*args, **kwargs)
+        raise AssertionError("no outbound connection may be opened")
 
-    monkeypatch.setattr(jwks_cache, "get_jwks", counted)
-    monkeypatch.setattr(mcp_authz, "get_jwks", counted)
+    monkeypatch.setattr(socket.socket, "connect", refuse_outbound)
     for name in ("decode", "get_unverified_claims", "get_unverified_header"):
         original = getattr(jose.jwt, name)
 
@@ -116,8 +108,21 @@ def spies(monkeypatch):
     return seen
 
 
+def _signed_token(audience: str) -> str:
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048).private_bytes(
+        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption())
+    now = int(time.time())
+    return jose.jwt.encode(
+        {"sub": "owner-1", "iss": "https://idp.invalid/realms/r", "aud": audience, "azp": "astral-web",
+         "iat": now, "exp": now + 300, "realm_access": {"roles": ["user", "admin"]}},
+        key, algorithm="RS256", headers={"kid": "k"})
+
+
 @pytest.fixture(params=["production", "dev-token"])
-def node(request, plane_runtime, server_identity, spies, monkeypatch):
+def node(request, plane_runtime, node_data_dir, spies, monkeypatch):
     if request.param == "dev-token":
         monkeypatch.setenv("ASTRAL_ENV", "development")
         monkeypatch.setenv("USE_MOCK_AUTH", "true")  # the removed flag must change nothing
@@ -125,27 +130,14 @@ def node(request, plane_runtime, server_identity, spies, monkeypatch):
     else:
         monkeypatch.setenv("ASTRAL_ENV", "production")
         monkeypatch.delenv("USE_MOCK_AUTH", raising=False)
-        token = server_identity.token("owner-1", roles=("user", "admin"))
-        mcp_token = server_identity.mcp_token("owner-1")
+        token = _signed_token("account")
+        mcp_token = _signed_token("astral-mcp")
     monkeypatch.setenv(ni.PROFILE_ENV, ni.PERSONAL)
     monkeypatch.setenv("WEB_SESSION_ENC_KEY", Fernet.generate_key().decode())
     orch = orchestrator_app.host(plane_runtime)
     app = orchestrator_app.build(monkeypatch, orch)
     client = TestClient(app, base_url=orchestrator_app.PUBLIC_BASE_URL, raise_server_exceptions=False)
     yield NS(client=client, orch=orch, token=token, mcp_token=mcp_token, spies=spies, mode=request.param)
-    client.close()
-
-
-@pytest.fixture
-def server(plane_runtime, server_identity, spies, monkeypatch):
-    monkeypatch.setenv("ASTRAL_ENV", "production")
-    monkeypatch.delenv(ni.PROFILE_ENV, raising=False)
-    monkeypatch.setenv("WEB_SESSION_ENC_KEY", Fernet.generate_key().decode())
-    orch = orchestrator_app.host(plane_runtime)
-    app = orchestrator_app.build(monkeypatch, orch)
-    client = TestClient(app, base_url=orchestrator_app.PUBLIC_BASE_URL, raise_server_exceptions=False)
-    yield NS(client=client, orch=orch, identity=server_identity, spies=spies,
-             token=server_identity.token("owner-1", roles=("user", "admin")))
     client.close()
 
 
@@ -188,24 +180,34 @@ def test_a_query_token_and_a_bare_request_are_refused_the_same_way(node, path):
     _untouched(node)
 
 
-@pytest.mark.parametrize("method,path", SIGN_IN_DOORS)
-def test_sign_in_token_proxy_and_device_grant_are_unavailable(node, method, path):
-    response = node.client.request(method, path, headers={
-        "Authorization": f"Bearer {node.token}", "X-Astral-Session-Custody": "1",
-        "Content-Type": "application/x-www-form-urlencoded"},
+REMOVED_DOORS = [*SIGN_IN_DOORS, *LEGACY_DOORS,
+                 ("GET", "/api/remote-mcp/oauth/start"), ("GET", "/api/remote-mcp/oauth/callback")]
+CREDENTIALS = (
+    {"Authorization": "Bearer {token}"},
+    {"Cookie": "astral_session=value.signature"},
+    {"Authorization": "Bearer {token}", "Cookie": "astral_session=value.signature"},
+    {},
+)
+
+
+@pytest.mark.parametrize("method,path", REMOVED_DOORS)
+@pytest.mark.parametrize("credentials", CREDENTIALS)
+def test_removed_sign_in_session_and_enrollment_doors_answer_404(node, method, path, credentials):
+    headers = {name: value.format(token=node.token) for name, value in credentials.items()}
+    response = node.client.request(
+        method, path, headers={**headers, "Origin": orchestrator_app.PUBLIC_BASE_URL},
         content=b"grant_type=refresh_token&refresh_token=r", follow_redirects=False)
-    assert response.status_code == 403, response.text
-    assert _detail(response) == SIGN_IN
+    assert response.status_code == 404, response.text
     _untouched(node)
 
 
-@pytest.mark.parametrize("method,path", LEGACY_DOORS)
-def test_legacy_enrollment_doors_are_closed(node, method, path):
-    response = node.client.request(method, path, headers={
-        "Authorization": f"Bearer {node.token}", "Origin": orchestrator_app.PUBLIC_BASE_URL,
-        "Content-Type": "application/json"}, content=b'{"owner_id": "o", "member_id": "m"}')
-    assert response.status_code == 403, response.text
-    assert _detail(response) == LEGACY
+@pytest.mark.parametrize("credentials", CREDENTIALS)
+def test_the_shell_reads_no_credential_and_never_redirects_to_sign_in(node, credentials):
+    headers = {name: value.format(token=node.token) for name, value in credentials.items()}
+    response = node.client.get("/", headers=headers, follow_redirects=False)
+    assert response.status_code in (200, 500), response.status_code
+    assert node.token not in response.text and "value.signature" not in response.text
+    assert "location" not in response.headers
     _untouched(node)
 
 
@@ -276,9 +278,6 @@ async def test_each_rest_dependency_refuses_before_parsing(node):
 
 
 async def test_every_token_choke_point_refuses_on_the_node(node):
-    with pytest.raises(TokenRefused) as refused:
-        await verify_idp_token(node.token)
-    assert refused.value.reason == "node_bearer_refused"
     for call in (mcp_authz.decode_mcp_token(node.mcp_token), mcp_authz.authorize_mcp_request(
             headers={"authorization": f"Bearer {node.mcp_token}"}, query_params={}, cookies={},
             required_scopes=("mcp:discover",))):
@@ -288,72 +287,13 @@ async def test_every_token_choke_point_refuses_on_the_node(node):
     assert await Orchestrator.validate_token(node.orch, node.token) is None
     assert await A2ASecurityValidator(require_first_party_user=True).validate_token(node.token) is None
     assert await A2ASecurityValidator().validate_token(node.token) is None
-    assert await a2a.authenticate_a2a_request(
-        A2ASecurityValidator(require_first_party_user=True), {"authorization": f"Bearer {node.token}"},
-        resolve_framework_bearer=lambda _token: pytest.fail("framework credentials are a bearer")) is None
+    assert not hasattr(a2a, "authenticate_a2a_request")
     assert ni.bound_owner() is None
     _untouched(node)
 
 
-def test_the_same_token_still_works_on_the_server_profile(server, monkeypatch):
-    headers = {"Authorization": f"Bearer {server.token}"}
-    shared = server.client.get("/api/share", headers=headers)
-    assert shared.status_code == 404 and _detail(shared) == "Not Found"
-    downloaded = server.client.get("/api/download/s1/f.txt", headers=headers)
-    assert downloaded.status_code == 404 and downloaded.json() == {"error": "File not found"}
-    assert server.client.get("/api/share", params={"token": server.token}).status_code == 404
-    monkeypatch.setattr(web_auth, "_idp_reachable", lambda _authority: _true())
-    login = server.client.get("/auth/login", follow_redirects=False)
-    assert login.status_code == 307 and login.headers["location"].startswith(AUTHORITY)
-    for method, path in SIGN_IN_DOORS[11:]:
-        response = server.client.request(method, path, headers=headers, json={})
-        assert response.status_code != 403 or _detail(response) != SIGN_IN
-    for method, path in LEGACY_DOORS:
-        response = server.client.request(method, path, headers={**headers, "Origin": orchestrator_app.PUBLIC_BASE_URL}, json={})
-        assert response.status_code != 403 or _detail(response) != LEGACY
-    assert server.spies["jwks"] > 0
-
-
 async def _true():
     return True
-
-
-async def test_the_same_token_still_works_at_the_server_profile_choke_points(server):
-    owner = server.identity.owner("owner-1")
-    assert (await verify_idp_token(server.token))["sub"] == owner
-    assert (await Orchestrator.validate_token(server.orch, server.token))["sub"] == owner
-    assert (await A2ASecurityValidator(require_first_party_user=True).validate_token(server.token))["sub"] == owner
-    principal = await a2a.authenticate_a2a_request(
-        A2ASecurityValidator(require_first_party_user=True), {"authorization": f"Bearer {server.token}"})
-    assert principal.sub == owner
-    claims = await mcp_authz.authorize_mcp_request(
-        headers={"authorization": f"Bearer {server.identity.mcp_token('owner-1')}"}, query_params={},
-        cookies={}, required_scopes=("mcp:discover",))
-    assert claims["sub"] == owner
-    payload = await auth.get_current_user_payload(
-        _request(server.token), HTTPAuthorizationCredentials(scheme="Bearer", credentials=server.token))
-    assert payload["sub"] == owner
-
-
-def test_the_server_websocket_door_does_not_answer_with_the_node_refusal(server):
-    with server.client.websocket_connect("/ws") as socket:
-        socket.send_text(json.dumps({"type": "register_ui", "token": "not-a-token"}))
-        assert json.loads(socket.receive_text()) == {"type": "auth_required", "reason": "invalid"}
-
-
-def test_the_same_token_passes_the_a2a_and_mcp_doors_on_the_server_profile(server):
-    a2a_response = server.client.post("/a2a", json=A2A_BODY, headers={"Authorization": f"Bearer {server.token}"})
-    assert a2a_response.status_code != 401, a2a_response.text
-    assert "Authentication required" not in a2a_response.text and BEARER not in a2a_response.text
-    fetched = server.spies["jwks"]
-    assert fetched > 0
-    mcp_response = server.client.post("/mcp", json={
-        "jsonrpc": "2.0", "id": 1, "method": "server/discover", "params": {"_meta": MCP_META}},
-        headers={"Authorization": f"Bearer {server.identity.mcp_token('owner-1')}",
-                 "MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "server/discover"})
-    assert mcp_response.status_code != 401, mcp_response.text
-    assert "www-authenticate" not in mcp_response.headers
-    assert server.spies["jwks"] > fetched
 
 
 PERSONAL_METADATA = {
@@ -373,15 +313,10 @@ def _no_identity_server(client, authority):
         assert authority is None or authority not in text
 
 
-def test_a_personal_node_names_no_identity_server_while_keycloak_is_still_configured(node, server_identity):
-    _no_identity_server(node.client, server_identity.issuer.authority)
-    _untouched(node)
-
-
 def test_a_personal_node_with_no_keycloak_setting_mounts_and_refuses_mcp_and_a2a(plane_runtime, spies, monkeypatch):
     monkeypatch.setenv("ASTRAL_ENV", "production")
     monkeypatch.setenv(ni.PROFILE_ENV, ni.PERSONAL)
-    for name in ("KEYCLOAK_AUTHORITY", "KEYCLOAK_CLIENT_ID", "KEYCLOAK_CLIENT_SECRET", ni.ISSUERS_ENV):
+    for name in ("KEYCLOAK_AUTHORITY", "KEYCLOAK_CLIENT_ID", "KEYCLOAK_CLIENT_SECRET"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("WEB_SESSION_ENC_KEY", Fernet.generate_key().decode())
     app = orchestrator_app.build(monkeypatch, orchestrator_app.host(plane_runtime))
@@ -392,55 +327,3 @@ def test_a_personal_node_with_no_keycloak_setting_mounts_and_refuses_mcp_and_a2a
         _mcp_probe(probe)
     assert spies == {"jwks": 0, "parse": 0}
 
-
-def test_the_server_profile_keeps_its_identity_server_metadata_and_bearer_challenges(server):
-    authority = server.identity.issuer.authority
-    metadata = server.client.get("/.well-known/oauth-protected-resource/mcp").json()
-    assert metadata["authorization_servers"] == [authority] and metadata["bearer_methods_supported"] == ["header"]
-    card = server.client.get("/a2a/.well-known/agent-card.json").json()
-    assert f"{authority}/.well-known/openid-configuration" in json.dumps(card)
-    refused = server.client.post("/a2a", json=A2A_BODY)
-    assert refused.status_code == 401 and refused.headers["www-authenticate"] == 'Bearer realm="astral-a2a"'
-    challenged = server.client.post("/mcp", json={
-        "jsonrpc": "2.0", "id": 1, "method": "server/discover", "params": {"_meta": MCP_META}},
-        headers={"MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "server/discover"})
-    assert challenged.status_code == 401 and challenged.headers["www-authenticate"].startswith("Bearer resource_metadata=")
-
-
-def test_the_mcp_server_still_needs_keycloak_on_the_server_profile(monkeypatch):
-    from orchestrator import mcp_server_endpoint
-
-    monkeypatch.delenv(ni.PROFILE_ENV, raising=False)
-    monkeypatch.delenv("KEYCLOAK_AUTHORITY", raising=False)
-    with pytest.raises(RuntimeError, match="KEYCLOAK_AUTHORITY"):
-        mcp_server_endpoint.install_mcp_server(NS(), object(), public_base_url=orchestrator_app.PUBLIC_BASE_URL)
-
-
-async def test_the_jwks_warm_loop_never_fetches_on_a_personal_node(monkeypatch):
-    import asyncio
-
-    fetched = []
-
-    async def fetch(url, *args, **kwargs):
-        fetched.append(url)
-        return {"keys": []}
-
-    monkeypatch.setattr(jwks_cache, "get_jwks", fetch)
-    monkeypatch.setattr(jwks_cache, "_fetch", fetch)
-    monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://idp.example/realms/r")
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
-    monkeypatch.setenv(ni.PROFILE_ENV, ni.PERSONAL)
-    orch = orchestrator_app.host()
-    async with asyncio.timeout(5):
-        await orch._jwks_warm_loop()
-    assert fetched == []
-    monkeypatch.delenv(ni.PROFILE_ENV)
-    task = asyncio.create_task(orch._jwks_warm_loop())
-    try:
-        async with asyncio.timeout(5):
-            while not fetched:
-                await asyncio.sleep(0.01)
-    finally:
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
-    assert fetched == ["https://idp.example/realms/r/protocol/openid-connect/certs"]

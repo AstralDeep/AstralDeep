@@ -72,7 +72,7 @@ recall writes serialize with the locked row through PostgreSQL.
 The stable repository catalog includes four explicit stores for the first identity/agent
 cutover slice:
 
-- `identity`: detached Keycloak/OIDC subject observations; authentication and role policy remain
+- `identity`: detached identity subject observations; authentication and role policy remain
   in Deep.
 - `agents`: first-party ownership/trust plus user-agent revisions, host sessions, runtime
   generations, and request fences.
@@ -167,7 +167,7 @@ the `066.001` baseline:
 
 Use `create_credential_repository()`, `create_offline_grant_repository()`, and
 `create_share_grant_repository()` for individual composition. Encryption, raw token handling,
-Keycloak exchange, PHI policy, rendering, and audit decisions remain in AstralDeep. See
+token exchange, PHI policy, rendering, and audit decisions remain in AstralDeep. See
 `docs/credentials-and-grants.md` for the owner, replay, and transaction contracts.
 
 Conversation-adjacent durable state has three additional stable factories:
@@ -326,8 +326,8 @@ and for redacting messages and scalar metadata before storing or emitting diagno
 
 AstralPlane owns qualification of its Python source, architecture boundary, PostgreSQL migration
 and repository behavior, and standalone package compatibility. Pull requests, merge groups, and `main` pushes run
-the repository-owned `.github/workflows/ci.yml` jobs `quality`, `postgresql`, and
-`package-compatibility`; the `gates` aggregate fails closed unless every owner job succeeds. The
+the Deep `.github/workflows/ci.yml` jobs `plane-quality`, `plane-postgres`, and
+`plane-package-compatibility`; the `gates` aggregate fails closed unless every owner job succeeds. The
 PostgreSQL lane runs the complete Python 3.11 suite against PostgreSQL 17 with a measured-baseline
 combined branch-coverage floor of 88.75% and a changed-line coverage threshold of 90%.
 `scripts/check_changed_coverage.py` decides changed-line coverage from diff-cover's JSON report for
@@ -391,7 +391,7 @@ uv run --frozen --group ci python scripts/check_changed_coverage.py \
   --report changed-coverage.json --base-sha "$BASE_SHA" --fail-under 90
 uv lock --check
 uv build --build-constraints tooling/python-ci/build-requirements.lock.txt --require-hashes
-actionlint .github/workflows/ci.yml
+actionlint ../.github/workflows/ci.yml
 ```
 
 PostgreSQL integration checks use an isolated test database and the synthetic non-PHI fixture under

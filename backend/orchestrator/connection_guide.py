@@ -27,7 +27,7 @@ STATUS_DEGRADED = "degraded"
 STATUS_UNAVAILABLE = "unavailable"
 STATUS_OFF = "off"
 
-REQUIRED_KEYS = ("database", "auth", "publication")
+REQUIRED_KEYS = ("database", "publication")
 PROBE_TIMEOUT_SECONDS = 4
 
 SIGN_IN_TITLE = "Sign in and connect your model"
@@ -137,39 +137,6 @@ def _database_check(orch) -> dict[str, str | bool]:
     return _check(
         "database", "Database", STATUS_READY,
         "Database migrations are current and durable storage is answering.", "",
-        required=True,
-    )
-
-
-async def _keycloak_reachable(authority: str) -> bool:
-    from orchestrator.web_auth import _idp_reachable
-
-    return bool(await _idp_reachable(authority))
-
-
-async def _auth_check(orch) -> dict[str, str | bool]:
-    from orchestrator.web_auth import _keycloak_config
-
-    authority, _client_id, _secret = _keycloak_config()
-    if not authority:
-        return _check(
-            "auth", "Authentication", STATUS_UNAVAILABLE,
-            "No identity provider is configured, so sign-in cannot complete.",
-            "Set KEYCLOAK_AUTHORITY and the Keycloak client settings, then restart "
-            "the app.",
-            required=True,
-        )
-    if not await _keycloak_reachable(authority):
-        return _check(
-            "auth", "Authentication", STATUS_UNAVAILABLE,
-            "The configured identity provider is unreachable.",
-            "Verify the Keycloak URL and network path; first sign-in cannot complete "
-            "until it is reachable.",
-            required=True,
-        )
-    return _check(
-        "auth", "Authentication", STATUS_READY,
-        "Sign-in is served by the configured identity provider.", "",
         required=True,
     )
 
@@ -310,7 +277,6 @@ def _lets_check(orch) -> dict[str, str | bool]:
 
 async def service_checks(orch) -> list[dict[str, Any]]:
     probes = (("database", "Database", True, lambda: asyncio.to_thread(_database_check, orch)),
-        ("auth", "Authentication", True, lambda: _auth_check(orch)),
         ("worker", "Voice workers", False, lambda: asyncio.to_thread(_worker_check, orch)),
         ("publication", "Agent publication", True, lambda: _publication_check(orch)),
         ("lets", "LETS warden", True, lambda: asyncio.to_thread(_lets_check, orch)))

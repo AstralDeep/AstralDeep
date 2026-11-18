@@ -1,11 +1,9 @@
-"""Covers signed agent card admission for external A2A peers: pinned keys, tampering, change after approval, JWKS fetch, audit and registration."""
 
 from __future__ import annotations
 
 import base64
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import jwt
 import pytest
@@ -15,11 +13,6 @@ from orchestrator import a2a_card_trust as trust_module
 from orchestrator.a2a_card_trust import CardRefused, CardTrust, CardTrustRegistry
 from orchestrator.orchestrator import Orchestrator
 from tests.a2a_card_signing import TestSigner
-from tests.test_a2a_card_authority import (
-    bound as bound, fixture as fixture, human as human, registration as registration,
-    request_context, runtime as runtime, service as service, signing_key as signing_key,
-    socket_request as socket_request,
-)
 
 BASE = "https://peer.example"
 JWKS = "https://peer.example/.well-known/jwks.json"
@@ -226,101 +219,6 @@ def _orchestrator() -> Orchestrator:
     orch = Orchestrator.__new__(Orchestrator)
     orch.a2a_card_trust = CardTrustRegistry()
     return orch
-
-
-@pytest.fixture
-def audit(monkeypatch):
-    events = []
-
-    async def record(**event):
-        events.append(event)
-
-    monkeypatch.setattr("audit.hooks.record_generic", record)
-    return events
-
-
-@pytest.mark.asyncio
-async def test_admission_is_audited_for_success_and_each_refusal(audit):
-    signer = TestSigner()
-    orch = _orchestrator()
-    assert await orch._admit_a2a_card(BASE, signer.sign(_card())) is False
-    orch.a2a_card_trust.pin(BASE, CardTrust(public_key=signer.public_jwk))
-    assert await orch._admit_a2a_card(BASE, _card()) is False
-    assert await orch._admit_a2a_card(BASE, signer.sign(_card())) is True
-    assert await orch._admit_a2a_card(BASE, signer.sign(_card("changed"))) is False
-    assert [(e["action_type"], e["outputs_meta"]["result"]) for e in audit] == [
-        ("a2a.agent_card.refused", "no_pinned_key"), ("a2a.agent_card.refused", "card_unsigned"),
-        ("a2a.agent_card.admitted", "admitted"), ("a2a.agent_card.refused", "card_changed_after_approval")]
-    assert audit[2]["outputs_meta"]["card_sha256"].startswith("sha256:")
-    assert all(e["inputs_meta"]["agent_url"] == BASE for e in audit)
-
-
-@pytest.mark.asyncio
-async def test_discovery_refuses_an_unsigned_card_and_registers_nothing(audit, monkeypatch):
-    from aiohttp import web
-
-    signer = TestSigner()
-    payload = {"name": "Peer", "description": "d", "version": "1.0.0", "capabilities": {},
-               "skills": [{"id": "echo", "name": "echo", "description": "e", "tags": ["t"]}],
-               "defaultInputModes": ["a/b"], "defaultOutputModes": ["a/b"],
-               "supportedInterfaces": [{"url": "http://127.0.0.1/rpc", "protocolBinding": "JSONRPC", "protocolVersion": "1.0"}]}
-    served = {"card": payload}
-
-    async def card(request):
-        return web.json_response(served["card"])
-
-    app = web.Application()
-    app.add_routes([web.get("/.well-known/agent-card.json", card)])
-    runner = web.AppRunner(app)
-    await runner.setup()
-    await web.TCPSite(runner, "127.0.0.1", 0).start()
-    base = f"http://127.0.0.1:{runner.addresses[0][1]}"
-    payload["supportedInterfaces"][0]["url"] = base + "/rpc"
-    try:
-        from tests.test_a2a_outbound_negotiation import _discovery_orchestrator
-
-        orch = _discovery_orchestrator()
-        orch.a2a_card_trust = CardTrustRegistry()
-        orch.a2a_card_trust.pin(base, CardTrust(public_key=signer.public_jwk))
-        orch.discover_agent = AsyncMock()
-        await orch.discover_a2a_agent(base)
-        assert orch.a2a_clients == {} and orch.agent_cards == {}
-        assert audit[-1]["outputs_meta"]["result"] == "card_unsigned"
-
-        served["card"] = signer.sign_payload(payload)
-        await orch.discover_a2a_agent(base)
-        assert list(orch.a2a_clients.values()) == [base]
-        assert audit[-1]["action_type"] == "a2a.agent_card.admitted"
-    finally:
-        await runner.cleanup()
-
-
-@pytest.mark.asyncio
-async def test_register_action_requires_a_pinned_key_and_pins_it(audit, registration):
-    signer = TestSigner()
-    orch = registration.orch
-    ws = registration.socket
-    await registration.claims(realm_access={"roles": ["user", "admin"]})
-
-    async def register(payload):
-        registration.message["payload"] = payload
-        with request_context(registration.capture()):
-            await Orchestrator._register_external_agent(orch, ws, payload)
-
-    await register({"url": ""})
-    await register({"url": BASE})
-    assert orch.discover_a2a_agent.await_count == 0
-    assert orch.send_ui_render.await_count == 2
-    assert "Pin a JWKS URL" in orch.send_ui_render.await_args.args[1][0]["message"]
-
-    await register({"url": BASE + "/", "public_key": signer.public_jwk})
-    orch.discover_a2a_agent.assert_awaited_once_with(BASE)
-    assert registration.registry.trust_for(BASE).public_key == signer.public_jwk
-    assert "Could not discover" in orch.send_ui_render.await_args.args[1][0]["message"]
-
-    orch.agent_cards = {"peer": SimpleNamespace(metadata={"a2a_url": BASE})}
-    await register({"url": BASE, "jwks_url": JWKS})
-    orch.send_agent_list.assert_awaited_once()
 
 
 def test_registry_is_created_from_the_environment_on_first_use(monkeypatch):

@@ -5,19 +5,15 @@ bearer is discarded after validation, and a personal node refuses it unread and 
 
 from __future__ import annotations
 
-import asyncio
 import os
 from dataclasses import dataclass
-from typing import Any, Callable, Iterable, Mapping, Optional
+from typing import Any, Iterable, Mapping, NoReturn, Optional
 from urllib.parse import urlsplit, urlunsplit
 
-from jose import jwt as jose_jwt
 from starlette.requests import Request
 
 from orchestrator import caller_tickets
 from orchestrator.auth import NODE_BEARER_REFUSED, node_caller_challenge
-from shared import node_identity
-from shared.jwks_cache import get_jwks
 
 
 MCP_AUDIENCE = "astral-mcp"
@@ -34,8 +30,6 @@ _SCOPE_IMPLICATIONS = {
     "mcp:tools:invoke": frozenset(MCP_SCOPES),
 }
 
-_FRAMEWORK_MCP_SCOPES = frozenset(MCP_SCOPES)
-_FRAMEWORK_TOKEN_PREFIX = "afk_"
 
 
 @dataclass(frozen=True)
@@ -77,20 +71,10 @@ def resource_metadata_url(public_base_url: str) -> str:
 
 
 def protected_resource_metadata(public_base_url: str) -> dict[str, Any]:
-    if node_identity.is_personal():
-        return {
-            "resource": resource_identifier(public_base_url),
-            "scopes_supported": list(MCP_SCOPES),
-            "bearer_methods_supported": [],
-        }
-    authority = os.getenv("KEYCLOAK_AUTHORITY", "").strip().rstrip("/")
-    if not authority:
-        raise RuntimeError("KEYCLOAK_AUTHORITY is required when FF_MCP_SERVER is enabled")
     return {
         "resource": resource_identifier(public_base_url),
-        "authorization_servers": [authority],
         "scopes_supported": list(MCP_SCOPES),
-        "bearer_methods_supported": ["header"],
+        "bearer_methods_supported": [],
     }
 
 
@@ -132,13 +116,7 @@ def challenge_header(
     error: str,
     required_scopes: Iterable[str],
 ) -> str:
-    if node_identity.is_personal():
-        return node_caller_challenge("astral-mcp", error)
-    scopes = " ".join(dict.fromkeys(required_scopes))
-    return (
-        f'Bearer resource_metadata="{resource_metadata_url(public_base_url)}", '
-        f'scope="{scopes}", error="{error}"'
-    )
+    return node_caller_challenge("astral-mcp", error)
 
 
 def bearer_from_headers(
@@ -167,30 +145,10 @@ def bearer_from_headers(
 
 async def decode_mcp_token(token: str) -> dict[str, Any]:
     refuse_on_personal_node(())
-    authority = os.getenv("KEYCLOAK_AUTHORITY", "").strip().rstrip("/")
-    if not authority:
-        raise RuntimeError("KEYCLOAK_AUTHORITY is not configured")
-    jwks = await get_jwks(
-        f"{authority}/protocol/openid-connect/certs",
-        token=token,
-    )
-    payload = jose_jwt.decode(
-        token,
-        jwks,
-        algorithms=["RS256"],
-        audience=MCP_AUDIENCE,
-        issuer=authority,
-        options={"verify_at_hash": False},
-    )
-    if not isinstance(payload, dict) or not payload.get("sub"):
-        raise ValueError("MCP token has no subject")
-    payload["sub"] = node_identity.canonical_owner_id(authority, payload["sub"])
-    return payload
 
 
-def refuse_on_personal_node(required_scopes: Iterable[str]) -> None:
-    if node_identity.is_personal():
-        raise MCPAuthError(401, NODE_BEARER_REFUSED, "this node refuses bearer tokens", tuple(required_scopes))
+def refuse_on_personal_node(required_scopes: Iterable[str]) -> NoReturn:
+    raise MCPAuthError(401, NODE_BEARER_REFUSED, caller_tickets.reason_for(NODE_BEARER_REFUSED), tuple(required_scopes))
 
 
 def require_mcp_entry_role(
@@ -216,7 +174,7 @@ async def authorize_mcp_caller(
         if method.startswith("resources/"):
             raise caller_tickets.refusal(caller_tickets.TOOL_NOT_COVERED)
     except caller_tickets.CallerRefused as exc:
-        raise MCPAuthError(exc.status, exc.code, "this node refuses the caller", required) from None
+        raise MCPAuthError(exc.status, exc.code, caller_tickets.reason_for(exc.code), required) from None
     return claims
 
 
@@ -226,44 +184,8 @@ async def authorize_mcp_request(
     query_params: Mapping[str, str],
     cookies: Mapping[str, str],
     required_scopes: Iterable[str],
-    resolve_framework_bearer: Optional[Callable[[str], Any]] = None,
-) -> dict[str, Any]:
-    required = tuple(required_scopes)
-    refuse_on_personal_node(required)
-    token = bearer_from_headers(
-        headers,
-        query_params,
-        cookies,
-        required_scopes=required,
-    )
-    if resolve_framework_bearer is not None and token.startswith(_FRAMEWORK_TOKEN_PREFIX):
-        caller = await asyncio.to_thread(resolve_framework_bearer, token)
-        if caller is None:
-            raise MCPAuthError(401, "invalid_token", "invalid bearer token", required)
-        missing = tuple(scope for scope in required if scope not in _FRAMEWORK_MCP_SCOPES)
-        if missing:
-            raise MCPAuthError(403, "insufficient_scope", "required MCP scope is missing", missing)
-        return {
-            "sub": caller.owner_id,
-            "iss": "astral-framework",
-            "aud": MCP_AUDIENCE,
-            "scope": " ".join(MCP_SCOPES),
-            "realm_access": {"roles": ["user"]},
-            "_framework_credential_id": caller.credential_id,
-            "_framework_scopes": sorted(caller.scopes),
-            "_framework_caller": caller,
-        }
-    try:
-        payload = await decode_mcp_token(token)
-    except MCPAuthError:
-        raise
-    except Exception as exc:
-        raise MCPAuthError(401, "invalid_token", "invalid bearer token", required) from exc
-    require_mcp_entry_role(payload, required)
-    missing = tuple(scope for scope in required if scope not in effective_mcp_scopes(payload))
-    if missing:
-        raise MCPAuthError(403, "insufficient_scope", "required MCP scope is missing", missing)
-    return dict(payload)
+) -> NoReturn:
+    refuse_on_personal_node(required_scopes)
 
 
 __all__ = [

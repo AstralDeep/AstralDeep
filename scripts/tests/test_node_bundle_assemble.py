@@ -185,6 +185,17 @@ def test_a_pack_that_names_the_build_directory_is_refused(tmp_path):
         ap.scan_for_leaks(stage, [work])
 
 
+def test_a_leak_error_names_the_matched_path_and_its_printable_context(tmp_path):
+    stage, work, repo = tmp_path / "stage", tmp_path / "work", tmp_path / "repo"
+    stage.mkdir()
+    (stage / "lib.dylib").write_bytes(b"\x00\x01id " + str(repo).encode() + b"/target/x.dylib\x00\x02")
+    with pytest.raises(ap.PackError) as caught:
+        ap.scan_for_leaks(stage, [work, repo])
+    message = str(caught.value)
+    assert "lib.dylib" in message and repr(str(repo)) in message
+    assert f"..id {repo}/target/x.dylib.." in message and str(work) not in message
+
+
 def test_a_path_split_across_read_blocks_is_still_found(tmp_path):
     stage, work = tmp_path / "stage", tmp_path / "work"
     stage.mkdir()

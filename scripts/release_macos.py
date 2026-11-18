@@ -675,7 +675,8 @@ class Release:
             "xcodebuild", "archive", "-project", self.projection / PROJECT, "-scheme", SCHEME,
             "-configuration", CONFIGURATION, "-destination", "generic/platform=macOS",
             "-archivePath", archive, "-derivedDataPath", self.work / "dd",
-            f"ASTRAL_DEVELOPMENT_TEAM={TEAM_ID}", "CODE_SIGN_STYLE=Manual", f"CODE_SIGN_IDENTITY={SIGNING_IDENTITY}",
+            f"ASTRAL_DEVELOPMENT_TEAM={TEAM_ID}", f"DEVELOPMENT_TEAM={TEAM_ID}", "CODE_SIGN_STYLE=Manual",
+            f"CODE_SIGN_IDENTITY={SIGNING_IDENTITY}",
             "ARCHS=arm64", f"MARKETING_VERSION={self.version}", f"CURRENT_PROJECT_VERSION={self.build}",
             f"INFOPLIST_FILE={offer_plist}", f"ASTRAL_PROFILE_DIRECT={PROFILE_UUID}",
         ])

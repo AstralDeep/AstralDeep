@@ -5,20 +5,20 @@ router's truthful status, denial, and recovery responses.
 
 from __future__ import annotations
 
+import json
 import sys
 import asyncio
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from fastapi import FastAPI  # noqa: E402
-from fastapi import Depends  # noqa: E402
+from fastapi import Depends, Request  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from orchestrator.emergency_stop import (  # noqa: E402
@@ -39,17 +39,11 @@ from orchestrator.work_admission import (  # noqa: E402
 OWNER = "11111111-1111-1111-1111-111111111111"
 
 
-@pytest.fixture(autouse=True)
-def _identity(server_identity, monkeypatch):
-    monkeypatch.setitem(globals(), "_IDENTITY", server_identity)
-    return server_identity
-
-
-_IDENTITY = None
+CLAIMS_HEADER = "x-test-claims"
 
 
 def _auth(sub: str = OWNER, roles=("user",), **claims) -> dict[str, str]:
-    return _IDENTITY.headers(sub, roles=roles, **claims)
+    return {CLAIMS_HEADER: json.dumps({"sub": sub, "realm_access": {"roles": list(roles)}, **claims})}
 
 
 def _config(name: str = "interactive") -> list[AdmissionClassConfig]:
@@ -144,14 +138,23 @@ def test_submission_gate_is_none_without_a_coordinator():
 
 
 def _client(coordinator) -> TestClient:
+    from orchestrator.auth import get_current_user_payload, refuse_node_bearer
     from orchestrator.emergency_stop_api import _human, _owner
 
     app = FastAPI()
     app.include_router(emergency_stop_router)
-    app.state.orchestrator = SimpleNamespace(emergency_stop=coordinator)
+    app.state.orchestrator = (SimpleNamespace() if coordinator is None
+                              else SimpleNamespace(emergency_stop=coordinator))
+
+    async def claims(request: Request):
+        encoded = request.headers.get(CLAIMS_HEADER)
+        if not encoded:
+            refuse_node_bearer()
+        return json.loads(encoded)
 
     async def human(owner=Depends(_owner)):
         return SimpleNamespace(owner_id=owner[0], claims=owner[1], require_write=lambda: "POST")
+    app.dependency_overrides[get_current_user_payload] = claims
     app.dependency_overrides[_human] = human
     return TestClient(app)
 
@@ -225,10 +228,7 @@ def test_verify_endpoint_refreshes_remote_responder_states():
 
 
 def test_endpoints_report_unavailable_without_a_coordinator():
-    app = FastAPI()
-    app.include_router(emergency_stop_router)
-    app.state.orchestrator = SimpleNamespace()
-    client = TestClient(app)
+    client = _client(None)
     assert client.get("/api/emergency-stop", headers=_auth()).status_code == 503
     assert client.post("/api/emergency-stop/stop", headers=_auth(), json={}).status_code == 503
 
@@ -290,16 +290,6 @@ def test_endpoints_require_an_authenticated_user_role():
     client = _client(EmergencyStopCoordinator())
     response = client.get("/api/emergency-stop", headers=_auth(roles=("guest",)))
     assert response.status_code == 403
-
-
-def test_unsigned_and_foreign_signed_tokens_are_refused():
-    from tests.helpers.idp_tokens import FakeIssuer
-
-    client = _client(EmergencyStopCoordinator())
-    for bad in ("e30.e30.sig", FakeIssuer().token(OWNER)):
-        headers = {"Authorization": f"Bearer {bad}"}
-        assert client.get("/api/emergency-stop", headers=headers).status_code == 401
-        assert client.post("/api/emergency-stop/stop", headers=headers, json={}).status_code == 401
 
 
 def test_status_endpoint_without_any_orchestrator_is_unavailable():

@@ -9,20 +9,19 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field, replace
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 import inspect
 import json
 import logging
 import re
 import unicodedata
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from astralplane.repositories.assignment_models import (
-    AssignmentDefinition, AssignmentOperationAuthority, AssignmentOperationSpec, AssignmentRecord,
+    AssignmentDefinition, AssignmentRecord,
 )
-from audit.schemas import AuditEventCreate, AuditEventDTO
 from orchestrator.work_submit_authority import (
-    AuthenticatedWorkRequest, refresh_work_submission_authority,
+    AuthenticatedWorkRequest,
 )
 from persistent_agents.models import AssignmentError, SourceSelection, ToolReference, digest
 
@@ -554,110 +553,9 @@ class WorkSubmitService:
             kind = body["kind"]
             if kind not in {"research", "chat"}:
                 _invalid()
-            preflight = self.research_preflight
-            if kind == "chat" and preflight is None:
+            if kind == "chat" and self.research_preflight is None:
                 raise AssignmentError("work_chat_profile_unavailable", 503)
-            authority = await refresh_work_submission_authority(context, sessions=self.sessions)
-            definition = await self._definition(context, authority, body)
-            if kind == "chat":
-                prepared = await preflight.prepare_chat(owner_id=context.owner_id,
-                    runtime=self.store.plane_runtime, definition=definition)
-            else:
-                prepared = None if preflight is None else await preflight.prepare(
-                    owner_id=context.owner_id, runtime=self.store.plane_runtime, definition=definition,
-                    source_bound=self.assignments.tool_bound("web-research-1:fetch_page"))
-            state = authority.observation
-            hard_expiry = datetime.fromtimestamp(state.credential.hard_expires_at, timezone.utc)
-            if not state.started_at < deadline <= min(hard_expiry, state.started_at + timedelta(days=1)):
-                _invalid()
-            observation = replace(state, valid_until=min(state.valid_until, deadline))
-            selected = (None if "selection" not in body else await self._prepare_selection(
-                context, observation, body["selection"], definition, prepared))
-            operation = AssignmentOperationSpec(kind, AssignmentOperationAuthority(
-                context.owner_id, "interactive", "session_incarnation", state.credential.incarnation_id,
-                deadline), deadline, body.get("source_retention", "operation"))
-            identity = str(uuid4())
-
-            def accept(transaction, repository):
-                self._current(context)
-                replay = self._receipt(repository, transaction, context, body, signature)
-                if replay is not None:
-                    self._current(context)
-                    return WorkSubmissionResult(replay, False)
-                sessions = self.store.plane_runtime.repositories.history.sessions
-                current = _sync(sessions.assert_current_execution(transaction, observation=observation))
-                self._current(context, now=current.observed_at)
-                replay = self._receipt(repository, transaction, context, body, signature)
-                if replay is not None:
-                    self._current(context)
-                    return WorkSubmissionResult(replay, False)
-                self._check_new_admission()
-                if preflight is not None and selected is None:
-                    preflight.assert_current(transaction, runtime=self.store.plane_runtime,
-                                             owner_id=context.owner_id, prepared=prepared)
-                    if kind == "research":
-                        preflight.assert_policy(transaction, runtime=self.store.plane_runtime,
-                            orchestrator=self.assignments.orch, owner_id=context.owner_id,
-                            claims=authority.claims)
-                create = getattr(repository, "create_operation", None)
-                append = getattr(self.audit, "insert_in_transaction", None)
-                if not callable(create) or not callable(append):
-                    raise AssignmentError("work_repository_unavailable", 503)
-                record = _sync(create(transaction, owner_id=context.owner_id, assignment_id=identity,
-                    origin_namespace=_NAMESPACE, caller_key=body["caller_key"], command_digest=signature,
-                    definition=definition, operation=operation, authority=observation,
-                    **FixedResearchPreflight.creation_fields(prepared)))
-                if (not isinstance(record, AssignmentRecord) or record.assignment_id != identity
-                        or record.owner_id != context.owner_id or record.execution_profile != "one_shot"):
-                    raise AssignmentError("work_repository_unavailable", 503)
-                selected_snapshot = None
-                if selected is not None:
-                    record, selected_snapshot = self._bind_selection(transaction, repository,
-                        record, context, body["selection"], definition, prepared, selected, observation)
-                    preflight.assert_current(transaction, runtime=self.store.plane_runtime,
-                                             owner_id=context.owner_id, prepared=prepared)
-                    preflight.assert_policy(transaction, runtime=self.store.plane_runtime,
-                        orchestrator=self.assignments.orch, owner_id=context.owner_id,
-                        claims=authority.claims)
-                inputs_meta = {"operation_id": identity, "kind": kind, "version": 2}
-                if selected is not None:
-                    inputs_meta["selection"] = {"version": 1, "skills": len(body["selection"]["skills"]),
-                        "notes": len(body["selection"]["notes"]),
-                        "agent_selected": body["selection"]["agent"] is not None}
-                event = AuditEventCreate(actor_user_id=context.owner_id, auth_principal=context.owner_id,
-                    event_class="conversation", action_type="work.accept", description="Work accepted",
-                    conversation_id=definition.conversation_id, correlation_id=identity, outcome="success",
-                    inputs_meta=inputs_meta,
-                    outputs_meta={}, started_at=current.observed_at, completed_at=current.observed_at)
-                audited = _sync(append(event, transaction=transaction, plane_runtime=self.store.plane_runtime))
-                if not isinstance(audited, AuditEventDTO):
-                    raise AssignmentError("work_repository_unavailable", 503)
-                current = _sync(sessions.assert_current_execution(transaction, observation=observation))
-                self._current(context, now=current.observed_at)
-                if current.observed_at >= deadline:
-                    raise AssignmentError("work_authority_unavailable", 403)
-                if preflight is not None:
-                    preflight.assert_key(prepared)
-                self._check_new_admission()
-                if selected is not None:
-                    self._selection_current(context, prepared, selected)
-                    if selected.agent_revision is not None:
-                        self._agent_selection_policy(selected.agent_revision, definition, prepared.selection.profile)
-                    record = repository.assert_selected_input_current(transaction,
-                        owner_id=context.owner_id, assignment_id=identity,
-                        expected_instruction_revision=record.instruction_revision,
-                        expected_control_epoch=record.control_epoch,
-                        expected_state_version=record.state_version, expected=selected_snapshot,
-                        authority_valid_until=observation.valid_until)
-                    self._selection_current(context, prepared, selected)
-                    if selected.agent_revision is not None:
-                        self._agent_selection_policy(selected.agent_revision, definition, prepared.selection.profile)
-                    self._check_new_admission()
-                return WorkSubmissionResult(record, True)
-
-            result = await self.store.transaction(accept, bound_session_waits=True)
-            self._current(context)
-            return result
+            raise AssignmentError("work_authority_unavailable", 403)
         except Exception:
             accepted = await self._accepted(context, body, signature)
             if accepted is not None:

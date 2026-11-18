@@ -25,10 +25,7 @@ from a2a.types import (
     AgentProvider,
     Message as A2AMessage,
     Role,
-    SecurityScheme,
     SecurityRequirement,
-    StringList,
-    OpenIdConnectSecurityScheme,
 )
 from a2a.utils.constants import PROTOCOL_VERSION_1_0
 
@@ -40,7 +37,6 @@ from shared.a2a_bridge import (
     make_data_part,
 )
 from shared.a2a_publication import A2APublicationRegistry
-from shared import node_identity
 from shared.a2a_security import A2ASecurityValidator
 from orchestrator import a2a_publication_signing as publication_signing
 from orchestrator import caller_tickets
@@ -117,46 +113,6 @@ def bearer_from_headers(headers) -> str:
     if not separator or scheme.lower() != "bearer" or not token.strip():
         return ""
     return token.strip()
-
-
-def _a2a_framework_resolver(orchestrator):
-    try:
-        from shared.feature_flags import flags
-
-        if not flags.is_enabled("framework_credentials"):
-            return None
-    except Exception:
-        return None
-    service = getattr(orchestrator, "framework_credentials", None)
-    if service is None:
-        return None
-    return service.resolve_bearer
-
-
-async def authenticate_a2a_request(
-    validator: A2ASecurityValidator, headers, *, resolve_framework_bearer=None,
-) -> Optional[A2APrincipal]:
-    if node_identity.is_personal():
-        return None
-    token = bearer_from_headers(headers)
-    if not token:
-        return None
-    if resolve_framework_bearer is not None and token.startswith("afk_"):
-        caller = await asyncio.to_thread(resolve_framework_bearer, token)
-        if caller is None:
-            return None
-        claims = {
-            "sub": caller.owner_id, "iss": "astral-framework", "aud": "astral-a2a",
-            "realm_access": {"roles": ["user"]},
-            "_framework_credential_id": caller.credential_id,
-            "_framework_scopes": sorted(caller.scopes),
-            "_framework_caller": caller,
-        }
-        return A2APrincipal(claims, token)
-    claims = await validator.validate_token(token)
-    if not isinstance(claims, dict) or not isinstance(claims.get("sub"), str):
-        return None
-    return A2APrincipal(claims, token)
 
 
 class OrchestratorA2AExecutor(AgentExecutor):
@@ -442,8 +398,6 @@ def _public_url() -> str:
 
 
 def build_orchestrator_a2a_card(orchestrator) -> A2AAgentCard:
-    authority = os.getenv("KEYCLOAK_AUTHORITY", "")
-    registry = _publication_registry(orchestrator)
     policy = _publication_policy(orchestrator)
     signer = None
     try:
@@ -473,34 +427,13 @@ def build_orchestrator_a2a_card(orchestrator) -> A2AAgentCard:
         ))
     skills.append(A2AAgentSkill(
         id="chat", name="chat",
-        description="Send a natural language message for LLM-powered routing "
-                    "(authenticated; tools are listed per caller)",
+        description="Send a natural language message for LLM-powered routing. "
+                    + "Requires an owner-minted caller ticket that covers a2a.message. Tools are listed per ticket.",
         tags=["routing"],
     ))
 
     security_schemes = {}
     security_requirements: List[SecurityRequirement] = []
-    if authority and not node_identity.is_personal():
-        security_schemes["keycloak_oidc"] = SecurityScheme(
-            open_id_connect_security_scheme=OpenIdConnectSecurityScheme(
-                open_id_connect_url=f"{authority}/.well-known/openid-configuration",
-            )
-        )
-        if unsignable:
-            advertised = []
-        elif policy is not None:
-            advertised = list(dict.fromkeys(scope for record in publications
-                             for scope in record.audiences
-                             if scope in policy._registered_scopes(record.agent_id)))
-        elif registry is not None:
-            advertised = list(registry.advertised_audiences()) if registry.available else []
-        else:
-            advertised = ["tools:read", "tools:write", "tools:search", "tools:system"]
-        if advertised:
-            security_requirements.append(SecurityRequirement(schemes={
-                "keycloak_oidc": StringList(list=advertised),
-            }))
-
     card = A2AAgentCard(
         name="AstralDeep Orchestrator",
         description="Multi-agent orchestrator with LLM-powered tool routing. Routes requests to specialized agents.",
@@ -528,18 +461,18 @@ def build_orchestrator_a2a_card(orchestrator) -> A2AAgentCard:
     return card
 
 
-def _unauthenticated_response(message="Authentication required", *, status=401, error=NODE_BEARER_REFUSED):
+def _unauthenticated_response(message="Authentication required", *, status=401, error=NODE_BEARER_REFUSED, reason=None):
     from starlette.responses import JSONResponse
 
     return JSONResponse(
         {
             "jsonrpc": "2.0",
             "id": None,
-            "error": {"code": -32001, "message": message},
+            "error": {"code": -32001, "message": message,
+                      **({"data": {"code": error, "reason": reason}} if reason else {})},
         },
         status_code=status,
-        headers={"WWW-Authenticate": node_caller_challenge("astral-a2a", error) if node_identity.is_personal()
-                 else 'Bearer realm="astral-a2a"'},
+        headers={"WWW-Authenticate": node_caller_challenge("astral-a2a", error)},
     )
 
 
@@ -566,27 +499,16 @@ def setup_orchestrator_a2a(app, orchestrator):
         task_store=InMemoryTaskStore(owner_resolver=a2a_task_owner),
         agent_card=initial_card,
     )
-    validator = executor.security_validator
-
     async def refresh_card(_card):
         return await asyncio.to_thread(build_orchestrator_a2a_card, orchestrator)
 
     def _gated(endpoint):
         async def gated_endpoint(request):
-            if node_identity.is_personal():
-                try:
-                    principal = await _caller_principal(request)
-                except caller_tickets.CallerRefused as exc:
-                    return _unauthenticated_response(exc.code, status=exc.status, error=exc.code)
-                request.scope[PRINCIPAL_SCOPE_KEY] = principal
-                return await endpoint(request)
-            # Must run before the SDK parses a method, or tasks/* bypass this
-            principal = await authenticate_a2a_request(
-                validator, request.headers,
-                resolve_framework_bearer=_a2a_framework_resolver(orchestrator),
-            )
-            if principal is None:
-                return _unauthenticated_response()
+            try:
+                principal = await _caller_principal(request)
+            except caller_tickets.CallerRefused as exc:
+                return _unauthenticated_response(
+                    exc.code, status=exc.status, error=exc.code, reason=caller_tickets.reason_for(exc.code))
             request.scope[PRINCIPAL_SCOPE_KEY] = principal
             return await endpoint(request)
 

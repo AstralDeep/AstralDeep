@@ -522,69 +522,6 @@ async def test_unbind_mismatch_preserves_foreign_binding_but_closes_plane(
     assert "plane.close" in events
 
 
-def test_constructor_transaction_rolls_back_after_process_binding_and_recomposes(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from agents.general import file_tools
-    from orchestrator import orchestrator as orchestrator_module
-    from orchestrator import offline_grant, web_auth
-    from shared import attachment_materializer, attachment_resolver
-
-    monkeypatch.setattr(file_tools, "_PRODUCTION_DEPENDENCIES", None)
-    monkeypatch.setattr(attachment_resolver, "_PLANE_RUNTIME", None)
-    monkeypatch.setattr(attachment_resolver, "_PLANE_REPOSITORIES", None)
-    monkeypatch.setattr(attachment_resolver, "_PLANE_BLOBS", None)
-    monkeypatch.setattr(attachment_materializer, "_MATERIALIZATION_SERVICE", None)
-    monkeypatch.setattr(web_auth, "_STORE", None)
-    monkeypatch.setattr(web_auth, "_CREDENTIAL_MANAGER", None)
-    monkeypatch.setattr(offline_grant, "_APPLICATION_STORE", None)
-
-    runtime, events = _composition()
-
-    @orchestrator_module._transactional_runtime_construction
-    def _fail_after_binding(owner) -> None:
-        owner.runtime_composition = runtime
-        owner.credential_manager = object()
-        owner.web_sessions = object()
-        owner.offline_grants = object()
-        web_auth.bind_credential_manager(owner.credential_manager)
-        web_auth.bind_session_store(owner.web_sessions)
-        offline_grant.bind_offline_grant_store(owner.offline_grants)
-        attachment_resolver.register_plane_runtime(
-            runtime.plane.runtime,
-            runtime.plane.repositories,
-            runtime.plane.blobs,
-        )
-        attachment_materializer.register_materialization_service(
-            runtime.plane.attachment_materializer
-        )
-        file_tools.register_plane_dependencies(
-            runtime.plane.runtime,
-            runtime.plane.repositories,
-            runtime.plane.blobs,
-        )
-        raise RuntimeError("failed immediately after file-tool registration")
-
-    with pytest.raises(RuntimeError, match="immediately after file-tool"):
-        _fail_after_binding(SimpleNamespace())
-
-    assert events[-1] == "plane.close"
-    assert web_auth._STORE is None
-    assert web_auth._CREDENTIAL_MANAGER is None
-    assert offline_grant._APPLICATION_STORE is None
-    assert file_tools._PRODUCTION_DEPENDENCIES is None
-    assert attachment_resolver._PLANE_RUNTIME is None
-    assert attachment_materializer._MATERIALIZATION_SERVICE is None
-
-    replacement, _replacement_events = _composition()
-    assert file_tools.register_plane_dependencies(
-        replacement.plane.runtime,
-        replacement.plane.repositories,
-        replacement.plane.blobs,
-    )
-    replacement.abort()
-
-
 class _StartAsyncTasks:
     def __init__(self, events: list[str]) -> None:
         self.events = events
@@ -602,12 +539,12 @@ class _StartAsyncTasks:
 async def test_startup_recovers_generated_publications_before_background_loop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from orchestrator import session_store
+    from orchestrator import boot_posture
     from orchestrator.orchestrator import Orchestrator
 
     events: list[str] = []
     monkeypatch.setattr(
-        session_store,
+        boot_posture,
         "assert_production_posture",
         lambda: events.append("posture"),
     )

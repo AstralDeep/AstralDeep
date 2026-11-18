@@ -333,7 +333,7 @@ async def _ws_publication_caller(orch, websocket, user_id, *, work_read=None):
     from orchestrator.work_api import _origin
     from orchestrator.work_control_authority import WorkCallerAuthority
     from orchestrator.work_submit_authority import (
-        AuthenticatedWorkRequest, _expiry, _signed_selection, capture_human_caller,
+        AuthenticatedWorkRequest, _expiry, capture_human_caller, refuse_session_cookie,
     )
     from orchestrator.work_surface_authority import _transport_headers
     from orchestrator.human_request_authority import current_human_caller
@@ -365,7 +365,8 @@ async def _ws_publication_caller(orch, websocket, user_id, *, work_read=None):
     if _origin(origins[0]) != _origin(base, base=True):
         raise AssignmentError("work_origin_refused", 403)
 
-    session_id = _signed_selection(transport)
+    refuse_session_cookie(transport)
+    session_id = None
     verified = await auth.verify_user(await auth.verify_production_token(token))
     if verified.get("sub") != user_id:
         raise AssignmentError("work_authentication_required", 401)

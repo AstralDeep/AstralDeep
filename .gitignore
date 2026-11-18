@@ -20,13 +20,9 @@ windows-client/build_verify*/
 # Stray mis-pathed directory from an accidental run (contents already covered).
 backend/backend/
 docs/*
-# Operator/setup docs are product documentation — never silently drop them
-# (docs/keycloak-android-client-setup.md was lost to `docs/*` until the
-# 2026-07-07 release audit; its four siblings had needed `git add -f`).
-!docs/keycloak*.md
+# Operator/setup docs are product documentation, so each one is listed here.
 !docs/production-deployment.md
 !docs/personal-node.md
-!docs/institution-node.md
 !docs/byo-client-agents.md
 !docs/remote-compute-agents.md
 !docs/mcp-server-endpoint.md

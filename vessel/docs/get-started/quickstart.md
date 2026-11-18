@@ -70,12 +70,12 @@ Container mode needs Docker with Buildx and the Compose v2 plugin, and a Linux k
 
 ### 1. Prepare the node build inputs
 
-The AstralVessel 0.7.0 executor image contains the exact, verified Kernel artifacts used to build the matching Deep node image. Use it only to copy those files; it is not the node image and must not be passed to `astralvessel up --image`.
+The AstralVessel 0.8.0 executor image contains the exact, verified Kernel artifacts used to build the matching Deep node image. Use it only to copy those files; it is not the node image and must not be passed to `astralvessel up --image`.
 
 ```bash
 mkdir astral-install && cd astral-install
-docker pull ghcr.io/astraldeep/astralvessel:0.7.0
-artifact_container="$(docker create ghcr.io/astraldeep/astralvessel:0.7.0)"
+docker pull ghcr.io/astraldeep/astralvessel:0.8.0
+artifact_container="$(docker create ghcr.io/astraldeep/astralvessel:0.8.0)"
 mkdir kernel-artifacts
 docker cp "${artifact_container}:/opt/vessel-build/kernel-artifacts/." ./kernel-artifacts/
 docker rm "$artifact_container"
@@ -113,7 +113,7 @@ Deep's image build checks the wheel and mailbox against its pinned manifest and 
 ### 3. Install AstralVessel
 
 ```bash
-python3 -m pip install astralvessel==0.7.0
+python3 -m pip install astralvessel==0.8.0
 ```
 
 ### 4. Start and check the node

@@ -21,7 +21,6 @@ from shared.protocol import MCPResponse
 
 USER_ID = "voice-parity-owner"
 USERNAME = "voice.parity"
-RAW_KEYCLOAK_TOKEN = "memory-only-keycloak-token-065"
 AGENT_ID = "parity-agent"
 TOOL_ID = "read_record"
 
@@ -42,6 +41,9 @@ class _Permissions:
         assert (user_id, agent_id) == (USER_ID, AGENT_ID)
         return ["tools:read"] if self.allowed else []
 
+    def get_tool_scope(self, agent_id: str, tool_id: str) -> str:
+        return "tools:read"
+
     def get_tool_scope_map(self, agent_id: str) -> dict[str, str]:
         return {TOOL_ID: "tools:read", "send_email": "tools:read", "blocked_tool": "tools:read"}
 
@@ -49,19 +51,6 @@ class _Permissions:
 class _Delegation:
     def __init__(self) -> None:
         self.calls: list[tuple[Any, ...]] = []
-
-    async def exchange_token_for_agent(
-        self,
-        raw_token: str,
-        agent_id: str,
-        allowed_tools: list[str],
-        user_id: str,
-        scopes: list[str],
-    ) -> dict[str, str]:
-        self.calls.append(
-            (raw_token, agent_id, tuple(allowed_tools), user_id, tuple(scopes))
-        )
-        return {"access_token": "attenuated-parity-token"}
 
 
 def _sockets() -> tuple[_TypedSocket, DurableUserTurnWebSocket]:
@@ -75,7 +64,6 @@ def _claims() -> dict[str, Any]:
         "sub": USER_ID,
         "preferred_username": USERNAME,
         "realm_access": {"roles": ["clinician"]},
-        "_raw_token": RAW_KEYCLOAK_TOKEN,
     }
 
 
@@ -120,7 +108,14 @@ def _gate_runtime(
 
 
 @pytest.mark.asyncio
-async def test_keycloak_owner_llm_and_rfc8693_scope_match_typed_turn() -> None:
+async def test_owner_llm_and_node_delegation_scope_match_typed_turn(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from shared import node_identity
+
+    monkeypatch.setenv(node_identity.PROFILE_ENV, node_identity.PERSONAL)
+    monkeypatch.setenv(node_identity.DATA_DIR_ENV, str(tmp_path / "node"))
+    node_identity.reset_cache()
     typed, voice = _sockets()
     runtime, delegation = _gate_runtime(typed, voice)
 
@@ -169,31 +164,19 @@ async def test_keycloak_owner_llm_and_rfc8693_scope_match_typed_turn() -> None:
         for socket in (typed, voice)
     ]
     assert all(isinstance(outcome, PreparedDispatch) for outcome in outcomes)
-    assert (
-        outcomes[0].args
-        == outcomes[1].args
-        == {
-            "record": "123",
-            "_delegation_token": "attenuated-parity-token",
-        }
-    )
-    assert outcomes[0].delegation_token == outcomes[1].delegation_token
-    assert delegation.calls == [
-        (
-            RAW_KEYCLOAK_TOKEN,
-            AGENT_ID,
-            (TOOL_ID, "send_email"),
-            USER_ID,
-            ("tools:read",),
-        ),
-        (
-            RAW_KEYCLOAK_TOKEN,
-            AGENT_ID,
-            (TOOL_ID, "send_email"),
-            USER_ID,
-            ("tools:read",),
-        ),
-    ]
+    typed_outcome, voice_outcome = outcomes
+    tokens = [outcome.args.pop("_delegation_token") for outcome in outcomes]
+    assert typed_outcome.args == voice_outcome.args == {"record": "123"}
+    identity = node_identity.load_node_identity(create=False)
+    claims = [identity.verify_token(token, audience=None) for token in tokens]
+    for claim in claims:
+        assert claim["sub"] == USER_ID
+        assert set(claim["scope"].split()) == {"tools:read", f"tool:{TOOL_ID}", "tool:send_email"}
+        assert claim["act"]["sub"] == f"agent:{AGENT_ID}"
+    stable = ("sub", "scope", "act", "aud", "iss")
+    assert {key: claims[0].get(key) for key in stable} == {key: claims[1].get(key) for key in stable}
+    assert delegation.calls == []
+    node_identity.reset_cache()
 
 
 @pytest.mark.asyncio

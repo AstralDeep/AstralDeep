@@ -33,6 +33,16 @@ def _write_key(directory, key, mode=0o600):
     return path
 
 
+@pytest.fixture
+def unsigned_host(publication_host):  # noqa: F811
+    def build():
+        orch = publication_host()
+        del orch.publication_signer
+        return orch
+
+    return build
+
+
 def test_publication_list_round_trips_and_rejects_other_keys_and_tampering():
     signer, other = _signer(), _signer()
     entries = [{"capability": "weather-1", "audiences": ["tools:read"], "expires_at": None, "publication_id": "p1"}]
@@ -110,12 +120,12 @@ def test_unpublished_capability_is_refused_at_admission(publication_host):  # no
     assert orch.a2a_publication_policy.admit("web-research-1") is None
 
 
-def test_personal_node_loads_its_key_from_the_data_directory(publication_host, monkeypatch, tmp_path):  # noqa: F811
+def test_personal_node_loads_its_key_from_the_data_directory(unsigned_host, monkeypatch, tmp_path):
     key = Ed25519PrivateKey.generate()
     _write_key(tmp_path, key)
     monkeypatch.setenv(signing.PROFILE_ENV, "personal")
     monkeypatch.setenv(signing.DATA_DIR_ENV, str(tmp_path))
-    orch = publication_host()
+    orch = unsigned_host()
     registry = attach_publication_registry(orch)
     _publish(registry)
     card = build_orchestrator_a2a_card(orch)
@@ -126,7 +136,7 @@ def test_personal_node_loads_its_key_from_the_data_directory(publication_host, m
 
 
 @pytest.mark.parametrize("setup", ["missing", "group-readable", "garbage", "wrong-type"])
-def test_personal_node_without_a_usable_key_publishes_nothing(publication_host, monkeypatch, tmp_path, setup):  # noqa: F811
+def test_personal_node_without_a_usable_key_publishes_nothing(unsigned_host, monkeypatch, tmp_path, setup):
     path = tmp_path / signing.KEY_FILE
     if setup == "group-readable":
         _write_key(tmp_path, Ed25519PrivateKey.generate(), 0o644)
@@ -137,7 +147,7 @@ def test_personal_node_without_a_usable_key_publishes_nothing(publication_host, 
         _write_key(tmp_path, ec.generate_private_key(ec.SECP256R1()))
     monkeypatch.setenv(signing.PROFILE_ENV, "personal")
     monkeypatch.setenv(signing.DATA_DIR_ENV, str(tmp_path))
-    orch = publication_host()
+    orch = unsigned_host()
     registry = attach_publication_registry(orch)
     _publish(registry)
     card = build_orchestrator_a2a_card(orch)
@@ -149,9 +159,9 @@ def test_personal_node_without_a_usable_key_publishes_nothing(publication_host, 
         signing.load_node_signer()
 
 
-def test_central_deployment_without_a_key_keeps_unsigned_cards(publication_host, monkeypatch):  # noqa: F811
+def test_central_deployment_without_a_key_keeps_unsigned_cards(unsigned_host, monkeypatch):
     monkeypatch.delenv(signing.PROFILE_ENV, raising=False)
-    orch = publication_host()
+    orch = unsigned_host()
     card = build_orchestrator_a2a_card(orch)
     assert not card.signatures
     assert signing.can_publish(orch) is True

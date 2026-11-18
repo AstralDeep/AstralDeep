@@ -450,62 +450,6 @@ def test_voice_activation_refuses_negotiated_legacy_chat(history):
     assert runtime.calls == []
 
 
-def test_resume_rejection_keeps_registration_ready_and_correlated(history, monkeypatch):
-    import asyncio
-    from types import SimpleNamespace
-    from unittest.mock import AsyncMock
-    from tests.test_register_ui_auth_required import (
-        _FakeWS,
-        _make_fake,
-        _register_msg,
-        _run_and_drain,
-    )
-    from orchestrator.orchestrator import Orchestrator
-    import audit.hooks
-
-    monkeypatch.setattr(audit.hooks, "record_auth_event", AsyncMock())
-    fake = _make_fake(validate=AsyncMock(return_value={"sub": "owner"}))
-    fake.history = history
-    fake._register_ui_operation_refusal = Orchestrator._register_ui_operation_refusal
-    fake._emit_hydration_snapshot = AsyncMock()
-    fake._issue_voice_control_binding = AsyncMock()
-    fake.rote.register_device = lambda ws, device: SimpleNamespace(
-        device_type=SimpleNamespace(value="macos"),
-        console_contract="console/v2",
-        project_workspaces_v1=True,
-    )
-    socket = _FakeWS()
-    fake._registered_events[id(socket)] = asyncio.Event()
-    chat_id = history.create_chat(user_id="owner")
-    generation, request_id = identity(), identity()
-    _run_and_drain(
-        fake.handle_ui_message(
-            socket,
-            _register_msg(
-                token="test",
-                device_id=identity(),
-                connection_generation=generation,
-                capabilities=["project_workspaces_v1"],
-                device={"project_workspaces_v1": True},
-                resume={
-                    "schema_version": 1,
-                    "active_chat_id": chat_id,
-                    "request_generation": request_id,
-                },
-            ),
-        )
-    )
-    error = next(
-        frame
-        for _, frame in fake._sent
-        if frame.get("code") == "project_selection_required"
-    )
-    assert fake._registered_events[id(socket)].is_set()
-    assert error["request_generation"] == request_id
-    assert error["chat_id"] == chat_id
-    fake._emit_hydration_snapshot.assert_not_awaited()
-
-
 @pytest.mark.parametrize(
     "value", [None, "bad", "550E8400-E29B-41D4-A716-446655440000", 3]
 )
@@ -775,35 +719,6 @@ def test_client_supplied_creation_identity_is_not_silently_replaced(api_client):
     assert response.json()["detail"]["code"] == "project_selection_required"
 
 
-@pytest.mark.parametrize(
-    "legacy_id",
-    ["🧪" * 512, "\x01" * 512, " legacy\n" + "🧪" * 504],
-    ids=["emoji", "control", "mixed"],
-)
-def test_project_chat_cursor_round_trips_maximum_legacy_identity(history, legacy_id):
-    from orchestrator.projects import ProjectService
-
-    service = ProjectService(history)
-    owner_id = "🧪" * 512
-    project_id = identity()
-    service.create(owner_id, project_id, "Research")
-    chats = sorted([legacy_id, "🫠" * 512])
-    for chat_id in chats:
-        history.create_chat(chat_id, user_id=owner_id)
-        with history.plane_runtime.transaction() as transaction:
-            history.plane_repositories.projects.attach_chat(
-                transaction, owner_id=owner_id, project_id=project_id, chat_id=chat_id
-            )
-    page = service.list_chats(owner_id, project_id, limit=1)
-    assert page["chats"][0]["id"] == chats[0]
-    assert len(page["next_cursor"]) <= 4096
-    final = service.list_chats(
-        owner_id, project_id, limit=1, cursor=page["next_cursor"]
-    )
-    assert final["chats"][0]["id"] == chats[1]
-    assert final["next_cursor"] is None
-
-
 def test_project_cursor_bounds_do_not_depend_on_owner_unicode(history):
     from orchestrator.projects import ProjectService
 
@@ -817,39 +732,6 @@ def test_project_cursor_bounds_do_not_depend_on_owner_unicode(history):
     final = service.list(owner, limit=1, cursor=first["next_cursor"])
     assert final["projects"][0]["project_id"] == projects[1]
     assert final["next_cursor"] is None
-
-
-@pytest.mark.parametrize(
-    "ordering",
-    [
-        {"chat_id_utf8": "!"},
-        {"chat_id_utf8": 3},
-        {"chat_id_utf8": "_w=="},
-        {"chat_id_utf8": "", "owner_id": "other"},
-        [],
-    ],
-)
-def test_signed_malformed_cursor_ordering_is_refused(ordering):
-    import time
-    from orchestrator.external_identity_links import encode_signed_payload
-    from orchestrator.projects import ProjectError, ProjectService, _cursor_scope
-    from orchestrator.web_auth import _secret
-
-    scope = "chats:" + identity()
-    now = int(time.time())
-    token = encode_signed_payload(
-        {
-            "v": 1,
-            "type": "project_page",
-            "iat": now,
-            "exp": now + 300,
-            "scope": _cursor_scope("owner", scope),
-            "cursor": ordering,
-        },
-        _secret(),
-    )
-    with pytest.raises(ProjectError, match="invalid_project_cursor"):
-        ProjectService._cursor(token, "owner", scope)
 
 
 def test_cursor_encoder_never_emits_an_oversized_token():

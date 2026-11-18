@@ -18,7 +18,6 @@ import pytest
 
 from orchestrator.history import ConversationCommitRepository
 from orchestrator.orchestrator import Orchestrator
-from orchestrator.runtime_observability import RuntimeObservability
 from orchestrator.workspace import WorkspaceManager
 from orchestrator.scheduled_publication import (
     ScheduledPublicationEscapeError,
@@ -29,7 +28,6 @@ from orchestrator.work_admission import (
     AdmissionClassConfig,
     WorkAdmissionCoordinator,
 )
-from scheduler.runner import JobRunner
 from scheduler.tests.plane_runtime import (
     ensure_plane_runtime,
     scheduled_job_store as ScheduledJobStore,
@@ -679,51 +677,3 @@ async def test_legacy_turn_and_scheduled_workspace_suppression_are_preserved(
     assert result == []
     assert len(rendered) == 1
 
-
-def test_scheduler_observability_uses_only_bounded_dimensions() -> None:
-    observability = RuntimeObservability(deployment_instance="atomic_chat_test")
-    runner = JobRunner(
-        SimpleNamespace(runtime_observability=observability),
-        SimpleNamespace(),
-        SimpleNamespace(),
-    )
-
-    runner._observe_scheduler(
-        "claim_recovered",
-        {"agent_id": None},
-        result_code="claim_recovered",
-    )
-    runner._observe_effect("reserved", effect_kind="chat_history")
-    runner._observe_effect("published", effect_kind="chat_history")
-    samples = {sample.name: sample for sample in observability.snapshot()}
-
-    assert samples["scheduler_claim_recovered_total"].labels == {
-        "deployment_instance": "atomic_chat_test",
-        "job_type": "scheduled_chat",
-        "result_code": "claim_recovered",
-    }
-    assert samples["scheduler_effect_reserved_total"].labels == {
-        "deployment_instance": "atomic_chat_test",
-        "effect_kind": "chat_history",
-    }
-    assert samples["scheduler_effect_published_total"].value == 1
-
-
-@pytest.mark.parametrize("scope", ("tools:write", "tools:execute"))
-def test_mutating_scheduled_scopes_are_ineligible(scope: str) -> None:
-    runner = JobRunner(
-        SimpleNamespace(),
-        SimpleNamespace(),
-        SimpleNamespace(),
-    )
-
-    decision = runner.assess_job(
-        {
-            "handler_kind": "scheduled_chat",
-            "consented_scopes": ["tools:read", scope],
-        }
-    )
-
-    assert decision.eligible is False
-    assert decision.code == "handler_downstream_idempotency_unreviewed"
-    assert decision.retryable is False

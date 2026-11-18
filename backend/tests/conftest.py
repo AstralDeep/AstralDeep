@@ -39,6 +39,46 @@ from tests.helpers.xdist_database import drop_worker_database, isolate_worker_da
 WORKER_DATABASE = isolate_worker_database(os.environ)
 
 
+ASYNC_TEST_DEADLINE_SECONDS = 240
+
+
+def pytest_collection_modifyitems(items):
+    import functools
+    import inspect
+    import threading
+
+    for item in items:
+        function = getattr(item, "obj", None)
+        if not inspect.iscoroutinefunction(function):
+            continue
+
+        @functools.wraps(function)
+        async def bounded(*args, __function=function, **kwargs):
+            loop = asyncio.get_running_loop()
+            task = asyncio.current_task()
+            expired = threading.Event()
+
+            def expire():
+                expired.set()
+                loop.call_soon_threadsafe(task.cancel)
+
+            watchdog = threading.Timer(ASYNC_TEST_DEADLINE_SECONDS, expire)
+            watchdog.daemon = True
+            watchdog.start()
+            try:
+                return await __function(*args, **kwargs)
+            except asyncio.CancelledError:
+                if expired.is_set():
+                    raise TimeoutError(
+                        f"async test exceeded {ASYNC_TEST_DEADLINE_SECONDS}s"
+                    ) from None
+                raise
+            finally:
+                watchdog.cancel()
+
+        item.obj = bounded
+
+
 def pytest_unconfigure(config):
     if WORKER_DATABASE is not None:
         drop_worker_database(*WORKER_DATABASE)
@@ -92,13 +132,12 @@ async def orchestrator_module_factory():
 
 
 @pytest.fixture
-def server_identity(monkeypatch, tmp_path):
+def node_data_dir(monkeypatch, tmp_path):
     from shared import node_identity
 
-    from tests.helpers.server_identity import ServerIdentity
-
-    identity = ServerIdentity.install(monkeypatch, data_dir=tmp_path / "node")
-    yield identity
+    monkeypatch.setenv(node_identity.DATA_DIR_ENV, str(tmp_path / "node"))
+    node_identity.reset_cache()
+    yield tmp_path / "node"
     node_identity.reset_cache()
 
 
@@ -154,4 +193,3 @@ def data_sharing_store(credential_plane_089):
         plane_repositories=credential_plane_089.repositories,
     )
 
-from tests.helpers.completed_result import completed_seed  # noqa: E402,F401

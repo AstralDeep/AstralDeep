@@ -45,4 +45,4 @@ The ticket is not a secret. The key is, so it is never printed, never an environ
 
 ## Exit codes
 
-`up` exits non-zero when the node or a sandbox is not ready, or when a probe or node check fails. `check` and `conformance` exit 1 on any failure.
+`up` exits non-zero when the node or a sandbox is not ready, or when a probe or node check fails. `check` and `conformance` exit 1 on any failure. `ask`, `chat`, `caller key` and `connections` exit 1 with one line that says what the node refused and what to do next, such as asking the owner for a new ticket. A usage error exits 2.

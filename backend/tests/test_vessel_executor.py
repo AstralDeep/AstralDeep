@@ -121,14 +121,14 @@ def test_a_partial_or_unusable_configuration_is_a_problem_and_leaves_the_executo
 
 
 def test_a_production_node_refuses_to_start_on_a_broken_executor_setting(monkeypatch, tmp_path):
-    from orchestrator import session_store
+    from orchestrator import boot_posture
 
     monkeypatch.setenv(ve.URL_ENV, URL)
     monkeypatch.setenv(ve.TOKEN_ENV, TOKEN)
     monkeypatch.setenv(ve.AGENT_TOKENS_ENV, str(tmp_path / "missing.json"))
     monkeypatch.delenv("ASTRAL_ENV", raising=False)
     with pytest.raises(SystemExit) as stopped:
-        session_store.assert_production_posture()
+        boot_posture.assert_production_posture()
     assert stopped.value.code == 78
 
 

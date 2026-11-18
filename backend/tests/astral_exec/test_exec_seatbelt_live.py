@@ -37,7 +37,10 @@ pytestmark = pytest.mark.skipif(
 
 PYTHON = os.path.realpath(sys.executable)
 PREFIX = os.path.realpath(sys.base_prefix)
-HOME = pwd.getpwuid(os.getuid()).pw_dir
+try:
+    HOME = pwd.getpwuid(os.getuid()).pw_dir
+except KeyError:
+    HOME = os.environ.get("HOME", "/")
 RUN_PY = Path(launch.__file__).resolve().parent / "run.py"
 LIMITS = {
     "memory_bytes": 1 << 30,

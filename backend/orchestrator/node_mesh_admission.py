@@ -253,7 +253,7 @@ def _binding_code(admission, ticket, owner):
 async def source_bound_capability(orch, owner, chat, agent, tool, args):
     from shared import node_identity
 
-    if (not (node_identity.is_personal() or node_identity.is_institution())
+    if (not node_identity.is_personal()
             or not isinstance(owner, str) or not owner
             or not isinstance(chat, str) or not chat or not isinstance(agent, str) or not agent
             or not isinstance(tool, str) or not tool or not isinstance(args, dict)):

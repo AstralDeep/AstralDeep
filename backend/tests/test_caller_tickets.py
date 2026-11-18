@@ -29,8 +29,8 @@ from orchestrator.orchestrator import Orchestrator
 from shared import node_identity
 from shared.a2a_publication import A2APublicationRegistry
 from shared.protocol import AgentCard, AgentSkill, MCPResponse
-from tests.helpers.dev_mesh import DevMesh, dev_node, node_settings, now_ms, publish_catalog, until, wait_for_caller_pause
-from tests.test_mcp_endpoint_064 import META, _Orchestrator
+from tests.helpers.dev_mesh import DevMesh, Door, dev_node, node_settings, now_ms, publish_catalog, until, wait_for_caller_pause
+from tests.test_mcp_endpoint_064 import _Orchestrator
 
 BASE = "http://mcp.test"
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "dev_mesh.py"
@@ -104,43 +104,6 @@ def audit(monkeypatch):
     recorder = Audit()
     monkeypatch.setattr(audit_hooks, "get_recorder", lambda: recorder)
     return recorder
-
-
-class Door:
-    def __init__(self, mesh: DevMesh, client: httpx.AsyncClient, host: Host):
-        self.mesh, self.client, self.host = mesh, client, host
-        self.holder = dev_mesh.CallerHolder.generate()
-
-    def mint(self, tools, *, label="Dev script", a2a=False, lifetime_s=dev_mesh.DEFAULT_LIFETIME_S, node=None):
-        return self.mesh.owner.mint_caller_ticket(
-            node or self.mesh.node_device, self.holder, tools, label=label, a2a=a2a, lifetime_s=lifetime_s)
-
-    async def post(self, path: str, body: bytes, ticket, extra: Optional[Dict[str, str]] = None, *,
-                   signed_body: Optional[bytes] = None, signed_target: Optional[str] = None, holder=None,
-                   headers: Optional[Dict[str, str]] = None) -> httpx.Response:
-        proof = headers if headers is not None else self.mesh.owner.caller_headers(
-            holder or self.holder, ticket, "POST", signed_target or path, body if signed_body is None else signed_body)
-        merged = {"Content-Type": "application/json", **(extra or {}), **proof}
-        return await self.client.post(path, content=body, headers=merged)
-
-    def mcp(self, method: str, params: Optional[dict] = None):
-        body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": {**(params or {}), "_meta": dict(META)}})
-        extra = {"MCP-Protocol-Version": "2026-07-28", "Mcp-Method": method}
-        if method == "tools/call":
-            extra["Mcp-Name"] = (params or {})["name"]
-        return body.encode(), extra
-
-    async def call_mcp(self, ticket, method: str, params: Optional[dict] = None, **options) -> httpx.Response:
-        body, extra = self.mcp(method, params)
-        return await self.post("/mcp", body, ticket, extra, **options)
-
-    async def call_tool(self, ticket, name: str, **options) -> httpx.Response:
-        return await self.call_mcp(ticket, "tools/call", {"name": name, "arguments": {"value": "v"}}, **options)
-
-    async def send_a2a(self, ticket, parts: Optional[list] = None, **options) -> httpx.Response:
-        message = {"message_id": "m1", "role": "ROLE_USER", "parts": parts or [{"text": ""}]}
-        body = json.dumps({"jsonrpc": "2.0", "id": "1", "method": "SendMessage", "params": {"message": message}})
-        return await self.post("/a2a", body.encode(), ticket, {"A2A-Version": "1.0"}, **options)
 
 
 def code_of(response: httpx.Response) -> str:
@@ -253,6 +216,29 @@ async def test_requests_without_a_valid_presentation_are_refused_before_dispatch
             assert (response.status_code, code_of(response)) == (status, code), headers
         query = await door.client.post("/mcp?token=x", content=body, headers={**extra, **proof, "Content-Type": "application/json"})
         assert (query.status_code, code_of(query)) == (401, "node.bearer_refused")
+        assert door.host.calls == []
+
+
+BEARER_CREDENTIALS = {
+    "framework bearer": {"Authorization": "Bearer afk_0123456789abcdef"},
+    "jwt bearer": {"Authorization": "Bearer eyJhbGciOiJSUzI1NiJ9.e30.c2ln"},
+    "session cookie": {"Cookie": "astral_session=value.signature"},
+    "no credential": {},
+}
+
+
+@pytest.mark.parametrize("claimed_personal", [True, False])
+@pytest.mark.parametrize("credential", sorted(BEARER_CREDENTIALS))
+async def test_mcp_and_a2a_refuse_every_non_ticket_credential_whatever_the_profile_check_says(
+        tmp_path, monkeypatch, credential, claimed_personal):
+    async with served(tmp_path, monkeypatch) as door:
+        monkeypatch.setattr(node_identity, "is_personal", lambda: claimed_personal)
+        headers = {"Content-Type": "application/json", **BEARER_CREDENTIALS[credential]}
+        mcp_body, mcp_extra = door.mcp("tools/call", {"name": "read_value", "arguments": {"value": "v"}})
+        a2a_body = b'{"jsonrpc": "2.0", "id": "1", "method": "SendMessage", "params": {}}'
+        for path, body, extra in (("/mcp", mcp_body, mcp_extra), ("/a2a", a2a_body, {"A2A-Version": "1.0"})):
+            response = await door.client.post(path, content=body, headers={**extra, **headers})
+            assert (response.status_code, code_of(response)) == (401, "node.bearer_refused"), (path, credential)
         assert door.host.calls == []
 
 
@@ -671,7 +657,7 @@ def ticket_claims() -> Dict[str, Any]:
 
 
 async def test_the_delegation_token_of_a_ticketed_call_names_only_that_tool(orchestrator_factory):
-    from orchestrator import delegation as dg
+    from orchestrator import agent_authority as dg
 
     orch = ticketed_orchestrator(orchestrator_factory)
     session = {**ticket_claims(), "_invocation_channel": "mcp"}
@@ -703,7 +689,7 @@ async def test_a_ticketed_call_is_bound_to_its_tool_scope_and_definition(orchest
 
 
 async def test_a_chained_hop_from_a_ticketed_call_is_refused_and_the_uncovered_tool_never_runs(orchestrator_factory):
-    from orchestrator import delegation as dg
+    from orchestrator import agent_authority as dg
     from shared.feature_flags import flags
     from shared.protocol import AgentHopRequest
 
@@ -732,16 +718,3 @@ async def test_a_chained_hop_from_a_ticketed_call_is_refused_and_the_uncovered_t
     assert dg.decode_token_payload(token)["scope"].split() == ["tools:read", "tool:read_value"]
 
 
-async def test_the_real_dispatch_of_a_ticketed_call_sends_the_agent_a_token_for_that_tool_only(orchestrator_factory, monkeypatch):
-    monkeypatch.setenv("DELEGATION_REQUIRED", "true")
-    orch = ticketed_orchestrator(orchestrator_factory)
-    orch.delegation.agent_service_client_id = "agent-service"
-    orch._map_file_paths = lambda _chat, arguments, **_: arguments
-    orch.credential_manager.get_agent_credentials_encrypted = lambda *_: None
-    orch._execute_with_retry = AsyncMock(return_value=MCPResponse(result={"ok": True}))
-    ran = await orch.execute_mcp_tool(
-        claims=ticket_claims(), user_id=OWNER_ID, agent_id=AGENT, tool_name="read_value", arguments={})
-    assert ran.error is None and orch._execute_with_retry.await_count == 1
-    sent = orch._execute_with_retry.await_args.args[3]["_delegation_token"]
-    from orchestrator import delegation as dg
-    assert dg.decode_token_payload(sent)["scope"].split() == ["tools:read", "tool:read_value"]

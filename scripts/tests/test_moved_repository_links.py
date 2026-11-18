@@ -31,7 +31,6 @@ ARCHIVE_BY_FILE = {
     "scripts/tests/test_verify_migration_provenance.py": "covers the provenance verifier",
     "scripts/tests/test_verify_component_ownership.py": "covers the ownership verifier",
     "scripts/tests/test_install_local_components.py": "covers refusal of the pre-move component path",
-    "plane/tests/architecture/test_ci_workflow.py": "asserts the pre-move path is gone from the workflow",
     "scripts/tests/test_moved_repository_links.py": "names the moved repositories to search for them",
 }
 

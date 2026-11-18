@@ -1,0 +1,225 @@
+# Releases AstralVessel when a vessel-v<version> tag is pushed: the vessel and egress images to GitHub's container registry for amd64 and arm64, then the package to PyPI.
+# PyPI accepts the upload through GitHub OIDC trusted publishing, so no token is stored, and every publishing job runs in the release-vessel environment that stays closed until the owner marks it ready.
+# Running it by hand (workflow_dispatch) is a dry run that builds both images for both architectures and the package and pushes nothing.
+name: Release Vessel
+
+on:
+  push:
+    tags: ["vessel-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          persist-credentials: false
+      - id: version
+        run: |
+          version=$(python3 -c "import tomllib; print(tomllib.load(open('vessel/pyproject.toml','rb'))['project']['version'])")
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "version $version is not X.Y.Z"; exit 1; }
+          if [ "$GITHUB_EVENT_NAME" = push ] && [ "vessel-v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "tag $GITHUB_REF_NAME does not match version $version"; exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  kernel-binding-amd64:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+      - name: Build the manifest-pinned Kernel artifacts from source
+        working-directory: vessel
+        run: python scripts/build_kernel_binding.py produce --source "$RUNNER_TEMP/astral-kernel" --output "$RUNNER_TEMP/kernel-artifacts" --platform linux/amd64
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: kernel-artifacts-linux-amd64
+          path: ${ runner.temp }/kernel-artifacts
+          if-no-files-found: error
+          retention-days: 14
+
+  kernel-binding-arm64:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+      - name: Build the manifest-pinned Kernel artifacts from source
+        working-directory: vessel
+        run: python scripts/build_kernel_binding.py produce --source "$RUNNER_TEMP/astral-kernel" --output "$RUNNER_TEMP/kernel-artifacts" --platform linux/arm64
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: kernel-artifacts-linux-arm64
+          path: ${ runner.temp }/kernel-artifacts
+          if-no-files-found: error
+          retention-days: 14
+
+  images:
+    needs: [check, kernel-binding-amd64, kernel-binding-arm64]
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        include:
+          - name: astralvessel
+            context: vessel
+          - name: astralvessel-egress
+            context: vessel/egress
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: kernel-artifacts-linux-amd64
+          path: ${{ runner.temp }}/kernel-artifact-inputs/linux-amd64
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: kernel-artifacts-linux-arm64
+          path: ${{ runner.temp }}/kernel-artifact-inputs/linux-arm64
+      - name: Assemble the two source-bound payloads as the named build context
+        run: |
+          mkdir -p "$RUNNER_TEMP/kernel-artifacts"
+          for arch in linux-amd64 linux-arm64; do
+            find "$RUNNER_TEMP/kernel-artifact-inputs/$arch" -maxdepth 1 -type f \
+              \( -name 'astral_kernel-*.whl' -o -name 'astral-mailbox-*' \) -exec cp {} "$RUNNER_TEMP/kernel-artifacts/" \;
+          done
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ${{ matrix.context }}
+          build-contexts: |
+            kernel-artifacts=${{ runner.temp }}/kernel-artifacts
+            astral-exec=backend/astral_exec
+          platforms: linux/amd64,linux/arm64
+          push: false
+          tags: |
+            ghcr.io/astraldeep/${{ matrix.name }}:${{ needs.check.outputs.version }}
+            ghcr.io/astraldeep/${{ matrix.name }}:latest
+
+  publish-images:
+    needs: [check, kernel-binding-amd64, kernel-binding-arm64]
+    if: (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && (github.event_name == 'push')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: release-vessel
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        include:
+          - name: astralvessel
+            context: vessel
+          - name: astralvessel-egress
+            context: vessel/egress
+    steps:
+      - name: Require the owner-configured release-vessel environment
+        env:
+          READY: ${{ vars.RELEASE_VESSEL_READY }}
+        run: |
+          [ "$READY" = true ] || { echo "::error::Set RELEASE_VESSEL_READY=true in the release-vessel environment after creating it with its reviewer and tag rule."; exit 1; }
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: kernel-artifacts-linux-amd64
+          path: ${{ runner.temp }}/kernel-artifact-inputs/linux-amd64
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: kernel-artifacts-linux-arm64
+          path: ${{ runner.temp }}/kernel-artifact-inputs/linux-arm64
+      - name: Assemble the two source-bound payloads as the named build context
+        run: |
+          mkdir -p "$RUNNER_TEMP/kernel-artifacts"
+          for arch in linux-amd64 linux-arm64; do
+            find "$RUNNER_TEMP/kernel-artifact-inputs/$arch" -maxdepth 1 -type f \
+              \( -name 'astral_kernel-*.whl' -o -name 'astral-mailbox-*' \) -exec cp {} "$RUNNER_TEMP/kernel-artifacts/" \;
+          done
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ${{ matrix.context }}
+          build-contexts: |
+            kernel-artifacts=${{ runner.temp }}/kernel-artifacts
+            astral-exec=backend/astral_exec
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/astraldeep/${{ matrix.name }}:${{ needs.check.outputs.version }}
+            ghcr.io/astraldeep/${{ matrix.name }}:latest
+
+  build:
+    needs: check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - working-directory: vessel
+        run: pip install build==1.3.0 twine==7.0.0 && python -m build && twine check dist/*
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dist
+          path: vessel/dist/
+          if-no-files-found: error
+
+  pypi:
+    needs: [check, publish-images, build]
+    if: (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && (github.event_name == 'push')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: release-vessel
+    permissions:
+      id-token: write
+    steps:
+      - name: Require the owner-configured release-vessel environment
+        env:
+          READY: ${{ vars.RELEASE_VESSEL_READY }}
+        run: |
+          [ "$READY" = true ] || { echo "::error::Set RELEASE_VESSEL_READY=true in the release-vessel environment after creating it with its reviewer and tag rule."; exit 1; }
+      - name: The released images must be pullable without signing in
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          for name in astralvessel astralvessel-egress; do
+            token=$(curl -fsS "https://ghcr.io/token?scope=repository:astraldeep/$name:pull" | jq -r .token)
+            curl -fsS -o /dev/null -H "Authorization: Bearer $token" \
+              -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json" \
+              "https://ghcr.io/v2/astraldeep/$name/manifests/$VERSION" \
+              || { echo "ghcr.io/astraldeep/$name is not public; make the package public, then re-run this job"; exit 1; }
+          done
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3

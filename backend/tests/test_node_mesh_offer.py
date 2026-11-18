@@ -371,8 +371,8 @@ async def test_outside_the_personal_profile_there_is_no_offer(node, monkeypatch)
     assert _secret(node.home) == secret and node.kernel.offers == 0
 
 
-async def test_a_node_mesh_on_another_profile_writes_no_secret(tmp_path, monkeypatch):
-    monkeypatch.setenv(ni.PROFILE_ENV, ni.INSTITUTION)
+async def test_a_node_mesh_without_the_personal_profile_writes_no_secret(tmp_path, monkeypatch):
+    monkeypatch.delenv(ni.PROFILE_ENV, raising=False)
     fake.Kernel.instances.clear()
     mesh = node_mesh.NodeMesh(data_dir=tmp_path / "owner", binding=fake,
                               settings=node_mesh.MeshSettings(mailbox=MailboxSettings(enabled=False)))

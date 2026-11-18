@@ -389,7 +389,7 @@ is carried by the device instead of being fetched for each request.
 
 | Event | What the owner does | What happens |
 |---|---|---|
-| Lost or stolen device, another device at hand | Remove it on the other device | A removal entry, a new epoch and a raised stop counter are written and pushed to the mailbox. Every peer and node that sees them refuses the lost device's tickets and feed. |
+| Lost or stolen device, another device at hand | Remove it on the other device | A removal entry and a new epoch are written and pushed to the mailbox. Every peer and node that sees them refuses the lost device's tickets and feed. Removal never raises the Emergency Stop (owner ruling, 2026-11-17). |
 | Lost device, no other device online | Sign in on a new device with the recovery key | The new device enrolls, then removes the old one as above. |
 | All devices lost | Recovery key | Restores membership and whatever history a node or mailbox still holds. Without a recovery key the data is gone. This is stated at setup. |
 

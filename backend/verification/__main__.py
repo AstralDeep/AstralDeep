@@ -18,7 +18,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="verification", description="AstralDeep SDUI & "
                                 "delegated-authority verification harness")
     p.add_argument("--mode", default="in-process",
-                   help="in-process (scripted LLM, CI gate) or external (live + Keycloak)")
+                   help="in-process (scripted LLM, CI gate) or external (live)")
     p.add_argument("--persona", action="append", default=[], dest="personas",
                    help="restrict to a persona key (repeatable)")
     p.add_argument("--base-url", default=None, help="external-mode target base URL")
@@ -128,7 +128,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     from verification.report import write_report
 
     if config.mode == "external":
-        from verification.drivers.external import ExternalDriver  # noqa: F401
         raise SystemExit("external mode requires a live deployment; run with a base URL "
                          "and network access (not a CI gate)")
 

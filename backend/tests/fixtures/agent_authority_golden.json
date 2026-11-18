@@ -1,0 +1,116 @@
+{
+  "actor_chain": [
+    "agent:worker-1",
+    "agent:summarizer-1"
+  ],
+  "attenuated": [
+    "a",
+    "c"
+  ],
+  "audit_record": {
+    "acting_agent": "agent:worker-1",
+    "actor_chain": [
+      "agent:worker-1",
+      "agent:summarizer-1"
+    ],
+    "delegation_depth": 1,
+    "event": "delegation_chain_hop",
+    "human_authorizer": "mesh.1111111111111111111111111111111111111111111111111111111111111111",
+    "operation": "read_value",
+    "parent_actor": "agent:summarizer-1",
+    "scope": "tool:read tools:read",
+    "timestamp": 1800000000,
+    "tool": "read_value"
+  },
+  "authorize_in_scope": [
+    true,
+    ""
+  ],
+  "authorize_out_of_scope": [
+    false,
+    "tool 'write' outside delegated scope for ['agent:worker-1']"
+  ],
+  "child": {
+    "act": {
+      "act": {
+        "sub": "agent:summarizer-1"
+      },
+      "sub": "agent:worker-1"
+    },
+    "aud": "astral-agent-service",
+    "delegation": true,
+    "delegation_depth": 1,
+    "exp": 1800000300,
+    "iat": 1800000000,
+    "iss": "astral-internal-delegation",
+    "max_delegation_depth": 3,
+    "scope": "tool:read tools:read",
+    "sub": "mesh.1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "child_token": "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCIsImtpZCI6IjU2NDc1YWE3NTQ2MzQ3NGMwMjg1ZGY1ZGJmMmJjYWI3In0.eyJhY3QiOnsiYWN0Ijp7InN1YiI6ImFnZW50OnN1bW1hcml6ZXItMSJ9LCJzdWIiOiJhZ2VudDp3b3JrZXItMSJ9LCJhdWQiOlsiYXN0cmFsLWFnZW50LXNlcnZpY2UiLCJhc3RyYWwtbm9kZTo1NjQ3NWFhNzU0NjM0NzRjMDI4NWRmNWRiZjJiY2FiNyJdLCJkZWxlZ2F0aW9uIjp0cnVlLCJkZWxlZ2F0aW9uX2RlcHRoIjoxLCJleHAiOjE4MDAwMDAzMDAsImlhdCI6MTgwMDAwMDAwMCwiaXNzIjoiYXN0cmFsLW5vZGU6NTY0NzVhYTc1NDYzNDc0YzAyODVkZjVkYmYyYmNhYjciLCJtYXhfZGVsZWdhdGlvbl9kZXB0aCI6Mywic2NvcGUiOiJ0b29sOnJlYWQgdG9vbHM6cmVhZCIsInN1YiI6Im1lc2guMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMSJ9.ggUTwHWHK7L7x3bS8JUFnBRPF9zzPm9ftm0xuPIqvWqxUA3-n5s5EY50SuiN_xQHEsVw1iqVj_-Oda1Iv6xeDg",
+  "decoded": {
+    "act": {
+      "act": {
+        "sub": "agent:summarizer-1"
+      },
+      "sub": "agent:worker-1"
+    },
+    "aud": [
+      "astral-agent-service",
+      "astral-node:56475aa75463474c0285df5dbf2bcab7"
+    ],
+    "delegation": true,
+    "delegation_depth": 1,
+    "exp": 1800000300,
+    "iat": 1800000000,
+    "iss": "astral-node:56475aa75463474c0285df5dbf2bcab7",
+    "max_delegation_depth": 3,
+    "scope": "tool:read tools:read",
+    "sub": "mesh.1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "encoded_capped": "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCIsImtpZCI6IjU2NDc1YWE3NTQ2MzQ3NGMwMjg1ZGY1ZGJmMmJjYWI3In0.eyJhY3QiOnsic3ViIjoiYWdlbnQ6c3VtbWFyaXplci0xIn0sImF1ZCI6WyJhc3RyYWwtYWdlbnQtc2VydmljZSIsImFzdHJhbC1ub2RlOjU2NDc1YWE3NTQ2MzQ3NGMwMjg1ZGY1ZGJmMmJjYWI3Il0sImRlbGVnYXRpb24iOnRydWUsImV4cCI6MTgwMDAwMDMwMCwiaWF0IjoxODAwMDAwMDAwLCJpc3MiOiJhc3RyYWwtbm9kZTo1NjQ3NWFhNzU0NjM0NzRjMDI4NWRmNWRiZjJiY2FiNyIsInNjb3BlIjoidG9vbHM6cmVhZCB0b29sOnJlYWRfdmFsdWUiLCJzdWIiOiJtZXNoLjExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEifQ.1LAy1GGLujRrGbQ1BKgqRKP5Z5XOazC10lckX1jDj1qQs7S6YO3IgycaQIm0bq7OTo8ROP2yPWcK71LqyKFQAA",
+  "encoded_payload": "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCIsImtpZCI6IjU2NDc1YWE3NTQ2MzQ3NGMwMjg1ZGY1ZGJmMmJjYWI3In0.eyJhY3QiOnsic3ViIjoiYWdlbnQ6c3VtbWFyaXplci0xIn0sImF1ZCI6WyJhc3RyYWwtYWdlbnQtc2VydmljZSIsImFzdHJhbC1ub2RlOjU2NDc1YWE3NTQ2MzQ3NGMwMjg1ZGY1ZGJmMmJjYWI3Il0sImRlbGVnYXRpb24iOnRydWUsImV4cCI6MTgwMDAwMDMwMCwiaWF0IjoxODAwMDAwMDAwLCJpc3MiOiJhc3RyYWwtbm9kZTo1NjQ3NWFhNzU0NjM0NzRjMDI4NWRmNWRiZjJiY2FiNyIsInNjb3BlIjoidG9vbHM6cmVhZCB0b29sOnJlYWRfdmFsdWUiLCJzdWIiOiJtZXNoLjExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEifQ.1LAy1GGLujRrGbQ1BKgqRKP5Z5XOazC10lckX1jDj1qQs7S6YO3IgycaQIm0bq7OTo8ROP2yPWcK71LqyKFQAA",
+  "encoded_short_lifetime": "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCIsImtpZCI6IjU2NDc1YWE3NTQ2MzQ3NGMwMjg1ZGY1ZGJmMmJjYWI3In0.eyJhY3QiOnsic3ViIjoiYWdlbnQ6c3VtbWFyaXplci0xIn0sImF1ZCI6WyJhc3RyYWwtYWdlbnQtc2VydmljZSIsImFzdHJhbC1ub2RlOjU2NDc1YWE3NTQ2MzQ3NGMwMjg1ZGY1ZGJmMmJjYWI3Il0sImRlbGVnYXRpb24iOnRydWUsImV4cCI6MTgwMDAwMDA2MCwiaWF0IjoxODAwMDAwMDAwLCJpc3MiOiJhc3RyYWwtbm9kZTo1NjQ3NWFhNzU0NjM0NzRjMDI4NWRmNWRiZjJiY2FiNyIsInNjb3BlIjoidG9vbHM6cmVhZCB0b29sOnJlYWRfdmFsdWUiLCJzdWIiOiJtZXNoLjExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEifQ.FCwom_6YtBErA0wJfMD0G2Zu7uPo4j0X-9KH1jkl-xQhrF9TeT6fV2LAbSygUA7EYkammpj1DHTLB-_98ftADg",
+  "minted_node_session": "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCIsImtpZCI6IjU2NDc1YWE3NTQ2MzQ3NGMwMjg1ZGY1ZGJmMmJjYWI3In0.eyJhY3QiOnsic3ViIjoiYWdlbnQ6YWdlbnQtMSJ9LCJhdWQiOlsiYXN0cmFsLWFnZW50LXNlcnZpY2UiLCJhc3RyYWwtbm9kZTo1NjQ3NWFhNzU0NjM0NzRjMDI4NWRmNWRiZjJiY2FiNyJdLCJkZWxlZ2F0aW9uIjp0cnVlLCJleHAiOjE4MDAwMDAzMDAsImlhdCI6MTgwMDAwMDAwMCwiaXNzIjoiYXN0cmFsLW5vZGU6NTY0NzVhYTc1NDYzNDc0YzAyODVkZjVkYmYyYmNhYjciLCJzY29wZSI6InRvb2xzOnJlYWQgdG9vbHM6d3JpdGUgdG9vbDpyZWFkIHRvb2w6d3JpdGUiLCJzdWIiOiJtZXNoLjExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEifQ.9kQJ8BGFldMJQDxkxfzmvVRH7Pa6_ZkUYkzSc6ViJrYysB3ZPZftql5ye7VbsZGTenBpGtneTdc_0iUFYdAzBA",
+  "node_id": "astral-node:56475aa75463474c0285df5dbf2bcab7",
+  "now": 1800000000,
+  "owner": "mesh.1111111111111111111111111111111111111111111111111111111111111111",
+  "parent": {
+    "act": {
+      "sub": "agent:summarizer-1"
+    },
+    "aud": "astral-agent-service",
+    "delegation": true,
+    "delegation_depth": 0,
+    "exp": 1800000300,
+    "iat": 1800000000,
+    "iss": "astral-internal-delegation",
+    "max_delegation_depth": 3,
+    "scope": "tools:read tool:read tools:write tool:write",
+    "sub": "mesh.1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "verified_claims": {
+    "act": {
+      "act": {
+        "sub": "agent:summarizer-1"
+      },
+      "sub": "agent:worker-1"
+    },
+    "aud": [
+      "astral-agent-service",
+      "astral-node:56475aa75463474c0285df5dbf2bcab7"
+    ],
+    "delegation": true,
+    "delegation_depth": 1,
+    "exp": 1800000300,
+    "iat": 1800000000,
+    "iss": "astral-node:56475aa75463474c0285df5dbf2bcab7",
+    "max_delegation_depth": 3,
+    "scope": "tool:read tools:read",
+    "sub": "mesh.1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "verify_chain": [
+    true,
+    ""
+  ]
+}

@@ -39,14 +39,12 @@ def test_install_creates_private_files_and_a_loadable_key(tmp_path, monkeypatch)
     assert "ASTRAL_NODE_OWNER" not in values
     assert values["PUBLIC_BASE_URL"] == "https://node.example"
     assert "KEYCLOAK_CLIENT_SECRET" not in values
-    for name in ("WEB_SESSION_ENC_KEY", "CREDENTIAL_ENCRYPTION_KEY", "AUDIT_HMAC_SECRET", "AGENT_API_KEY"):
+    for name in ("CREDENTIAL_ENCRYPTION_KEY", "AUDIT_HMAC_SECRET", "AGENT_API_KEY"):
         assert len(values[name]) >= 32
     assert stat.S_IMODE((home / "node.env").stat().st_mode) == 0o600
     assert stat.S_IMODE(home.stat().st_mode) == 0o700
     assert stat.S_IMODE((home / "data").stat().st_mode) == 0o700
-    from cryptography.fernet import Fernet
 
-    Fernet(values["WEB_SESSION_ENC_KEY"].encode())
     monkeypatch.setenv(ni.PROFILE_ENV, "personal")
     monkeypatch.setenv(ni.DATA_DIR_ENV, values["ASTRAL_NODE_DATA_DIR"])
     ni.reset_cache()
@@ -61,7 +59,7 @@ def test_output_never_prints_a_secret_or_database_credentials(tmp_path):
     home = tmp_path / "home"
     result = run(home, "--database-url", "postgresql://user:hunter2@db/n")
     values = env_values(home / "node.env")
-    for name in ("WEB_SESSION_ENC_KEY", "CREDENTIAL_ENCRYPTION_KEY", "AUDIT_HMAC_SECRET", "AGENT_API_KEY"):
+    for name in ("CREDENTIAL_ENCRYPTION_KEY", "AUDIT_HMAC_SECRET", "AGENT_API_KEY"):
         assert values[name] not in result.stdout + result.stderr
     assert "hunter2" not in result.stdout + result.stderr
 
@@ -84,11 +82,11 @@ def test_rerun_keeps_every_existing_value_and_adds_only_what_is_missing(tmp_path
 
 
 def test_the_written_env_passes_the_production_posture_without_keycloak(tmp_path, monkeypatch):
-    from orchestrator.session_store import assert_production_posture
+    from orchestrator.boot_posture import assert_production_posture
 
     home = tmp_path / "home"
     assert run(home).returncode == 0
-    for name in ("KEYCLOAK_AUTHORITY", "KEYCLOAK_CLIENT_ID", "KEYCLOAK_CLIENT_SECRET", ni.OWNER_ENV, ni.ISSUERS_ENV):
+    for name in ("KEYCLOAK_AUTHORITY", "KEYCLOAK_CLIENT_ID", "KEYCLOAK_CLIENT_SECRET", ni.OWNER_ENV):
         monkeypatch.delenv(name, raising=False)
     for name, value in env_values(home / "node.env").items():
         monkeypatch.setenv(name, value)

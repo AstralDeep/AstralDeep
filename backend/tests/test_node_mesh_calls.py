@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import pytest
 
@@ -80,65 +79,19 @@ async def test_unknown_and_ambiguous_tools_are_refused(pairs, requested, code):
     assert caught.value.code == code
 
 
-async def test_authority_is_derived_for_the_one_scope_of_the_tool():
-    orch = Orch()
+async def test_a_call_with_no_bound_admission_is_refused(monkeypatch):
+    monkeypatch.setenv("ASTRAL_NODE_PROFILE", "personal")
     resolved = nmcalls.ResolvedTool("agent-1", "write_note", "tools:write", DEFINITION)
-    assert await nmcalls.OrchestratorCalls(orch).authorize(OWNER, resolved) == "authority"
-    assert orch.events[0][1] == {"user_id": OWNER, "agent_id": "agent-1", "turn_class": "mesh_request", "consented_scopes": ["tools:write"]}
-
-
-async def test_missing_authority_is_refused_with_a_dotted_code():
-    from orchestrator.chain_authority import AuthoritySkip
-
-    orch = Orch(authority=AuthoritySkip("empty_scopes", "gone"))
     with pytest.raises(nmcalls.CallRefused) as caught:
-        await nmcalls.OrchestratorCalls(orch).authorize(OWNER, nmcalls.ResolvedTool("a", "t", "tools:read", DEFINITION))
-    assert caught.value.code == "node.authority_empty_scopes"
+        await nmcalls.OrchestratorCalls(Orch()).authorize(OWNER, resolved)
+    assert caught.value.code == "request.call_mismatch"
 
 
-@pytest.mark.parametrize("failure", ["unbound", "wrong_owner", "principal", "policy", "owner_changed"])
-async def test_institution_authority_requires_the_current_signed_admission(monkeypatch, failure):
-    from orchestrator import node_mesh_admission, vessel_executor
-    from orchestrator.node_mesh import NodeMeshError, RequestReference
-    from shared import node_identity
-
-    monkeypatch.setattr(node_identity, "is_personal", lambda: False)
-    monkeypatch.setattr(node_identity, "is_institution", lambda: True)
-    resolved = nmcalls.ResolvedTool("agent-1", "write_note", "tools:write", DEFINITION)
-    orch = Orch()
-    calls = nmcalls.OrchestratorCalls(orch)
-    if failure == "unbound":
-        with pytest.raises(nmcalls.CallRefused, match="node.mesh_admission_unavailable"):
-            await calls.authorize(OWNER, resolved)
-        assert not orch.events
-        return
-
-    owner = [OWNER]
-    context = AsyncMock()
-    if failure == "principal":
-        context.side_effect = NodeMeshError("node.owner_mismatch")
-    policy = AsyncMock()
-    if failure == "policy":
-        policy.side_effect = NodeMeshError("institution.attestation_stale")
-    mesh = SimpleNamespace(kernel=object(), personal_authority_context=context)
-    request = RequestReference("request", "chat", "peer", "node", "call", None,
-                               ("call", "write_note", "{}", "{}", "{}"))
-    ticket = vessel_executor.CallTicket("{}", "{}", "{}")
-    if failure == "owner_changed":
-        async def changed_authority(**kwargs):
-            owner[0] = "other-owner"
-            return "authority"
-        orch.derive_machine_authority = changed_authority
-    with node_mesh_admission.binding(mesh, lambda: owner[0], OWNER, "chat", resolved, ticket,
-                                     request=request, check_current=policy):
-        with pytest.raises(nmcalls.CallRefused) as caught:
-            await calls.authorize("other-owner" if failure == "wrong_owner" else OWNER, resolved)
-    assert caught.value.code == {
-        "wrong_owner": "node.mesh_admission_unavailable",
-        "principal": "node.owner_mismatch",
-        "policy": "institution.attestation_stale",
-        "owner_changed": "node.owner_mismatch",
-    }[failure]
+async def test_a_node_outside_the_personal_profile_refuses_every_call(monkeypatch):
+    monkeypatch.delenv("ASTRAL_NODE_PROFILE", raising=False)
+    with pytest.raises(nmcalls.CallRefused) as caught:
+        await nmcalls.OrchestratorCalls(Orch()).authorize(OWNER, nmcalls.ResolvedTool("a", "t", "tools:read", DEFINITION))
+    assert caught.value.code == "node.mesh_admission_unavailable"
 
 
 RESOLVED = nmcalls.ResolvedTool("agent-1", "lookup", "tools:read", DEFINITION)
@@ -303,8 +256,6 @@ async def test_a_real_orchestrator_publishes_its_owner_visible_bundled_dice_tool
     monkeypatch.setenv("ASTRAL_NODE_PROFILE", "personal")
     monkeypatch.setenv("ASTRAL_NODE_DATA_DIR", str(tmp_path / "node-data"))
     monkeypatch.setenv("ASTRAL_NODE_OWNER", "oidc.0123456789abcdef.owner")
-    monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://auth.example.test/realms/astral")
-    monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-desktop")
     monkeypatch.setenv("AUDIT_HMAC_SECRET", "node-catalog-test-audit")
     monkeypatch.setenv("AGENT_KEY_PATH", str(tmp_path / "agent.pem"))
     monkeypatch.setenv("AGENT_API_KEY", key)

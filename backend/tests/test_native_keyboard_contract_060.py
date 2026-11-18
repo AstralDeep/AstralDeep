@@ -1,6 +1,5 @@
-"""Tests that native chat composers rely on the platform's own keyboard dismissal
-(immediate scroll on Apple, native IME on Android) rather than a custom overlay
-control.
+"""Tests that the Android chat composer relies on the platform's own keyboard
+dismissal (the native IME) rather than a custom overlay control.
 """
 
 from pathlib import Path
@@ -19,16 +18,6 @@ if not (
         "repo-root tooling files are not part of the product image",
         allow_module_level=True,
     )
-
-
-def test_apple_chat_uses_native_immediate_scroll_keyboard_dismissal() -> None:
-    source = (
-        ROOT / "components/AstralProjection/apple-clients/AstralApp/AstralApp/Views/ChatView.swift"
-    ).read_text(encoding="utf-8")
-
-    assert "placement: .keyboard" not in source
-    assert 'Button("Done")' not in source
-    assert source.count(".scrollDismissesKeyboard(.immediately)") >= 2
 
 
 def test_android_chat_leaves_dismissal_to_the_native_ime() -> None:

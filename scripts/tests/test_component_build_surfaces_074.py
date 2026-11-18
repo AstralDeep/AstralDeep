@@ -101,6 +101,10 @@ def test_public_ci_contains_only_repository_owned_qualification() -> None:
         "voice-worker-test",
         "secret-scan",
         "gates",
+        "no-keycloak", "no-docker-linux", "no-docker-macos",
+        "node-pack-linux", "node-pack-macos",
+        "plane-package-compatibility", "plane-quality",
+        "vessel-kernel-binding", "vessel-lint", "vessel-test", "vessel-isolation", "vessel-docs",
     }
     assert not (REPOSITORY_ROOT / ".github/workflows/android-ci.yml").exists()
     assert not (REPOSITORY_ROOT / ".github/workflows/apple-ci.yml").exists()
@@ -403,3 +407,11 @@ def test_android_release_workflow_is_manual_pinned_and_composition_owned() -> No
             r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+@[0-9a-f]{40}\s+# v\d+(?:\.\d+)*",
             value,
         ), value
+
+
+def test_macos_kernel_builds_pin_the_dylib_install_name_so_no_checkout_path_is_embedded():
+    flag = "-C link-arg=-Wl,-install_name,@rpath/libastral_kernel_ffi.dylib"
+    for name in ("ci.yml", "release-macos.yml"):
+        text = (REPOSITORY_ROOT / ".github/workflows" / name).read_text()
+        exports = [line for line in text.splitlines() if 'export RUSTFLAGS="' in line and "remap-path-prefix" in line]
+        assert exports and all(flag in line for line in exports), name

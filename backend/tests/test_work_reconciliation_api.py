@@ -6,38 +6,37 @@ from __future__ import annotations
 
 import os
 import sys
-from unittest.mock import MagicMock, AsyncMock
 from types import SimpleNamespace
+from unittest.mock import MagicMock, AsyncMock
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from orchestrator.api import async_task_router  # noqa: E402
+from orchestrator.auth import refuse_node_bearer, require_user_id  # noqa: E402
 from orchestrator.work_reconciliation import (  # noqa: E402
     ReconciliationRefused,
 )
 
 OWNER_SUBJECT = "owner-user-id"
 STRANGER_SUBJECT = "stranger-user-id"
-OWNER = ""
-STRANGER = ""
-_IDENTITY = None
-
-
-@pytest.fixture(autouse=True)
-def _identity(server_identity, monkeypatch):
-    monkeypatch.setitem(globals(), "_IDENTITY", server_identity)
-    monkeypatch.setitem(globals(), "OWNER", server_identity.owner(OWNER_SUBJECT))
-    monkeypatch.setitem(globals(), "STRANGER", server_identity.owner(STRANGER_SUBJECT))
-    return server_identity
+OWNER = OWNER_SUBJECT
+STRANGER = STRANGER_SUBJECT
+SUBJECT_HEADER = "x-test-subject"
 
 
 def _auth(sub: str) -> dict:
-    subject = OWNER_SUBJECT if sub == OWNER else STRANGER_SUBJECT
-    return _IDENTITY.headers(subject)
+    return {SUBJECT_HEADER: sub}
+
+
+async def _subject(request: Request) -> str:
+    subject = request.headers.get(SUBJECT_HEADER)
+    if not subject:
+        refuse_node_bearer()
+    return subject
 
 
 BODY = {
@@ -63,7 +62,7 @@ def _service():
 
 
 @pytest.fixture(autouse=True)
-def current_human(monkeypatch, _identity):
+def current_human(monkeypatch):
     monkeypatch.setattr("orchestrator.human_request_authority.authenticate_current_human_request",
                         AsyncMock(return_value=SimpleNamespace(owner_id=OWNER)))
 
@@ -74,6 +73,7 @@ def _app(service) -> TestClient:
     app = FastAPI()
     app.state.orchestrator = orch
     app.include_router(async_task_router)
+    app.dependency_overrides[require_user_id] = _subject
     return TestClient(app)
 
 

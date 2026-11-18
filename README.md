@@ -55,7 +55,6 @@ flowchart LR
     Plane[AstralPlane<br/>durable state]
     PG[(PostgreSQL)]
     LETS[LETS warden<br/>external, optional]
-    KC[Keycloak]
     Remote[BYO and remote<br/>compute agents]
 
     Clients --> API
@@ -66,7 +65,6 @@ flowchart LR
     Orch -- renders through --> Proj
     Orch --> Plane --> PG
     Orch -. receipts .-> LETS
-    Orch -. tokens .-> KC
 ```
 
 Bundled first-party agents run in-process by default. External, draft, and user-authored agents
@@ -162,18 +160,15 @@ When the container reports healthy, open <http://localhost:8001>. Useful endpoin
 
 The example environment runs in development mode (`ASTRAL_ENV=development`). A personal node
 (`ASTRAL_NODE_PROFILE=personal`) has no sign-in: run `python scripts/dev_mesh.py` to create a
-dev owner device, pair the node and mint a caller ticket. Server-profile work needs a real OIDC
-issuer, either the local Keycloak in `docker-compose.staging.yml` with a user you create or an
-institution realm, and you sign in yourself.
+dev owner device, pair the node and mint a caller ticket.
 
 ### First connection and service verification
 
-After signing in, the app guides the first connection: it shows the endpoint you reached
+The app guides the first connection: it shows the endpoint you reached
 and whether it matches an address this deployment publishes, real readiness for the
-database, authentication, voice workers, agent publication, and the optional LETS warden
-(each with an actionable fix when not ready), and the sign-in/key rules — sign-in is
-completed by you on the server's own sign-in page, and provider keys are entered only in
-the encrypted in-product LLM setup, never typed by agents. The same report is available
+database, voice workers, agent publication, and the optional LETS warden
+(each with an actionable fix when not ready), and the key rules. Astral has no sign-in, and
+provider keys are entered only in the encrypted in-product LLM setup, never typed by agents. The same report is available
 at `GET /api/connection/status` (HTTP 503 when a required service is not ready), and the
 server pushes this guide when a required service is down at registration.
 
@@ -182,7 +177,7 @@ server pushes this guide when a required service is down at registration.
 Run `make doctor` (or `make doctor PYTHON=python3`) for a read-only diagnosis of a
 Linux, macOS or Windows source/Compose installation. The doctor checks Python, Git and
 Docker Compose v2, exact local component pins/contracts, required `.env` configuration,
-production exit-78 posture, and configured application, PostgreSQL, LiveKit and Keycloak
+production exit-78 posture, and configured application, PostgreSQL and LiveKit
 health. It reports `ready` (exit 0), `repair` (exit 1) or `unsupported` (exit 2), with
 redacted findings and suggested repairs. `python scripts/install_doctor.py --json` emits
 the same report as JSON. It never starts containers, changes configuration or signs in.
@@ -212,13 +207,13 @@ feature flags that gate optional subsystems.
 - **Production is the default.** An unset `ASTRAL_ENV` means production. Production refuses to
   start with missing or placeholder secrets, exiting with the
   documented configuration-error code 78.
-- **Secrets stay out of Git.** The Keycloak client secret, `CREDENTIAL_ENCRYPTION_KEY`, the
+- **Secrets stay out of Git.** `CREDENTIAL_ENCRYPTION_KEY`, the
   agent API key, and similar values are supplied at deploy time only.
 - **Image and environment are separate.** The published image bakes in no configuration. A
   changed `.env` takes effect only when the container is recreated (`make apply-config`), not on
   a restart.
 
-For a full production setup (Keycloak, TLS, secrets, voice, backups), follow the
+For a full production setup (a personal node, TLS, secrets, voice, backups), follow the
 [production deployment guide](docs/production-deployment.md).
 
 ## Development workflow
@@ -287,8 +282,8 @@ production image to the GitHub Container Registry with an immutable commit tag.
 
 Every client renders the same server-owned chrome, settings surfaces, and theme. A change to
 the UI protocol, chrome, theme, or layout lands on every in-scope client in the same feature,
-guarded by the protocol manifest and each client's drift tests. The native clients sign in to
-Keycloak with PKCE (or, on watchOS, the device-authorization grant).
+guarded by the protocol manifest and each client's drift tests. The native clients pair with a node
+and need no sign-in.
 
 Client releases run from protected workflows in this repository over the pinned AstralProjection
 revision. Windows releases are cut from `v*` tags, Apple releases from `apple-v*` tags, and
@@ -324,8 +319,8 @@ Beyond the bundled set:
 
 ## Security model
 
-- **Identity:** Keycloak is the only user identity provider, with authorization enforced at the API layer.
-- **Delegation:** agents act on RFC 8693 delegated tokens with attenuated scopes. Recursive delegation, off by default behind a feature flag, preserves monotonic attenuation, a complete actor chain, and a depth bound.
+- **Identity:** the owner's mesh keys. A node authenticates a caller only by a roster-listed device key with a mesh ticket, or by an owner-minted caller ticket.
+- **Delegation:** agents act on attenuated mesh tickets. Recursive delegation, off by default behind a feature flag, preserves monotonic attenuation, a complete actor chain, and a depth bound.
 - **Runtime gates:** per-user tool permissions, a policy engine, PHI gates, confirmation gates, and egress validation apply to every agent, including in-process first-party agents.
 - **Isolation:** data is owner-scoped end to end, and external or user-authored agents are untrusted at the server boundary.
 - **Audit:** security-relevant actions, including delegated-authority use, append to a per-owner hash-chained audit trail.
@@ -351,12 +346,8 @@ improvement, use the [issue template](https://github.com/AstralDeep/AstralDeep/i
 | Guide | Covers |
 |---|---|
 | [Production deployment](docs/production-deployment.md) | Deploying and operating AstralDeep in production |
+| [Run your own node](docs/personal-node.md) | Installing, pairing and operating a personal node |
 | [Component composition](docs/component-composition.md) | Component pins, verification, and recovery |
-| [Keycloak realm settings](docs/keycloak-realm-settings.md) | Realm configuration for AstralDeep |
-| [Keycloak agent delegation](docs/keycloak_agent_delegation_setup.md) | Token exchange for agent delegation |
-| [Keycloak: Android client](docs/keycloak-android-client-setup.md) | The `astral-mobile` client |
-| [Keycloak: Windows client](docs/keycloak-windows-client-setup.md) | The `astral-desktop` client |
-| [ORCID identity](docs/keycloak-orcid-identity.md) | Direct ORCID identity for restricted external agents |
 | [Bring-your-own client agents](docs/byo-client-agents.md) | Operating personal agents |
 | [Your own agents and skills](docs/your-own-agents-and-skills.md) | Authoring agents and skills |
 | [Remote compute agents](docs/remote-compute-agents.md) | Operating remote-compute agents |

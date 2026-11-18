@@ -3,7 +3,7 @@
 The compatibility finding is **conditional and source-reviewed**. Offline
 fixtures show that Astral accepts authenticated modern discovery and refuses
 the reviewed legacy fallback. They do not establish the pinned tunnel binary's
-readiness, an OAuth browser flow, ChatGPT interoperability, TLS behavior, or a
+readiness, a connection flow, ChatGPT interoperability, TLS behavior, or a
 deployment. No tunnel was started or published for this qualification.
 `FF_MCP_SERVER` remains default-off.
 
@@ -19,18 +19,15 @@ Static headers injected by the local client do not prove per-user OAuth or
 owner isolation and must not substitute a shared credential for either.
 
 The pinned client's [OAuth configuration](https://github.com/openai/tunnel-client/blob/fda241e2343ddd49dd63a7da3e1afab2a6e91722/docs/configuration.md)
-forwards inbound authorization and leaves browser authorization directed at the
-upstream identity provider. Private Keycloak browser authorization is not
-automatically tunneled: verify browser reachability, the registered redirect
-URI, and the intended issuer/audience without weakening Keycloak or TLS checks.
-Separate OAuth metadata origins require explicit client trust; that trust does
-not expose arbitrary Keycloak routes.
+forwards inbound authorization. Astral has no browser authorization step for
+this endpoint. The client presents an owner-minted caller ticket, and the node
+verifies it against its own roster without TLS checks being weakened.
 
 The [official secure MCP tunnel guide](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels)
 (living document retrieved 2026-10-28) describes private connections and OAuth
 limitations. A temporary private tunnel does not satisfy stable public plugin
 hosting or public distribution requirements. Its hosted transport is separate
-from Astral's Keycloak IAM, RFC 8693 delegation, per-owner permissions, PHI,
+from Astral's caller tickets, mesh delegation, per-owner permissions, PHI,
 egress, confirmation, LETS, and audit controls. No bypass is part of this guide.
 
 ## Exact source and dependency pins
@@ -99,12 +96,12 @@ ASTRAL_ENV=development PYTHON_DOTENV_DISABLED=1 python3.11 -m pytest -q \
 The 11 tests install the real routes directly in a local FastAPI test process.
 They use development/fake token fixtures, an in-memory admission coordinator,
 fake tool execution, and a simulated disconnect; they do not open an OpenAI
-connection, validate real Keycloak issuance/revocation, or start the tunnel.
+connection, validate real caller ticket issuance, or start the tunnel.
 
 | Synthetic probe | Expected Astral response |
 |---|---|
-| `GET /.well-known/oauth-protected-resource/mcp` | `200`, resource and Keycloak authorization-server metadata |
-| Unauthenticated modern `server/discover` | `401`, bearer challenge with protected-resource metadata |
+| `GET /.well-known/oauth-protected-resource/mcp` | `404`, the node publishes no identity server metadata |
+| Unauthenticated modern `server/discover` | `401`, caller ticket challenge |
 | Legacy `initialize`, without or with fixture bearer | `400`, strict modern envelope validation refuses the request |
 | Authorized modern `server/discover` | `200`, protocol `2026-07-28` |
 | Rejected fixture tokens | `401`, sanitized denial |
@@ -134,7 +131,7 @@ This is an operator procedure, outside CI and separate from deployment
 qualification. Run it only after authorizing the outbound OpenAI connection
 and privacy boundaries. Prepare a disposable candidate environment using
 [MCP endpoint setup](mcp-server-endpoint.md) and
-[production configuration](production-deployment.md): real Keycloak,
+[production configuration](production-deployment.md): a minted caller ticket,
 representative synthetic owners/data, normal database/workers, a trusted
 canonical `PUBLIC_BASE_URL`, and verified HTTPS. Enable `FF_MCP_SERVER=true`
 only in that environment and recreate its orchestrator container. Keep mock
@@ -145,7 +142,7 @@ workspace associations and a restricted runtime tunnel key. Supply that key
 locally through the secret manager as `CONTROL_PLANE_API_KEY`; keep its value
 out of chat, shell history, command arguments, logs, and screenshots. It is a
 tunnel transport credential, not an Astral LLM-provider credential. The human
-operator completes all OpenAI and Keycloak sign-ins.
+operator completes all OpenAI sign-ins.
 
 In the build terminal, create a private config directory. Replace the three
 non-secret placeholders with the pilot's values. The profile deliberately
@@ -166,8 +163,6 @@ mcp:
   server_urls:
     - channel: main
       url: https://REPLACE_WITH_ASTRAL_ORIGIN/mcp
-  oauth_trusted_origins:
-    - https://REPLACE_WITH_KEYCLOAK_ORIGIN
 health:
   listen_addr: 127.0.0.1:0
   url_file: $QUAL_DIR/health-url
@@ -215,7 +210,7 @@ If the fallback leaves readiness at `503`, retain sanitized status evidence
 and stop; do not enable legacy initialization, remove headers, weaken audience
 validation, inject a shared token, or report success.
 
-Only if readiness and the real OAuth flow succeed, use the intended OpenAI
+Only if readiness and a real caller ticket call succeed, use the intended OpenAI
 surface for modern discovery and one non-destructive synthetic tool call.
 Verify the permitted owner succeeds; a second owner without permission sees
 no such tool and cannot dispatch it; rejected expired/revoked credentials

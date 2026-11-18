@@ -504,7 +504,7 @@ async def get_operation_submission(
         "snapshot of effective admission gauges and bounded reliability "
         "counters, including the feature-080 background operation latency "
         "aggregates, with a no-store response. Deployment-wide diagnostics "
-        "require the existing Keycloak admin role: an authenticated non-admin "
+        "require the existing admin role: an authenticated non-admin "
         "principal is denied with 403 before any collector or admission "
         "inspection occurs. Ordinary owner-scoped operation reconciliation "
         "remains available to non-admin users on its own endpoints."

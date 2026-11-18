@@ -11,7 +11,6 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 from orchestrator.auth import get_current_user_payload, require_user_id
-from orchestrator.session_consent import select_consent_session
 
 from .models import (
     ApprovalDecisionRequest,
@@ -89,9 +88,7 @@ async def create_assignment(body: CreateAssignmentRequest, request: Request,
                             owner_id: str = _OWNER,
                             claims: dict = _CLAIMS):
     service = _service(request)
-    selected = await select_consent_session(
-        request, principal=claims, store=getattr(getattr(service, "orch", None), "web_sessions", None))
-    record = await service.create(owner_id, claims, body, selected_session=selected)
+    record = await service.create(owner_id, claims, body)
     return _json({"assignment": public_record(record)}, 201)
 
 
@@ -109,10 +106,7 @@ async def revise_assignment(assignment_id: str, body: ReviseAssignmentRequest, r
                             owner_id: str = _OWNER,
                             claims: dict = _CLAIMS):
     service = _service(request)
-    selected = await select_consent_session(
-        request, principal=claims, store=getattr(getattr(service, "orch", None), "web_sessions", None))
-    return _json(_control_result(await service.revise(
-        owner_id, claims, assignment_id, body, selected_session=selected)))
+    return _json(_control_result(await service.revise(owner_id, claims, assignment_id, body)))
 
 
 @assignment_router.get("/{assignment_id}/activity")

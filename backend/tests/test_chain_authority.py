@@ -16,10 +16,9 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from orchestrator.chain_authority import (  # noqa: E402
     AuthoritySkip,
     ChainBudget,
-    MachineAuthority,
     MachineTurnAuthority,
 )
-from orchestrator.delegation import DEFAULT_MAX_DELEGATION_DEPTH  # noqa: E402
+from orchestrator.agent_authority import DEFAULT_MAX_DELEGATION_DEPTH  # noqa: E402
 
 
 def test_budget_charges_until_hop_limit():
@@ -78,27 +77,7 @@ def _mta(*, grant_valid=True, latest=None, mint="fresh-token",
         grants.mint_access_token = AsyncMock(side_effect=mint)
     else:
         grants.mint_access_token = AsyncMock(return_value=mint)
-    return MachineTurnAuthority(orch, grants), orch, grants
-
-
-@pytest.mark.asyncio
-async def test_derive_success_shape():
-    mta, _, grants = _mta()
-    out = await mta.derive(
-        user_id="u1", agent_id="a1",
-        consented_scopes=["tools:read", "tools:write"],
-        grant_id="g1", turn_class="scheduled_job")
-    assert isinstance(out, MachineAuthority)
-    assert out.access_token == "fresh-token"
-    assert out.allowed_scopes == ["tools:read"]
-    assert out.agent_id == "a1"
-    assert out.principal == "machine:scheduled_job"
-    assert out.consent_ref == "g1"
-    claims = out.machine_claims()
-    assert claims == {"sub": "u1", "machine_class": "scheduled_job",
-                      "consent_ref": "g1"}
-    assert "fresh-token" not in str(claims)
-    grants.mint_access_token.assert_awaited_once_with("g1", user_id="u1")
+    return MachineTurnAuthority(orch), orch, grants
 
 
 @pytest.mark.asyncio
@@ -108,150 +87,6 @@ async def test_derive_skips_on_missing_consent():
                            grant_id=None, turn_class="parser_replay")
     assert isinstance(out, AuthoritySkip)
     assert out.reason == "missing_consent"
-
-
-@pytest.mark.asyncio
-async def test_derive_falls_back_to_latest_valid_grant():
-    mta, _, grants = _mta(latest="g-standing")
-    out = await mta.derive(user_id="u1", agent_id=None, consented_scopes=None,
-                           grant_id=None, turn_class="draft_self_test")
-    assert isinstance(out, MachineAuthority)
-    assert out.consent_ref == "g-standing"
-    assert out.principal == "machine:draft_self_test"
-    grants.latest_valid_for.assert_called_once_with("u1", None)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("turn_class", [
-    "scheduled_job", "persistent_assignment", "parser_replay", "draft_self_test",
-])
-@pytest.mark.parametrize("consented_scopes", [None, []])
-async def test_only_unspecified_parser_and_draft_scopes_use_standing_authority(turn_class, consented_scopes):
-    from orchestrator.chain_authority import machine_scope_ceiling, machine_session_binding
-
-    mta, _, _ = _mta()
-    out = await mta.derive(
-        user_id="u1", agent_id=None, consented_scopes=consented_scopes,
-        grant_id="g1", turn_class=turn_class,
-    )
-    assert isinstance(out, MachineAuthority)
-    ceiling = machine_scope_ceiling(machine_session_binding(out))
-    if consented_scopes is None and turn_class in {"parser_replay", "draft_self_test"}:
-        assert ceiling is None
-    else:
-        assert ceiling == frozenset()
-
-
-@pytest.mark.asyncio
-async def test_derive_skips_on_revoked_or_expired():
-    mta, _, _ = _mta(grant_valid=False)
-    out = await mta.derive(user_id="u1", agent_id="a1", consented_scopes=[],
-                           grant_id="g1", turn_class="scheduled_job")
-    assert isinstance(out, AuthoritySkip)
-    assert out.reason == "revoked_or_expired"
-
-
-@pytest.mark.asyncio
-async def test_derive_skips_on_mint_failure():
-    mta, _, _ = _mta(mint=RuntimeError("keycloak-side revocation"))
-    out = await mta.derive(user_id="u1", agent_id="a1", consented_scopes=[],
-                           grant_id="g1", turn_class="scheduled_job")
-    assert isinstance(out, AuthoritySkip)
-    assert out.reason == "mint_failed"
-    assert "keycloak" in out.detail
-
-
-@pytest.mark.asyncio
-async def test_derive_skips_on_empty_intersection():
-    mta, _, _ = _mta(current_scopes={"tools:read": False})
-    out = await mta.derive(
-        user_id="u1", agent_id="a1", consented_scopes=["tools:read"],
-        grant_id="g1", turn_class="scheduled_job")
-    assert isinstance(out, AuthoritySkip)
-    assert out.reason == "empty_scopes"
-
-
-@pytest.mark.asyncio
-async def test_derive_agentless_job_has_no_scope_skip():
-    mta, _, _ = _mta()
-    out = await mta.derive(user_id="u1", agent_id=None, consented_scopes=None,
-                           grant_id="g1", turn_class="scheduled_job")
-    assert isinstance(out, MachineAuthority)
-    assert out.allowed_scopes == []
-
-
-@pytest.mark.asyncio
-async def test_derive_agentless_narrows_to_consented_union(monkeypatch):
-    from orchestrator import tool_visibility
-    seen = []
-    monkeypatch.setattr(tool_visibility, "enabled_scope_union",
-                        lambda o, uid: seen.append(uid) or ["tools:read", "tools:files"])
-    mta, orch, _ = _mta()
-    out = await mta.derive(user_id="u1", agent_id=None,
-                           consented_scopes=["tools:read", "tools:search"],
-                           grant_id="g1", turn_class="scheduled_job")
-    assert isinstance(out, MachineAuthority)
-    assert out.allowed_scopes == ["tools:read"]
-    assert seen == ["u1"]
-    orch.tool_permissions.get_enabled_scope_names.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_derive_agentless_skips_on_empty_intersection(monkeypatch):
-    from orchestrator import tool_visibility
-    monkeypatch.setattr(tool_visibility, "enabled_scope_union",
-                        lambda o, uid: ["tools:files"])
-    mta, _, _ = _mta()
-    out = await mta.derive(user_id="u1", agent_id=None,
-                           consented_scopes=["tools:read"],
-                           grant_id="g1", turn_class="scheduled_job")
-    assert isinstance(out, AuthoritySkip)
-    assert out.reason == "empty_scopes"
-
-
-@pytest.mark.asyncio
-async def test_derive_agentless_union_error_fails_closed(monkeypatch):
-    from orchestrator import tool_visibility
-
-    def boom(o, uid):
-        raise RuntimeError("db")
-    monkeypatch.setattr(tool_visibility, "enabled_scope_union", boom)
-    mta, _, _ = _mta()
-    out = await mta.derive(user_id="u1", agent_id=None,
-                           consented_scopes=["tools:read"],
-                           grant_id="g1", turn_class="scheduled_job")
-    assert isinstance(out, AuthoritySkip)
-    assert out.reason == "empty_scopes"
-
-
-@pytest.mark.asyncio
-async def test_derive_agentless_legacy_empty_consent_does_not_consult_union(monkeypatch):
-    from orchestrator import tool_visibility
-    called = []
-    monkeypatch.setattr(tool_visibility, "enabled_scope_union",
-                        lambda o, uid: called.append(uid) or ["tools:read"])
-    mta, _, _ = _mta()
-    out = await mta.derive(user_id="u1", agent_id=None, consented_scopes=[],
-                           grant_id="g1", turn_class="scheduled_job")
-    assert isinstance(out, MachineAuthority)
-    assert out.allowed_scopes == []
-    assert called == []
-
-
-@pytest.mark.asyncio
-async def test_derive_agent_bound_path_unchanged(monkeypatch):
-    from orchestrator import tool_visibility
-    called = []
-    monkeypatch.setattr(tool_visibility, "enabled_scope_union",
-                        lambda o, uid: called.append(uid) or ["tools:files"])
-    mta, orch, _ = _mta()
-    out = await mta.derive(user_id="u1", agent_id="a1",
-                           consented_scopes=["tools:read", "tools:write"],
-                           grant_id="g1", turn_class="scheduled_job")
-    assert isinstance(out, MachineAuthority)
-    assert out.allowed_scopes == ["tools:read"]
-    orch.tool_permissions.get_enabled_scope_names.assert_called_once_with("u1", "a1")
-    assert called == []
 
 
 @pytest.mark.asyncio

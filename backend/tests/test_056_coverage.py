@@ -173,93 +173,6 @@ def test_summarize_fetched_empty_text_errors():
     assert any(c.get("variant") == "error" for c in out["_ui_components"])
 
 
-def test_latest_valid_for_prefers_agent_grant():
-    from orchestrator.offline_grant import OfflineGrantStore
-
-    repository = _OfflineGrantRepository(
-        SimpleNamespace(grant_id="grant-agent")
-    )
-    runtime = _PlaneRuntime(offline_grants=repository)
-    store = OfflineGrantStore(
-        plane_runtime=runtime,
-        plane_repositories=runtime.repositories,
-    )
-    assert store.latest_valid_for("u1", "web-research-1") == "grant-agent"
-    assert repository.calls[0]["owner_id"] == "u1"
-    assert repository.calls[0]["agent_id"] == "web-research-1"
-    assert isinstance(repository.calls[0]["as_of"], int)
-
-
-def test_latest_valid_for_falls_back_to_any_grant():
-    from orchestrator.offline_grant import OfflineGrantStore
-
-    repository = _OfflineGrantRepository(SimpleNamespace(grant_id="grant-any"))
-    runtime = _PlaneRuntime(offline_grants=repository)
-    store = OfflineGrantStore(
-        plane_runtime=runtime,
-        plane_repositories=runtime.repositories,
-    )
-    assert store.latest_valid_for("u1", "web-research-1") == "grant-any"
-    assert len(repository.calls) == 1
-    assert repository.calls[0]["owner_id"] == "u1"
-    assert repository.calls[0]["agent_id"] == "web-research-1"
-
-
-def test_latest_valid_for_none_when_absent():
-    from orchestrator.offline_grant import OfflineGrantStore
-
-    repository = _OfflineGrantRepository(None)
-    runtime = _PlaneRuntime(offline_grants=repository)
-    store = OfflineGrantStore(
-        plane_runtime=runtime,
-        plane_repositories=runtime.repositories,
-    )
-    assert store.latest_valid_for("u1", None) is None
-    assert repository.calls[0]["agent_id"] is None
-
-
-def test_latest_refresh_token_for_reads_live_session(monkeypatch):
-    from orchestrator import session_store
-
-    monkeypatch.setenv("ASTRAL_ENV", "development")
-    monkeypatch.delenv("WEB_SESSION_ENC_KEY", raising=False)
-    monkeypatch.delenv("OFFLINE_GRANT_ENC_KEY", raising=False)
-    record = SimpleNamespace(
-        session_id="sid-1",
-        incarnation_id="00000000-0000-4000-8000-000000000001",
-        owner_id="u1",
-        access_token_ciphertext="at-abc",
-        refresh_token_ciphertext="rt-abc",
-        interactive_anchor=1,
-        hard_expires_at=10_000,
-        last_refresh_at=2,
-        resumed=False,
-        created_at=1,
-    )
-    repository = _SessionRepository(record)
-    store = session_store.WebSessionStore(
-        session_context=_RepositoryContext(repository),
-        revocation_context=_RepositoryContext(SimpleNamespace()),
-    )
-    assert store.latest_refresh_token_for("u1") == "rt-abc"
-    assert repository.calls[0]["owner_id"] == "u1"
-    assert isinstance(repository.calls[0]["observed_at"], int)
-
-
-def test_latest_refresh_token_for_none_without_session(monkeypatch):
-    from orchestrator import session_store
-
-    monkeypatch.setenv("ASTRAL_ENV", "development")
-    monkeypatch.delenv("WEB_SESSION_ENC_KEY", raising=False)
-    monkeypatch.delenv("OFFLINE_GRANT_ENC_KEY", raising=False)
-    repository = _SessionRepository(None)
-    store = session_store.WebSessionStore(
-        session_context=_RepositoryContext(repository),
-        revocation_context=_RepositoryContext(SimpleNamespace()),
-    )
-    assert store.latest_refresh_token_for("u1") is None
-
-
 def test_resolve_hop_response_sets_future():
     from shared.base_agent import BaseA2AAgent
     from shared.protocol import AgentHopResponse
@@ -299,38 +212,36 @@ def test_from_json_decodes_hop_frames():
     assert isinstance(resp, AgentHopResponse) and resp.response == {"result": "ok"}
 
 
-def test_encode_decode_roundtrip():
-    from orchestrator import delegation as dg
+def test_encode_decode_roundtrip(tmp_path, monkeypatch):
+    import time
 
-    payload = {"sub": "u1", "act": {"sub": "agent:a"}, "scope": "tools:read",
-               "exp": 123, "delegation": True}
-    token = dg.encode_delegation_payload(payload)
-    assert token.count(".") == 2
-    assert dg.decode_token_payload(token) == payload
+    from orchestrator import agent_authority as dg
+    from shared import node_identity
+
+    monkeypatch.setenv(node_identity.PROFILE_ENV, node_identity.PERSONAL)
+    monkeypatch.setenv(node_identity.DATA_DIR_ENV, str(tmp_path / "node"))
+    node_identity.reset_cache()
+    try:
+        now = int(time.time())
+        payload = {"sub": "u1", "act": {"sub": "agent:a"}, "scope": "tools:read",
+                   "iat": now, "exp": now + 60, "aud": ["agent-service"], "delegation": True}
+        token = dg.encode_delegation_payload(payload)
+        assert token.count(".") == 2
+        decoded = dg.decode_token_payload(token)
+        assert {key: decoded[key] for key in payload if key != "aud"} == {
+            key: value for key, value in payload.items() if key != "aud"}
+        assert "agent-service" in decoded["aud"]
+        assert dg.verify_signed_delegation(token, audience="agent-service")["sub"] == "u1"
+    finally:
+        node_identity.reset_cache()
 
 
 def test_decode_rejects_malformed():
-    from orchestrator import delegation as dg
+    from orchestrator import agent_authority as dg
 
     assert dg.decode_token_payload("") is None
     assert dg.decode_token_payload("not-a-token") is None
     assert dg.decode_token_payload("a.b") is None
-
-
-def test_child_signing_key_prefers_env(monkeypatch):
-    from orchestrator import delegation as dg
-
-    monkeypatch.setenv("ASTRAL_ENV", "development")
-
-    monkeypatch.setenv("DELEGATION_CHILD_SIGNING_KEY", "dedicated-key")
-    assert dg._child_signing_key() == b"dedicated-key"
-    monkeypatch.delenv("DELEGATION_CHILD_SIGNING_KEY")
-    monkeypatch.setenv("MEMORY_HMAC_KEY", "shared-key")
-    assert dg._child_signing_key() == b"shared-key"
-    monkeypatch.delenv("MEMORY_HMAC_KEY")
-    first = dg._child_signing_key()
-    assert len(first) == 32 and first != b"mock-delegation-secret"
-    assert dg._child_signing_key() == first
 
 
 @pytest.fixture

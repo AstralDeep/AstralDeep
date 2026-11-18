@@ -11,6 +11,7 @@ import pytest
 
 from orchestrator import remote_confirmation, taint
 from orchestrator.terminal_security import TerminalAuthority
+from orchestrator.tool_permissions import _TURN_PERMISSION_MEMO
 from orchestrator.orchestrator import GateRefusal
 from shared.feature_flags import flags
 from shared.protocol import RegisterAgent
@@ -102,7 +103,15 @@ async def test_gate_binds_fresh_host_authority_after_normal_permission_checks(or
     socket = object()
     orch.ui_sessions[socket] = {"sub": "u1", "exp": time.time() + 600,
                                 "realm_access": {"roles": ["user"]}}
-    orch.tool_permissions.is_tool_allowed = MagicMock(side_effect=[True, not revoked])
+    fresh_checks = []
+
+    def permission(*args):
+        if _TURN_PERMISSION_MEMO.get() is None:
+            return True
+        fresh_checks.append(args)
+        return not revoked
+
+    orch.tool_permissions.is_tool_allowed = MagicMock(side_effect=permission)
     arguments = {"user_id": "foreign", "_terminal_authority": "forged"}
     prepared = await orch._authorize_and_prepare(socket, "terminal-shell-1", "list_terminals",
                                                  arguments, user_id="u1", auto_subscribe_stream=False)
@@ -115,7 +124,8 @@ async def test_gate_binds_fresh_host_authority_after_normal_permission_checks(or
         assert authority.owner_id == prepared.args["user_id"] == "u1"
         assert authority.matches(orch)
         assert prepared.stream_params["_terminal_authority"] == "forged"
-    assert orch.tool_permissions.is_tool_allowed.call_count == 2
+    assert fresh_checks == [("u1", "terminal-shell-1", "list_terminals")]
+    assert orch.tool_permissions.is_tool_allowed.call_count > len(fresh_checks)
 
 
 @pytest.mark.asyncio

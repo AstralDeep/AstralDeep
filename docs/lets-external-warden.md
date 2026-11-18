@@ -75,9 +75,7 @@ LETS_EXECUTOR_RUNTIME_RETENTION_DAYS=30
 Why per-request identity: the bundled LETS authenticator accepts only EdDSA
 JWTs with a lifetime ≤ 1 h, so a static token read at boot would expire.
 `MintingLETSClient` mints a fresh token for every request under the client's
-request lock. Keycloak cannot fill this role without new code on both sides
-(RS256, no `nbf`, no `tenant_id`/`scope` claims) — see the design notes in the
-074 spec.
+request lock. See the design notes in the 074 spec.
 
 The mounted files are: the private CA that signed the warden's server
 certificate, the orchestrator's client certificate/key (the warden requires

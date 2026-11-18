@@ -19,6 +19,7 @@ from verification.evidence import CapturedEvidence, flatten_components
 from verification.isolation import Principal, require_issuer_scoped_cleanup, teardown
 from verification.personas import Fixture, materialize
 from verification.scenarios import Scenario
+from verification.drivers.fixture_identity import fixture_issuer_digest, fixture_owner_id
 from verification.drivers.scripted_llm import scripted_llm_for
 
 logger = logging.getLogger("verification.in_process")
@@ -83,6 +84,8 @@ class LoopbackAgent:
         return None
 
 
+_TURN_GUIDANCE_FLAGS = ("user_skills", "observation_packing", "safe_compaction")
+
 class InProcessDriver:
     mode = "in_process"
     auth_mode = "mock_inprocess"
@@ -103,6 +106,10 @@ class InProcessDriver:
         os.environ["FF_UI_DESIGNER"] = "false"
         self._saved_delegation_required = os.environ.get("DELEGATION_REQUIRED")
         os.environ["DELEGATION_REQUIRED"] = "false"
+        from shared.feature_flags import flags
+
+        self._saved_flags = {name: flags._flags.get(name) for name in _TURN_GUIDANCE_FLAGS}
+        flags._flags.update(dict.fromkeys(_TURN_GUIDANCE_FLAGS, False))
 
         from verification.drivers.fixture_identity import FixtureIdentity
 
@@ -164,7 +171,6 @@ class InProcessDriver:
         return runtime, repositories, blobs
 
     def _execution_principal(self, principal: Principal) -> Principal:
-        from shared.node_identity import canonical_owner_id
 
         identity = getattr(self, "_fixture_identity", None)
         if identity is None or identity.closed:
@@ -179,12 +185,12 @@ class InProcessDriver:
             raise ValueError("verification principal is outside the configured run namespace")
         identity_digest = hashlib.sha256(principal.user_id.encode("utf-8")).hexdigest()[:12]
         suffix = f"_exec_{self._execution_nonce}_{identity_digest}"
-        owner_prefix_length = len(canonical_owner_id(identity.authority, "x")) - 1
+        owner_prefix_length = len(fixture_owner_id(identity.authority, "x")) - 1
         maximum_base = 255 - owner_prefix_length - len(suffix)
         if len(expected_prefix) > maximum_base:
             raise ValueError("verification run namespace is too long for blob ownership")
         subject = f"{principal.user_id[:maximum_base]}{suffix}"
-        scoped_id = canonical_owner_id(identity.authority, subject)
+        scoped_id = fixture_owner_id(identity.authority, subject)
         scoped = Principal(user_id=scoped_id, roles=list(principal.roles))
         self._execution_subjects[scoped_id] = subject
         self._execution_principals[principal.user_id] = scoped
@@ -306,18 +312,10 @@ class InProcessDriver:
 
     async def _register_session(self, principal: Principal, chat_id: Optional[str] = None) -> CaptureSocket:
         principal = self._execution_principal(principal)
-        from orchestrator.auth import verify_production_token, verify_user
-
-        subject = self._execution_subjects[principal.user_id]
-        _, token = self._fixture_identity.claims_and_token(
-            Principal(subject, list(principal.roles)).claims()
-        )
-        claims = await verify_user(await verify_production_token(token))
-        if claims.get("sub") != principal.user_id:
-            raise RuntimeError("verification authenticated owner differs from fixture owner")
+        claims = Principal(principal.user_id, list(principal.roles)).claims()
         await self._seed_llm_config(principal.user_id)
         ws = CaptureSocket(label=principal.user_id)
-        self.orch.ui_sessions[ws] = claims | {"_raw_token": token}
+        self.orch.ui_sessions[ws] = dict(claims)
         ws.scope = {"type": "websocket", "headers": [], "query_string": b""}
         context = self.orch._new_connection_context(ws)
         context.registered = True
@@ -339,26 +337,9 @@ class InProcessDriver:
             context.closing = True
 
     async def _send_registered_turn(self, ws, message, chat_id, *, user_id, attachments):
-        from orchestrator.human_request_authority import capture_human_socket_request
-        from verification.drivers.fixture_admission import admitted_registered_turn
-
-        context = self.orch._connection_contexts[id(ws)]
-        frame = {"type": "ui_event", "action": "chat_message",
-                 "submission_id": str(uuid.uuid4()), "request_generation": str(uuid.uuid4()),
-                 "connection_generation": str(context.connection_generation),
-                 "message": message, "chat_id": chat_id}
-        pending = capture_human_socket_request(
-            self.orch.human_request_boundary, websocket=ws, context=context,
-            message=frame, purpose="skill_lookup",
+        return await self.orch.handle_chat_message(
+            ws, message, chat_id, user_id=user_id, attachments=attachments,
         )
-        try:
-            async with admitted_registered_turn(self.orch, ws, frame=frame, human_request=pending) as context:
-                return await self.orch.handle_chat_message(
-                    ws, message, chat_id, user_id=user_id, attachments=attachments,
-                    operation_context=context,
-                )
-        finally:
-            pending.close()
 
     async def grant_default_scopes(self, principal: Principal) -> None:
         principal = self._execution_principal(principal)
@@ -523,7 +504,7 @@ class InProcessDriver:
         from verification.isolation import make_principal
 
         d = self._execution_principal(make_principal(run_id, "delegD"))
-        from orchestrator.delegation import mint_child_delegation
+        from orchestrator.agent_authority import mint_child_delegation
 
         claims: Dict[str, Any] = mint_child_delegation(
             {"sub": d.user_id, "scope": "tools:read", "exp": int(time.time()) + 300},
@@ -663,6 +644,9 @@ class InProcessDriver:
         error, cancellation = await _observe_task_through_cancellation(task)
         if getattr(self, "_fixture_identity", None) is not None:
             self._fixture_identity.close()
+        from shared.feature_flags import flags
+
+        flags._flags.update(getattr(self, "_saved_flags", {}))
         saved = getattr(self, "_saved_delegation_required", None)
         if saved is None:
             os.environ.pop("DELEGATION_REQUIRED", None)
@@ -718,9 +702,8 @@ class InProcessDriver:
             try:
                 scope = {}
                 if getattr(self, "_execution_subjects", {}):
-                    from shared.node_identity import issuer_digest
 
-                    scope["owner_issuer_hash"] = issuer_digest(self._fixture_identity.authority)
+                    scope["owner_issuer_hash"] = fixture_issuer_digest(self._fixture_identity.authority)
                 await asyncio.to_thread(
                     teardown,
                     plane_runtime=plane_runtime,

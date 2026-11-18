@@ -5,7 +5,6 @@ admission gate in JobRunner.run_occurrence.
 
 from __future__ import annotations
 
-import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any, Iterator
@@ -17,7 +16,7 @@ from orchestrator.work_admission import (
     AdmissionClassConfig,
     WorkAdmissionCoordinator,
 )
-from scheduler.runner import JobRunner, default_monitoring_dispatcher
+from scheduler.runner import default_monitoring_dispatcher
 from scheduler.store import ScheduleActionError
 from scheduler.tests.plane_runtime import (
     ensure_plane_runtime,
@@ -430,129 +429,6 @@ class _ValidGrants:
 
     async def mint_access_token(self, grant_id, *, user_id):
         return "test-access-token"
-
-
-@pytest.mark.asyncio
-async def test_run_occurrence_pauses_and_notifies_once_when_unbound(
-    clean_database: PlaneTestRuntime,
-) -> None:
-    coordinator = _coordinator(clean_database)
-    store = ScheduledJobStore(clean_database, coordinator=coordinator)
-    owner = "owner-run-unbound"
-    job = _job(store, owner=owner, label="run-unbound")
-    job_id = str(job["id"])
-    store.set_job_policy(owner, job_id, max_runs=None, monitor_changes=False, expected_version=0)
-    claim = _claim_one(store, "run-unbound", job_id=job_id)
-    attempt = store.start_attempt(store.allocate_attempt(claim), lease_seconds=15)
-
-    orchestrator, calls = _recording_orchestrator()
-    runner = JobRunner(orchestrator, store, _ValidGrants())
-    runner.bind_execution_context(coordinator=coordinator, store=store)
-
-    result = await runner.run_occurrence(attempt, claim_lost=asyncio.Event())
-
-    assert result.outcome == "failure"
-    assert result.result_code == "monitoring_assignment_unbound"
-    assert result.retryable is False
-    assert calls["turns"] == []
-    assert len(calls["notifications"]) == 1
-    assert store.get_job(owner, job_id)["status"] == "paused"
-
-
-@pytest.mark.asyncio
-async def test_run_occurrence_admits_and_dispatches_with_an_injected_dispatcher(
-    clean_database: PlaneTestRuntime,
-) -> None:
-    coordinator = _coordinator(clean_database)
-    store = ScheduledJobStore(clean_database, coordinator=coordinator)
-    owner = "owner-run-admit"
-    job = _job(store, owner=owner, label="run-admit")
-    job_id = str(job["id"])
-    store.set_job_policy(owner, job_id, max_runs=None, monitor_changes=False, expected_version=0)
-    assignment_id = _assignment(clean_database, owner=owner)
-    claim = _claim_one(store, "run-admit", job_id=job_id)
-    attempt = store.start_attempt(store.allocate_attempt(claim), lease_seconds=15)
-
-    def dispatcher(transaction, job_row, prior_assignment_id):
-        assert job_row["id"] == job_id
-        assert prior_assignment_id is None
-        return assignment_id
-
-    orchestrator, calls = _recording_orchestrator()
-    runner = JobRunner(orchestrator, store, _ValidGrants(), monitoring_dispatcher=dispatcher)
-    runner.bind_execution_context(coordinator=coordinator, store=store)
-
-    result = await runner.run_occurrence(attempt, claim_lost=asyncio.Event())
-
-    assert result.outcome == "success"
-    assert len(calls["turns"]) == 1
-    policy = store.get_job_policy(owner, job_id)
-    assert policy["admitted_runs"] == 1
-    assert policy["last_assignment_id"] == assignment_id
-
-
-@pytest.mark.asyncio
-async def test_run_occurrence_pauses_and_notifies_once_when_allowance_exhausted(
-    clean_database: PlaneTestRuntime,
-) -> None:
-    coordinator = _coordinator(clean_database)
-    store = ScheduledJobStore(clean_database, coordinator=coordinator)
-    owner = "owner-run-exhausted"
-    job = _job(store, owner=owner, label="run-exhausted", due=False)
-    job_id = str(job["id"])
-    store.set_job_policy(owner, job_id, max_runs=1, monitor_changes=False, expected_version=0)
-    assignment_a = _assignment(clean_database, owner=owner)
-    assignment_b = _assignment(clean_database, owner=owner)
-
-    _run_now(store, owner=owner, job_id=job_id)
-    pre_claim = _claim_one(store, "run-exhausted-pre", job_id=job_id)
-    assert store.admit_episode(pre_claim, assignment_id=assignment_a).admitted is True
-    _set_lifecycle(clean_database, assignment_a, "completed")
-
-    _run_now(store, owner=owner, job_id=job_id)
-    claim = _claim_one(store, "run-exhausted", job_id=job_id)
-    attempt = store.start_attempt(store.allocate_attempt(claim), lease_seconds=15)
-
-    orchestrator, calls = _recording_orchestrator()
-    runner = JobRunner(
-        orchestrator, store, _ValidGrants(),
-        monitoring_dispatcher=lambda transaction, job_row, prior: assignment_b,
-    )
-    runner.bind_execution_context(coordinator=coordinator, store=store)
-
-    result = await runner.run_occurrence(attempt, claim_lost=asyncio.Event())
-
-    assert result.outcome == "failure"
-    assert result.result_code == "allowance_exhausted"
-    assert result.retryable is False
-    assert calls["turns"] == []
-    assert len(calls["notifications"]) == 1
-    assert store.get_job(owner, job_id)["status"] == "paused"
-    assert store.get_job_policy(owner, job_id)["admitted_runs"] == 1
-
-
-@pytest.mark.asyncio
-async def test_run_occurrence_is_unaffected_for_a_legacy_job_without_a_policy(
-    clean_database: PlaneTestRuntime,
-) -> None:
-    coordinator = _coordinator(clean_database)
-    store = ScheduledJobStore(clean_database, coordinator=coordinator)
-    owner = "owner-run-legacy"
-    job = _job(store, owner=owner, label="run-legacy")
-    job_id = str(job["id"])
-    assert store.get_job_policy(owner, job_id) is None
-    claim = _claim_one(store, "run-legacy", job_id=job_id)
-    attempt = store.start_attempt(store.allocate_attempt(claim), lease_seconds=15)
-
-    orchestrator, calls = _recording_orchestrator()
-    runner = JobRunner(orchestrator, store, _ValidGrants())
-    runner.bind_execution_context(coordinator=coordinator, store=store)
-
-    result = await runner.run_occurrence(attempt, claim_lost=asyncio.Event())
-
-    assert result.outcome == "success"
-    assert len(calls["turns"]) == 1
-    assert store.get_job_policy(owner, job_id) is None
 
 
 def test_default_monitoring_dispatcher_reuses_the_bound_assignment_and_refuses_when_unbound() -> None:

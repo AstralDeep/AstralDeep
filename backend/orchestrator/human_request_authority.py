@@ -35,7 +35,7 @@ from orchestrator import auth
 from orchestrator.session_store import WebSessionStore
 from orchestrator.work_submit_authority import (
     AuthenticatedWorkRequest, _authenticate_work_request, _expiry, capture_human_caller,
-    _signed_selection,
+    SESSION_COOKIE,
 )
 from orchestrator.work_write_boundary import freeze_work_request
 from persistent_agents.models import AssignmentError
@@ -75,7 +75,6 @@ def _socket_method(message):
 
 def _socket_policy():
     return tuple(os.getenv(key) for key in (
-        "KEYCLOAK_AUTHORITY", "KEYCLOAK_CLIENT_ID", "KEYCLOAK_ALLOWED_AZP",
         "PUBLIC_BASE_URL", "BACKEND_PUBLIC_URL",
     ))
 
@@ -420,20 +419,12 @@ class _HumanSocketRequest:
                 raise AssignmentError("human_query_token_refused", 403)
             # Real transport for header parsing, not a fabricated request
             transport = HTTPConnection({"type": "websocket", "headers": headers})
-            self.session_id = _signed_selection(transport)
-            from orchestrator import web_auth
-            supplied = [part.strip().split("=", 1)[0] for header in
-                transport.headers.getlist("cookie") for part in header.split(";")]
-            if web_auth.COOKIE_NAME in supplied and self.session_id is None:
+            self.session_id = None
+            if SESSION_COOKIE in [part.strip().split("=", 1)[0] for header in
+                    transport.headers.getlist("cookie") for part in header.split(";")]:
                 raise ValueError
-            if purpose == "remote_effect" and self.session_id is None:
+            if purpose == "remote_effect":
                 raise ValueError
-            if self.session_id is not None and method == "WS_WRITE":
-                from orchestrator.work_api import _origin
-                origins = transport.headers.getlist("origin")
-                base = os.getenv("PUBLIC_BASE_URL") or os.getenv("BACKEND_PUBLIC_URL")
-                if not base or len(origins) != 1 or _origin(origins[0]) != _origin(base, base=True):
-                    raise AssignmentError("human_origin_refused", 403)
         except AssignmentError:
             raise
         except (AttributeError, KeyError, TypeError, ValueError, UnicodeError):
@@ -503,7 +494,7 @@ class _HumanSocketRequest:
                     return observation
 
                 current()
-                observation = await binding.adapter.run_in_transaction(capture)
+                await binding.adapter.run_in_transaction(capture)
                 current()
                 try:
                     await auth.verify_production_token(self.token)
@@ -512,38 +503,7 @@ class _HumanSocketRequest:
                         return
                 else:
                     return
-                current()
-                claims = auth.jose_jwt.get_unverified_claims(self.token)
-                authority, client_id, _ = auth._get_keycloak_config()
-                from shared.auth_clients import is_azp_allowed
-                from shared.token_verify import with_owner_identity
-                if (not authority or not client_id or type(claims.get("iss")) is not str
-                        or claims["iss"].rstrip("/") != authority.rstrip("/")
-                        or type(claims.get("azp")) is not str or not is_azp_allowed(claims["azp"])):
-                    return
-                claims = with_owner_identity(claims, authority)
-                if _expiry(claims, self.owner_id) != self.expiry:
-                    return
-                auth._reject_non_first_party(claims)
-                await auth.verify_user(claims)
-                saved = {key: deepcopy(value) for key, value in self.captured.items()
-                         if not key.startswith("_")}
-                for value in (claims, saved):
-                    value["realm_access"] = {**value.get("realm_access", {}),
-                        "roles": sorted(set(auth._extract_roles(value)))}
-                if claims != saved:
-                    return
-
-                def verify(tx):
-                    current()
-                    binding.session_repository.bound_request_execution_waits(tx)
-                    binding.session_repository.assert_current_consent(tx, observation=observation)
-                    current()
-
-                await binding.adapter.run_in_transaction(verify)
-                current()
-                from shared.protocol import AuthRequired
-                await expected_orchestrator._safe_send(self.websocket, AuthRequired(reason="expired").to_json())
+                return
         except asyncio.CancelledError:
             raise
         except Exception:

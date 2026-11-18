@@ -30,7 +30,7 @@ from lets.executor import (
 from lets.executor_authority import ProcessFileExecutorAuthorityAnchor
 from lets.models import Receipt
 
-from orchestrator.delegation import (
+from orchestrator.agent_authority import (
     authorize_chained_tool_call,
     mint_child_delegation,
     verify_delegation_chain,

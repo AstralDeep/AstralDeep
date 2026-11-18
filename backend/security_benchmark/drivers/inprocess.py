@@ -1,5 +1,4 @@
 """Refuses the retired benchmark driver whose turn execution was never implemented.
-The signed-turn qualification command lives in drivers/real_dispatch.py.
 """
 
 from __future__ import annotations
@@ -19,8 +18,7 @@ class InProcessDriver(Driver):
 
     def setup(self) -> None:
         raise RuntimeError(
-            "the legacy in_process ASR driver has no real turn executor; "
-            "use --qualify-real-dispatch for the signed fixture gate")
+            "the legacy in_process ASR driver has no real turn executor")
 
     def run_case(self, case: BenchmarkCase, envelope: EnvelopeConfig) -> CaseTrace:
         self.setup()
