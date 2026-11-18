@@ -18,7 +18,7 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from fastapi import FastAPI  # noqa: E402
-from fastapi import Depends  # noqa: E402
+from fastapi import Depends, Request  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from orchestrator.emergency_stop import (  # noqa: E402
@@ -138,8 +138,6 @@ def test_submission_gate_is_none_without_a_coordinator():
 
 
 def _client(coordinator) -> TestClient:
-    from fastapi import Request
-
     from orchestrator.auth import get_current_user_payload, refuse_node_bearer
     from orchestrator.emergency_stop_api import _human, _owner
 

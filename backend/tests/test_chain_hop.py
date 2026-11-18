@@ -151,8 +151,9 @@ async def test_hop_executes_under_child_authority(orch):
     assert set(child["scope"].split()) <= set(parent["scope"].split())
     assert child["scope"]
     assert child["exp"] <= parent["exp"]
-    assert child["aud"] == parent["aud"]
-    assert child["iss"] == parent["iss"]
+    assert parent["aud"] in child["aud"]
+    assert child["aud"][-1].startswith("astral-node:")
+    assert child["iss"] == child["aud"][-1]
     assert child["delegation_depth"] == 1
     assert dg.actor_chain(child) == ["agent:callee-1", "agent:initiator-1"]
     assert child["sub"] == "u1"

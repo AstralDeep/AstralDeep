@@ -21,7 +21,7 @@ if str(BACKEND_DIR) not in sys.path:
 from tests.helpers.voice_plane_runtime import isolated_plane_runtime  # noqa: E402
 
 SUBJECT = "dev-user-id"
-OWNER = ""
+OWNER = SUBJECT
 AUTH_HEADER: dict = {}
 
 
@@ -72,11 +72,20 @@ def plane_runtime():
 
 
 @pytest.fixture
-def client(app_and_orch):
+def unauthenticated_client(app_and_orch):
     from fastapi.testclient import TestClient
 
     app, _ = app_and_orch
     return TestClient(app)
+
+
+@pytest.fixture
+def client(app_and_orch, unauthenticated_client):
+    from orchestrator.auth import require_user_id
+
+    app, _ = app_and_orch
+    app.dependency_overrides[require_user_id] = lambda: OWNER
+    return unauthenticated_client
 
 
 @pytest.fixture
@@ -130,13 +139,13 @@ def _insert_step(runtime, *, chat_id, user_id, name, status, started_at, ended_a
 
 
 class TestAuth:
-    def test_401_without_token(self, client, fresh_chat):
-        resp = client.get(f"/api/chats/{fresh_chat}/steps")
+    def test_401_without_token(self, unauthenticated_client, fresh_chat):
+        resp = unauthenticated_client.get(f"/api/chats/{fresh_chat}/steps")
         assert resp.status_code == 401
 
 
-    def test_401_for_an_unsigned_token(self, client, fresh_chat):
-        resp = client.get(
+    def test_401_for_an_unsigned_token(self, unauthenticated_client, fresh_chat):
+        resp = unauthenticated_client.get(
             f"/api/chats/{fresh_chat}/steps",
             headers={"Authorization": "Bearer e30.e30.sig"})
         assert resp.status_code == 401

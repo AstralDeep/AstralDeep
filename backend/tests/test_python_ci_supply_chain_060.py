@@ -329,8 +329,6 @@ def test_release_tooling_job_covers_owned_scripts_with_exact_omissions() -> None
     expected_test_paths = {
         "backend/tests/test_ios_store_upload.py",
         "backend/tests/test_ios_store_profile.py",
-        "scripts/tests/test_check_no_keycloak.py",
-        "scripts/tests/test_no_docker_check.py",
         "scripts/tests/test_ci_browser_retry.py",
         "scripts/tests/test_ci_network_fixture.py",
         "scripts/tests/test_ci_fence_fixture_verifier.py",

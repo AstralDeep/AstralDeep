@@ -69,8 +69,6 @@ CURRENT_DEPENDENCY_AUTHORITIES = {
     "backend/requirements-document-worker.txt": "28383cb135800b5415ca4c9504ea83e1514fa3e6f1d89257ab06fd5e8116508a",
     "Dockerfile": "ae7b33908f98aeb86c794f3815224b8ddfdf00bd479a599ef8e30f2291ed4659",
     "Dockerfile.voice": "82ffc56ab274790ea60e280852eb49608e9e8f7dbc3432fc16b4a1f3bcd21b84",
-    "scripts/exec_harness/Dockerfile": "b4636ddf5c80c75cb44e29cba88d4413308c824967ac50975bc8399e6be6f8a5",
-    "scripts/node_bundle/linux/Dockerfile": "12165b6182217673c434e17492c392282537f14bc1181fff52a9b8847c9edb59",
     "backend/requirements.txt": "54ca1ab0277575f4c833a5437fb4e3f9defb49c9382be6b6a6828608ddc3671c",
     "backend/requirements-gaiakeep.txt": "87ea5ed066e8aa376f355df70a4efac295d331c7c77601d277a05c8acb37feea",
     "backend/tests/fixtures/runtime_reliability_060/runtime-lock-contract.json": (
@@ -85,11 +83,16 @@ CURRENT_DEPENDENCY_AUTHORITIES = {
     ),
     "tooling/backend-ci/requirements.in": "6c5d44dd5d3b6c9c1241d655c6e8c2e9d8b266c0d18d99838be058ef8b7320fe",
     "tooling/backend-ci/requirements.lock.txt": "7368b4b122049b43e1930b1be178f82f3aeb13e481b1c8e7679c3a2c8b800815",
-    "tooling/reference-ci/requirements.lock.txt": "871492171fb95c578af3af6084a31f2ac0c78eebfed2e41e55825ac82cd0e4df",
     "tooling/requirements-gaiakeep-tests.txt": "86c94aaf151b3920dbcdb1b682fbb9401d1b3ddb64adcd508444bc86acd5d21c",
     "tooling/requirements-gaiakeep-sdk-tests.txt": "a346c3a5ad503cf1b04e61655fb6e3ec667027f8d097c92ab960b4d013fb4c78",
     "tooling/ui-ci/requirements.in": "3b298d1b5ca1a5b849ed568d3a5bda4babfaea3a1187eca7983e1cf9aa73b659",
     "tooling/ui-ci/requirements.lock.txt": "afb649d5dd7d9b74477e73b7f24972b273505a04ea2dfcd2d23defbbf71a84dc",
+    "scripts/exec_harness/Dockerfile": "b4636ddf5c80c75cb44e29cba88d4413308c824967ac50975bc8399e6be6f8a5",
+    "scripts/node_bundle/linux/Dockerfile": "12165b6182217673c434e17492c392282537f14bc1181fff52a9b8847c9edb59",
+    "tooling/contract-ref/requirements.in": "d3a35d4c88066ef69d8323917e8be4df3663acd3c71c6b49b118bfa7e73ce6f9",
+    "tooling/contract-ref/requirements.lock.txt": "98c7d84a2a18e04f5e592e7d4df8713e9608545ba361838dac11325ea17771bf",
+    "tooling/vessel-ci/requirements.in": "7be319d70fa5006881fd8ed02f5fe0eee1547a693ecc067aa02ddc49a34f41dc",
+    "tooling/vessel-ci/requirements.lock.txt": "74cc6d27c76cd8e0af31110059c1bb88dd9fc370836b1773656c7bb81917ce48",
     "uv.lock": "9ac083ef3b758ad4ceb6867290b7bd7116e0a008af86fb90d91afe6613e1d92e",
 }
 DEEP_DEPENDENCY_AUTHORITY_POLICY = {

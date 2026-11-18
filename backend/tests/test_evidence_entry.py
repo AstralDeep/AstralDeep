@@ -27,6 +27,12 @@ from tests.test_context_presentation import (
 pytestmark = pytest.mark.asyncio
 
 
+@pytest.fixture(autouse=True)
+def entry_controls(monkeypatch):
+    monkeypatch.setattr(flags, "is_enabled", lambda name: name == "observation_packing")
+    monkeypatch.setenv("FF_LLM_STREAMING", "false")
+
+
 async def test_disabled_entry_preserves_original_internal_dispatch():
     host = SimpleNamespace(_get_user_id=lambda _socket: "alice")
     host._begin_conversation_publication = AsyncMock(return_value=(None, None, None))
