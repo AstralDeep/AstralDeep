@@ -1298,6 +1298,7 @@ jobs:
           name: vessel-kernel-artifacts-linux-amd64
           path: ${{ runner.temp }}/kernel-artifacts
       - name: Install ripgrep from its release, checksum pinned
+        working-directory: ${{ runner.temp }}
         run: |
           f=ripgrep-14.1.1-x86_64-unknown-linux-musl.tar.gz
           curl -fsSL --retry 3 -o "$f" "https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/$f"
@@ -1429,6 +1430,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install ripgrep from its release, checksum pinned
+        working-directory: ${{ runner.temp }}
         run: |
           f=ripgrep-14.1.1-aarch64-apple-darwin.tar.gz
           curl -fsSL --retry 3 -o "$f" "https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/$f"
@@ -1488,7 +1490,11 @@ jobs:
           path: ${{ runner.temp }}/pack
       - name: Remove the runner's preinstalled Docker client
         run: |
-          for p in $(type -ap docker); do sudo mv "$p" "$p.disabled"; done
+          for p in $(type -ap docker); do
+            real=$(readlink -f "$p")
+            if [ -e "$real" ]; then sudo mv "$real" "$real.disabled"; fi
+          done
+          hash -r
           ! command -v docker
       - name: Print the runner Landlock ABI
         run: |
