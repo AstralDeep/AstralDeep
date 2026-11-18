@@ -128,6 +128,20 @@ def prepare_mesh(directory):
     return SimpleNamespace(config=config, signer=signer, owner=created.mesh_id)
 
 
+async def deposits_settled(kernel, floor, seconds=40):
+    deadline = time.monotonic() + seconds
+    last, steady = None, 0
+    while time.monotonic() < deadline:
+        await kernel.sync_now()
+        current = kernel.mailbox_state().deposited_through
+        steady = steady + 1 if current > floor and current == last else 0
+        if steady >= 3:
+            return
+        last = current
+        await asyncio.sleep(0.5)
+    raise AssertionError("timed out waiting for the laptop to deposit everything")
+
+
 async def until(condition, what, seconds=40):
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
@@ -224,8 +238,7 @@ async def test_the_node_joins_a_mesh_syncs_chats_and_relays_through_its_mailbox(
         deposited = laptop.mailbox_state().deposited_through
         later = laptop.create_chat("written while the tablet is away")
         laptop.send_message(later, "left in the mailbox", None)
-        await laptop.sync_now()
-        await until(lambda: laptop.mailbox_state().deposited_through > deposited, "the laptop to deposit")
+        await deposits_settled(laptop, deposited)
         await laptop.stop_network()
         running.remove(laptop)
 

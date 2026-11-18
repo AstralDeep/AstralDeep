@@ -46,6 +46,11 @@ MACOS_BINARY_MEMBER = "Products/Debug/AstralDeep.app/Contents/MacOS/AstralDeep.d
 MACOS_SKIP_DISPOSITIONS = {
     "unit": {
         "AppModelChromeSurfaceTests/testEvidenceHostedSurfaceRetiresItsActualTimerAndRejectsLateReplay()": "Hosted SwiftUI evidence coverage uses the isolated iOS test destination",
+        "ConnectionKeychainTests/testConnectionItemsLeaveTheMeshDeviceItemsUnchanged()": "Keychain needs a signed host; unsigned test builds have none",
+        "ConnectionKeychainTests/testRoundTripReplaceRemoveAndAbsent()": "Keychain needs a signed host; unsigned test builds have none",
+        "ConnectionKeychainTests/testStoredItemsReadBackAsThisDeviceOnlyAndNotSynchronizable()": "Keychain needs a signed host; unsigned test builds have none",
+        "ConnectionKeychainTests/testTwoIssuersForOneConnectionDoNotCollide()": "Keychain needs a signed host; unsigned test builds have none",
+        "MeshDeviceKeysTests/testKeychainStoreRoundTrip()": "Keychain needs a signed host; unsigned test builds have none",
         "OnDeviceFallbackModelTests/testRealVerifiedTextFallbackWhenExplicitlyRequested()": "Set ASTRAL_VERIFIED_MODEL_TEST_ROOT to a verified installed model root for this local hardware check.",
     },
     "ui": {
@@ -54,7 +59,11 @@ MACOS_SKIP_DISPOSITIONS = {
 }
 IOS_SKIP_DISPOSITIONS = {
     "unit": {
-        "MeshDeviceKeysTests/testKeychainStoreRoundTrip()": "Keychain needs a signed host; unsigned simulator test builds have none",
+        "ConnectionKeychainTests/testConnectionItemsLeaveTheMeshDeviceItemsUnchanged()": "Keychain needs a signed host; unsigned test builds have none",
+        "ConnectionKeychainTests/testRoundTripReplaceRemoveAndAbsent()": "Keychain needs a signed host; unsigned test builds have none",
+        "ConnectionKeychainTests/testStoredItemsReadBackAsThisDeviceOnlyAndNotSynchronizable()": "Keychain needs a signed host; unsigned test builds have none",
+        "ConnectionKeychainTests/testTwoIssuersForOneConnectionDoNotCollide()": "Keychain needs a signed host; unsigned test builds have none",
+        "MeshDeviceKeysTests/testKeychainStoreRoundTrip()": "Keychain needs a signed host; unsigned test builds have none",
         "OnDeviceFallbackModelTests/testRealVerifiedTextFallbackWhenExplicitlyRequested()": (
             "Set ASTRAL_VERIFIED_MODEL_TEST_ROOT to a verified installed model root for this local hardware check."
         ),
@@ -219,14 +228,25 @@ def macos_macho(raw: bytes, lane: str) -> str:
 MACOS_UNIT_WARNING_SOURCES = {
     "ConsoleShellPresentationTests.swift": "[Internal] Thread running at User-interactive quality-of-service class waiting on a lower QoS thread running at Default quality-of-service class. Investigate ways to avoid priority inversions",
     "GuidanceRenderer088Tests.swift": "Accessing FocusState's value outside of the body of a View. This will result in a constant Binding of the initial value and will not update.",
+    "OnDevicePhiFilterTests.swift": "Thread running at User-interactive quality-of-service class waiting on a lower QoS thread running at Default quality-of-service class. Investigate ways to avoid priority inversions",
     "RealMeshKernelTests.swift": "Thread running at User-initiated quality-of-service class waiting on a lower QoS thread running at Default quality-of-service class. Investigate ways to avoid priority inversions",
 }
 MACOS_UNIT_WARNINGS = frozenset(MACOS_UNIT_WARNING_SOURCES.values())
+MACOS_UI_WARNINGS = frozenset(
+    {
+        MACOS_UNIT_WARNING_SOURCES["ConsoleShellPresentationTests.swift"],
+        MACOS_UNIT_WARNING_SOURCES["RealMeshKernelTests.swift"],
+    }
+)
 
 
 def macos_case_warnings(children: Any, lane: str) -> None:
     require(isinstance(children, list) and len(children) <= 16)
-    require(not children or lane == "unit")
+    require(
+        not children
+        or lane == "unit"
+        or all(isinstance(warning, dict) and warning.get("name") in MACOS_UI_WARNINGS for warning in children)
+    )
     for warning in children:
         require(
             isinstance(warning, dict)
