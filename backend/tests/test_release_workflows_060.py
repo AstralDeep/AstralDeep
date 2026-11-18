@@ -1780,6 +1780,7 @@ def test_ci_has_no_stale_composed_or_client_release_claims() -> None:
         "secret-scan",
         "no-keycloak",
         "node-pack-linux",
+        "node-pack-linux-arm64",
         "node-pack-macos",
         "no-docker-macos",
         "no-docker-linux",
@@ -2861,3 +2862,24 @@ def test_result_bundle_refusals_stop_an_errexit_step_only_when_the_path_is_taken
             assert completed.stdout.startswith("::error::"), guard
             assert completed.stdout.rstrip("\n").endswith(" already exists"), guard
             assert "proceeded" not in completed.stdout, guard
+
+
+def test_ci_builds_the_linux_arm64_node_pack_and_keeps_evidence_when_it_fails() -> None:
+    pack = _workflow_jobs(CI_WORKFLOW)["node-pack-linux-arm64"]
+    assert pack["runs-on"] == "ubuntu-24.04-arm" and pack["timeout-minutes"] <= 30
+    assert "needs" not in pack
+    runs = "\n".join(step.get("run", "") for step in pack["steps"])
+    assert "build_kernel_binding.py --root . --output build/kernel-binding --platform linux-aarch64" in runs
+    assert "install_kernel_binding.py verify --artifacts build/kernel-binding --platform linux-aarch64" in runs
+    assert "build_linux.py --platform linux-aarch64" in runs
+    evidence = [step for step in pack["steps"] if str(step.get("uses", "")).startswith("actions/upload-artifact@")]
+    assert len(evidence) == 1
+    assert evidence[0]["if"] == "${{ always() }}"
+    assert evidence[0]["uses"].startswith("actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02")
+    assert evidence[0]["with"]["retention-days"] <= 7
+    assert "build/kernel-binding" in evidence[0]["with"]["path"] and "runner.temp" in evidence[0]["with"]["path"]
+
+    gates = _workflow_job(_workflow_text(CI_WORKFLOW), "gates")
+    assert "- node-pack-linux-arm64" in gates
+    assert "needs.node-pack-linux-arm64.result }}' == 'success'" in gates
+    assert "node-pack-linux-aarch64" not in _workflow_text(WORKFLOWS / "release-macos.yml")

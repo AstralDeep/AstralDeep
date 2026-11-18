@@ -6,7 +6,7 @@
   },
   "kernel": {
     "repository": "https://github.com/AstralDeep/AstralKernel.git",
-    "commit": "eb9821f41e8d84b642110c098a12dcb54eced665"
+    "commit": "f108c8504edb995d29570f38da83fbc2eb3aa6c1"
   },
   "platforms": {
     "macos-arm64": {
