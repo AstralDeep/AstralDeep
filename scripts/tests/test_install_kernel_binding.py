@@ -157,3 +157,57 @@ def test_main_pin_rewrites_the_manifest(staged, monkeypatch, capsys):
     assert written["artifacts"]["linux-aarch64"]["wheel"]["sha256"] == digest(b"newer wheel")
     assert ikb.main(["pin", "--artifacts", str(artifacts), "--commit", "abc1234"]) == 1
     assert "--wheel and --mailbox" in capsys.readouterr().err
+
+
+def make_wheel(path, members):
+    import zipfile
+
+    with zipfile.ZipFile(path, "w") as archive:
+        for name, data in members.items():
+            archive.writestr(name, data)
+
+
+def test_wheel_mismatch_reports_digests_and_record_lines(staged):
+    artifacts, manifest, _ = staged
+    record = "k/__init__.py,sha256=abc,12\nk-1.dist-info/RECORD,,\n"
+    make_wheel(artifacts / "k.whl", {"k/__init__.py": "x", "k-1.dist-info/RECORD": record})
+    actual = ikb.sha256(artifacts / "k.whl")
+    with pytest.raises(ikb.BindingError) as caught:
+        ikb.verify(artifacts, "linux-aarch64", manifest)
+    message = str(caught.value)
+    assert "digest mismatch for k.whl" in message
+    assert f"expected sha256: {digest(b'wheel')}" in message
+    assert f"actual sha256:   {actual}" in message
+    assert "  k/__init__.py,sha256=abc,12" in message
+
+
+def test_non_wheel_mismatch_reports_digests_without_record(staged):
+    artifacts, manifest, _ = staged
+    (artifacts / "mb").write_bytes(b"tampered")
+    with pytest.raises(ikb.BindingError) as caught:
+        ikb.verify(artifacts, "linux-aarch64", manifest)
+    message = str(caught.value)
+    assert "digest mismatch for mb" in message and digest(b"tampered") in message
+    assert "RECORD" not in message
+
+
+def test_corrupt_and_recordless_wheels_still_report(staged):
+    artifacts, manifest, _ = staged
+    (artifacts / "k.whl").write_bytes(b"not a zip")
+    with pytest.raises(ikb.BindingError, match=r"RECORD: unreadable"):
+        ikb.verify(artifacts, "linux-aarch64", manifest)
+    make_wheel(artifacts / "k.whl", {"k/__init__.py": "x"})
+    with pytest.raises(ikb.BindingError, match=r"RECORD: not present"):
+        ikb.verify(artifacts, "linux-aarch64", manifest)
+
+
+def test_cli_prints_the_report_and_installs_nothing(staged, tmp_path, monkeypatch, capsys):
+    artifacts, manifest, path = staged
+    make_wheel(artifacts / "k.whl", {"k-1.dist-info/RECORD": "a,sha256=1,2\n"})
+    monkeypatch.setattr(ikb, "load_manifest", lambda: manifest)
+    ran = []
+    monkeypatch.setattr(ikb.subprocess, "run", lambda *a, **k: ran.append(a))
+    code = ikb.main(["install", "--artifacts", str(artifacts), "--platform", "linux-aarch64", "--bin-dir", str(tmp_path / "bin")])
+    err = capsys.readouterr().err
+    assert code == 1 and ran == [] and not (tmp_path / "bin").exists()
+    assert "expected sha256" in err and "a,sha256=1,2" in err
