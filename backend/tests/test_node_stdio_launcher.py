@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import sys
 import urllib.error
 import urllib.request
 from types import SimpleNamespace as NS
@@ -205,6 +206,7 @@ def test_the_listing_names_the_refusal_for_a_stdio_connection_this_node_would_ru
 
 
 async def test_in_production_the_node_refuses_a_stdio_proposal_with_the_sandbox_code(tmp_path, monkeypatch):
+    monkeypatch.setattr("orchestrator.node_stdio_exec.default_backend", lambda directory: None)
     async with dev_node(tmp_path, monkeypatch) as mesh:
         assert mesh.node.stdio_refusal == SANDBOX_UNAVAILABLE
         with pytest.raises(ak.KernelError) as refused:
@@ -241,3 +243,12 @@ async def test_stopping_the_node_stops_every_running_child(tmp_path, monkeypatch
         mesh.node._launcher.start(spec(ident="held"))
         assert mesh.node.stdio_refusal is None and sandbox.children[0].poll() is None
     assert sandbox.children[0].poll() is not None
+
+
+def test_a_child_that_exits_during_startup_fails_the_start():
+    sandbox = FixtureSandbox(argv=[sys.executable, "-c", "raise SystemExit(3)"])
+    launcher = NodeStdioLauncher(sandbox)
+    with pytest.raises(LaunchRefused) as raised:
+        launcher.start(spec())
+    assert raised.value.code == SANDBOX_UNAVAILABLE
+    assert launcher.running() == ()

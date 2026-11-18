@@ -1,4 +1,4 @@
-"""The node's real sandbox backend for local stdio MCP servers: it fills the launch policy's workspace, loads and selects it through astral_exec, writes the credential environment to a private file and starts the server through the run.py launch command with its own stdio piped back.
+"""The node's real sandbox backend for local stdio MCP servers: it fills the launch policy's workspace, loads and selects it through astral_exec, hands the credential environment to run.py over an inherited pipe and starts the server through the run.py launch command with its own stdio piped back.
 node_stdio_launcher.py drives it through the SandboxBackend protocol, and node_mesh.py and institution_meshes.py install it only when this machine can confine a tool.
 """
 
@@ -12,6 +12,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any, BinaryIO, Dict, List, Optional
 
@@ -27,6 +28,14 @@ LAUNCHER_ENV = {"LC_ALL": "C.UTF-8"}
 
 class ExecRefusal(OSError):
     pass
+
+
+def _feed(descriptor: int, body: bytes) -> None:
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(body)
+    except OSError:
+        pass
 
 
 def _canonical(path: str, platform: str) -> str:
@@ -103,26 +112,33 @@ class ExecSandbox:
             if isinstance(chosen, Refusal):
                 raise ExecRefusal(chosen.code)
             policy_file = os.path.join(control, "policy.json")
-            env_file = os.path.join(control, "env.json")
-            for path, body in ((policy_file, policy.canonical_bytes()), (env_file, json.dumps(dict(spec.env)).encode())):
-                descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-                with os.fdopen(descriptor, "wb") as handle:
-                    handle.write(body)
+            descriptor = os.open(policy_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(policy.canonical_bytes())
+            env_read, env_write = os.pipe()
             argv = [
                 sys.executable, "-I", "-B", str(RUN_PY), "launch",
                 "--policy", policy_file, "--data-dir", self._data_dir,
-                "--home", _canonical(self._home, platform), "--env-file", env_file,
+                "--home", _canonical(self._home, platform), "--env-file", f"/dev/fd/{env_read}",
                 "--", spec.command, *spec.args,
             ]
-            process = subprocess.Popen(
-                argv,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                env=dict(LAUNCHER_ENV),
-                cwd=control,
-                start_new_session=True,
-            )
+            try:
+                process = subprocess.Popen(
+                    argv,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    env=dict(LAUNCHER_ENV),
+                    cwd=control,
+                    start_new_session=True,
+                    pass_fds=(env_read,),
+                )
+            except BaseException:
+                os.close(env_write)
+                raise
+            finally:
+                os.close(env_read)
+            threading.Thread(target=_feed, args=(env_write, json.dumps(dict(spec.env)).encode()), daemon=True).start()
         except (ExecRefused, PolicyError) as exc:
             for path in scratch:
                 shutil.rmtree(path, ignore_errors=True)

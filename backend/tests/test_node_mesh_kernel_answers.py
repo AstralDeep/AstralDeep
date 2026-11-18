@@ -279,3 +279,18 @@ async def test_false_request_interrupt_acknowledgement_retries_without_restartin
     await asyncio.wait_for(state.bridge._answer(state.host.request), 5)
     assert len(attempts) == 2 and state.refusals == []
     state.native.assert_awaited_once()
+
+
+@pytest.mark.parametrize("code", ["phi.group_not_ready", "phi.device_excluded"])
+@pytest.mark.parametrize("started", ["CLAIMED", "RUNNING"])
+async def test_a_phi_write_failure_mid_turn_ends_the_turn_with_the_phi_code(kernel_host, code, started):
+    state = kernel_host
+
+    async def failing(_request):
+        state.host.request.state = SimpleNamespace(name=started)
+        raise fake.KernelError.State("engine.sink", f"journal write refused: {code}")
+
+    state.native.side_effect = failing
+    await state.bridge._answer(state.host.request)
+    assert state.refusals == [("request-1", code)]
+    assert state.host.request.state.name == "REFUSED"

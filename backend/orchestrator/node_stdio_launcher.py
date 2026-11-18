@@ -10,6 +10,7 @@ import json
 import logging
 import secrets
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any, BinaryIO, Dict, Mapping, Optional, Protocol, Sequence, Tuple
 
@@ -23,6 +24,7 @@ MAX_REQUEST_BYTES = 1 << 20
 MAX_RESPONSE_BYTES = 16 << 20
 REPLY_SECONDS = 60.0
 STOP_SECONDS = 5.0
+STARTUP_SECONDS = 0.5
 
 
 class LaunchRefused(Exception):
@@ -185,6 +187,13 @@ class NodeStdioLauncher:
         except Exception as exc:
             logger.warning("node_stdio_spawn_failed id=%s kind=%s", spec.id, type(exc).__name__)
             raise LaunchRefused(SANDBOX_UNAVAILABLE) from exc
+        deadline = time.monotonic() + STARTUP_SECONDS
+        while process.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.02)
+        if process.poll() is not None:
+            process.stop()
+            logger.warning("node_stdio_exited_at_start id=%s", spec.id)
+            raise LaunchRefused(SANDBOX_UNAVAILABLE)
         bearer = secrets.token_urlsafe(32)
         bridge = _Bridge(process, bearer)
         try:
