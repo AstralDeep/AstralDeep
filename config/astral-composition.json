@@ -11,7 +11,7 @@
     "astral-kernel": {
       "repository": "https://github.com/AstralDeep/AstralKernel.git",
       "path": "components/AstralKernel",
-      "commit": "52402c0bdfd9689ee500d0ccab9c7f98de18d4e2",
+      "commit": "eb9821f41e8d84b642110c098a12dcb54eced665",
       "contract_version": "0.1.0"
     },
     "astral-primitives": {
