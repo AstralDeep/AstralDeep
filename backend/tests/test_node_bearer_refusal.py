@@ -287,9 +287,7 @@ async def test_every_token_choke_point_refuses_on_the_node(node):
     assert await Orchestrator.validate_token(node.orch, node.token) is None
     assert await A2ASecurityValidator(require_first_party_user=True).validate_token(node.token) is None
     assert await A2ASecurityValidator().validate_token(node.token) is None
-    assert await a2a.authenticate_a2a_request(
-        A2ASecurityValidator(require_first_party_user=True), {"authorization": f"Bearer {node.token}"},
-        resolve_framework_bearer=lambda _token: pytest.fail("framework credentials are a bearer")) is None
+    assert not hasattr(a2a, "authenticate_a2a_request")
     assert ni.bound_owner() is None
     _untouched(node)
 

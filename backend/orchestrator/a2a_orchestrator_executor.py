@@ -116,46 +116,6 @@ def bearer_from_headers(headers) -> str:
     return token.strip()
 
 
-def _a2a_framework_resolver(orchestrator):
-    try:
-        from shared.feature_flags import flags
-
-        if not flags.is_enabled("framework_credentials"):
-            return None
-    except Exception:
-        return None
-    service = getattr(orchestrator, "framework_credentials", None)
-    if service is None:
-        return None
-    return service.resolve_bearer
-
-
-async def authenticate_a2a_request(
-    validator: A2ASecurityValidator, headers, *, resolve_framework_bearer=None,
-) -> Optional[A2APrincipal]:
-    if node_identity.is_personal():
-        return None
-    token = bearer_from_headers(headers)
-    if not token:
-        return None
-    if resolve_framework_bearer is not None and token.startswith("afk_"):
-        caller = await asyncio.to_thread(resolve_framework_bearer, token)
-        if caller is None:
-            return None
-        claims = {
-            "sub": caller.owner_id, "iss": "astral-framework", "aud": "astral-a2a",
-            "realm_access": {"roles": ["user"]},
-            "_framework_credential_id": caller.credential_id,
-            "_framework_scopes": sorted(caller.scopes),
-            "_framework_caller": caller,
-        }
-        return A2APrincipal(claims, token)
-    claims = await validator.validate_token(token)
-    if not isinstance(claims, dict) or not isinstance(claims.get("sub"), str):
-        return None
-    return A2APrincipal(claims, token)
-
-
 class OrchestratorA2AExecutor(AgentExecutor):
     def __init__(self, orchestrator):
         self.orchestrator = orchestrator
@@ -542,28 +502,16 @@ def setup_orchestrator_a2a(app, orchestrator):
         task_store=InMemoryTaskStore(owner_resolver=a2a_task_owner),
         agent_card=initial_card,
     )
-    validator = executor.security_validator
-
     async def refresh_card(_card):
         return await asyncio.to_thread(build_orchestrator_a2a_card, orchestrator)
 
     def _gated(endpoint):
         async def gated_endpoint(request):
-            if node_identity.is_personal():
-                try:
-                    principal = await _caller_principal(request)
-                except caller_tickets.CallerRefused as exc:
-                    return _unauthenticated_response(
-                        exc.code, status=exc.status, error=exc.code, reason=caller_tickets.reason_for(exc.code))
-                request.scope[PRINCIPAL_SCOPE_KEY] = principal
-                return await endpoint(request)
-            # Must run before the SDK parses a method, or tasks/* bypass this
-            principal = await authenticate_a2a_request(
-                validator, request.headers,
-                resolve_framework_bearer=_a2a_framework_resolver(orchestrator),
-            )
-            if principal is None:
-                return _unauthenticated_response()
+            try:
+                principal = await _caller_principal(request)
+            except caller_tickets.CallerRefused as exc:
+                return _unauthenticated_response(
+                    exc.code, status=exc.status, error=exc.code, reason=caller_tickets.reason_for(exc.code))
             request.scope[PRINCIPAL_SCOPE_KEY] = principal
             return await endpoint(request)
 

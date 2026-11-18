@@ -24,7 +24,6 @@ from orchestrator import caller_tickets
 from orchestrator.mcp_authz import (
     authorize_mcp_caller,
     MCPAuthError,
-    authorize_mcp_request,
     canonical_public_base_url,
     challenge_header,
     protected_resource_metadata,
@@ -579,20 +578,6 @@ class MCPNoCredentialsCORSMiddleware:
         await self.app(scope, receive, send_without_credentials)
 
 
-def _framework_bearer_resolver(orchestrator: Any):
-    try:
-        from shared.feature_flags import flags
-
-        if not flags.is_enabled("framework_credentials"):
-            return None
-    except Exception:
-        return None
-    service = getattr(orchestrator, "framework_credentials", None)
-    if service is None:
-        return None
-    return service.resolve_bearer
-
-
 async def _dispatch_work_tool(orchestrator: Any, claims: dict, tool_name: str, arguments: Any):
     from shared.protocol import MCPResponse
 
@@ -739,20 +724,11 @@ def create_mcp_router(orchestrator: Any, *, public_base_url: str) -> APIRouter:
 
             required_scopes = _METHOD_SCOPE.get(method, ("mcp:discover",))
             try:
-                if node_identity.is_personal():
-                    # why: _validate_headers_and_metadata already required a tools/call name here
-                    claims = await authorize_mcp_caller(
-                        request, body, method=method, required_scopes=required_scopes,
-                        tool=payload.get("params", {}).get("name"),
-                    )
-                else:
-                    claims = await authorize_mcp_request(
-                        headers=request.headers,
-                        query_params=request.query_params,
-                        cookies=request.cookies,
-                        required_scopes=required_scopes,
-                        resolve_framework_bearer=_framework_bearer_resolver(orchestrator),
-                    )
+                # why: _validate_headers_and_metadata already required a tools/call name here
+                claims = await authorize_mcp_caller(
+                    request, body, method=method, required_scopes=required_scopes,
+                    tool=payload.get("params", {}).get("name"),
+                )
             except MCPAuthError as exc:
                 result_code = exc.error.replace(".", "_")
                 challenge = challenge_header(
