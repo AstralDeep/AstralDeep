@@ -14,7 +14,6 @@ from persistent_agents.research_episode import run_research_episode
 from persistent_agents.tests.test_dispatch_integration import context
 from shared.feature_flags import flags
 from shared.protocol import MCPResponse
-from tests.test_chain_authority import _mta
 from tests.test_chain_hop import _parent, _register_parent, _run_hop
 from tests.test_chain_hop import orch as shared_hop_host
 
@@ -97,18 +96,6 @@ async def test_shutdown_awaits_assignment_runner_before_store_and_plane_shutdown
         await hub._close_started_services_once()
     assert events[:2] == ["runner_stopped", "store_closed"]
     assert "unbound" in events
-
-
-@pytest.mark.asyncio
-async def test_assignment_never_uses_unrelated_latest_offline_grant():
-    authority, _, grants = _mta(latest="unrelated")
-    denied = await authority.derive(user_id="u1", agent_id=None, consented_scopes=["tools:read"],
-                                    grant_id=None, turn_class="persistent_assignment")
-    assert denied.reason == "missing_consent"
-    grants.latest_valid_for.assert_not_called()
-    admitted = await authority.derive(user_id="u1", agent_id="a1", consented_scopes=["tools:read"],
-                                      grant_id="g1", turn_class="persistent_assignment")
-    assert admitted.principal == "machine:persistent_assignment"
 
 
 @pytest.mark.asyncio

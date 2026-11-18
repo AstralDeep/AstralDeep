@@ -5,7 +5,6 @@ scoping, revocation fencing, and the async facade keeping DB work off the event 
 
 from __future__ import annotations
 
-import asyncio
 from contextlib import contextmanager
 from dataclasses import replace
 from uuid import uuid4
@@ -15,7 +14,7 @@ from cryptography.fernet import Fernet
 
 from astralplane.repositories.history import SessionRecord
 from astralplane.repositories.revocations import RevocationQueueRecord
-from orchestrator.session_store import SessionStoreError, WebSessionStore
+from orchestrator.session_store import WebSessionStore
 
 
 class _Context:
@@ -172,40 +171,6 @@ def _store(monkeypatch):
     return store, sessions, revocations
 
 
-def test_session_lifecycle_uses_typed_plane_contracts(monkeypatch) -> None:
-    store, sessions, _revocations = _store(monkeypatch)
-
-    created = store.create(
-        "sid-a",
-        user_id="alice",
-        access_token="access-a",
-        refresh_token="refresh-a",
-        hard_max_seconds=3600,
-    )
-    durable = sessions.records["sid-a"]
-    assert durable.access_token_ciphertext != "access-a"
-    assert store.get("sid-a") == created
-    assert store.latest_refresh_token_for("alice") == "refresh-a"
-
-    anchor = created["interactive_anchor"]
-    store.update_tokens(
-        "sid-a",
-        access_token="access-b",
-        refresh_token="refresh-b",
-    )
-    refreshed = store.get("sid-a")
-    assert refreshed is not None
-    assert refreshed["access_token"] == "access-b"
-    assert refreshed["interactive_anchor"] == anchor
-    assert refreshed["last_refresh_at"] > created["last_refresh_at"]
-
-    store.mark_resumed("sid-a")
-    store.mark_resumed("sid-a")
-    assert store.get("sid-a")["resumed"] is True
-    assert store.delete("sid-a")["refresh_token"] == "refresh-b"
-    assert store.delete("sid-a") is None
-
-
 def test_owner_and_expiry_operations_remain_scoped(monkeypatch) -> None:
     store, sessions, _revocations = _store(monkeypatch)
     store.create(
@@ -237,52 +202,6 @@ def test_owner_and_expiry_operations_remain_scoped(monkeypatch) -> None:
     assert store.get("sid-c") is None
     assert store.pop_death_reason("sid-c") == "hard_cap"
     assert store.purge_expired() == 0
-
-
-def test_revocation_mutations_reuse_owner_and_attempt_fences(monkeypatch) -> None:
-    store, _sessions, revocations = _store(monkeypatch)
-    store.enqueue_revocation("alice", "refresh-a", client_id="web")
-    store.enqueue_revocation("alice", "")
-
-    pending = store.pending_revocations()
-    assert len(pending) == 1
-    assert pending[0]["refresh_token"] == "refresh-a"
-    assert revocations.records[1].refresh_token_ciphertext != "refresh-a"
-
-    store.bump_revocation_attempt(1)
-    assert store.pending_revocations()[0]["attempts"] == 1
-    store.resolve_revocation(1)
-    assert store.pending_revocations() == []
-    with pytest.raises(SessionStoreError, match="owner fence"):
-        store.resolve_revocation(1)
-
-
-def test_async_facade_keeps_database_work_off_event_loop(monkeypatch) -> None:
-    store, _sessions, _revocations = _store(monkeypatch)
-
-    async def exercise() -> None:
-        await store.acreate(
-            "sid-async",
-            user_id="alice",
-            access_token="a",
-            refresh_token="r",
-            hard_max_seconds=3600,
-        )
-        assert (await store.aget("sid-async"))["user_id"] == "alice"
-        await store.aupdate_tokens(
-            "sid-async",
-            access_token="b",
-            refresh_token="rr",
-        )
-        await store.amark_resumed("sid-async")
-        await store.aenqueue_revocation("alice", "rr", "web")
-        item = (await store.apending_revocations())[0]
-        await store.abump_revocation_attempt(item["id"])
-        await store.aresolve_revocation(item["id"])
-        assert await store.adelete_for_user("alice") == 1
-        assert await store.apurge_expired() == 0
-
-    asyncio.run(exercise())
 
 
 def test_store_requires_runtime_or_explicit_repository_contexts(monkeypatch) -> None:

@@ -7,6 +7,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import secrets
 import time
 import uuid
 from dataclasses import asdict, dataclass
@@ -26,7 +27,8 @@ from orchestrator.plane_repository_context import (
     PlaneRepositoryContext,
     repository_from,
 )
-from orchestrator.web_auth import _secret
+
+_CURSOR_KEY = secrets.token_bytes(32)
 
 
 _PROJECT_CURSOR_MAX_BYTES = 4096
@@ -217,7 +219,7 @@ class ProjectService:
             ):
                 raise ValueError
             payload = decode_signed_payload(
-                cursor, _secret(), expected_type="project_page"
+                cursor, _CURSOR_KEY, expected_type="project_page"
             )
             if payload.get("scope") != _cursor_scope(owner_id, scope):
                 raise ValueError
@@ -263,7 +265,7 @@ class ProjectService:
                 "scope": _cursor_scope(owner_id, scope),
                 "cursor": ordering,
             },
-            _secret(),
+            _CURSOR_KEY,
         )
         if len(token) > _PROJECT_CURSOR_MAX_BYTES:
             raise ProjectError("invalid_project_cursor")

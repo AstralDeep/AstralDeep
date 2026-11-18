@@ -359,7 +359,6 @@ class _ConnectionOperation:
     preselected: bool = False
     auth_principal: str | None = None
     auth_claims: dict[str, Any] = field(default_factory=dict, repr=False)
-    subject_auth_claims: dict[str, Any] = field(default_factory=dict, repr=False)
     runtime_websocket: Any | None = field(default=None, repr=False)
     committed_operation: OperationRecord | None = None
     subscribers: dict[int, tuple[Any, _ConnectionIngressFrame]] = field(
@@ -1030,6 +1029,9 @@ class PreparedDispatch(NamedTuple):
     hop_correlation_id: Optional[str] = None
 
 
+_MEMBER_CLAIM = "astral_mesh"
+
+
 class GateRefusal(NamedTuple):
     response: MCPResponse
     render_components: Optional[List[Dict[str, Any]]] = None
@@ -1039,28 +1041,11 @@ class GateRefusal(NamedTuple):
 
 
 def _unbind_orchestrator_process_consumers(orchestrator) -> None:
-    from orchestrator.offline_grant import unbind_offline_grant_store
-    from orchestrator.web_auth import (
-        unbind_credential_manager,
-        unbind_session_store,
-    )
-
     errors: list[BaseException] = []
     boundary = getattr(orchestrator, "human_request_boundary", None)
     if boundary is not None:
         try:
             boundary.close()
-        except BaseException as exc:
-            errors.append(exc)
-    for callback, attribute in (
-        (unbind_offline_grant_store, "offline_grants"),
-        (unbind_session_store, "web_sessions"),
-        (unbind_credential_manager, "credential_manager"),
-    ):
-        if not hasattr(orchestrator, attribute):
-            continue
-        try:
-            callback(getattr(orchestrator, attribute))
         except BaseException as exc:
             errors.append(exc)
     if len(errors) == 1:
@@ -1433,25 +1418,12 @@ class Orchestrator:
             plane_runtime=self.runtime_composition.plane.runtime,
             plane_repositories=self.runtime_composition.plane.repositories,
         )
-        from orchestrator.boot_posture import WebSessionStore
-        from orchestrator.web_auth import bind_credential_manager, bind_session_store
+        from orchestrator.session_store import WebSessionStore
 
-        bind_credential_manager(self.credential_manager)
         self.web_sessions = WebSessionStore(
             plane_runtime=self.runtime_composition.plane.runtime,
             plane_repositories=self.runtime_composition.plane.repositories,
         )
-        bind_session_store(self.web_sessions)
-        from orchestrator.offline_grant import (
-            OfflineGrantStore,
-            bind_offline_grant_store,
-        )
-
-        self.offline_grants = OfflineGrantStore(
-            plane_runtime=self.runtime_composition.plane.runtime,
-            plane_repositories=self.runtime_composition.plane.repositories,
-        )
-        bind_offline_grant_store(self.offline_grants)
         from orchestrator.artifact_share import ShareGrantStore, set_share_store
 
         set_share_store(
@@ -6351,7 +6323,6 @@ class Orchestrator:
             return None
         if frame_type in {
             "register_ui",
-            "refresh_ui_auth",
             "close",
             "ping",
             "pong",
@@ -8141,8 +8112,6 @@ class Orchestrator:
                     )
                     or {}
                 )
-                from orchestrator.ui_auth_renewal import subject_auth_snapshot
-
                 work = _ConnectionOperation(
                     frame=frame,
                     owner=owner,
@@ -8157,7 +8126,6 @@ class Orchestrator:
                         if frame.operation_kind == "voice_chat_message"
                         else {}
                     ),
-                    subject_auth_claims=subject_auth_snapshot(captured_claims),
                 )
                 work.subscribers[id(context)] = (context, frame)
                 context.operations[result.operation_id] = work
@@ -8186,7 +8154,6 @@ class Orchestrator:
                         if registry.get(result.operation_id) is work:
                             registry.pop(result.operation_id, None)
                         work.auth_claims.clear()
-                        work.subject_auth_claims.clear()
                         frame.close_work_read()
                         self._scrub_terminal_voice_operation(context, work)
                     continue
@@ -8215,7 +8182,6 @@ class Orchestrator:
                     if registry.get(result.operation_id) is work:
                         registry.pop(result.operation_id, None)
                     work.auth_claims.clear()
-                    work.subject_auth_claims.clear()
                     frame.close_work_read()
                     await self._send_connection_admission_refusal(
                         context,
@@ -8233,7 +8199,6 @@ class Orchestrator:
                     if registry.get(result.operation_id) is work:
                         registry.pop(result.operation_id, None)
                     work.auth_claims.clear()
-                    work.subject_auth_claims.clear()
                     continue
                 if (
                     context.closing
@@ -8250,7 +8215,6 @@ class Orchestrator:
                         context, work, terminal
                     )
                     work.auth_claims.clear()
-                    work.subject_auth_claims.clear()
                     await self._notify_interactive_capacity()
                     continue
                 scheduled.append((work, projection))
@@ -8317,7 +8281,6 @@ class Orchestrator:
                     # A pre-start cancel skips finally; release the lane here too
                     completion = accepted_work.lane_complete
                     accepted_work.auth_claims.clear()
-                    accepted_work.subject_auth_claims.clear()
                     accepted_work.frame.close_work_read()
                     if completion is not None:
                         context.pending_reads.discard(completion)
@@ -9151,18 +9114,6 @@ class Orchestrator:
                         )
                         work.runtime_websocket = runtime_websocket
                         runtime_session = dict(work.auth_claims)
-                        from orchestrator.ui_auth_renewal import (
-                            capture_subject_token_resolver,
-                        )
-                        runtime_session["_subject_token_resolver"] = (
-                            capture_subject_token_resolver(
-                                self.ui_sessions,
-                                getattr(self, "_connection_contexts", {}),
-                                context.websocket,
-                                work.owner.owner_user_id or "legacy",
-                                _CONNECTION_OPERATION_CONTEXT.get(),
-                            )
-                        )
                         runtime_session.pop("_raw_token", None)
                         self.ui_sessions[runtime_websocket] = runtime_session
                         self.rote._profiles[runtime_websocket] = (
@@ -9181,7 +9132,6 @@ class Orchestrator:
                     runtime_websocket.scrub()
                     work.runtime_websocket = None
                 work.auth_claims.clear()
-                work.subject_auth_claims.clear()
                 if work.frame.human_request is not None:
                     work.frame.human_request.close()
                 _CONNECTION_OPERATION_CONTEXT.reset(token)
@@ -9350,7 +9300,6 @@ class Orchestrator:
                 runtime_websocket.scrub()
                 work.runtime_websocket = None
             work.auth_claims.clear()
-            work.subject_auth_claims.clear()
             work.frame.close_work_read()
             if work.frame.parsed.get("type") == "voice_local_final":
                 self._scrub_terminal_voice_operation(context, work)
@@ -9439,26 +9388,7 @@ class Orchestrator:
                 and context.work_registrations_pending == 0
                 and getattr(self, "_connection_contexts", {}).get(id(context.websocket)) is context
                 and self.ui_sessions.get(context.websocket) is ready[0]):
-            session = self.ui_sessions.get(context.websocket) or {}
-            session["_auth_context_generation"] = str(context.connection_generation)
             await self._safe_send(context.websocket, ready[1])
-            renewal_ready = bool(
-                session.get("_auth_refresh_enabled") is True
-                and str(context.connection_generation)
-                == session.get("_auth_connection_generation")
-            )
-            logger.info(
-                "UI auth renewal registration readiness enabled=%s",
-                renewal_ready,
-            )
-            if renewal_ready:
-                await self._safe_send(
-                    context.websocket,
-                    json.dumps({
-                        "type": "ui_auth_refresh_ready",
-                        "connection_generation": str(context.connection_generation),
-                    }),
-                )
 
     async def _route_ui_frame(
         self,
@@ -9593,13 +9523,6 @@ class Orchestrator:
                 reason="client_close",
             )
             return False
-        if control == "refresh_ui_auth":
-            self._track_connection_task(
-                context,
-                self._run_ui_control(context, raw),
-                name=f"connection-auth-refresh-{context.connection_scope_id}",
-            )
-            return True
         if control == "ping":
             await self._safe_send(
                 context.websocket,
@@ -10597,9 +10520,6 @@ class Orchestrator:
         raw_frame: dict[str, Any] | None = None
         try:
             raw_frame = self._parsed_ui_frame(message)
-            if raw_frame is not None and raw_frame.get("type") == "refresh_ui_auth":
-                await self._handle_ui_auth_refresh(websocket, message)
-                return
             if (
                 raw_frame is not None
                 and (
@@ -10690,13 +10610,11 @@ class Orchestrator:
 
                 if user_data:
                     logger.info(f"UI registered: {user_data.get('preferred_username', 'unknown')}")
-                    from orchestrator.ui_auth_renewal import bind_registered_session
-                    bind_registered_session(
-                        user_data,
-                        token=token,
-                        capabilities=getattr(msg, "capabilities", None),
-                        connection_generation=msg.connection_generation,
-                    )
+                    offered = getattr(msg, "capabilities", None)
+                    user_data["_raw_token"] = token
+                    user_data["_client_capabilities"] = [
+                        value for value in offered if isinstance(value, str)
+                    ] if isinstance(offered, (list, tuple, set)) else []
                     previous_owner = (self.ui_sessions.get(websocket) or {}).get("sub")
                     if previous_owner != user_data.get("sub"):
                         self.rote.cleanup(websocket)
@@ -13676,8 +13594,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                                        consented_scopes: Optional[List[str]] = None,
                                        grant_id: Optional[str] = None):
         from orchestrator.chain_authority import MachineTurnAuthority
-        grants = self.offline_grants
-        return await MachineTurnAuthority(self, grants).derive(
+        return await MachineTurnAuthority(self).derive(
             user_id=user_id, agent_id=agent_id,
             consented_scopes=consented_scopes, grant_id=grant_id,
             turn_class=turn_class)
@@ -14960,7 +14877,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             current_socket_human_read, retire_socket_human_read,
         )
         from orchestrator.turn_guidance_authority import (
-            bind_foreground_guidance, bind_machine_guidance, bind_turn_selection,
+            bind_foreground_guidance, bind_turn_selection,
             bind_voice_guidance, capture_turn_guidance_from_human, current_turn_guidance,
             use_turn_guidance,
         )
@@ -14997,11 +14914,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     expected_orchestrator=self, websocket=websocket, voice_dispatch=voice_dispatch,
                     operation_context=context, chat_id=chat_id)
             elif getattr(websocket, "_guidance_machine_authority", None) is not None:
-                scheduled = getattr(websocket, "_guidance_scheduled_attempt", None) or (None, None)
-                binding = await bind_machine_guidance(expected_orchestrator=self,
-                    websocket=websocket, authority=websocket._guidance_machine_authority,
-                    chat_id=chat_id, scheduled_attempt=scheduled[0], scheduled_store=scheduled[1])
-                origin = binding.origin
+                raise AssignmentError("skill_authentication_required", 401)
             else:
                 # Passed explicitly: the ContextVar may already be reset
                 caller = await current_socket_human_read(
@@ -19603,20 +19516,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 )
                 return GateRefusal(response=MCPResponse(error={
                     "code": exc.code, "message": exc.code, "retryable": False}))
-        from orchestrator import mesh_admission
-        if mesh_admission.MEMBER_CLAIM in _session_claims or (
-                isinstance(parent_token, dict) and mesh_admission.MEMBER_CLAIM in parent_token):
-            try:
-                if (mesh_admission.MEMBER_CLAIM not in _session_claims
-                        or _session_claims.get("sub") != user_id):
-                    raise mesh_admission.MeshAdmissionError()
-                scope = self.tool_permissions.get_tool_scope(agent_id, tool_name)
-                await asyncio.to_thread(mesh_admission.assert_dispatch_current, self,
-                                        _session_claims, agent_id, scope)
-            except Exception:
-                return GateRefusal(response=MCPResponse(error={
-                    "code": mesh_admission.MeshAdmissionError.code,
-                    "message": "Current member authority is unavailable", "retryable": False}))
+        if _MEMBER_CLAIM in _session_claims or (
+                isinstance(parent_token, dict) and _MEMBER_CLAIM in parent_token):
+            return GateRefusal(response=MCPResponse(error={
+                "code": "mesh.member_authority_unavailable",
+                "message": "Current member authority is unavailable", "retryable": False}))
         from orchestrator.chain_authority import machine_scope_ceiling, machine_tool_admitted
 
         machine_scopes = machine_scope_ceiling(_session_claims)
@@ -20035,7 +19939,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             elif not delegation_token and (
                 self._delegation_required()
                 or machine_scopes is not None
-                or mesh_admission.MEMBER_CLAIM in _session_claims
                 or (self.ui_sessions.get(websocket, {}) or {}).get("_delegation_fault")
                 == "session_auth_unavailable"
             ):
@@ -20611,11 +20514,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             parent_payload = _dg.decode_token_payload(token) if token else None
             if parent_payload is not None:
                 parent_payload = _dg.normalize_hop_parent(parent_payload, agent_id)
-                from orchestrator.mesh_admission import MEMBER_CLAIM
-                claims = self.ui_sessions.get(ui_websocket, {})
-                if MEMBER_CLAIM in claims:
-                    parent_payload[MEMBER_CLAIM] = dict(claims[MEMBER_CLAIM])
-                    parent_payload["cnf"] = dict(claims["cnf"])
             self._dispatch_context[request_id] = {
                 "agent_id": agent_id,
                 "user_id": args.get("user_id") if isinstance(args, dict) else None,
@@ -21453,18 +21351,11 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     **({"effect_state": "not_started"} if not admitted or exc.effect_state == "not_started" else {})})
 
         async def project_bound_invoke(capabilities):
-            from orchestrator import mesh_admission
             from orchestrator import source_bound
             claims = self.ui_sessions.get(websocket, {}) if websocket is not None else {}
-            if mesh_admission.MEMBER_CLAIM in claims:
-                try:
-                    if claims.get("sub") != user_id:
-                        raise mesh_admission.MeshAdmissionError()
-                    await asyncio.to_thread(mesh_admission.assert_dispatch_current, self, claims,
-                                            agent_id, self.tool_permissions.get_tool_scope(agent_id, tool_name))
-                except mesh_admission.MeshAdmissionError:
-                    return MCPResponse(error={"code": mesh_admission.MeshAdmissionError.code,
-                        "message": "Current member authority is unavailable", "retryable": False})
+            if _MEMBER_CLAIM in claims:
+                return MCPResponse(error={"code": "mesh.member_authority_unavailable",
+                    "message": "Current member authority is unavailable", "retryable": False})
             try:
                 action = source_bound.registered_action(
                     self.tool_permissions.get_tool_scope_map(agent_id), agent_id, tool_name,
@@ -21625,23 +21516,16 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         return result
 
     async def _execute_with_retry(self, websocket, agent_id, tool_name, args, *positional, **kwargs):
-        from orchestrator.remote_effect_execution import select_effect, selected_effect
+        from orchestrator.remote_effect_execution import select_effect
         from orchestrator.work_reconciliation import ReconciliationRefused
         try:
-            selection = await select_effect(self, websocket, agent_id, tool_name,
+            await select_effect(self, websocket, agent_id, tool_name,
                 kwargs.pop("effect_original_arguments", args), kwargs.get("user_id"))
         except Exception as exc:
             code = exc.code if isinstance(exc, ReconciliationRefused) else "effect_current_authority_unavailable"
             return MCPResponse(error={"code": code, "message": code, "retryable": False})
-        with selected_effect(selection):
-            if selection is not None:
-                kwargs["max_retries"] = 1
-                positional = ()
-            result = await self._execute_with_retry_loop(
-                websocket, agent_id, tool_name, args, *positional, **kwargs)
-            if selection is not None and result is not None and result.error:
-                result.error["retryable"] = False
-            return result
+        return await self._execute_with_retry_loop(
+            websocket, agent_id, tool_name, args, *positional, **kwargs)
 
     async def _execute_with_retry_loop(
         self, websocket, agent_id: str, tool_name: str, args: Dict,
@@ -22610,90 +22494,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             return MCPResponse(request_id=request_id,
                                error={"message": str(e), "retryable": True})
 
-    async def _handle_ui_auth_refresh(self, websocket: Any, raw: str) -> None:
-        from orchestrator.ui_auth_renewal import parse_refresh_message
-
-        frame = parse_refresh_message(raw)
-        if frame is None:
-            return
-        renewal = self._ui_auth_renewal_service()
-        ack = await renewal.handle(websocket, frame)
-        if ack is None:
-            return
-        renewal.signal(websocket)
-        await self._safe_send(websocket, json.dumps(ack, separators=(",", ":")))
-        logger.info(
-            "UI authentication renewal outcome request=%s connection=%s accepted=%s",
-            ack["request_id"], ack["connection_generation"], ack["accepted"],
-        )
-        session = self.ui_sessions.get(websocket) or {}
-        exp = session.get("exp")
-        if (
-            ack.get("accepted") is False
-            and isinstance(exp, (int, float))
-            and not isinstance(exp, bool)
-            and exp <= time.time()
-            and session.get("_auth_refresh_required") is not True
-        ):
-            session["_auth_refresh_required"] = True
-            from shared.protocol import AuthRequired
-            await self._safe_send(websocket, AuthRequired(reason="expired").to_json())
-
-    def _ui_auth_renewal_service(self):
-        from orchestrator.ui_auth_renewal import UIAuthRenewal
-
-        renewal = getattr(self, "_ui_auth_renewal", None)
-        if renewal is None:
-            renewal = UIAuthRenewal(
-                self.ui_sessions,
-                getattr(self, "_connection_contexts", {}),
-                self.validate_token,
-            )
-            self._ui_auth_renewal = renewal
-        return renewal
-
-    async def _await_ui_auth_refresh(
-        self,
-        websocket: Any,
-        resolver: Any,
-        *,
-        rejected_token: str | None = None,
-    ) -> str | None:
-        if resolver is None:
-            return None
-        if not resolver.is_current():
-            return None
-        registration = getattr(resolver, "websocket", websocket)
-        session = self.ui_sessions.get(registration)
-        if not isinstance(session, dict):
-            return None
-        current_token = resolver.resolve()
-        if current_token is not None and (
-            rejected_token is None or current_token != rejected_token
-        ):
-            return current_token
-        if rejected_token is None:
-            session["_auth_refresh_required"] = True
-        elif (
-            session.get("_raw_token") == rejected_token
-            and session.get("_auth_refresh_required") is not True
-        ):
-            if not resolver.is_current():
-                return None
-            session["_auth_refresh_required"] = True
-        elif session.get("_auth_refresh_required") is not True:
-            return None
-        from shared.protocol import AuthRequired
-
-        reason = "expired" if (
-            isinstance(session.get("exp"), (int, float))
-            and not isinstance(session.get("exp"), bool)
-            and session["exp"] <= time.time()
-        ) else "invalid"
-        await self._safe_send(registration, AuthRequired(reason=reason).to_json())
-        renewal = self._ui_auth_renewal_service()
-        return await renewal.wait_for_token(resolver, timeout=30.0)
-
     def _delegation_required(self) -> bool:
         from shared import node_identity
 
@@ -22727,12 +22527,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             if not card:
                 return None
             session = self.ui_sessions.get(websocket, {})
-            from orchestrator import mesh_admission
-            if mesh_admission.MEMBER_CLAIM in session:
-                if session.get("sub") != user_id:
-                    return None
-                service = mesh_admission.admission_from_orchestrator(self)
-                return await asyncio.to_thread(service.delegation_token, session, agent_id)
+            if _MEMBER_CLAIM in session:
+                return None
             if session.get("_invocation_channel") == "mcp":
                 from orchestrator import agent_authority as _dg
                 try:
@@ -22762,168 +22558,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     session["_delegation_fault"] = "signing_key_unset"
                     logger.error("Node delegation refused: node signing key unavailable")
                     return None
-            raw_token = None
-            resolver = None
-            resolver_capture_reason = None
-            active_operation_context = _CONNECTION_OPERATION_CONTEXT.get()
-            resolver_required = bool(
-                session.get("_auth_refresh_enabled") is True
-                or active_operation_context is not None
-            )
-            if resolver_required:
-                from orchestrator.ui_auth_renewal import (
-                    capture_subject_token_resolver_with_reason,
-                )
-                resolver = session.get("_subject_token_resolver")
-                if resolver is None:
-                    resolver, resolver_capture_reason = capture_subject_token_resolver_with_reason(
-                        self.ui_sessions,
-                        getattr(self, "_connection_contexts", {}),
-                        websocket,
-                        user_id,
-                        active_operation_context,
-                    )
-                if resolver is not None:
-                    raw_token = resolver.resolve()
-                if raw_token is None:
-                    raw_token = await self._await_ui_auth_refresh(websocket, resolver)
-            else:
-                raw_token = session.get("_raw_token")
-            if not raw_token:
-                if resolver_required:
-                    session["_delegation_fault"] = "session_auth_unavailable"
-                    reason = resolver_capture_reason
-                    if reason is None and resolver is not None:
-                        reason = resolver.unavailable_reason()
-                    logger.warning(
-                        "Delegation credential unavailable (reason=%s)",
-                        reason or "credential_missing",
-                    )
-                return None
-
-            from orchestrator.chain_authority import machine_scope_ceiling, machine_tool_admitted, machine_tool_listed
-
-            machine_scopes = machine_scope_ceiling(session)
-            if machine_scopes is not None and (
-                session.get("sub") != user_id
-                or session.get("_machine_authority_agent") not in (None, agent_id)
-            ):
-                return None
-
-            agent_flags = self.security_flags.get(agent_id, {})
-
-            def _scope_reads():
-                allowed = []
-                for skill in card.skills:
-                    if skill.id in agent_flags and agent_flags[skill.id].get("blocked"):
-                        continue
-                    if not self.tool_permissions.is_tool_allowed(user_id, agent_id, skill.id):
-                        continue
-                    if not machine_tool_admitted(self, session, agent_id, skill.id):
-                        continue
-                    if machine_scopes is not None and (
-                        self.tool_permissions.get_tool_scope(agent_id, skill.id)
-                        not in machine_scopes
-                    ):
-                        continue
-                    allowed.append(skill.id)
-                scopes = self.tool_permissions.get_enabled_scope_names(user_id, agent_id)
-                if machine_scopes is not None:
-                    scopes = [scope for scope in scopes if scope in machine_scopes]
-                return allowed, scopes
-
-            allowed_tools, enabled_scopes = await asyncio.to_thread(_scope_reads)
-
-            if machine_scopes is not None and (
-                not enabled_scopes or (machine_tool_listed(session) and not allowed_tools)
-            ):
-                return None
-
-            if resolver is not None:
-                raw_token = resolver.resolve()
-                if raw_token is None:
-                    raw_token = await self._await_ui_auth_refresh(websocket, resolver)
-                if raw_token is None:
-                    session["_delegation_fault"] = "session_auth_unavailable"
-                    return None
-
-            result = await self.delegation.exchange_token_for_agent(
-                raw_token, agent_id, allowed_tools, user_id, enabled_scopes
-            )
-            error_description = result.get("error_description", "")
-            invalid_subject = (
-                result.get("error") in {"invalid_token", "invalid_grant"}
-                or (
-                    isinstance(error_description, str)
-                    and "invalid token" in error_description.lower()
-                )
-            )
-            if invalid_subject:
-                from orchestrator.ui_auth_renewal import capture_subject_token_resolver
-
-                resolver = session.get("_subject_token_resolver")
-                if resolver is None:
-                    resolver = capture_subject_token_resolver(
-                        self.ui_sessions,
-                        getattr(self, "_connection_contexts", {}),
-                        websocket,
-                        user_id,
-                        _CONNECTION_OPERATION_CONTEXT.get(),
-                    )
-                refreshed = await self._await_ui_auth_refresh(
-                    websocket,
-                    resolver,
-                    rejected_token=raw_token,
-                )
-                if refreshed is not None:
-                    allowed_tools, enabled_scopes = await asyncio.to_thread(_scope_reads)
-                    if enabled_scopes:
-                        result = await self.delegation.exchange_token_for_agent(
-                            refreshed,
-                            agent_id,
-                            allowed_tools,
-                            user_id,
-                            enabled_scopes,
-                        )
-                    else:
-                        result = {
-                            "error": "no_enabled_scopes",
-                            "error_description": "no enabled tool scopes",
-                        }
-                else:
-                    session["_delegation_fault"] = "session_auth_unavailable"
-            result_description = result.get("error_description", "")
-            if "error" in result and (
-                result.get("error") in {"invalid_token", "invalid_grant"}
-                or (
-                    isinstance(result_description, str)
-                    and "invalid token" in result_description.lower()
-                )
-            ):
-                session["_delegation_fault"] = "session_auth_unavailable"
-            if "error" in result:
-                if result.get("error") == "no_enabled_scopes":
-                    logger.warning(
-                        "Delegation refused: user=%s has no enabled tool scopes for agent=%s",
-                        user_id, agent_id)
-                    return None
-                if not hasattr(self, "_delegation_failed_agents"):
-                    self._delegation_failed_agents = set()
-                if agent_id not in self._delegation_failed_agents:
-                    self._delegation_failed_agents.add(agent_id)
-                    logger.error(
-                        "RFC 8693 token exchange failing for agent=%s (logged once; "
-                        "see docs/keycloak_agent_delegation_setup.md): %s", agent_id, result)
-                else:
-                    logger.debug(f"Delegation token exchange failed for agent={agent_id}: {result}")
-                return None
-            access_token = result.get("access_token")
-            if access_token and resolver is not None and (
-                not resolver.is_current() or resolver.resolve() is None
-            ):
-                session["_delegation_fault"] = "session_auth_unavailable"
-                return None
-            return access_token
+            session["_delegation_fault"] = "session_auth_unavailable"
+            return None
         except Exception as e:
             logger.warning(f"Delegation token generation failed: {e}")
             return None
@@ -25726,14 +25362,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                         logger.debug("vws chat-rail fan failed", exc_info=True)
         return sent
 
-    async def _shell_token_for_request(self, request):
-        try:
-            from orchestrator.web_auth import session_token
-            return await asyncio.to_thread(session_token, request)
-        except Exception:
-            logger.debug("web_auth: session_token unavailable", exc_info=True)
-            return ""
-
     @staticmethod
     def _adapt_tool_schema_for_model(schema: dict) -> dict:
         if not isinstance(schema, dict):
@@ -26260,8 +25888,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
     def build_http_app(self) -> FastAPI:
         from fastapi import Depends
-        from orchestrator.auth import refuse_node_bearer, refuse_node_sign_in
-        from orchestrator.mesh_api import refuse_legacy_enrollment
+        from orchestrator.auth import refuse_node_bearer
         from orchestrator.models import WS_PROTOCOL_DOCS
 
         bearer_closed = [Depends(refuse_node_bearer)]
@@ -26379,17 +26006,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         _projection_static_dir = _projection_static_filesystem_root()
         _shell_resource = _projection_template_path("shell.html")
 
-        @app.get("/", response_class=_HTMLResponse, dependencies=[Depends(refuse_node_sign_in)])
+        @app.get("/", response_class=_HTMLResponse)
         async def serve_shell(request: Request):
-            try:
-                from orchestrator.web_auth import shell_gate
-                from fastapi.responses import RedirectResponse as _Redirect
-                gate = await asyncio.to_thread(shell_gate, request)
-                if gate:
-                    return _Redirect(gate, status_code=302)
-            except Exception:
-                logger.exception("web_auth: shell gate check failed — failing closed")
-                return _HTMLResponse("<h1>AstralDeep</h1><p>Sign-in unavailable.</p>", status_code=503)
             try:
                 shell = _shell_resource.read_text(encoding="utf-8")
                 from webrender.chrome.console_model import render_console_labels
@@ -26397,30 +26015,19 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             except Exception:
                 logger.exception("astralprojection: shell template missing")
                 return _HTMLResponse("<h1>AstralDeep</h1><p>UI shell unavailable.</p>", status_code=500)
-            token = ""
-            try:
-                token = await self._shell_token_for_request(request)
-            except Exception:
-                token = ""
             topbar = ""
             try:
                 from orchestrator.chrome_availability import projection_chrome_availability
-                from orchestrator.web_auth import session_roles
                 from webrender.chrome import render_topbar
                 topbar = render_topbar(
-                    roles=await asyncio.to_thread(session_roles, request),
+                    roles=[],
                     **projection_chrome_availability(self),
                 )
             except Exception:
                 logger.exception("chrome: topbar render failed — serving bare shell")
-            shell = shell.replace("%%ASTRAL_TOKEN%%", token or "")
+            shell = shell.replace("%%ASTRAL_TOKEN%%", "")
             from html import escape as _html_escape
-            identity = {"name": "Signed in", "role": "Member", "initials": "A"}
-            try:
-                from orchestrator.web_auth import session_identity
-                identity = await asyncio.to_thread(session_identity, request)
-            except Exception:
-                logger.debug("shell: session identity unavailable", exc_info=True)
+            identity = {"name": "Guest", "role": "Guest", "initials": "A"}
             for placeholder, key in (
                 ("%%ASTRAL_USER_NAME%%", "name"),
                 ("%%ASTRAL_USER_ROLE%%", "role"),
@@ -26428,12 +26035,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             ):
                 shell = shell.replace(placeholder, _html_escape(str(identity.get(key, ""))))
 
-            resumed_flag = "true"
-            try:
-                from orchestrator.web_auth import session_resumed_flag
-                resumed_flag = "true" if await asyncio.to_thread(session_resumed_flag, request) else "false"
-            except Exception:
-                logger.debug("session_resumed_flag failed", exc_info=True)
+            resumed_flag = "false"
             shell = shell.replace("%%ASTRAL_RESUMED%%", resumed_flag)
             accept_attr = ""
             try:
@@ -26443,15 +26045,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 logger.debug("attachment accept-list injection failed", exc_info=True)
             shell = shell.replace("%%ASTRAL_ACCEPT%%", accept_attr)
             landing_json = '{"scenarios":[],"categories":[],"agents":[]}'
-            try:
-                from orchestrator import web_landing
-                from orchestrator.web_auth import session_subject
-                _subject = await asyncio.to_thread(session_subject, request)
-                landing_json = web_landing.as_script_json(
-                    await web_landing.payload(self, _subject)
-                )
-            except Exception:
-                logger.debug("shell: landing payload unavailable", exc_info=True)
             shell = shell.replace("%%ASTRAL_LANDING%%", landing_json)
 
             shell = _apply_asset_versions(shell, _projection_static_dir)
@@ -26486,11 +26079,9 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
 
         from orchestrator.api import chat_router, component_router, agent_router, dashboard_router, draft_router, voice_router, task_router, async_task_router, user_router, chrome_router, export_router, share_router, operation_router
         from orchestrator.auth import auth_router
-        from orchestrator.mesh_api import mesh_router
         from orchestrator.push_api import push_router
         from orchestrator.mesh_push_api import mesh_push_router
         from orchestrator.notification_api import notification_router
-        from orchestrator.web_auth import web_auth_router
         from orchestrator.attachments.router import attachments_router
         from audit.api import audit_router
         from audit.middleware import AuditHTTPMiddleware
@@ -26514,7 +26105,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         from orchestrator.computer_policy_api import computer_policy_router
         from orchestrator.connection_guide import connection_router
         from orchestrator.a2a_publication_api import publication_router
-        from orchestrator.mesh_web import mesh_web_router
         from orchestrator.node_api import node_router
         from orchestrator.harness.selection_api import harness_router
         from orchestrator.terminal_api import terminal_router
@@ -26524,24 +26114,14 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             draft_router, dashboard_router, chrome_router, lets_router,
             computer_policy_router, connection_router,
         ]
-        if flags.is_enabled("remote_mcp"):
-            from orchestrator.remote_mcp_api import remote_mcp_router
-            bearer_routers.append(remote_mcp_router)
         bearer_routers += [notification_router, publication_router, export_router]
         for router in bearer_routers:
             app.include_router(router, dependencies=bearer_closed)
         app.include_router(share_router)
         app.include_router(auth_router)
-        app.include_router(mesh_router)
-        app.include_router(mesh_web_router, dependencies=[Depends(refuse_legacy_enrollment)])
         app.include_router(node_router)
         for router in (push_router, mesh_push_router, harness_router):
             app.include_router(router, dependencies=bearer_closed)
-        app.include_router(web_auth_router)
-        if flags.is_enabled("kiosk_login"):
-            from orchestrator.web_auth import kiosk_router
-            app.include_router(kiosk_router)
-            logger.info("Kiosk sign-in surface mounted at /kiosk")
         for router in (
             attachments_router, voice_router, task_router, async_task_router,
             operation_router, terminal_router, audit_router, feedback_user_router,
@@ -26628,23 +26208,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 review_registered_computer_use(self)
         except Exception:
             logger.exception("Feature 040: in-process agent registration failed")
-
-        async def _revocation_queue_loop():
-            from orchestrator.web_auth import process_revocation_queue_once
-            interval = int(os.getenv("AUTH_REVOCATION_RETRY_SECONDS", "60"))
-            while True:
-                try:
-                    resolved = await process_revocation_queue_once()
-                    if resolved:
-                        logger.info("auth: resolved %d queued credential revocation(s)", resolved)
-                except Exception:
-                    logger.debug("auth: revocation queue pass failed", exc_info=True)
-                await asyncio.sleep(interval)
-
-        self._track_startup_background_task(
-            _revocation_queue_loop(),
-            name="auth-revocation-queue",
-        )
 
         self._track_startup_background_task(
             self._jwks_warm_loop(),
@@ -26750,7 +26313,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     plane_runtime=_plane_source.plane_runtime,
                     plane_repositories=_plane_source.plane_repositories,
                 )
-                _job_runner = JobRunner(self, _job_store, self.offline_grants)
+                _job_runner = JobRunner(self, _job_store)
                 self._scheduler_loop = SchedulerLoop(
                     _job_store,
                     _job_runner,

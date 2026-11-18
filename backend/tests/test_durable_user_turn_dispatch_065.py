@@ -32,7 +32,6 @@ from orchestrator.tests.test_voice_bootstrap_065 import (
     _voice_turn,
 )
 from orchestrator.task_state import TaskState
-from orchestrator.ui_auth_renewal import subject_auth_snapshot
 from orchestrator.work_admission import (
     AdmissionClass,
     AdmissionClassConfig,
@@ -131,7 +130,6 @@ def _runtime(origin: Any) -> Orchestrator:
             owner=work.owner,
             fence=fence,
             lease_lost=False,
-            subject_auth_claims=work.subject_auth_claims,
         )
         _context.operations[work.operation_id] = operation
         return (
@@ -400,7 +398,6 @@ async def test_voice_dispatch_retains_exact_authority_then_scrubs() -> None:
         "_auth_refresh_enabled": True,
     }
     work.auth_claims = dict(claims)
-    work.subject_auth_claims = subject_auth_snapshot(claims)
     runtime.ui_sessions[origin] = dict(claims)
     runtime._connection_contexts = {id(origin): context}
     completed: list[uuid.UUID] = []

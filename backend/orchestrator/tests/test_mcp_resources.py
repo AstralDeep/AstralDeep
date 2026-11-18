@@ -5,25 +5,18 @@ Real framework authority, owner isolation, PHI, and HTTP delivery are covered by
 import asyncio
 from copy import deepcopy
 import json
-import time
 from types import SimpleNamespace
 
 import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
-from jose import jwt
 
 from orchestrator.mcp_authz import MCPAuthError
 from orchestrator.mcp_server_endpoint import (
     _WORK_RESOURCE_URI_PATTERN,
-    create_mcp_router,
     list_resources,
     read_resource,
 )
 from orchestrator.mcp_work_resources import bounded_status as _build_bounded_view_model
 from orchestrator.mcp_work_resources import bounded_result
-from tests.test_mcp_endpoint_064 import _Orchestrator as AdmissionOrchestrator
-from tests.test_request_session_authority_088 import signing_key as signing_key
 
 OWNER_ID = "owner-2f1c"
 WORK_ID = "3f8a1c2e-9b4d-4f7a-8c1e-2d5b6a7c8e9f"
@@ -207,27 +200,3 @@ def resource_request(method, token):
                         "Mcp-Method": method}}
 
 
-@pytest.mark.parametrize("method", ["resources/list", "resources/read"])
-def test_verified_mcp_jwt_does_not_manufacture_framework_authority(monkeypatch, signing_key, method):
-    from orchestrator import mcp_authz
-
-    authority = "https://synthetic-iam.invalid/realm"
-    monkeypatch.setenv("KEYCLOAK_AUTHORITY", authority)
-    claims = {"sub": OWNER_ID, "iss": authority, "aud": "astral-mcp", "exp": int(time.time()) + 300,
-              "scope": "mcp:tools:read", "realm_access": {"roles": ["user"]}}
-    token = jwt.encode(claims, signing_key[0], algorithm="RS256", headers={"kid": "synthetic-request-authority"})
-    requested = []
-
-    async def keys(url, *, token):
-        requested.append(url)
-        return signing_key[1]
-
-    monkeypatch.setattr(mcp_authz, "get_jwks", keys)
-    orch = AdmissionOrchestrator()
-    app = FastAPI()
-    app.include_router(create_mcp_router(orch, public_base_url="https://mcp.invalid"))
-    response = TestClient(app).post("/mcp", **resource_request(method, token))
-    assert response.status_code == 403
-    assert requested == [f"{authority}/protocol/openid-connect/certs"]
-    assert "result" not in response.json()
-    assert orch.calls == []

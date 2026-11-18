@@ -2,7 +2,7 @@
 and hands each test its own FILE_COPY clone, which leaves no dirty buffers for the checkpoint
 every later clone and drop forces; engine_clone boots each clone under the template's verified
 boot identity, so initialize() does not re-verify the byte-identical schema. The session
-`plane_template` fixture backs test_engine_postgres.py's `plane`, and voice_plane_runtime.py
+`plane_template` fixture backs the persistent-agent suites, and voice_plane_runtime.py
 seals its own.
 """
 

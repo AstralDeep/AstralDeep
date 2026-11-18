@@ -469,9 +469,7 @@ def _surface_sections(mod) -> tuple:
 
 def _session_identity(orch, websocket, roles) -> dict:
     try:
-        from orchestrator.web_auth import (
-            identity_from_claims,
-        )
+        from orchestrator.identity_display import identity_from_claims
 
         return identity_from_claims(orch.ui_sessions.get(websocket) or {}, roles)
     except Exception:

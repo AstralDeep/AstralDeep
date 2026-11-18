@@ -129,37 +129,6 @@ async def test_register_agent_validates_skill_scopes(monkeypatch):
     assert scope_map["ok_tool"] == "tools:read"
 
 
-@pytest.mark.parametrize("scope,accepted", [("", False), ("tools:bogus", False), ("tools:read", True)])
-async def test_registered_scope_controls_real_dispatch(orchestrator_factory, scope, accepted):
-    from unittest.mock import AsyncMock, MagicMock
-
-    from shared.protocol import AgentCard, AgentSkill, MCPResponse
-
-    orch = orchestrator_factory()
-    agent = "scope-reader"
-    card = AgentCard("Reader", "Synthetic scope reader", agent,
-                     skills=[AgentSkill("Read", "Reads a synthetic value", "read_value", scope=scope)])
-    orch.agent_cards[agent] = card
-    orch.local_agents[agent] = object()
-    orch.tool_permissions = MagicMock()
-    orch.tool_permissions.get_tool_scope_map.return_value = {"read_value": scope}
-    orch.tool_permissions.get_tool_scope.return_value = scope
-    orch.tool_permissions.is_tool_allowed.return_value = True
-    orch._execute_with_retry = AsyncMock(return_value=MCPResponse(result={"value": "synthetic"}))
-    ws = object()
-    orch.ui_sessions[ws] = {"sub": "scope-owner"}
-    call = SimpleNamespace(function=SimpleNamespace(name="read_value", arguments="{}"))
-    response = await orch.execute_single_tool(ws, call, {"read_value": agent}, "scope-chat", user_id="scope-owner")
-    if accepted:
-        assert response.error is None
-        assert response.result == {"value": "synthetic"}
-        orch._execute_with_retry.assert_awaited_once()
-    else:
-        assert response.error["code"] == "effect_declaration_unavailable"
-        assert response.error["retryable"] is False
-        orch._execute_with_retry.assert_not_awaited()
-
-
 async def test_register_agent_reads_the_stream_progress_interval(monkeypatch):
     monkeypatch.setenv("DEFAULT_AGENT_OWNER", "")
     monkeypatch.setenv("AGENT_API_KEY", "")
@@ -445,75 +414,6 @@ def test_safe_flip_allowed_fails_closed_on_error():
 
     pm = _pm_with_db(SimpleNamespace(get_agent_ownership=_raise))
     assert pm._safe_flip_allowed("boom") is False
-
-
-def test_secret_explicit_web_session_secret(monkeypatch):
-    from orchestrator import web_auth
-
-    monkeypatch.setenv("WEB_SESSION_SECRET", "explicit-signing-key")
-    monkeypatch.delenv("WEB_SESSION_ENC_KEY", raising=False)
-    monkeypatch.delenv("OFFLINE_GRANT_ENC_KEY", raising=False)
-    assert web_auth._secret() == b"explicit-signing-key"
-
-
-def test_secret_hkdf_from_enc_key(monkeypatch):
-    from orchestrator import web_auth
-
-    monkeypatch.delenv("WEB_SESSION_SECRET", raising=False)
-    monkeypatch.setenv("WEB_SESSION_ENC_KEY", "encryption-key-only")
-    monkeypatch.delenv("OFFLINE_GRANT_ENC_KEY", raising=False)
-    derived = web_auth._secret()
-    assert derived != b"encryption-key-only"
-    assert len(derived) == 32
-
-
-def test_secret_hkdf_failure_falls_back(monkeypatch):
-    from cryptography.hazmat.primitives.kdf import hkdf as hkdf_mod
-    from orchestrator import web_auth
-
-    monkeypatch.delenv("WEB_SESSION_SECRET", raising=False)
-    monkeypatch.setenv("WEB_SESSION_ENC_KEY", "encryption-key-only")
-    monkeypatch.delenv("OFFLINE_GRANT_ENC_KEY", raising=False)
-
-    def _boom(*a, **k):
-        raise RuntimeError("no hkdf")
-
-    monkeypatch.setattr(hkdf_mod, "HKDF", _boom)
-    assert web_auth._secret() == b"encryption-key-only"
-
-
-async def test_auth_login_prunes_pending(monkeypatch):
-    import time
-
-    from orchestrator import web_auth
-
-    monkeypatch.setattr(web_auth, "_keycloak_config",
-                        lambda: ("https://kc.example/realms/astral", "astral-frontend", ""))
-
-    async def _reachable(authority):
-        return True
-
-    monkeypatch.setattr(web_auth, "_idp_reachable", _reachable)
-
-    saved = dict(web_auth._PENDING)
-    try:
-        web_auth._PENDING.clear()
-        now = time.time()
-        web_auth._PENDING["stale"] = {"code_verifier": "x", "created_at": now - 1000}
-        for i in range(4098):
-            web_auth._PENDING[f"fresh-{i}"] = {"code_verifier": "x", "created_at": now}
-
-        req = SimpleNamespace(
-            query_params={"next": "/"},
-            base_url="http://test/",
-        )
-        resp = await web_auth.auth_login(req)
-        assert resp.status_code in (302, 303, 307)
-        assert "stale" not in web_auth._PENDING
-        assert len(web_auth._PENDING) <= 4097
-    finally:
-        web_auth._PENDING.clear()
-        web_auth._PENDING.update(saved)
 
 
 class _SafeSetFakeDB:

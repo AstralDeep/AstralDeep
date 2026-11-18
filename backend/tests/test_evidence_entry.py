@@ -1,100 +1,30 @@
-"""Exercises evidence entry, context limits, and service lifetime through the real host methods.
-Signed human fixtures retain the ordinary authority boundary, while synthetic providers isolate physical model calls.
-"""
 
 import asyncio
-from concurrent.futures import TimeoutError as FutureTimeout
 from copy import deepcopy
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
-from uuid import uuid4
 
 import pytest
 
-from agents.evidence.evidence_agent import EvidenceAgent
-from agents.evidence.mcp_server import TOOL_REGISTRY
-from orchestrator import context_authority, evidence_context, local_agents, slash_commands, user_skills
+from orchestrator import context_authority, evidence_context, slash_commands, user_skills
 from orchestrator.context_presentation import evidence_components, persistent_reference_components, usage_components
 from orchestrator.context_usage import ContextUsage
-from orchestrator.conversation_publication import ConversationPublicationStage
 from orchestrator.evidence_context import EvidenceContext
-from orchestrator.history import ConversationCommitRepository
 from orchestrator.orchestrator import Orchestrator
 from orchestrator.tests.test_dispatch_local_agents_040 import _make_card
 from orchestrator.user_skill_catalog import CurrentSkill
 from persistent_agents.models import AssignmentError
-from rote.rote import ROTE
-from shared.agent_runtime import AgentRuntime
 from shared.feature_flags import FeatureFlags, flags
-from shared.protocol import ConversationFrameFence, ConversationSnapshot, FrameDisposition, MCPRequest, MCPResponse
-from tests.test_context_authority import (
-    admitted_turn, bound as bound, fixture as fixture, human as human,
-    runtime as runtime, service as service, signing_key as signing_key,
-)
+from shared.protocol import MCPResponse
 from tests.test_evidence_dispatch import (
     Completions, _make_tool_call, authorized_prepare, dispatch_host, model_host, response,
 )
-from tests.helpers.voice_plane_runtime import history_manager
 from tests.test_context_presentation import (
-    FrameSocket, REFERENCE, SOURCE_TEXT, publication_runtime as publication_runtime, reference_response,
+    publication_runtime as publication_runtime,
 )
 
 pytestmark = pytest.mark.asyncio
-
-
-@pytest.fixture(autouse=True)
-def entry_controls(monkeypatch):
-    monkeypatch.setattr(flags, "is_enabled", lambda name: name == "observation_packing")
-    monkeypatch.setenv("FF_LLM_STREAMING", "false")
-
-
-@pytest.mark.parametrize("outcome", ["success", "failure", "cancellation"])
-@pytest.mark.parametrize("cached", [False, True])
-async def test_original_admitted_chat_entry_installs_and_closes_readonly_context(human, bound, fixture,
-                                                                              monkeypatch, outcome, cached):
-    async with admitted_turn(human, bound, fixture, operation=True) as turn:
-        host, socket, chat, binding = turn
-        if cached:
-            host._evidence_context = SimpleNamespace()
-            monkeypatch.setattr(flags, "is_enabled", lambda _name: False)
-        host._handle_chat_message_with_guidance = Orchestrator._handle_chat_message_with_guidance.__get__(host)
-        host._begin_conversation_publication = AsyncMock(return_value=(None, None, None))
-        host._begin_detached_conversation_publication = AsyncMock(return_value=(None, None))
-        observed = []
-
-        async def implementation(actual_socket, message, actual_chat, _display, **kwargs):
-            assert actual_socket is socket and actual_chat == chat and message == "Read captured evidence"
-            assert kwargs["user_id"] == fixture[1] and kwargs["conversation_server_initiated"] is True
-            lease = context_authority.current_context_authority(orchestrator=host, websocket=socket, chat_id=chat)
-            observed.append(lease)
-
-            async def child():
-                proof = await lease.verify(orchestrator=host, websocket=socket, chat_id=chat)
-                assert proof.owner_id == fixture[1] and proof.operation_fences == (binding.operations[0].fence,)
-                with pytest.raises(AssignmentError, match="human_write_required"):
-                    lease.require_write()
-
-            await asyncio.create_task(child())
-            if outcome == "failure":
-                raise RuntimeError("synthetic implementation failure")
-            if outcome == "cancellation":
-                raise asyncio.CancelledError()
-            return "synthetic accepted turn"
-
-        host._handle_chat_message_impl = implementation
-        if outcome == "success":
-            assert await Orchestrator.handle_chat_message(host, socket, "Read captured evidence", chat,
-                                                          user_id=fixture[1]) == "synthetic accepted turn"
-        else:
-            with pytest.raises(RuntimeError if outcome == "failure" else asyncio.CancelledError):
-                await Orchestrator.handle_chat_message(host, socket, "Read captured evidence", chat, user_id=fixture[1])
-        assert len(observed) == 1
-        with pytest.raises(AssignmentError):
-            await observed[0].verify(orchestrator=host, websocket=socket, chat_id=chat)
-        with pytest.raises(AssignmentError):
-            context_authority.current_context_authority(orchestrator=host, websocket=socket, chat_id=chat)
-        host._begin_detached_conversation_publication.assert_awaited_once()
 
 
 async def test_disabled_entry_preserves_original_internal_dispatch():
@@ -271,87 +201,6 @@ async def test_default_slash_disabled_evidence_without_cached_service_preserves_
     first = host._append_conversation_message.await_args_list[0].kwargs
     assert first["role"] == "user" and first["content"] == message
     assert not hasattr(host, "_evidence_context") and not state.provider.events
-
-
-@pytest.mark.parametrize("kind,label", [("usage", "Complete accounting"), ("source", "Captured source"),
-    ("delete", "Source unavailable"), ("blocked", "Recall blocked"), ("limit", "Context limit")])
-@pytest.mark.parametrize("device", ["browser", "macos", "watch"])
-async def test_real_entry_publishes_persistent_assistant_metadata_without_late_transient_overlay(
-        publication_runtime, monkeypatch, kind, label, device):
-    default_slash_controls(monkeypatch)
-    state = conversation_host([])
-    host, socket, owner = state.host, FrameSocket(), "alice"
-    host.history = history_manager(publication_runtime)
-    chat = await asyncio.to_thread(host.history.create_chat, user_id=owner)
-    await asyncio.to_thread(host.history.update_chat_title, chat, "Existing title", user_id=owner)
-    host.runtime_composition = SimpleNamespace(plane=SimpleNamespace(runtime=publication_runtime,
-        repositories=publication_runtime.repositories))
-    host.conversation_commits = ConversationCommitRepository(plane_runtime=publication_runtime,
-        plane_repositories=publication_runtime.repositories)
-    request, connection = str(uuid4()), str(uuid4())
-    staged = await asyncio.to_thread(host.conversation_commits.stage_commit, chat_id=chat,
-        owner_user_id=owner, request_generation=request)
-    stage = ConversationPublicationStage(history=host.history, commit_id=staged["commit_id"], chat_id=chat,
-        user_id=owner, base_render_revision=staged["base_render_revision"],
-        next_render_revision=staged["base_render_revision"] + 1)
-    host._append_conversation_message = Orchestrator._append_conversation_message.__get__(host)
-    host._publish_conversation_snapshot = Orchestrator._publish_conversation_snapshot.__get__(host)
-    host._safe_send = Orchestrator._safe_send.__get__(host)
-    host._refresh_history_after_commit = AsyncMock()
-    host.workspace.live_components = lambda *_args: []
-    host.workspace.live_layouts = lambda *_args: []
-    host.ui_clients = {socket}
-    host.ui_sessions = {socket: {"sub": owner}}
-    host._conversation_scopes = {}
-    host._ws_active_chat = {id(socket): chat}
-    host.rote = ROTE()
-    host.rote.register_device(socket, {"device_type": device})
-    host._bind_conversation_scope(socket, chat_id=chat, connection_generation=connection,
-        request_generation=request, purpose="commit", base_render_revision=staged["base_render_revision"])
-    if kind == "usage":
-        result = MCPResponse(result=await state.provider.ledger.totals(owner, chat))
-        tool, message = "context_usage", "/evidence usage"
-    elif kind == "source":
-        result = reference_response()
-        tool, message = "recall_observation", "/evidence recall " + REFERENCE
-    elif kind == "delete":
-        result = MCPResponse(result={"status": "deleted", "text": SOURCE_TEXT})
-        tool, message = "delete_observation", "/evidence delete " + REFERENCE
-    else:
-        result = None
-        tool, message = "recall_observation", "/evidence invalid" if kind == "blocked" else "Read captured evidence"
-    host.agent_cards = {"evidence-1": _make_card("evidence-1", [tool])}
-    host.execute_single_tool = AsyncMock(return_value=result)
-    host._evidence_context.verify_delivery = AsyncMock(return_value=result)
-    if kind == "limit":
-        host._evidence_context.prepare.return_value = SimpleNamespace(messages=[], status="context_limit", reason="bounded")
-        host._evidence_context.prepare.side_effect = None
-
-    await host._handle_chat_message_impl(socket, message, chat, user_id=owner, selected_tools=[tool],
-        conversation_stage=stage, conversation_request_generation=request)
-
-    assert stage.committed and stage.sealed
-    snapshots = [frame for frame in socket.frames if frame.get("type") == "conversation_snapshot"]
-    assert len(snapshots) == 1 and not any(frame.get("type") == "ui_render" for frame in socket.frames)
-    assert not host._rendered_ui
-    emitted = ConversationSnapshot.from_dict(snapshots[0])
-    fence = ConversationFrameFence(chat, connection, request, "commit", staged["base_render_revision"])
-    assert fence.accept_snapshot(emitted) is FrameDisposition.APPLY
-    assert [item["role"] for item in emitted.transcript] == ["user", "assistant"]
-    saved = await asyncio.to_thread(host.history.get_chat, chat, owner)
-    assert [item["role"] for item in saved["messages"]] == ["user", "assistant"]
-    assert SOURCE_TEXT not in json.dumps(saved) and SOURCE_TEXT not in json.dumps(socket.frames)
-    assert label in json.dumps(emitted.transcript[-1])
-    assert not emitted.canvas["components"]
-    assert not state.provider.completions.calls and not state.provider.events
-    assert socket.frames[-1]["type"] == "chat_status" and socket.frames[-1]["status"] == "done"
-    if kind == "source":
-        assert REFERENCE in json.dumps(emitted.transcript[-1])
-        if device == "watch":
-            assert "phone or desktop" in json.dumps(emitted.transcript[-1])
-            assert "chrome_open" not in json.dumps(emitted.transcript[-1])
-        else:
-            assert "chrome_open" in json.dumps(emitted.transcript[-1])
 
 
 def complete_history():
@@ -623,130 +472,3 @@ async def test_startup_constructs_evidence_service_only_when_enabled_and_starts_
         assert host._evidence_context._sweep_task is None
 
 
-@pytest.fixture
-def evidence_agent(monkeypatch, tmp_path):
-    monkeypatch.setenv("AGENT_KEY_PATH", str(tmp_path / "synthetic-agent.pem"))
-    monkeypatch.setenv("EVIDENCE_AGENT_PORT", "8765")
-    monkeypatch.setenv("LETS_MODE", "off")
-    host = SimpleNamespace(_evidence_context=SimpleNamespace(tool=AsyncMock()))
-    return EvidenceAgent(host, port=8765), host
-
-
-@pytest.mark.parametrize("name,arguments", [
-    ("recall_observation", {"reference": "obs_" + "x" * 43, "offset": 0}),
-    ("delete_observation", {"reference": "obs_" + "x" * 43}),
-    ("context_usage", {}),
-    ("inspect_context_view", {"view_id": "view_" + "v" * 43}),
-])
-async def test_evidence_agent_uses_real_runtime_and_strips_untrusted_owner_arguments(evidence_agent, name, arguments):
-    agent, host = evidence_agent
-    socket = SimpleNamespace(send_text=AsyncMock())
-    host._evidence_context.tool.return_value = MCPResponse(request_id="synthetic-call", result={"status": "bounded"})
-    request = MCPRequest(request_id="synthetic-call", method="tools/call", params={"name": name, "arguments": {
-        **arguments, "_runtime": "forged-runtime", "_authority": "forged-authority",
-        "user_id": "mallory", "session_id": "foreign-chat",
-    }})
-    await agent.handle_mcp_request(socket, request)
-    host._evidence_context.tool.assert_awaited_once_with("synthetic-call", name, arguments)
-    assert type(request.params["arguments"]["_runtime"]) is AgentRuntime
-    assert request.params["arguments"]["_runtime"].agent_id == "evidence-1"
-    frame = json.loads(socket.send_text.await_args.args[0])
-    assert frame["result"] == {"status": "bounded"} and frame["responder_info"]["name"] == "evidence-1"
-
-
-async def test_evidence_tools_list_publishes_existing_scopes_and_bounded_schemas(evidence_agent):
-    agent, _host = evidence_agent
-    listed = agent.mcp_server.process_request(MCPRequest(request_id="tools", method="tools/list"))
-    assert {item["name"] for item in listed.result["tools"]} == set(TOOL_REGISTRY)
-    assert {skill.id: skill.scope for skill in agent.card.skills} == {
-        "recall_observation": "tools:read", "delete_observation": "tools:write", "context_usage": "tools:read",
-        "inspect_context_view": "tools:read",
-    }
-    assert TOOL_REGISTRY["recall_observation"]["input_schema"]["properties"]["reference"]["maxLength"] == 47
-
-
-@pytest.mark.parametrize("invalid", ["method", "tool", "tool_list", "tool_object", "arguments", "runtime",
-                                    "request", "agent", "loop", "disabled"])
-async def test_evidence_mcp_refuses_untrusted_or_unavailable_runtime(evidence_agent, monkeypatch, invalid):
-    agent, host = evidence_agent
-    request = MCPRequest(request_id="synthetic-call", method="tools/call",
-                         params={"name": "context_usage", "arguments": {}})
-    loop = asyncio.get_running_loop()
-    closed_loop = None
-    if invalid == "loop":
-        closed_loop = asyncio.new_event_loop()
-        closed_loop.close()
-        loop = closed_loop
-    runtime = AgentRuntime(object(), request, "evidence-1", loop)
-    request.params["arguments"]["_runtime"] = runtime
-    if invalid == "method":
-        request.method = "unexpected"
-    elif invalid == "tool":
-        request.params["name"] = "unexpected"
-    elif invalid == "tool_list":
-        request.params["name"] = ["context_usage"]
-    elif invalid == "tool_object":
-        request.params["name"] = {"name": "context_usage"}
-    elif invalid == "arguments":
-        request.params["arguments"] = "unexpected"
-    elif invalid == "runtime":
-        request.params["arguments"]["_runtime"] = SimpleNamespace(request_id=request.request_id, agent_id="evidence-1")
-    elif invalid == "request":
-        runtime.request_id = "foreign-request"
-    elif invalid == "agent":
-        runtime.agent_id = "foreign-agent"
-    elif invalid == "disabled":
-        host._evidence_context = None
-        monkeypatch.setattr(flags, "is_enabled", lambda _name: False)
-    value = await asyncio.to_thread(agent.mcp_server.process_request, request)
-    assert value.request_id == request.request_id and value.result is None
-    assert value.error == {"code": "evidence_unavailable_or_not_authorized", "retryable": False,
-                           "message": "Evidence is unavailable or not authorized."}
-    if host._evidence_context is not None:
-        host._evidence_context.tool.assert_not_awaited()
-
-
-@pytest.mark.parametrize("failure", ["timeout", "ordinary"])
-async def test_evidence_mcp_failure_redacts_provider_details_and_cancels_timeout(evidence_agent, monkeypatch, failure):
-    agent, host = evidence_agent
-    request = MCPRequest(request_id="synthetic-call", method="tools/call",
-                         params={"name": "context_usage", "arguments": {}})
-    request.params["arguments"]["_runtime"] = AgentRuntime(object(), request, "evidence-1", asyncio.get_running_loop())
-    future = SimpleNamespace(result=MagicMock(side_effect=FutureTimeout("private-body") if failure == "timeout"
-                                            else RuntimeError("private-body")), cancel=MagicMock())
-
-    def deferred(coroutine, _loop):
-        coroutine.close()
-        return future
-
-    monkeypatch.setattr("agents.evidence.mcp_server.asyncio.run_coroutine_threadsafe", deferred)
-    value = agent.mcp_server.process_request(request)
-    assert value.error["code"] == "evidence_unavailable_or_not_authorized" and "private-body" not in value.to_json()
-    assert future.cancel.call_count == (1 if failure == "timeout" else 0)
-
-
-@pytest.mark.parametrize("packing,compaction", [(False, False), (True, False), (False, True), (True, True)])
-async def test_builtin_evidence_registration_is_default_off_and_follows_either_flag(monkeypatch, evidence_agent,
-                                                                                  packing, compaction):
-    from shared import attachment_materializer, attachment_resolver
-
-    agent, _host = evidence_agent
-    monkeypatch.setattr(flags, "is_enabled", lambda name: {
-        "observation_packing": packing, "safe_compaction": compaction,
-    }.get(name, False))
-    monkeypatch.setattr(local_agents, "discover_built_in_agent_dirs", lambda: [])
-    monkeypatch.setattr(attachment_resolver, "register_plane_runtime", lambda *_args: False)
-    monkeypatch.setattr(attachment_materializer, "register_materialization_service", lambda *_args: None)
-    plane = SimpleNamespace(runtime=object(), repositories=object(), blobs=object(), attachment_materializer=object())
-    host = SimpleNamespace(runtime_composition=SimpleNamespace(plane=plane), local_agents={}, register_agent=AsyncMock())
-    registered = await local_agents.register_built_ins(host)
-    assert registered == (["evidence-1"] if packing or compaction else [])
-    if registered:
-        actual = host.local_agents["evidence-1"]
-        assert isinstance(actual, EvidenceAgent) and actual.mcp_server._orchestrator is host
-        host.register_agent.assert_awaited_once()
-        assert host.register_agent.await_args.args[0] is None
-        assert host.register_agent.await_args.args[1].agent_card.agent_id == agent.agent_id
-    else:
-        host.register_agent.assert_not_awaited()
-        assert host.local_agents == {}

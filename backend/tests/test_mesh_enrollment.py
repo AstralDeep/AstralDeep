@@ -14,11 +14,9 @@ import uuid
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from fastapi import FastAPI, HTTPException, Request
 from fastapi.security import HTTPBearer
 
 from audit.repository import AuditRepository
-from orchestrator import mesh_api
 from orchestrator import mesh_enrollment as me
 from tests.helpers.voice_plane_runtime import isolated_plane_runtime
 
@@ -893,26 +891,6 @@ def test_owner_isolation_on_invitations_and_members(store):
     assert store.list_members("owner-iso-b") == []
 
 
-def test_origin_guard_rejects_structurally_invalid_values():
-    with pytest.raises(HTTPException) as padded:
-        mesh_api._origin_of(" http://testserver ")
-    assert padded.value.status_code == 403
-    with pytest.raises(HTTPException):
-        mesh_api._origin_of("http://user:pass@testserver")
-    with pytest.raises(HTTPException):
-        mesh_api._origin_of("http://testserver/enroll#frag")
-    with pytest.raises(HTTPException):
-        mesh_api._origin_of("ftp://testserver")
-    with pytest.raises(HTTPException):
-        mesh_api._origin_of("http://testserver:99999")
-    assert mesh_api._origin_of("http://testserver/x", base=True) == (
-        "http",
-        "testserver",
-        80,
-    )
-    assert mesh_api._origin_of("https://testserver") == ("https", "testserver", 443)
-
-
 def test_undecryptable_record_fails_closed(store):
     result, fields, _ = _make_invitation(store, "owner-corrupt")
     store._credentials.call(
@@ -1390,26 +1368,6 @@ def test_expiry_during_durable_audit_rolls_back_all_authority(
     assert store._list(owner, me.MEMBER_NAMESPACE) == before_members
     assert audit_repository.list_for_user(owner)[0] == before_audit
     assert audit_repository.verify_chain(owner) is None
-
-
-def test_host_audit_injection_and_api_missing_audit_denies_creation(
-    plane_runtime, audit_repository
-):
-    from types import SimpleNamespace
-
-    app = FastAPI()
-    app.state.orchestrator = SimpleNamespace(
-        audit_repo=audit_repository, plane_repository_source=plane_runtime
-    )
-    request = Request({"type": "http", "app": app})
-    host_store = mesh_api._store(request, source=mesh_api._plane_source(request))
-    _make_invitation(host_store, "owner-mounted-audit")
-    assert len(audit_repository.list_for_user("owner-mounted-audit")[0]) == 1
-    app.state.orchestrator.audit_repo = None
-    host_store = mesh_api._store(request, source=plane_runtime)
-    with pytest.raises(me.AuditUnavailable):
-        _make_invitation(host_store, "owner-missing-mounted-audit")
-    assert host_store.list_invitations("owner-missing-mounted-audit") == []
 
 
 @pytest.mark.parametrize("change", ["legacy", "foreign", "key", "fingerprint"])

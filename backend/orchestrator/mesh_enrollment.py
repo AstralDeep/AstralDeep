@@ -1,6 +1,6 @@
 """Confirms possession-bound invitations and attenuated membership through AstralPlane.
 Encrypted product scope records share membership transitions and durable audit in one
-transaction; mesh_api.py exposes the host's IAM and device boundaries.
+transaction.
 """
 
 from __future__ import annotations

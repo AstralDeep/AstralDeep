@@ -1,5 +1,5 @@
 """RFC 8693 token-exchange client that asks the identity server for a scoped agent token on behalf of a user token.
-It is used by orchestrator.py and mesh_admission.py until the server profile goes."""
+It is used by orchestrator.py until the server profile goes."""
 
 import os
 import logging

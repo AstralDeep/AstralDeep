@@ -24,18 +24,3 @@ def test_projection_owns_shell_kiosk_and_static_runtime_resources() -> None:
     assert template_path("kiosk.html").is_file()
 
 
-def test_deep_uses_projection_accessors_without_legacy_path_fallback() -> None:
-    orchestrator = (ROOT / "backend/orchestrator/orchestrator.py").read_text(
-        encoding="utf-8"
-    )
-    web_auth = (ROOT / "backend/orchestrator/web_auth.py").read_text(
-        encoding="utf-8"
-    )
-
-    assert "from astralprojection import static_root" in orchestrator
-    assert "template_path as _projection_template_path" in orchestrator
-    assert "_projection_template_path(\"shell.html\")" in orchestrator
-    assert "from astralprojection import template_path" in web_auth
-    assert "template_path(\"kiosk.html\")" in web_auth
-    assert '"webrender", "templates", "shell.html"' not in orchestrator
-    assert '"webrender", "templates", "kiosk.html"' not in web_auth

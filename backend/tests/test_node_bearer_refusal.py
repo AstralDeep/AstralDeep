@@ -1,5 +1,3 @@
-"""Proves a personal node refuses a validly signed bearer JWT from an accepted issuer at every door of the app Orchestrator.build_http_app serves, with the door's refusal code and with no key fetch or token parse, while the same token still works on the server profile.
-The doors are orchestrator/auth.py, web_auth.py, mesh_api.py, mcp_authz.py, a2a_orchestrator_executor.py, orchestrator.validate_token, shared/token_verify.py and shared/a2a_security.py, and test_node_route_census.py proves no route sits outside them."""
 
 from __future__ import annotations
 
@@ -15,7 +13,7 @@ from fastapi.testclient import TestClient
 from starlette.requests import Request
 from starlette.websockets import WebSocketDisconnect
 
-from orchestrator import a2a_orchestrator_executor as a2a, auth, mcp_authz, web_auth
+from orchestrator import a2a_orchestrator_executor as a2a, auth, mcp_authz
 from orchestrator.orchestrator import Orchestrator
 from orchestrator.voice_worker_endpoint import WORKER_CONTROL_PATH
 from shared import jwks_cache, node_identity as ni
@@ -23,12 +21,9 @@ from shared.a2a_security import A2ASecurityValidator
 from shared.token_verify import TokenRefused, verify_idp_token
 from tests import test_node_route_census as census
 from tests.helpers import orchestrator_app
-from tests.helpers.idp_tokens import AUTHORITY
 from tests.helpers.voice_plane_runtime import isolated_plane_runtime
 
 BEARER = "node.bearer_refused"
-SIGN_IN = "node.sign_in_unavailable"
-LEGACY = "node.legacy_enrollment_closed"
 MCP_META = {
     "io.modelcontextprotocol/protocolVersion": "2026-07-28",
     "io.modelcontextprotocol/clientCapabilities": {},
@@ -46,7 +41,6 @@ REST_DOORS = [
     ("GET", "/api/share", 401, REFUSED),
     ("GET", "/api/download/s1/f.txt", 401, REFUSED),
     ("POST", "/api/audit/session-resume-failed", 401, REFUSED),
-    ("GET", "/api/remote-mcp/oauth/start", 401, REFUSED),
     ("GET", "/api/emergency-stop", 401, REFUSED),
     ("GET", "/api/chrome/commands", 401, REFUSED),
     ("GET", "/api/work/v1/operations/op-1", 401, {"error": "work_authentication_required"}),
@@ -57,7 +51,6 @@ REST_DOORS = [
     ("GET", "/api/voice/v2/status", 401, VOICE_REFUSED),
 ]
 SIGN_IN_DOORS = [
-    ("GET", "/"),
     ("GET", "/auth/login"),
     ("GET", "/auth/callback?code=c&state=s"),
     ("GET", "/auth/session"),
@@ -188,24 +181,34 @@ def test_a_query_token_and_a_bare_request_are_refused_the_same_way(node, path):
     _untouched(node)
 
 
-@pytest.mark.parametrize("method,path", SIGN_IN_DOORS)
-def test_sign_in_token_proxy_and_device_grant_are_unavailable(node, method, path):
-    response = node.client.request(method, path, headers={
-        "Authorization": f"Bearer {node.token}", "X-Astral-Session-Custody": "1",
-        "Content-Type": "application/x-www-form-urlencoded"},
+REMOVED_DOORS = [*SIGN_IN_DOORS, *LEGACY_DOORS,
+                 ("GET", "/api/remote-mcp/oauth/start"), ("GET", "/api/remote-mcp/oauth/callback")]
+CREDENTIALS = (
+    {"Authorization": "Bearer {token}"},
+    {"Cookie": "astral_session=value.signature"},
+    {"Authorization": "Bearer {token}", "Cookie": "astral_session=value.signature"},
+    {},
+)
+
+
+@pytest.mark.parametrize("method,path", REMOVED_DOORS)
+@pytest.mark.parametrize("credentials", CREDENTIALS)
+def test_removed_sign_in_session_and_enrollment_doors_answer_404(node, method, path, credentials):
+    headers = {name: value.format(token=node.token) for name, value in credentials.items()}
+    response = node.client.request(
+        method, path, headers={**headers, "Origin": orchestrator_app.PUBLIC_BASE_URL},
         content=b"grant_type=refresh_token&refresh_token=r", follow_redirects=False)
-    assert response.status_code == 403, response.text
-    assert _detail(response) == SIGN_IN
+    assert response.status_code == 404, response.text
     _untouched(node)
 
 
-@pytest.mark.parametrize("method,path", LEGACY_DOORS)
-def test_legacy_enrollment_doors_are_closed(node, method, path):
-    response = node.client.request(method, path, headers={
-        "Authorization": f"Bearer {node.token}", "Origin": orchestrator_app.PUBLIC_BASE_URL,
-        "Content-Type": "application/json"}, content=b'{"owner_id": "o", "member_id": "m"}')
-    assert response.status_code == 403, response.text
-    assert _detail(response) == LEGACY
+@pytest.mark.parametrize("credentials", CREDENTIALS)
+def test_the_shell_reads_no_credential_and_never_redirects_to_sign_in(node, credentials):
+    headers = {name: value.format(token=node.token) for name, value in credentials.items()}
+    response = node.client.get("/", headers=headers, follow_redirects=False)
+    assert response.status_code in (200, 500), response.status_code
+    assert node.token not in response.text and "value.signature" not in response.text
+    assert "location" not in response.headers
     _untouched(node)
 
 
@@ -293,25 +296,6 @@ async def test_every_token_choke_point_refuses_on_the_node(node):
         resolve_framework_bearer=lambda _token: pytest.fail("framework credentials are a bearer")) is None
     assert ni.bound_owner() is None
     _untouched(node)
-
-
-def test_the_same_token_still_works_on_the_server_profile(server, monkeypatch):
-    headers = {"Authorization": f"Bearer {server.token}"}
-    shared = server.client.get("/api/share", headers=headers)
-    assert shared.status_code == 404 and _detail(shared) == "Not Found"
-    downloaded = server.client.get("/api/download/s1/f.txt", headers=headers)
-    assert downloaded.status_code == 404 and downloaded.json() == {"error": "File not found"}
-    assert server.client.get("/api/share", params={"token": server.token}).status_code == 404
-    monkeypatch.setattr(web_auth, "_idp_reachable", lambda _authority: _true())
-    login = server.client.get("/auth/login", follow_redirects=False)
-    assert login.status_code == 307 and login.headers["location"].startswith(AUTHORITY)
-    for method, path in SIGN_IN_DOORS[11:]:
-        response = server.client.request(method, path, headers=headers, json={})
-        assert response.status_code != 403 or _detail(response) != SIGN_IN
-    for method, path in LEGACY_DOORS:
-        response = server.client.request(method, path, headers={**headers, "Origin": orchestrator_app.PUBLIC_BASE_URL}, json={})
-        assert response.status_code != 403 or _detail(response) != LEGACY
-    assert server.spies["jwks"] > 0
 
 
 async def _true():

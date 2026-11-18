@@ -1,7 +1,3 @@
-"""Contract tests for Deep's typed AstralPlane repository adapters
-(credential_manager.py, offline_grant.py, remote_machines.py, tool_permissions.py,
-artifact_share.py, chat_steps.py): owner scoping and isolation per adapter.
-"""
 
 from __future__ import annotations
 
@@ -32,7 +28,6 @@ from orchestrator.api import list_agents, set_agent_visibility
 from orchestrator.artifact_share import ShareGrantStore, hash_token
 from orchestrator.chat_steps import ChatStepRecorder
 from orchestrator.credential_manager import CredentialManager
-from orchestrator.offline_grant import OfflineGrantStore
 from orchestrator.tool_permissions import ToolPermissionManager
 from orchestrator.models import AgentVisibilityRequest
 from shared.protocol import AgentCard, AgentSkill
@@ -492,33 +487,6 @@ def test_credential_adapter_preserves_owner_scope(monkeypatch) -> None:
     assert manager.get_credential("alice", "agent-a", "TOKEN") == "secret"
     assert manager.get_credential("bob", "agent-a", "TOKEN") is None
     assert manager.list_credential_keys("alice", "agent-a") == ["TOKEN"]
-
-
-def test_offline_grant_adapter_requires_owner_for_validity(monkeypatch) -> None:
-    from tests.helpers.session_consent_088 import synthetic_consent
-    from unittest.mock import Mock
-    from datetime import datetime, timezone
-    key = Fernet.generate_key().decode()
-    monkeypatch.setattr("orchestrator.offline_grant.OFFLINE_GRANT_ENC_KEY", key)
-    repository = _OfflineGrants()
-    selected = synthetic_consent("alice")
-    sessions = SimpleNamespace(bound_request_execution_waits=Mock(),
-        assert_current_consent=Mock(return_value=SimpleNamespace(observed_at=datetime.now(timezone.utc))))
-    store = OfflineGrantStore(
-        db=_Database(offline_grants=repository, history=SimpleNamespace(sessions=sessions)),
-        plane_repository=repository,
-    )
-    monkeypatch.setattr(store, "_session_reference", lambda owner, selection: selection.reference(owner))
-
-    grant_id = store.capture("alice", selected, "agent-a")
-    assert sessions.assert_current_consent.call_count == 2
-    assert all(call.kwargs["observation"] is selected.observation
-               for call in sessions.assert_current_consent.call_args_list)
-    assert store.is_valid(grant_id, user_id="alice") is True
-    assert store.is_valid(grant_id, user_id="bob") is False
-    assert store.latest_valid_for("alice", "agent-a") == grant_id
-    assert store.revoke_for_user("alice") == 1
-    assert store.is_valid(grant_id, user_id="alice") is False
 
 
 def test_chat_step_adapter_emits_canonical_plane_state() -> None:

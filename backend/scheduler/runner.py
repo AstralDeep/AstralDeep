@@ -254,14 +254,12 @@ class JobRunner:
         self,
         orchestrator,
         store,
-        offline_grants,
         *,
         handler_declarations: Dict[str, ScheduledHandlerDeclaration] | None = None,
         monitoring_dispatcher: Callable[[Any, Dict[str, Any], str | None], str] | None = None,
     ) -> None:
         self.orch = orchestrator
         self.store = store
-        self.grants = offline_grants
         self._coordinator: WorkAdmissionCoordinator | None = None
         self._monitoring_dispatcher = monitoring_dispatcher or default_monitoring_dispatcher
         self._handler_declarations = dict(
@@ -920,7 +918,7 @@ class JobRunner:
 
         from orchestrator.chain_authority import AuthoritySkip, MachineTurnAuthority
 
-        authority = await MachineTurnAuthority(self.orch, self.grants).derive(
+        authority = await MachineTurnAuthority(self.orch).derive(
             user_id=user_id,
             agent_id=job.get("agent_id"),
             consented_scopes=list(job.get("consented_scopes") or []),
@@ -1084,7 +1082,7 @@ class JobRunner:
         agent_id = job.get("agent_id")
         from orchestrator.chain_authority import AuthoritySkip, MachineTurnAuthority
 
-        authority = await MachineTurnAuthority(self.orch, self.grants).derive(
+        authority = await MachineTurnAuthority(self.orch).derive(
             user_id=user_id,
             agent_id=agent_id,
             consented_scopes=list(job.get("consented_scopes") or []),

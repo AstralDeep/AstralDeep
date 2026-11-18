@@ -200,17 +200,11 @@ class ChainedDriver(Driver):
         orch = MagicMock()
         orch.tool_permissions.get_agent_scopes = MagicMock(
             return_value={"tools:read": True})
-        grants = MagicMock()
-        grants.is_valid = MagicMock(return_value=False)
-        grants.latest_valid_for = MagicMock(return_value=None)
-        grants.mint_access_token = AsyncMock(return_value="should-never-mint")
-
-        authority = await MachineTurnAuthority(orch, grants).derive(
+        authority = await MachineTurnAuthority(orch).derive(
             user_id="human-1", agent_id="web-research-1",
             consented_scopes=["tools:read"], grant_id="revoked-grant",
             turn_class="scheduled_job")
         skipped = isinstance(authority, AuthoritySkip)
-        grants.mint_access_token.assert_not_awaited()
         executed = not skipped
         if not chaining_on:
             return False, None, False

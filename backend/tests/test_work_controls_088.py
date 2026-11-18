@@ -21,7 +21,6 @@ from orchestrator.work_control_authority import WorkCallerAuthority
 from orchestrator.work_controls import WorkControlRequest, WorkControlService, WorkDeleteRequest
 from orchestrator.work_submit_authority import AuthenticatedWorkRequest
 from persistent_agents.models import AssignmentError
-from shared.node_identity import canonical_owner_id
 from tests.test_work_api_088 import host as host
 
 
@@ -197,27 +196,6 @@ async def test_nonhuman_or_unauthorized_principal_never_reaches_storage(controls
 
 
 @pytest.mark.asyncio
-async def test_flag_off_extra_authority_unknown_commands_and_private_errors_fail_closed(controls):
-    app, orch, read, repo = controls
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-        path = f"/api/work/v1/operations/{read.assignment.assignment_id}"
-        refused = await client.post(path + "/resume", json=body())
-        assert refused.status_code == 403 and refused.json() == {"error": "work_origin_refused"}
-        assert refused.headers["cache-control"] == "no-store"
-        assert (await client.post("/api/work/v1/operations", json={})).status_code == 405
-        invalid = await client.post(path + "/pause", json=body(owner_id="other"), headers={"Origin": "http://test"})
-        assert invalid.status_code == 422 and invalid.json() == {"error": "work_control_invalid"}
-        orch.persistent_assignments.enabled = False
-        assert (await client.post(path + "/pause", json=body(), headers={"Origin": "http://test"})).status_code == 503
-        repo.get_operation.assert_not_called()
-        orch.persistent_assignments.enabled = True
-        repo.apply_control.side_effect = AssignmentError("private upstream detail", 503)
-        failed = await client.post(path + "/pause", json=body(), headers={"Origin": "http://test"})
-        assert failed.json() == {"error": "work_control_unavailable"}
-        assert failed.headers["cache-control"] == "no-store"
-
-
-@pytest.mark.asyncio
 async def test_service_missing_contract_malformed_record_and_delete_race_are_bounded(controls):
     _, orch, read, repo = controls
     service = WorkControlService(orch.persistent_assignments)
@@ -239,33 +217,3 @@ async def test_service_missing_contract_malformed_record_and_delete_race_are_bou
         await service.delete(*args, WorkDeleteRequest(expected_revision=7), caller=caller)
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("transport", ["cookie", "bearer"])
-async def test_write_uses_original_credential_verification_on_every_retry(controls, monkeypatch, transport):
-    from jose import JWTError
-    from orchestrator import auth, web_auth
-
-    app, _, read, repo = controls
-    app.dependency_overrides.clear()
-    monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-frontend")
-    monkeypatch.setattr(auth, "_get_keycloak_config", lambda: ("https://iam.example/realms/test", "astral-frontend", ""))
-    monkeypatch.setattr("shared.jwks_cache.get_jwks", AsyncMock(return_value={"keys": []}))
-    session = AsyncMock(return_value={"access_token": "fixture.access.token"})
-    monkeypatch.setattr(web_auth, "ensure_session", session)
-    issuer = {"iss": "https://iam.example/realms/test", "azp": "astral-frontend", "aud": "account"}
-    read.assignment.owner_id = canonical_owner_id(issuer["iss"], "owner")
-    decode = Mock(return_value={"sub": "owner", "realm_access": {"roles": ["user"]}} | issuer)
-    monkeypatch.setattr("jose.jwt.decode", decode)
-    headers = {"Authorization": "Bearer fixture.access.token"} if transport == "bearer" else {"Origin": "http://test"}
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-        path = f"/api/work/v1/operations/{read.assignment.assignment_id}/pause"
-        payload = body()
-        assert (await client.post(path, json=payload, headers=headers)).status_code == 200
-        decode.return_value = {"sub": "owner", "realm_access": {"roles": []}} | issuer
-        assert (await client.post(path, json=payload, headers=headers)).status_code == 403
-        decode.side_effect = JWTError("private expired credential")
-        expired = await client.post(path, json=payload, headers=headers)
-        assert expired.status_code == 401 and "private" not in expired.text
-        assert expired.headers["cache-control"] == "no-store"
-    assert decode.call_count == 3 and repo.apply_control.call_count == 1
-    assert session.call_count == (3 if transport == "cookie" else 0)

@@ -1,5 +1,5 @@
 """Builds the HTTP app through the orchestrator's own Orchestrator.build_http_app on a bare host with every flag-gated surface switched on, so node tests reach each route through the real route table.
-test_node_route_census.py, test_node_bearer_refusal.py, test_node_mesh_offer.py and test_mesh_admission.py use it, and a PostgreSQL runtime from voice_plane_runtime.py backs the A2A publication store."""
+test_node_route_census.py, test_node_bearer_refusal.py and test_node_mesh_offer.py use it, and a PostgreSQL runtime from voice_plane_runtime.py backs the A2A publication store."""
 
 from __future__ import annotations
 

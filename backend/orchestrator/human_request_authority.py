@@ -35,7 +35,7 @@ from orchestrator import auth
 from orchestrator.session_store import WebSessionStore
 from orchestrator.work_submit_authority import (
     AuthenticatedWorkRequest, _authenticate_work_request, _expiry, capture_human_caller,
-    _signed_selection,
+    SESSION_COOKIE,
 )
 from orchestrator.work_write_boundary import freeze_work_request
 from persistent_agents.models import AssignmentError
@@ -420,20 +420,12 @@ class _HumanSocketRequest:
                 raise AssignmentError("human_query_token_refused", 403)
             # Real transport for header parsing, not a fabricated request
             transport = HTTPConnection({"type": "websocket", "headers": headers})
-            self.session_id = _signed_selection(transport)
-            from orchestrator import web_auth
-            supplied = [part.strip().split("=", 1)[0] for header in
-                transport.headers.getlist("cookie") for part in header.split(";")]
-            if web_auth.COOKIE_NAME in supplied and self.session_id is None:
+            self.session_id = None
+            if SESSION_COOKIE in [part.strip().split("=", 1)[0] for header in
+                    transport.headers.getlist("cookie") for part in header.split(";")]:
                 raise ValueError
-            if purpose == "remote_effect" and self.session_id is None:
+            if purpose == "remote_effect":
                 raise ValueError
-            if self.session_id is not None and method == "WS_WRITE":
-                from orchestrator.work_api import _origin
-                origins = transport.headers.getlist("origin")
-                base = os.getenv("PUBLIC_BASE_URL") or os.getenv("BACKEND_PUBLIC_URL")
-                if not base or len(origins) != 1 or _origin(origins[0]) != _origin(base, base=True):
-                    raise AssignmentError("human_origin_refused", 403)
         except AssignmentError:
             raise
         except (AttributeError, KeyError, TypeError, ValueError, UnicodeError):

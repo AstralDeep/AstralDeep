@@ -1,5 +1,5 @@
 """Read-only, in-memory guidance authority for turns already admitted elsewhere;
-machine/voice/foreground/background/HTTP bindings retain a parent's read origin
+voice/foreground/background/HTTP bindings retain a parent's read origin
 without ever granting model, tool, or authored-metadata authority themselves.
 """
 
@@ -168,7 +168,6 @@ class TurnGuidanceBinding:
     chat_id: str
     operations: tuple[_OperationBinding, ...] = ()
     background: object = field(default=None, repr=False)
-    machine: object = field(default=None, repr=False)
     voice: object = field(default=None, repr=False)
     parent: object = field(default=None, repr=False)
     budget: object = field(default=None, repr=False)
@@ -220,148 +219,13 @@ class TurnGuidanceBinding:
         self.local(orch)
         if self.parent is not None:
             self.parent.current(tx, orch)
-        if self.machine is not None:
-            self.machine.current(tx, orch, self.origin)
         for operation in self.operations:
             operation.current(tx, orch, self.origin)
-        if self.machine is not None:
-            self.machine.current_grant(tx, orch, self.origin)
         if self.voice is not None:
             self.voice.current(tx, orch, self.origin)
-        if self.machine is not None:
-            self.machine.current(tx, orch, self.origin)
         for operation in self.operations:
             operation.current(tx, orch, self.origin)
         self.local(orch)
-
-
-@dataclass(frozen=True, slots=True, repr=False)
-class _MachineBinding:
-    websocket: object
-    authority: object
-    registration: dict = field(repr=False)
-    snapshot: dict = field(repr=False)
-    grant: object = field(repr=False)
-    store: object = field(repr=False)
-    adapter: object = field(repr=False)
-    repository: object = field(repr=False)
-    scheduled: object = field(default=None, repr=False)
-
-    def current(self, tx, orch, origin):
-        if (getattr(self.websocket, "_guidance_machine_authority", None) is not self.authority
-                or getattr(orch, "ui_sessions", {}).get(self.websocket) is not self.registration
-                or self.registration != self.snapshot
-                or getattr(orch, "offline_grants", None) is not self.store
-                or self.store._grants is not self.adapter
-                or self.adapter.plane_runtime is not origin.binding.runtime
-                or self.adapter.repository is not self.repository
-                or origin.binding.repositories.offline_grants is not self.repository):
-            _refuse()
-        if self.scheduled is not None:
-            store, adapter, repository, attempt, job = self.scheduled
-            if (store._plane is not adapter or adapter.plane_runtime is not origin.binding.runtime
-                    or adapter.repository is not repository
-                    or origin.binding.repositories.scheduler is not repository or attempt.job != job):
-                _refuse()
-            _scheduled_current(tx, self.scheduled, origin.owner_id)
-
-    def current_grant(self, tx, orch, origin):
-        # Grant lock must follow slot/operation locks, never precede
-        grant = self.repository.assert_current_grant(tx, owner_id=origin.owner_id,
-                                                     grant_id=self.grant.grant_id)
-        if grant != self.grant:
-            _refuse()
-
-
-def _scheduled_current(tx, scheduled, owner):
-    from astralplane.repositories.scheduler import OccurrenceState
-    _, _, repository, attempt, job = scheduled
-    claim = attempt.claim
-    current = repository.assert_current_claim(tx, owner_id=owner,
-        occurrence_id=str(claim.occurrence_id), claim_generation=claim.claim_generation,
-        lease_token=str(claim.lease_token), lease_owner=claim.lease_owner,
-        states=(OccurrenceState.RUNNING,))
-    if (current.operation_id != str(attempt.operation_id)
-            or current.operation_execution_generation != attempt.execution_fence.execution_generation
-            or current.job_id != str(job["id"])):
-        _refuse()
-
-
-async def bind_machine_guidance(*, expected_orchestrator, websocket, authority,
-                                chat_id, scheduled_attempt=None, scheduled_store=None):
-    from orchestrator.async_tasks import VirtualWebSocket
-    from orchestrator.chain_authority import MachineAuthority, machine_session_binding
-    from orchestrator.offline_grant import OfflineGrantStore
-    from scheduler.store import ScheduledAttempt, ScheduledJobStore
-    if (type(authority) is not MachineAuthority or type(websocket) is not VirtualWebSocket
-            or getattr(websocket, "_guidance_machine_authority", None) is not authority):
-        _refuse()
-    orch = expected_orchestrator
-    binding = _Composition.capture_host(getattr(orch, "human_request_boundary", None))
-    registration = getattr(orch, "ui_sessions", {}).get(websocket)
-    snapshot = machine_session_binding(authority)
-    store = getattr(orch, "offline_grants", None)
-    if type(store) is not OfflineGrantStore or registration != snapshot:
-        _refuse()
-    adapter = store._grants
-    repository = binding.repositories.offline_grants
-    if adapter.plane_runtime is not binding.runtime or adapter.repository is not repository:
-        _refuse()
-    scheduled = None
-    if authority.turn_class == "scheduled_job":
-        if (type(scheduled_attempt) is not ScheduledAttempt or type(scheduled_store) is not ScheduledJobStore
-                or scheduled_attempt.execution_fence is None
-                or scheduled_attempt.job.get("user_id") != authority.user_id
-                or scheduled_attempt.job.get("offline_grant_id") != authority.consent_ref):
-            _refuse()
-        scheduled = (scheduled_store, scheduled_store._plane, binding.repositories.scheduler,
-                     scheduled_attempt, deepcopy(scheduled_attempt.job))
-    elif scheduled_attempt is not None or scheduled_store is not None:
-        _refuse()
-    elif authority.turn_class not in {"parser_replay", "draft_self_test"}:
-        _refuse()
-
-    def capture(tx):
-        binding.session_repository.bound_request_execution_waits(tx)
-        binding.assert_host_current(orch)
-        binding.repositories.preferences.skills.lock_owner(tx, owner_id=authority.user_id)
-        if scheduled is not None:
-            _scheduled_current(tx, scheduled, authority.user_id)
-        operation = (orch.work_admission.assert_current_execution_lease(
-            scheduled_attempt.execution_fence, transaction=tx) if scheduled is not None else None)
-        grant = repository.assert_current_grant(tx, owner_id=authority.user_id, grant_id=authority.consent_ref)
-        if scheduled is not None:
-            _scheduled_current(tx, scheduled, authority.user_id)
-            orch.work_admission.assert_current_execution_lease(scheduled_attempt.execution_fence, transaction=tx)
-        return grant, operation
-    origin = None
-    returned = False
-    try:
-        async with asyncio.timeout(15):
-            grant, operation = await binding.adapter.run_in_transaction(capture)
-            claims = await auth.verify_user(await auth.verify_production_token(authority.access_token))
-            expiry = _expiry(claims, authority.user_id)
-            origin = _GuidanceOrigin(binding, authority.user_id, authority.access_token,
-                _claims_json(claims), None, expiry, _socket_policy())
-            machine = _MachineBinding(websocket, authority, registration, snapshot,
-                                      grant, store, adapter, repository, scheduled)
-            operations = (() if operation is None else (_OperationBinding.capture(
-                orch, origin, operation, scheduled_attempt.execution_fence),))
-            result = TurnGuidanceBinding(origin, websocket, chat_id, operations, machine=machine)
-            reader = TurnGuidanceReader(result, expected_orchestrator=orch)
-            try:
-                await reader.verify_delivery()
-            finally:
-                reader.close()
-            returned = True
-            return result
-    except AssignmentError:
-        raise
-    except Exception:
-        _refuse()
-    finally:
-        if origin is not None and not returned:
-            origin.close()
 
 
 def bind_background_guidance(origin, *, expected_orchestrator, websocket):

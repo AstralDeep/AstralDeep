@@ -1,5 +1,5 @@
 """Node-signed in-process agent authority: scoped, depth-bounded delegation tokens bound to a request's verified machine authority, with child attenuation, actor-chain checks and chained tool authorization.
-The orchestrator, chain_authority.py, evidence_context.py, mesh_enrollment.py, mesh_api.py and the benchmark and verification drivers mint and check these tokens, signed with the node key from shared/node_identity.py."""
+The orchestrator, chain_authority.py, evidence_context.py, mesh_enrollment.py and the benchmark and verification drivers mint and check these tokens, signed with the node key from shared/node_identity.py."""
 
 import base64
 import hashlib
