@@ -1222,7 +1222,7 @@ def test_a_stop_signal_during_teardown_still_finishes_the_sweep():
     fake.end = end_with_a_signal
     try:
         with pytest.raises(launch._Stopped):
-            supervise(proc, fake)
+            supervise(proc, fake, wall_ms=200)
         assert proc.wait(timeout=30) == -signal.SIGKILL
     finally:
         for sig, handler in previous.items():
