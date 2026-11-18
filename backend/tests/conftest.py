@@ -92,13 +92,12 @@ async def orchestrator_module_factory():
 
 
 @pytest.fixture
-def server_identity(monkeypatch, tmp_path):
+def node_data_dir(monkeypatch, tmp_path):
     from shared import node_identity
 
-    from tests.helpers.server_identity import ServerIdentity
-
-    identity = ServerIdentity.install(monkeypatch, data_dir=tmp_path / "node")
-    yield identity
+    monkeypatch.setenv(node_identity.DATA_DIR_ENV, str(tmp_path / "node"))
+    node_identity.reset_cache()
+    yield tmp_path / "node"
     node_identity.reset_cache()
 
 

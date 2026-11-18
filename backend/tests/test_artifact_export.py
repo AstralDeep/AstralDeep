@@ -29,13 +29,6 @@ USER_ID = ""
 AUTH: dict = {}
 
 
-@pytest.fixture(autouse=True)
-def _identity(server_identity, monkeypatch):
-    monkeypatch.setitem(globals(), "USER_ID", server_identity.owner(SUBJECT))
-    monkeypatch.setitem(globals(), "AUTH", server_identity.headers(SUBJECT))
-    return server_identity
-
-
 CHAT_ID = "chat-export-1"
 
 

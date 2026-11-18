@@ -12,7 +12,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from a2a.types import Message as A2AMessage, Role
 
-from orchestrator.a2a_orchestrator_executor import OrchestratorA2AExecutor
 from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
 from orchestrator.governed_dispatch import (
     DispatchRuntime,
@@ -23,7 +22,6 @@ from orchestrator.lets_gateway import LETS_CALLER_CAPABILITY, LetsGatewayError
 from orchestrator.lets_audit import LetsAuditObserver
 from orchestrator.orchestrator import Orchestrator
 from shared.a2a_bridge import a2a_message_to_mcp_request, make_data_part
-from shared.a2a_executor import MCPAgentExecutor
 from shared.base_agent import BaseA2AAgent
 from shared.protocol import MCP_PROTOCOL_VERSION, MCPRequest, MCPResponse
 
@@ -855,24 +853,3 @@ def test_a2a_bridge_keeps_protected_metadata_outside_tool_arguments() -> None:
     assert LETS_CALLER_CAPABILITY not in request.params["arguments"]
 
 
-@pytest.mark.asyncio
-async def test_a2a_executors_validate_actual_http_bearer_context() -> None:
-    context = SimpleNamespace(
-        call_context=SimpleNamespace(
-            state={"headers": {"Authorization": "Bearer subject-token"}}
-        )
-    )
-    claims = {"sub": "owner-1", "scope": "tools:read"}
-
-    orchestrator_executor = OrchestratorA2AExecutor(MagicMock())
-    orchestrator_executor.security_validator.validate_token = AsyncMock(
-        return_value=claims
-    )
-    assert await orchestrator_executor._validated_invocation_identity(context) == (
-        claims,
-        "subject-token",
-    )
-
-    agent_executor = MCPAgentExecutor(MagicMock())
-    agent_executor.security_validator.validate_token = AsyncMock(return_value=claims)
-    assert await agent_executor._validated_bearer_claims(context) == claims

@@ -39,10 +39,6 @@
       "until": "T9"
     },
     {
-      "path": "backend/orchestrator/a2a_orchestrator_executor.py",
-      "until": "T6"
-    },
-    {
       "path": "backend/orchestrator/agent_identity.py",
       "until": "T9"
     },
@@ -71,20 +67,8 @@
       "until": "T9"
     },
     {
-      "path": "backend/orchestrator/delegation.py",
-      "until": "T6"
-    },
-    {
       "path": "backend/orchestrator/human_request_authority.py",
       "until": "T9"
-    },
-    {
-      "path": "backend/orchestrator/institution_meshes.py",
-      "until": "T6"
-    },
-    {
-      "path": "backend/orchestrator/mcp_authz.py",
-      "until": "T6"
     },
     {
       "path": "backend/orchestrator/mesh_push_registry.py",
@@ -119,40 +103,12 @@
       "until": "T9"
     },
     {
-      "path": "backend/security_benchmark/drivers/real_dispatch.py",
-      "until": "T6"
-    },
-    {
       "path": "backend/shared/__init__.py",
       "until": "T9"
     },
     {
-      "path": "backend/shared/a2a_bridge.py",
-      "until": "T6"
-    },
-    {
-      "path": "backend/shared/a2a_security.py",
-      "until": "T6"
-    },
-    {
-      "path": "backend/shared/auth_clients.py",
-      "until": "T6"
-    },
-    {
-      "path": "backend/shared/institution_profile.py",
-      "until": "T6"
-    },
-    {
-      "path": "backend/shared/jwks_cache.py",
-      "until": "T6"
-    },
-    {
       "path": "backend/shared/node_identity.py",
       "until": "T7"
-    },
-    {
-      "path": "backend/shared/token_verify.py",
-      "until": "T6"
     },
     {
       "path": "backend/verification/__main__.py",

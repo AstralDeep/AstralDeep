@@ -104,3 +104,31 @@ def test_chrome_identity_names_a_guest_without_roles_and_never_an_email():
 
 def test_project_cursors_are_signed_with_a_fresh_random_process_key():
     assert isinstance(projects._CURSOR_KEY, bytes) and len(projects._CURSOR_KEY) == 32
+
+
+@pytest.mark.parametrize("inbound", [True, False])
+def test_the_a2a_validator_accepts_no_identity_server_token(inbound):
+    from shared.a2a_security import A2ASecurityValidator
+
+    validator = A2ASecurityValidator(require_first_party_user=inbound)
+    assert asyncio.run(validator.validate_token("a.b.c")) is None
+    assert asyncio.run(validator.validate_token("")) is None
+
+
+def test_the_delegation_signing_environment_changes_nothing(monkeypatch):
+    from orchestrator import agent_authority
+
+    monkeypatch.setenv("DELEGATION_CHILD_SIGNING_KEY", "k" * 40)
+    monkeypatch.delenv("ASTRAL_NODE_PROFILE", raising=False)
+    with pytest.raises(agent_authority.DelegationConfigError):
+        agent_authority._child_signing_key()
+
+
+def test_the_mcp_token_decoder_and_ui_token_validator_refuse_every_bearer():
+    from orchestrator import mcp_authz
+
+    with pytest.raises(mcp_authz.MCPAuthError):
+        asyncio.run(mcp_authz.decode_mcp_token("a.b.c"))
+    host = SimpleNamespace()
+    assert asyncio.run(types.MethodType(Orchestrator.validate_token, host)("a.b.c")) is None
+    assert mcp_authz.protected_resource_metadata("https://node.invalid")["bearer_methods_supported"] == []

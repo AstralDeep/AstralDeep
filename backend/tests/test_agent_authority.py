@@ -3,14 +3,10 @@ It drives orchestrator.py's _mint_mcp_delegation_token and _get_delegation_token
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
-import threading
 import time
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 import pytest
 from cryptography.hazmat.primitives import serialization
@@ -52,23 +48,6 @@ def node(tmp_path, monkeypatch):
     ni.reset_cache()
 
 
-def orchestrator(skills=("read", "write"), agent="agent-1"):
-    from orchestrator.orchestrator import Orchestrator
-
-    orch = Orchestrator.__new__(Orchestrator)
-    orch.ui_sessions = {}
-    orch.security_flags = {}
-    orch.agent_cards = {agent: SimpleNamespace(skills=[SimpleNamespace(id=name) for name in skills])}
-    scope_of = {"read": "tools:read", "write": "tools:write", "fetch_page": "tools:read"}
-    orch.tool_permissions = SimpleNamespace(
-        is_tool_allowed=MagicMock(return_value=True),
-        get_tool_scope=MagicMock(side_effect=lambda agent_id, tool: scope_of[tool]),
-        get_enabled_scope_names=MagicMock(return_value=["tools:read", "tools:write"]),
-    )
-    orch.delegation = SimpleNamespace(agent_service_client_id="wrong-audience-from-the-environment")
-    return orch
-
-
 def test_the_node_identity_is_the_golden_one(node):
     assert node.node_id == GOLDEN["node_id"]
 
@@ -77,14 +56,6 @@ def test_encoded_tokens_match_the_golden_bytes(node):
     assert aa.encode_delegation_payload(PAYLOAD) == GOLDEN["encoded_payload"]
     assert aa.encode_delegation_payload({**PAYLOAD, "exp": NOW + 60}) == GOLDEN["encoded_short_lifetime"]
     assert aa.encode_delegation_payload({**PAYLOAD, "exp": NOW + 9999}) == GOLDEN["encoded_capped"]
-
-
-async def test_a_minted_node_session_token_matches_the_golden_bytes(node):
-    token = await orchestrator()._mint_mcp_delegation_token("agent-1", OWNER, {"sub": OWNER, "exp": NOW + 10}, node_session=True)
-    assert token == GOLDEN["minted_node_session"]
-    claims = node.verify_token(token, audience=aa.AGENT_AUDIENCE, now=NOW)
-    assert claims["aud"] == [aa.AGENT_AUDIENCE, node.node_id] and claims["iss"] == node.node_id
-    assert claims["exp"] - claims["iat"] == 300 and claims["delegation"] is True
 
 
 def test_a_child_matches_the_golden_claims_and_bytes(node):
@@ -159,49 +130,3 @@ def test_tool_scope_checks_keep_their_no_fallthrough_rules():
     assert aa.is_tool_in_scope("fetch_page", ["tools:read", "tool:other"], "tools:read") is False
 
 
-async def test_no_token_exists_without_bound_machine_authority(node):
-    from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
-
-    orch = orchestrator()
-    socket = VirtualWebSocket(BackgroundTask(task_id="t1", chat_id="c1", user_id=OWNER))
-    assert await orch._get_delegation_token(socket, "agent-1", OWNER) is None
-    orch.ui_sessions[socket] = {"sub": "oidc.0123456789abcdef.someone-else"}
-    assert await orch._get_delegation_token(socket, "agent-1", OWNER) is None
-    assert await orch._get_delegation_token(socket, "missing-agent", OWNER) is None
-    orch.ui_sessions[socket] = {"sub": OWNER}
-    token = await orch._get_delegation_token(socket, "agent-1", OWNER)
-    claims = node.verify_token(token, audience=aa.AGENT_AUDIENCE)
-    assert claims["sub"] == OWNER and claims["act"] == {"sub": "agent:agent-1"}
-    assert claims["aud"] == [aa.AGENT_AUDIENCE, node.node_id]
-
-
-async def test_the_audience_is_fixed_whatever_the_environment_says(node, monkeypatch):
-    monkeypatch.setenv("AGENT_SERVICE_CLIENT_ID", "something-else")
-    orch = orchestrator()
-    orch.ui_sessions["s"] = {"sub": OWNER}
-    claims = node.verify_token(await orch._get_delegation_token("s", "agent-1", OWNER))
-    assert claims["aud"] == [aa.AGENT_AUDIENCE, node.node_id]
-
-
-async def test_the_summarizer_accepts_a_minted_token(node):
-    from agents.summarizer import mcp_tools
-
-    orch = orchestrator(skills=("fetch_page",), agent="summarizer-1")
-    orch.ui_sessions["s"] = {"sub": OWNER}
-    token = await orch._get_delegation_token("s", "summarizer-1", OWNER)
-    loop = asyncio.new_event_loop()
-    threading.Thread(target=loop.run_forever, daemon=True).start()
-    seen = []
-
-    async def call_agent_tool(agent, tool, arguments, timeout):
-        seen.append((agent, tool, arguments))
-        card = {"type": "card", "content": [{"type": "text", "content": "t"}, {"type": "text", "content": "page text"}]}
-        return SimpleNamespace(result={"title": "T"}, ui_components=[card], error=None)
-
-    runtime = SimpleNamespace(call_agent_tool=call_agent_tool, loop=loop)
-    try:
-        fetched = await asyncio.to_thread(mcp_tools._fetch_via_peer, "https://example.test", {"_runtime": runtime, "_delegation_token": token})
-    finally:
-        loop.call_soon_threadsafe(loop.stop)
-    assert fetched == ("T", "page text")
-    assert seen == [("web-research-1", "fetch_page", {"url": "https://example.test"})]

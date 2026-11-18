@@ -1,5 +1,4 @@
 """Contracts for legacy ablation drivers that return one trace per case.
-Signed-turn qualification uses the separate real_dispatch driver.
 """
 
 from __future__ import annotations

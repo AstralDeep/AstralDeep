@@ -11,14 +11,12 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from shared.external_http import AuthFailedError, BadRequestError, ServiceUnreachableError
 
-from orchestrator import institution_runtime, node_mesh, node_mesh_chat as nmc, push_wake as pw
-from orchestrator.institution_meshes import Owner
+from orchestrator import node_mesh, node_mesh_chat as nmc, push_wake as pw
 from orchestrator.push_providers import ApnsPushAdapter, PushProviderError
-from shared import institution_profile as ip
 from shared import node_identity as ni
 from tests import fake_astral_kernel as fake
 from tests.helpers.owner_file import seed_owner
-from tests.test_node_mesh_chat import History, StubMailbox, answering, settle
+from tests.test_node_mesh_chat import History, StubMailbox, settle
 
 PHONE = "sha256:" + "ab" * 32
 HEX = "ab" * 32
@@ -364,38 +362,6 @@ async def test_the_whole_path_from_a_kernel_change_to_a_content_free_apns_reques
     assert len(transport.calls) == 2
     await triggers.stop()
     await mesh.stop()
-
-
-async def test_each_institution_owner_gets_a_trigger_that_wakes_for_that_owner_only(tmp_path, monkeypatch):
-    fake.Kernel.instances.clear()
-    transport = FakeTransport()
-    targets = Targets(APNS)
-    wake = pw.WakeGateway(targets=targets, adapters={"apns": adapter(transport)}, limiter=pw.WakeLimiter(min_interval_seconds=0))
-    monkeypatch.setenv(ni.PROFILE_ENV, "institution")
-    async def accepted_issuers():
-        return [{"issuer": "https://idp.example/realms/a", "client_id": "astral-desktop", "jwks_json": json.dumps({"keys": []})}]
-
-    runtime = institution_runtime.InstitutionRuntime(
-        config=ip.InstitutionConfig(key="k", issuers=("https://idp.example/realms/a",)),
-        base_dir=tmp_path,
-        history=History(),
-        runner=answering(),
-        calls=None,
-        binding=fake,
-        issuers=accepted_issuers,
-        settings=node_mesh.MeshSettings(mailbox=node_mesh.MailboxSettings(enabled=False)),
-        phi_active=lambda _owner: False,
-        wake=pw.WakeTriggers(wake),
-    )
-    await runtime.serve_owner(Owner.verified("https://idp.example/realms/a", "alice"))
-    await runtime.serve_owner(Owner.verified("https://idp.example/realms/a", "bob"))
-    await asyncio.sleep(0.05)
-    fake.Kernel.instances[1].peers = [peer(PHONE, connected=False, pending_out=1)]
-    fake.Kernel.instances[1].notify()
-    await settle(lambda: targets.asked)
-    assert targets.asked == [(ni.canonical_owner_id("https://idp.example/realms/a", "bob"), PHONE)]
-    await runtime.stop()
-    nmc.install(None)
 
 
 async def test_a_legacy_personal_owner_is_retired_and_the_mesh_owner_binds_without_waking_an_unavailable_peer(tmp_path, monkeypatch):

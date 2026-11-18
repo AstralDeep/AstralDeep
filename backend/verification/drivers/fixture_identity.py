@@ -1,6 +1,5 @@
-"""Signed fixture identities for the in-process harness (backend/shared/jwks_cache.py):
-supplies only local JWKS retrieval while the product's real JWT signature, issuer,
-and role checks still run; never real Keycloak.
+"""Signed fixture identities for the in-process harness: mints locally signed claims and tokens
+for namespaced verification runs and never reaches a real identity server.
 """
 
 from __future__ import annotations
@@ -19,8 +18,6 @@ class FixtureIdentity:
     _active = None
 
     def __init__(self, run_id: str, *, authority: str | None = None) -> None:
-        from shared import jwks_cache
-
         if os.environ.get("ASTRAL_ENV") != "development":
             raise ValueError("synthetic verification IAM requires explicit development mode")
         if not run_id.startswith("__verif__"):
@@ -54,8 +51,6 @@ class FixtureIdentity:
         }
         self.previous = {key: os.environ.get(key) for key in self.values}
         os.environ.update(self.values)
-        self.cache = jwks_cache._cache
-        self.cache[self.url] = {"jwks": self.jwks, "fetched_at": time.time()}
         self.closed = False
         type(self)._active = self
 
@@ -67,7 +62,6 @@ class FixtureIdentity:
             "iat": int(time.time()), "exp": int(time.time()) + 300,
         }
         token = jwt.encode(issued, self.private_key, algorithm="RS256", headers={"kid": self.kid})
-        self.cache[self.url] = {"jwks": self.jwks, "fetched_at": time.time()}
         return issued, token
 
     def close(self) -> None:
@@ -75,7 +69,6 @@ class FixtureIdentity:
             return
         self.closed = True
         type(self)._active = None
-        self.cache.pop(self.url, None)
         self.private_key = b""
         for key, value in self.previous.items():
             if value is None:

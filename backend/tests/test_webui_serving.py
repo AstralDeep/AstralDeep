@@ -5,16 +5,10 @@ from AstralProjection's packaged static resources.
 
 from pathlib import Path
 
-import pytest
 from astralprojection.resources import static_root, template_path, vendor_path
 
 STATIC_ROOT = Path(str(static_root()))
 SHELL = template_path("shell.html")
-
-
-@pytest.fixture
-def session_access_token(server_identity):
-    return server_identity.token("shell-user")
 
 
 def test_vendor_assets_present():

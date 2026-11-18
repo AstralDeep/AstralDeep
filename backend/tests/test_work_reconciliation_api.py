@@ -7,7 +7,6 @@ from __future__ import annotations
 import os
 import sys
 from unittest.mock import MagicMock, AsyncMock
-from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -25,14 +24,6 @@ STRANGER_SUBJECT = "stranger-user-id"
 OWNER = ""
 STRANGER = ""
 _IDENTITY = None
-
-
-@pytest.fixture(autouse=True)
-def _identity(server_identity, monkeypatch):
-    monkeypatch.setitem(globals(), "_IDENTITY", server_identity)
-    monkeypatch.setitem(globals(), "OWNER", server_identity.owner(OWNER_SUBJECT))
-    monkeypatch.setitem(globals(), "STRANGER", server_identity.owner(STRANGER_SUBJECT))
-    return server_identity
 
 
 def _auth(sub: str) -> dict:
@@ -60,12 +51,6 @@ def _service():
         "operation_state": "retryable",
     }
     return service
-
-
-@pytest.fixture(autouse=True)
-def current_human(monkeypatch, _identity):
-    monkeypatch.setattr("orchestrator.human_request_authority.authenticate_current_human_request",
-                        AsyncMock(return_value=SimpleNamespace(owner_id=OWNER)))
 
 
 def _app(service) -> TestClient:

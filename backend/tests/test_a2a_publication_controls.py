@@ -89,11 +89,6 @@ def _publish(registry, agent_id="weather-1", audiences=None, lifetime="24h", act
 _identity = None
 
 
-@pytest.fixture(autouse=True)
-def _publication_identity(monkeypatch, server_identity):
-    monkeypatch.setitem(globals(), "_identity", server_identity)
-
-
 def _admin_headers() -> dict:
     return _identity.headers(ADMIN, roles=("admin",))
 

@@ -251,7 +251,6 @@ class OrchestratorCalls:
         return ResolvedTool(agent_id, skill.id, scope, pinned or skill_definition(skill))
 
     async def authorize(self, owner_id: str, resolved: ResolvedTool) -> Any:
-        from orchestrator.chain_authority import AuthoritySkip
         from orchestrator import node_mesh_admission
         from orchestrator.node_mesh import NodeMeshError
 
@@ -264,28 +263,7 @@ class OrchestratorCalls:
             except NodeMeshError as exc:
                 raise CallRefused(exc.code) from exc
 
-        bound = None
-        if node_identity.is_institution():
-            bound = node_mesh_admission.current_admission()
-            if (bound is None or bound.resolved != resolved or bound.owner != owner_id
-                    or bound.owner_of() != owner_id or bound.request is None or bound.request.call is None):
-                raise CallRefused("node.mesh_admission_unavailable")
-            try:
-                await bound.mesh.personal_authority_context(bound.request, owner_id, bound.kernel)
-                if bound.check_current is not None:
-                    await bound.check_current()
-            except NodeMeshError as exc:
-                raise CallRefused(exc.code) from exc
-
-        authority = await self._orch.derive_machine_authority(
-            user_id=owner_id, agent_id=resolved.agent_id, turn_class="mesh_request", consented_scopes=[resolved.scope]
-        )
-        if isinstance(authority, AuthoritySkip):
-            raise CallRefused(dotted(f"node.authority_{authority.reason}"))
-        if (bound is not None and (node_mesh_admission.current_admission() is not bound
-                                   or bound.owner_of() != owner_id)):
-            raise CallRefused("node.owner_mismatch")
-        return authority
+        raise CallRefused("node.mesh_admission_unavailable")
 
     async def run(
         self,

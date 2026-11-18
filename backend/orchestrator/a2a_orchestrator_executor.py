@@ -25,10 +25,7 @@ from a2a.types import (
     AgentProvider,
     Message as A2AMessage,
     Role,
-    SecurityScheme,
     SecurityRequirement,
-    StringList,
-    OpenIdConnectSecurityScheme,
 )
 from a2a.utils.constants import PROTOCOL_VERSION_1_0
 
@@ -442,8 +439,6 @@ def _public_url() -> str:
 
 
 def build_orchestrator_a2a_card(orchestrator) -> A2AAgentCard:
-    authority = os.getenv("KEYCLOAK_AUTHORITY", "")
-    registry = _publication_registry(orchestrator)
     policy = _publication_policy(orchestrator)
     signer = None
     try:
@@ -480,27 +475,6 @@ def build_orchestrator_a2a_card(orchestrator) -> A2AAgentCard:
 
     security_schemes = {}
     security_requirements: List[SecurityRequirement] = []
-    if authority and not node_identity.is_personal():
-        security_schemes["keycloak_oidc"] = SecurityScheme(
-            open_id_connect_security_scheme=OpenIdConnectSecurityScheme(
-                open_id_connect_url=f"{authority}/.well-known/openid-configuration",
-            )
-        )
-        if unsignable:
-            advertised = []
-        elif policy is not None:
-            advertised = list(dict.fromkeys(scope for record in publications
-                             for scope in record.audiences
-                             if scope in policy._registered_scopes(record.agent_id)))
-        elif registry is not None:
-            advertised = list(registry.advertised_audiences()) if registry.available else []
-        else:
-            advertised = ["tools:read", "tools:write", "tools:search", "tools:system"]
-        if advertised:
-            security_requirements.append(SecurityRequirement(schemes={
-                "keycloak_oidc": StringList(list=advertised),
-            }))
-
     card = A2AAgentCard(
         name="AstralDeep Orchestrator",
         description="Multi-agent orchestrator with LLM-powered tool routing. Routes requests to specialized agents.",

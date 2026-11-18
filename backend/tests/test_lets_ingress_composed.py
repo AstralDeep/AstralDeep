@@ -144,11 +144,6 @@ def _signed_manifest(
 
 
 class IngressWarden:
-    def __init__(self, signer: Ed25519Signer, policy: PolicySpec) -> None:
-        self.signer = signer
-        self.policy = policy
-        self.calls: list[dict[str, object]] = []
-        self.failure: Exception | None = None
 
     def authorize_tool(self, **values: object) -> Receipt:
         self.calls.append(dict(values))
@@ -192,33 +187,6 @@ class IngressWarden:
 
 
 class IngressIdentity:
-    def __init__(self) -> None:
-        from cryptography.hazmat.primitives import serialization
-        from cryptography.hazmat.primitives.asymmetric import rsa
-        from jose import jwk
-        from shared import jwks_cache
-
-        self.authority = f"https://ingress-{uuid.uuid4().hex}.invalid/realms/astral"
-        self.url = f"{self.authority}/protocol/openid-connect/certs"
-        self.kid = f"ingress-{uuid.uuid4().hex}"
-        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        self.private_key = key.private_bytes(
-            serialization.Encoding.PEM,
-            serialization.PrivateFormat.PKCS8,
-            serialization.NoEncryption(),
-        )
-        public = key.public_key().public_bytes(
-            serialization.Encoding.PEM,
-            serialization.PublicFormat.SubjectPublicKeyInfo,
-        )
-        self.jwks = {
-            "keys": [
-                jwk.construct(public, algorithm="RS256").to_dict()
-                | {"kid": self.kid, "use": "sig"}
-            ]
-        }
-        self.cache = jwks_cache._cache
-        self.cache[self.url] = {"jwks": self.jwks, "fetched_at": time.time()}
 
     def _encode(self, claims: dict[str, Any]) -> str:
         return jwt.encode(
@@ -293,18 +261,6 @@ async def ingress_database(ingress_plane, monkeypatch):
 
 
 class GeneratedExecutor:
-    def __init__(self, root: Path, slug: str, agent_id: str) -> None:
-        self.root = root
-        self.slug = slug
-        self.agent_id = agent_id
-        self.captured: list[MCPRequest] = []
-        self.bundle_dir = root / "agents" / slug
-        self.bundle_dir.mkdir(parents=True)
-        self.replay_root = root / "executor-state"
-        self.replay_root.mkdir()
-        self.effect_log = root / f"effects-{slug}.jsonl"
-        self.module: Any = None
-        self.server: Any = None
 
     def install(
         self,
@@ -477,8 +433,6 @@ class GeneratedExecutor:
 
 
 class _RecorderSocket:
-    def __init__(self) -> None:
-        self.sent: list[dict[str, Any]] = []
 
     async def send_text(self, data: str) -> bool:
         try:
@@ -516,37 +470,6 @@ def _agent_card(agent_id: str) -> SimpleNamespace:
 
 
 class IngressRig:
-    def __init__(
-        self,
-        *,
-        plane: Any,
-        orchestrator: Orchestrator,
-        identity: IngressIdentity | None = None,
-        warden: IngressWarden,
-        gateway: LetsAuthorizationGateway,
-        executor: GeneratedExecutor,
-        owner_id: str,
-        agent_id: str,
-        runtime_id: str,
-        runtime_generation: int,
-        audience: str,
-        binding_id: str,
-        repository: Any,
-    ) -> None:
-        self.plane = plane
-        self.orchestrator = orchestrator
-        self.identity = identity
-        self.warden = warden
-        self.gateway = gateway
-        self.executor = executor
-        self.owner_id = owner_id
-        self.agent_id = agent_id
-        self.runtime_id = runtime_id
-        self.runtime_generation = runtime_generation
-        self.audience = audience
-        self.binding_id = binding_id
-        self.repository = repository
-        self.agent = executor.build_agent()
 
     def wire_orchestrator(self) -> None:
         orch = self.orchestrator

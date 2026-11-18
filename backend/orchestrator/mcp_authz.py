@@ -11,13 +11,10 @@ from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Mapping, Optional
 from urllib.parse import urlsplit, urlunsplit
 
-from jose import jwt as jose_jwt
 from starlette.requests import Request
 
 from orchestrator import caller_tickets
 from orchestrator.auth import NODE_BEARER_REFUSED, node_caller_challenge
-from shared import node_identity
-from shared.jwks_cache import get_jwks
 
 
 MCP_AUDIENCE = "astral-mcp"
@@ -77,20 +74,10 @@ def resource_metadata_url(public_base_url: str) -> str:
 
 
 def protected_resource_metadata(public_base_url: str) -> dict[str, Any]:
-    if node_identity.is_personal():
-        return {
-            "resource": resource_identifier(public_base_url),
-            "scopes_supported": list(MCP_SCOPES),
-            "bearer_methods_supported": [],
-        }
-    authority = os.getenv("KEYCLOAK_AUTHORITY", "").strip().rstrip("/")
-    if not authority:
-        raise RuntimeError("KEYCLOAK_AUTHORITY is required when FF_MCP_SERVER is enabled")
     return {
         "resource": resource_identifier(public_base_url),
-        "authorization_servers": [authority],
         "scopes_supported": list(MCP_SCOPES),
-        "bearer_methods_supported": ["header"],
+        "bearer_methods_supported": [],
     }
 
 
@@ -132,13 +119,7 @@ def challenge_header(
     error: str,
     required_scopes: Iterable[str],
 ) -> str:
-    if node_identity.is_personal():
-        return node_caller_challenge("astral-mcp", error)
-    scopes = " ".join(dict.fromkeys(required_scopes))
-    return (
-        f'Bearer resource_metadata="{resource_metadata_url(public_base_url)}", '
-        f'scope="{scopes}", error="{error}"'
-    )
+    return node_caller_challenge("astral-mcp", error)
 
 
 def bearer_from_headers(
@@ -167,30 +148,10 @@ def bearer_from_headers(
 
 async def decode_mcp_token(token: str) -> dict[str, Any]:
     refuse_on_personal_node(())
-    authority = os.getenv("KEYCLOAK_AUTHORITY", "").strip().rstrip("/")
-    if not authority:
-        raise RuntimeError("KEYCLOAK_AUTHORITY is not configured")
-    jwks = await get_jwks(
-        f"{authority}/protocol/openid-connect/certs",
-        token=token,
-    )
-    payload = jose_jwt.decode(
-        token,
-        jwks,
-        algorithms=["RS256"],
-        audience=MCP_AUDIENCE,
-        issuer=authority,
-        options={"verify_at_hash": False},
-    )
-    if not isinstance(payload, dict) or not payload.get("sub"):
-        raise ValueError("MCP token has no subject")
-    payload["sub"] = node_identity.canonical_owner_id(authority, payload["sub"])
-    return payload
 
 
 def refuse_on_personal_node(required_scopes: Iterable[str]) -> None:
-    if node_identity.is_personal():
-        raise MCPAuthError(401, NODE_BEARER_REFUSED, "this node refuses bearer tokens", tuple(required_scopes))
+    raise MCPAuthError(401, NODE_BEARER_REFUSED, "this node refuses bearer tokens", tuple(required_scopes))
 
 
 def require_mcp_entry_role(

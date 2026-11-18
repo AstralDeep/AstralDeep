@@ -11,7 +11,6 @@ import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
@@ -37,12 +36,6 @@ from orchestrator.work_admission import (  # noqa: E402
 
 
 OWNER = "11111111-1111-1111-1111-111111111111"
-
-
-@pytest.fixture(autouse=True)
-def _identity(server_identity, monkeypatch):
-    monkeypatch.setitem(globals(), "_IDENTITY", server_identity)
-    return server_identity
 
 
 _IDENTITY = None
@@ -290,16 +283,6 @@ def test_endpoints_require_an_authenticated_user_role():
     client = _client(EmergencyStopCoordinator())
     response = client.get("/api/emergency-stop", headers=_auth(roles=("guest",)))
     assert response.status_code == 403
-
-
-def test_unsigned_and_foreign_signed_tokens_are_refused():
-    from tests.helpers.idp_tokens import FakeIssuer
-
-    client = _client(EmergencyStopCoordinator())
-    for bad in ("e30.e30.sig", FakeIssuer().token(OWNER)):
-        headers = {"Authorization": f"Bearer {bad}"}
-        assert client.get("/api/emergency-stop", headers=headers).status_code == 401
-        assert client.post("/api/emergency-stop/stop", headers=headers, json={}).status_code == 401
 
 
 def test_status_endpoint_without_any_orchestrator_is_unavailable():

@@ -28,28 +28,6 @@ def driver(tmp_path):
         value._fixture_identity.close()
 
 
-def test_state_owner_matches_authenticated_socket_owner(driver):
-    from orchestrator.auth import verify_production_token, verify_user
-    from shared.node_identity import canonical_owner_id
-
-    logical = Principal("__verif__owners_primary")
-    principal = driver._execution_principal(logical)
-
-    async def exercise():
-        ws = await driver._register_session(principal)
-        session = driver.orch.ui_sessions[ws]
-        verified = await verify_user(await verify_production_token(session["_raw_token"]))
-        assert session == verified | {"_raw_token": session["_raw_token"]}
-        assert principal.user_id == verified["sub"]
-        assert principal.user_id == canonical_owner_id(
-            driver._fixture_identity.authority, verified["astral_idp_sub"],
-        )
-        assert verified["astral_idp_sub"].startswith("__verif__owners_primary_exec_")
-        assert driver._execution_principal(principal) is principal
-
-    asyncio.run(exercise())
-
-
 def test_foreign_or_changed_principals_do_not_gain_owner_mapping(driver):
     driver._execution_principal(Principal("__verif__owners_primary"))
     with pytest.raises(ValueError, match="namespace"):
