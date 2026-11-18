@@ -1,4 +1,4 @@
-# Platform support
+﻿# Platform support
 
 A user install runs the node and its tools as processes on your machine. It needs no container engine. Each tool call is confined by what the host operating system offers.
 
@@ -10,7 +10,7 @@ This page says which hosts work and what each one gives you.
 | Linux 6.12 or newer, x86_64 or arm64 | Supported. Tool calls run under bubblewrap with Landlock ABI 6 and seccomp. Needs unprivileged user namespaces. |
 | Linux older than 6.12, or with Landlock off | `read`, `glob` and `list` work. `bash` and declared tools are refused with `exec.backend_unavailable`. |
 | Other CPU architectures | Not supported. No node pack exists for them. |
-| Windows | Not supported. |
+| Windows | Not supported as a deployment host: no confinement backend exists for it, so `astralvessel up` refuses it with `platform_unsupported`. The Python package imports and the test suite run on Windows for development. See Developing on Windows. |
 
 Every refusal names the missing piece: `landlock_abi`, `bwrap_missing`, `userns_denied`, `sandbox_exec_missing`, `app_sandboxed` or `platform_unsupported`. `astralvessel up` prints it.
 
@@ -35,6 +35,15 @@ astralvessel check
 ```
 
 It runs the backend conformance suite from the node pack and prints one line per case. A case the host cannot run prints as skipped with the reason. A failed case exits with status 1. See [Isolation and probes](isolation.md).
+
+## Developing on Windows
+
+Windows is not a deployment host, but the package imports there and the test suite runs, so the
+harness and its clients can be developed on one. Every test that needs a POSIX property carries a
+skip with its reason (`needs_bash`, `needs_procfs`, `needs_posix_modes`, `needs_host_backend` and
+the rest in `tests/conftest.py`). The process-exec backend and the sandbox conformance cases stay
+Linux-only. A test that fails only some of the time is never skipped for that alone. It is
+investigated first, because a real ordering fault can hide behind a platform difference.
 
 ## Python and the node pack
 

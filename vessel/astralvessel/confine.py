@@ -7,7 +7,6 @@ from __future__ import annotations
 import ctypes
 import os
 import platform
-import resource
 import struct
 import sys
 
@@ -26,7 +25,7 @@ SCOPE_ABSTRACT_UNIX_SOCKET, SCOPE_SIGNAL = 1, 2
 SYSTEM_PATHS = ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/opt")
 DEVICES = ("/dev/null", "/dev/zero", "/dev/urandom", "/dev/random")
 
-_libc = ctypes.CDLL(None, use_errno=True)
+_libc = ctypes.CDLL(None, use_errno=True) if sys.platform.startswith("linux") else None
 
 
 def abi_version() -> int:
@@ -134,6 +133,8 @@ def main(argv: list[str]) -> None:
     if not scratch or not command:
         raise SystemExit("usage: confine --scratch DIR [--read PATH]... -- argv...")
     try:
+        import resource  # POSIX only; confine.py runs as the sandbox entrypoint on Linux
+
         if fsize:
             # No single file the call writes may outgrow the turn's disk limit.
             resource.setrlimit(resource.RLIMIT_FSIZE, (fsize, fsize))
