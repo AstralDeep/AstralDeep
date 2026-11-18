@@ -66,6 +66,10 @@ async def test_a_node_with_legacy_rows_and_a_phase_2_connection_keeps_both_uncha
             info = await mesh.owner.add_connection(server.rs_url, "fixture", [])
             await connection_reached(mesh, info.id)
             await sign_in(mesh.owner.kernel, server, info.id)
+            await until(
+                lambda: [state.state for info in mesh.node.kernel.connections() for state in info.other_devices] == ["signed_in"],
+                "the owner sign-in to reach the node",
+            )
             keys = node_connections.legacy_keys_of(spy, "owner")
             first = await node_connections.status(mesh.node, legacy_keys=keys)
             second = await node_connections.status(mesh.node, legacy_keys=keys)
