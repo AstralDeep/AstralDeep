@@ -85,6 +85,13 @@ async def point_at_node(a, *devices):
         device.kernel.remember_contact_device(a.owner.mesh_id, address)
 
 
+async def verified_on(device, a):
+    await until(
+        lambda: any(c.mesh == a.owner.mesh_id and c.state == "verified" for c in device.kernel.contacts()),
+        "the verified contact to reach the device",
+    )
+
+
 def texts(device, grant):
     return [message.text for message in device.kernel.shared_chat(grant).messages]
 
@@ -110,6 +117,7 @@ async def test_a_verified_contact_reads_the_chat_and_a_third_mesh_does_not(tmp_p
         await verified_contacts(a.owner, b.owner)
         _, grant = await share_chat(a, b)
         await point_at_node(a, b.phone)
+        await verified_on(b.phone, a)
         view = await b.phone.read_shared(a.owner.mesh_id, grant.id)
         assert [message.text for message in view.messages] == ["first"]
         with pytest.raises(ak.KernelError) as refused:
@@ -128,6 +136,7 @@ async def test_a_new_contact_device_receives_the_item(tmp_path, monkeypatch):
         await b.pair_phone()
         await until(lambda: b.phone.kernel.contacts(), "the contact to reach the new device")
         await point_at_node(a, b.phone)
+        await verified_on(b.phone, a)
         view = await b.phone.read_shared(a.owner.mesh_id, grant.id)
         assert [message.text for message in view.messages] == ["first"]
 
@@ -137,6 +146,7 @@ async def test_a_removed_contact_device_is_refused(tmp_path, monkeypatch):
         await verified_contacts(a.owner, b.owner)
         chat, grant = await share_chat(a, b)
         await point_at_node(a, b.phone, b.owner)
+        await verified_on(b.phone, a)
         await b.phone.read_shared(a.owner.mesh_id, grant.id)
         await b.phone.stop()
         b.owner.kernel.remove_device(b.phone.device_id)
@@ -170,6 +180,7 @@ async def test_after_revocation_the_contact_cannot_read_new_events(tmp_path, mon
         await verified_contacts(a.owner, b.owner)
         chat, grant = await share_chat(a, b)
         await point_at_node(a, b.phone)
+        await verified_on(b.phone, a)
         await b.phone.read_shared(a.owner.mesh_id, grant.id)
         a.owner.revoke(grant.id)
         await until(lambda: not a.node.kernel.shares(), "the revocation to reach the node")
@@ -187,6 +198,7 @@ async def test_a_contact_offline_at_revocation_is_refused_at_its_next_session(tm
         await verified_contacts(a.owner, b.owner)
         chat, grant = await share_chat(a, b)
         await point_at_node(a, b.phone)
+        await verified_on(b.phone, a)
         await b.phone.read_shared(a.owner.mesh_id, grant.id)
         await b.phone.stop()
         a.owner.revoke(grant.id)
