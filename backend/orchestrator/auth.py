@@ -1,7 +1,4 @@
-"""BFF auth proxy and JWT verification for the REST API: exchanges OIDC tokens with
-Keycloak without exposing the client_secret to the browser, and supplies the
-require_user_id/verify_admin dependencies and the personal-node bearer and sign-in refusals.
-"""
+"""Bearer refusals and the require_user_id/verify_admin dependencies for the REST API; every bearer is refused."""
 
 import os
 import logging
@@ -105,10 +102,6 @@ def _extract_roles(user_data: dict) -> list:
     if isinstance(roles, list):
         roles = roles.copy()
     if "resource_access" in user_data:
-        client_id = os.getenv("KEYCLOAK_CLIENT_ID", "astral-frontend")
-        if client_id in user_data["resource_access"]:
-            client_roles = user_data["resource_access"][client_id].get("roles", [])
-            roles.extend(client_roles)
         if "account" in user_data["resource_access"]:
             account_roles = user_data["resource_access"]["account"].get("roles", [])
             roles.extend(account_roles)

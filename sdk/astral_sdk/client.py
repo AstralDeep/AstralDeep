@@ -129,7 +129,7 @@ def _unwrap_tool_result(result: dict[str, Any]) -> dict[str, Any]:
 
 def _terminal_guard(token: str) -> None:
     if token.startswith("afk_"):
-        raise AstralAuthError("terminal sessions require an owner Keycloak access token",
+        raise AstralAuthError("terminal sessions require an owner access token",
                               status_code=401,
                               code="terminal_owner_authentication_required")
 

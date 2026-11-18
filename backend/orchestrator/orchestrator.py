@@ -19972,16 +19972,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     err_msg = (
                         "Tool execution is disabled: this unattended task could not "
                         f"obtain delegated authorization for agent '{agent_id}'. "
-                        "An administrator must verify the Keycloak token-exchange "
-                        "configuration before the task can use tools."
+                        "Unattended tasks have no delegated authorization on this node."
                     )
                 else:
                     err_msg = (
                         "Tool execution is disabled: delegated authorization "
-                        "(RFC 8693 token exchange) is unavailable for agent "
-                        f"'{agent_id}'. An operator must register the tools:* "
-                        "client scopes on the identity provider (see "
-                        "docs/keycloak_agent_delegation_setup.md), or set "
+                        f"is unavailable for agent '{agent_id}'. Set "
                         "DELEGATION_REQUIRED=false to accept unscoped dispatch."
                     )
                 logger.error(
@@ -25895,7 +25891,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             {"name": "Components", "description": "Saved UI component management — save, list, delete, combine, and condense components."},
             {"name": "Agents", "description": "Connected agent discovery and information."},
             {"name": "System", "description": "System dashboard and configuration."},
-            {"name": "Auth", "description": "Authentication token proxy (Keycloak BFF)."},
+            {"name": "Auth", "description": "Authentication."},
             {"name": "Files", "description": "File upload and download."},
             {"name": "Audit", "description": "Per-user audit log (HIPAA + NIST AU). Read-only; admin-blind."},
         ]
@@ -25908,7 +25904,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 "The orchestrator provides two communication channels:\n\n"
                 "1. **REST API** (documented below) — Request/response endpoints for CRUD operations\n"
                 "2. **WebSocket** (`ws://<host>:<port>/ws`) — Real-time streaming for chat responses and live updates\n\n"
-                "Both channels share the same authentication (Keycloak JWT Bearer tokens).\n\n"
+                "Both channels share the same authentication (mesh caller tickets).\n\n"
                 "---\n"
                 + WS_PROTOCOL_DOCS
             ),
@@ -26143,7 +26139,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 setup_orchestrator_a2a(app, self)
                 logger.warning(
                     "A2A JSON-RPC endpoint mounted at /a2a/ (FF_A2A_SERVER=true). "
-                    "POST /a2a requires a first-party Keycloak bearer and "
+                    "POST /a2a refuses every bearer token and "
                     "dispatches through the tool authorization gate; the "
                     "anonymous agent card lists only capabilities the owner "
                     "explicitly published for A2A. "
@@ -26913,12 +26909,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         if not user_id or user_id == "legacy":
             return
         try:
-            roles = list(set(
-                user_data.get("realm_access", {}).get("roles", []) +
-                user_data.get("resource_access", {}).get(
-                    os.getenv("KEYCLOAK_CLIENT_ID", "astral-frontend"), {}
-                ).get("roles", [])
-            ))
+            roles = list(set(user_data.get("realm_access", {}).get("roles", [])))
             from orchestrator.plane_repository_context import (
                 plane_source_from_orchestrator,
             )

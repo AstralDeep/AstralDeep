@@ -1,4 +1,4 @@
-"""Projects verified external identity claims (ORCID) from the Keycloak-verified token
+"""Projects verified external identity claims (ORCID) from the verified token
 into the MCP envelope for agents declaring required_identity_claims — never the raw
 bearer token. Used by tool_permissions.py and tool_visibility.py.
 """

@@ -137,7 +137,7 @@ _SKIP_BODY = {
     "mint_failed": "Could not refresh its authorization. Re-confirm to resume.",
     "token_endpoint_unconfigured": (
         "The server cannot reach its identity provider because the token "
-        "endpoint is not configured (KEYCLOAK_AUTHORITY). An administrator "
+        "endpoint is not configured. An administrator "
         "must fix the server configuration; re-confirming will not help. "
         "Resume the job once that is done."
     ),

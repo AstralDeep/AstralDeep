@@ -32,7 +32,6 @@ class FixtureIdentity:
                 raise ValueError("synthetic IAM issuer must remain on verification.invalid")
         self.run_id = run_id
         self.authority = authority or f"https://verification.invalid/realms/{uuid.uuid4().hex}"
-        self.url = f"{self.authority}/protocol/openid-connect/certs"
         self.kid = f"fixture-{uuid.uuid4().hex}"
         key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
         self.private_key = key.private_bytes(
@@ -45,13 +44,6 @@ class FixtureIdentity:
         self.jwks = {"keys": [jwk.construct(public, algorithm="RS256").to_dict() | {
             "kid": self.kid, "use": "sig",
         }]}
-        self.values = {
-            "KEYCLOAK_AUTHORITY": self.authority,
-            "KEYCLOAK_CLIENT_ID": "astral-frontend",
-            "KEYCLOAK_ALLOWED_AZP": "astral-frontend",
-        }
-        self.previous = {key: os.environ.get(key) for key in self.values}
-        os.environ.update(self.values)
         self.closed = False
         type(self)._active = self
 
@@ -71,11 +63,7 @@ class FixtureIdentity:
         self.closed = True
         type(self)._active = None
         self.private_key = b""
-        for key, value in self.previous.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
+
 
 
 def fixture_issuer_digest(issuer: str) -> str:

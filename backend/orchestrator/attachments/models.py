@@ -17,7 +17,7 @@ AttachmentCategory = Literal[
 
 class Attachment(BaseModel):
     attachment_id: str = Field(..., description="UUIDv4")
-    user_id: str = Field(..., description="Keycloak sub of the owning user")
+    user_id: str = Field(..., description="Owner id of the owning user")
     filename: str
     content_type: str
     category: AttachmentCategory

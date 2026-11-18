@@ -1,5 +1,5 @@
 """Owns publisher-only mesh wake registrations in an isolated encrypted Plane credential namespace.
-Keycloak-authorized registration issues an opaque wake-only capability; owner fences, revocation, expiry and durable rate counters gate its use."""
+Authorized registration issues an opaque wake-only capability; owner fences, revocation, expiry and durable rate counters gate its use."""
 
 from __future__ import annotations
 

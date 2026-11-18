@@ -1,4 +1,4 @@
-"""Mints and verifies short-lived, unstored HMAC bearer tokens binding one Keycloak
+"""Mints and verifies short-lived, unstored HMAC bearer tokens binding one
 subject to a device and connection generation for voice control; durable session rows
 retain only the binding id and expiry to check against it.
 """

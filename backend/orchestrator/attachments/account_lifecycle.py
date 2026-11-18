@@ -1,4 +1,4 @@
-"""Self-service account-retirement entry point keyed to the verified Keycloak sub;
+"""Self-service account-retirement entry point keyed to the verified owner id;
 delegates to attachments/purge.py to atomically retire the owner's namespace, with
 physical reconciliation happening asynchronously.
 """

@@ -112,9 +112,9 @@ permission catalog. The public schema accepts only a fixed `mode` and an opaque
 `qualification_id`. It accepts no command, code, path, owner, runtime, lease, issuer,
 permit, signer, key, or authority override.
 
-The route retains Keycloak owner/scope, tool permission, PHI, source review, exact
+The route retains owner/scope, tool permission, PHI, source review, exact
 attended human approval, and hash-chained audit gates. A framework MCP caller cannot
-satisfy the human approval. The host context also binds the current Keycloak session,
+satisfy the human approval. The host context also binds the current owner session,
 chat, pending callback, and exact installed agent/card/server/actuator implementation.
 Displacement, logout, timeout, source change, and current permission loss fail closed.
 No provider or agent credentials are injected into this diagnostic agent.
@@ -166,7 +166,7 @@ return a late ready ID or start a new expiry task. Cancellation of the shutdown 
 still waits for that owned cleanup before propagating cancellation.
 
 Local fixture tests exercise these seams with independently signed standard receipts.
-Actual ordinary issuance through configured Keycloak/Plane/LETS and legitimate attended
+Actual ordinary issuance through configured Plane/LETS and legitimate attended
 review remains a distinct required qualification; fixtures do not establish it.
 
 ## Operator permit plan/bundle

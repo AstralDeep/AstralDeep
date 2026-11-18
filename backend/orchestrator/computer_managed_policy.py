@@ -1,5 +1,5 @@
 """Managed-policy ceilings for computer control: the Mac host's descriptor block and
-Keycloak role denials narrow the same switches with the stricter source winning, and an
+Role denials narrow the same switches with the stricter source winning, and an
 unavailable role lookup falls back to the last verified value or fails closed; used by
 computer_sessions.py, the dispatch gate and the diagnostics route.
 """

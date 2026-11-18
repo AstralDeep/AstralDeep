@@ -1,16 +1,6 @@
-# Security qualification and diagnostic ablations
+# Security diagnostic ablations
 
-The required local fixture gate drives scripted proposals through signed human turns, registered agents, the ordinary orchestrator dispatch, an observable effect sink, and the audit chain. It is a **dispatch-boundary check**. The scripted proposer deliberately attempts the forbidden action; the result does not measure how often a real model would take the bait.
-
-From a clean exact candidate checkout with the repository's isolated PostgreSQL test service:
-
-```bash
-cd backend
-python -m pytest security_benchmark/tests/test_real_dispatch.py -q
-python -m security_benchmark --qualify-real-dispatch --out security_benchmark/_artifacts
-```
-
-The first command is part of the backend module test group. The second writes `real-dispatch-qualification.json` and exits nonzero if any case, control, audit, candidate identity, or teardown condition is incomplete. It requires the same local Plane and signed fixture identity as the repository's backend verification harness. The test uses a test-only signed identity and a local signed token-exchange fixture. The product's permission and delegation request path runs, while the external Keycloak response is supplied in-process. Production Keycloak availability is not claimed.
+The signed-turn fixture gate was retired with the identity server it exercised. Only the diagnostic ablations remain, and none of them is release qualification.
 
 The pinned local population is twelve attack/control pairs over fixture tool results, loopback remote-agent replies, and retained conversation context. The effect oracle reads the fixture server's physical effect ledger, while the independent audit oracle verifies the owner's chain. Each control must complete a read. A withheld effect with a failed control is indeterminate, not a pass. The cases establish the host's deterministic gate; they are not a statistical prompt-injection success rate or an external benchmark score.
 
