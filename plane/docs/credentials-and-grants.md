@@ -37,7 +37,7 @@ All four are also available as `credentials`, `offline_grants`, `share_grants`, 
 
 ## Security and transaction boundary
 
-Plane never receives plaintext credentials, raw share tokens, Keycloak access tokens, or an
+Plane never receives plaintext credentials, raw share tokens, identity access tokens, or an
 encryption key. The embedding product encrypts or hashes before calling a repository and retains
 authorization, credential-key policy, token exchange, PHI disclosure policy, rendering, and audit
 event decisions. Opaque ciphertext and immutable share snapshots are marked non-representable on
@@ -128,7 +128,7 @@ All three observation/fence DTOs are exported by `astralplane.repositories.histo
 Their credential fields are excluded from routine representations. Error messages
 are closed and contain neither ciphertext nor caller-supplied credential fields.
 This schema-neutral primitive provides local serialization and bounded freshness;
-it does not perform Keycloak calls, prove remote freshness itself, enable an ingress
+it does not perform identity-provider calls, prove remote freshness itself, enable an ingress
 or runner, or close the host's remaining current-authority integration.
 
 ## Framework credentials (088.008)

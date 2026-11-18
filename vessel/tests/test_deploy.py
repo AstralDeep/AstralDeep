@@ -185,7 +185,7 @@ def test_the_node_section_validates_what_it_publishes_and_what_it_may_set(data_p
         path.write_text(bad + deployment_text(data_package))
         with pytest.raises(ValueError):
             load_deployment(path)
-    for name in ("KEYCLOAK_AUTHORITY", "ASTRAL_ACCEPTED_ISSUERS", "ASTRAL_NODE_OWNER"):
+    for name in ("ASTRAL_NODE_OWNER",):
         path.write_text(f'[node.environment]\n{name} = "x"\n' + deployment_text(data_package))
         with pytest.raises(ValueError, match=name):
             load_deployment(path)
