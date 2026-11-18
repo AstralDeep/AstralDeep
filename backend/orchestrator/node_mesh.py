@@ -1122,7 +1122,7 @@ class NodeMesh:
             result = await asyncio.to_thread(function, *arguments)
             return await result if inspect.isawaitable(result) else result
         except self._binding.KernelError as exc:
-            raise NodeMeshError(_code_of(exc)) from exc
+            raise NodeMeshError(_code_with_phi(exc)) from exc
 
     async def sync_now(self) -> None:
         if self._quarantined:

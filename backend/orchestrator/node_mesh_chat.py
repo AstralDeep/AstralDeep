@@ -532,9 +532,10 @@ class MeshChatBridge:
             current = await self._mesh.request(request.id)
             if current.state.name == "PENDING":
                 await self._refuse(request, exc.code if isinstance(exc, NodeMeshError) else "node.turn_failed")
+            elif isinstance(exc, NodeMeshError) and exc.code in PHI_CODES and current.state.name not in ("ANSWERED", "REFUSED"):
+                await self._refuse(request, exc.code)
             elif current.state.name == "CLAIMED":
-                code = exc.code if isinstance(exc, NodeMeshError) and exc.code in PHI_CODES else "node.outcome_unknown"
-                await self._refuse(request, code)
+                await self._refuse(request, "node.outcome_unknown")
             else:
                 logger.warning("node_mesh_request_outcome_unknown: %s", exc.code if isinstance(exc, NodeMeshError) else type(exc).__name__)
 
