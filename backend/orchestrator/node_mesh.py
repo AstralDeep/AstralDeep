@@ -394,6 +394,9 @@ class StepRecord:
     receipt: Optional[str] = None
 
 
+DEFAULT_SANDBOX: Any = object()
+
+
 class NodeMesh:
     def __init__(
         self,
@@ -403,8 +406,10 @@ class NodeMesh:
         binding: Any = None,
         mailbox: Optional[MailboxProcess] = None,
         mailbox_address: Optional[str] = None,
-        sandbox: Optional[node_stdio_launcher.SandboxBackend] = None,
+        sandbox: Any = DEFAULT_SANDBOX,
     ):
+        if sandbox is DEFAULT_SANDBOX:
+            sandbox = node_stdio_exec.default_backend(Path(data_dir))
         self._launcher = node_stdio_launcher.NodeStdioLauncher(sandbox)
         self._mailbox_address = mailbox_address
         self._data_dir = Path(data_dir)
@@ -1147,9 +1152,7 @@ async def start_configured(data_dir: Optional[Path] = None) -> Optional[NodeMesh
         return None
     try:
         mesh_dir = data_dir or node_identity.data_dir()
-        mesh = NodeMesh(
-            data_dir=mesh_dir, settings=MeshSettings.from_env(), sandbox=node_stdio_exec.default_backend(mesh_dir)
-        )
+        mesh = NodeMesh(data_dir=mesh_dir, settings=MeshSettings.from_env())
     except MeshUnavailable as exc:
         logger.warning("node_mesh_unavailable: %s", exc.code)
         return None

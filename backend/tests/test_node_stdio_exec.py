@@ -245,3 +245,22 @@ def test_the_credentials_travel_over_an_inherited_pipe_and_no_file_holds_them(mo
     assert seen["files"] == ["policy.json"]
     assert secret not in " ".join(seen["argv"]) and secret not in json.dumps(seen["env"])
     process._scratch.clear()
+
+
+def test_a_node_mesh_without_an_explicit_sandbox_installs_the_default_backend(monkeypatch, tmp_path):
+    from orchestrator import node_mesh
+
+    chosen = object()
+    asked = []
+    monkeypatch.setattr(node_mesh.node_stdio_exec, "default_backend", lambda directory: asked.append(directory) or chosen)
+    mesh = node_mesh.NodeMesh(data_dir=tmp_path, binding=object())
+    assert asked == [tmp_path] and mesh._launcher._backend is chosen
+    assert node_mesh.NodeMesh(data_dir=tmp_path, binding=object(), sandbox=None)._launcher.refusal == "connection.sandbox_unavailable"
+
+
+def test_a_node_mesh_on_a_machine_with_no_backend_keeps_the_refusal(monkeypatch, tmp_path):
+    from orchestrator import node_mesh
+
+    refusing(monkeypatch)
+    mesh = node_mesh.NodeMesh(data_dir=tmp_path, binding=object())
+    assert mesh._launcher.refusal == "connection.sandbox_unavailable"

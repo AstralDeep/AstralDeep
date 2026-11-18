@@ -206,6 +206,7 @@ def test_the_listing_names_the_refusal_for_a_stdio_connection_this_node_would_ru
 
 
 async def test_in_production_the_node_refuses_a_stdio_proposal_with_the_sandbox_code(tmp_path, monkeypatch):
+    monkeypatch.setattr("orchestrator.node_stdio_exec.default_backend", lambda directory: None)
     async with dev_node(tmp_path, monkeypatch) as mesh:
         assert mesh.node.stdio_refusal == SANDBOX_UNAVAILABLE
         with pytest.raises(ak.KernelError) as refused:
