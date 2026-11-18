@@ -246,3 +246,79 @@ def test_a_staged_copy_that_differs_from_the_verified_bytes_is_refused(good):
     with pytest.raises(release.ReleaseError, match="differs from the verified bytes"):
         subject.stage_node_pack()
     shutil.rmtree(subject.staging)
+
+
+def build_receipt(platform="linux-x86_64", deep=None, **changes):
+    receipt = {
+        "platform": platform, "deep_commit": deep, "kernel_artifacts": {"wheel": "k.whl", "mailbox": "mb"},
+        "builder_base": "debian:bookworm", "relocation_image": "debian:bookworm-slim", "apt_snapshot": "20260101T000000Z",
+        "builder_image_id": "sha256:" + "a" * 64,
+    }
+    receipt.update(changes)
+    return receipt
+
+
+def linux_folder(good, receipt=None, raw=None):
+    folder = good.root / "linux-x86_64"
+    (folder / "node-pack-build.json").unlink(missing_ok=True)
+    if raw is not None:
+        (folder / "node-pack-build.json").write_text(raw)
+    elif receipt is not None:
+        (folder / "node-pack-build.json").write_text(json.dumps(receipt))
+    return folder
+
+
+def test_a_linux_pack_of_three_files_or_with_its_valid_receipt_is_accepted(good):
+    subject = good.release()
+    folder = linux_folder(good)
+    assert subject.read_pack(folder, "linux-x86_64")[3].name.endswith("linux-x86_64.tar.gz")
+    linux_folder(good, build_receipt(deep=good.sha))
+    assert subject.read_pack(folder, "linux-x86_64")[2]["deep"]["commit"] == good.sha
+    assert subject.verify_node_bundle()["source_equivalence"]["releaseDeep"] == good.sha
+    linux_folder(good)
+
+
+@pytest.mark.parametrize("make", [
+    lambda sha: build_receipt(deep="e" * 40),
+    lambda sha: build_receipt(platform="linux-aarch64", deep=sha),
+    lambda sha: {**build_receipt(deep=sha), "extra": "field"},
+    lambda sha: {key: value for key, value in build_receipt(deep=sha).items() if key != "apt_snapshot"},
+    lambda sha: build_receipt(deep=sha, kernel_artifacts={"wheel": "k.whl"}),
+    lambda sha: build_receipt(deep=sha, kernel_artifacts={"wheel": "k.whl", "mailbox": 3}),
+    lambda sha: build_receipt(deep=sha, builder_base=""),
+    lambda sha: ["not", "an", "object"],
+])
+def test_an_invalid_or_mismatching_receipt_is_refused(good, make):
+    folder = linux_folder(good, make(good.sha))
+    try:
+        with pytest.raises(release.ReleaseError, match="build receipt"):
+            good.release().read_pack(folder, "linux-x86_64")
+    finally:
+        linux_folder(good)
+
+
+def test_an_unreadable_receipt_is_refused(good):
+    folder = linux_folder(good, raw="{not json")
+    try:
+        with pytest.raises(release.ReleaseError, match="unreadable"):
+            good.release().read_pack(folder, "linux-x86_64")
+    finally:
+        linux_folder(good)
+
+
+def test_any_other_extra_file_is_still_refused(good):
+    folder = linux_folder(good, build_receipt(deep=good.sha))
+    stray = folder / "notes.txt"
+    stray.write_text("x")
+    try:
+        with pytest.raises(release.ReleaseError, match="exactly its descriptor"):
+            good.release().read_pack(folder, "linux-x86_64")
+        stray.unlink()
+        mac = good.root / "macos-arm64"
+        (mac / "node-pack-build.json").write_text(json.dumps(build_receipt("macos-arm64", good.sha)))
+        with pytest.raises(release.ReleaseError, match="exactly its descriptor"):
+            good.release().read_pack(mac, "macos-arm64")
+    finally:
+        stray.unlink(missing_ok=True)
+        (good.root / "macos-arm64" / "node-pack-build.json").unlink(missing_ok=True)
+        linux_folder(good)
