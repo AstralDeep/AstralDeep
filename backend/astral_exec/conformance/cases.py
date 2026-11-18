@@ -15,7 +15,13 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from astral_exec.constants import DENIED_LOG_SERVICES, DENIED_SERVICES, DNSSD_SERVICE
+from astral_exec.constants import (
+    BWRAP_PATHS,
+    DENIED_LOG_SERVICES,
+    DENIED_SERVICES,
+    DNSSD_SERVICE,
+    LANDLOCK_ABI,
+)
 from astral_exec.errors import ExecRefused
 from astral_exec.facts import Facts
 from astral_exec.proxy import Proxy
@@ -660,9 +666,18 @@ def _(ctx: Context) -> None:
 
 
 def refusal_facts(ctx: Context, **changes) -> Facts:
-    facts = Facts({**ctx.facts, **changes})
-    facts.bwrap_path = ctx.facts.bwrap_path
-    facts.proc_children = ctx.facts.proc_children
+    capable = {
+        "platform": ctx.facts["platform"],
+        "landlock_abi": LANDLOCK_ABI,
+        "bwrap": True,
+        "userns": True,
+        "euid": 1000,
+        "sandbox_exec": True,
+        "app_sandboxed": False,
+    }
+    facts = Facts({**capable, **changes})
+    facts.bwrap_path = BWRAP_PATHS[0]
+    facts.proc_children = True
     return facts
 
 

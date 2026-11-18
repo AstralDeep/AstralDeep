@@ -45,6 +45,7 @@ ASYNC_TEST_DEADLINE_SECONDS = 240
 def pytest_collection_modifyitems(items):
     import functools
     import inspect
+    import threading
 
     for item in items:
         function = getattr(item, "obj", None)
@@ -53,8 +54,27 @@ def pytest_collection_modifyitems(items):
 
         @functools.wraps(function)
         async def bounded(*args, __function=function, **kwargs):
-            async with asyncio.timeout(ASYNC_TEST_DEADLINE_SECONDS):
+            loop = asyncio.get_running_loop()
+            task = asyncio.current_task()
+            expired = threading.Event()
+
+            def expire():
+                expired.set()
+                loop.call_soon_threadsafe(task.cancel)
+
+            watchdog = threading.Timer(ASYNC_TEST_DEADLINE_SECONDS, expire)
+            watchdog.daemon = True
+            watchdog.start()
+            try:
                 return await __function(*args, **kwargs)
+            except asyncio.CancelledError:
+                if expired.is_set():
+                    raise TimeoutError(
+                        f"async test exceeded {ASYNC_TEST_DEADLINE_SECONDS}s"
+                    ) from None
+                raise
+            finally:
+                watchdog.cancel()
 
         item.obj = bounded
 
