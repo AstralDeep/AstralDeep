@@ -219,6 +219,29 @@ async def test_requests_without_a_valid_presentation_are_refused_before_dispatch
         assert door.host.calls == []
 
 
+BEARER_CREDENTIALS = {
+    "framework bearer": {"Authorization": "Bearer afk_0123456789abcdef"},
+    "jwt bearer": {"Authorization": "Bearer eyJhbGciOiJSUzI1NiJ9.e30.c2ln"},
+    "session cookie": {"Cookie": "astral_session=value.signature"},
+    "no credential": {},
+}
+
+
+@pytest.mark.parametrize("claimed_personal", [True, False])
+@pytest.mark.parametrize("credential", sorted(BEARER_CREDENTIALS))
+async def test_mcp_and_a2a_refuse_every_non_ticket_credential_whatever_the_profile_check_says(
+        tmp_path, monkeypatch, credential, claimed_personal):
+    async with served(tmp_path, monkeypatch) as door:
+        monkeypatch.setattr(node_identity, "is_personal", lambda: claimed_personal)
+        headers = {"Content-Type": "application/json", **BEARER_CREDENTIALS[credential]}
+        mcp_body, mcp_extra = door.mcp("tools/call", {"name": "read_value", "arguments": {"value": "v"}})
+        a2a_body = b'{"jsonrpc": "2.0", "id": "1", "method": "SendMessage", "params": {}}'
+        for path, body, extra in (("/mcp", mcp_body, mcp_extra), ("/a2a", a2a_body, {"A2A-Version": "1.0"})):
+            response = await door.client.post(path, content=body, headers={**extra, **headers})
+            assert (response.status_code, code_of(response)) == (401, "node.bearer_refused"), (path, credential)
+        assert door.host.calls == []
+
+
 async def test_each_denial_carries_its_code_and_status(tmp_path, monkeypatch):
     async with served(tmp_path, monkeypatch) as door:
         ticket = door.mint(["read_value"])

@@ -5,10 +5,9 @@ bearer is discarded after validation, and a personal node refuses it unread and 
 
 from __future__ import annotations
 
-import asyncio
 import os
 from dataclasses import dataclass
-from typing import Any, Callable, Iterable, Mapping, Optional
+from typing import Any, Iterable, Mapping, NoReturn, Optional
 from urllib.parse import urlsplit, urlunsplit
 
 from starlette.requests import Request
@@ -31,8 +30,6 @@ _SCOPE_IMPLICATIONS = {
     "mcp:tools:invoke": frozenset(MCP_SCOPES),
 }
 
-_FRAMEWORK_MCP_SCOPES = frozenset(MCP_SCOPES)
-_FRAMEWORK_TOKEN_PREFIX = "afk_"
 
 
 @dataclass(frozen=True)
@@ -150,7 +147,7 @@ async def decode_mcp_token(token: str) -> dict[str, Any]:
     refuse_on_personal_node(())
 
 
-def refuse_on_personal_node(required_scopes: Iterable[str]) -> None:
+def refuse_on_personal_node(required_scopes: Iterable[str]) -> NoReturn:
     raise MCPAuthError(401, NODE_BEARER_REFUSED, caller_tickets.reason_for(NODE_BEARER_REFUSED), tuple(required_scopes))
 
 
@@ -187,44 +184,8 @@ async def authorize_mcp_request(
     query_params: Mapping[str, str],
     cookies: Mapping[str, str],
     required_scopes: Iterable[str],
-    resolve_framework_bearer: Optional[Callable[[str], Any]] = None,
-) -> dict[str, Any]:
-    required = tuple(required_scopes)
-    refuse_on_personal_node(required)
-    token = bearer_from_headers(
-        headers,
-        query_params,
-        cookies,
-        required_scopes=required,
-    )
-    if resolve_framework_bearer is not None and token.startswith(_FRAMEWORK_TOKEN_PREFIX):
-        caller = await asyncio.to_thread(resolve_framework_bearer, token)
-        if caller is None:
-            raise MCPAuthError(401, "invalid_token", "invalid bearer token", required)
-        missing = tuple(scope for scope in required if scope not in _FRAMEWORK_MCP_SCOPES)
-        if missing:
-            raise MCPAuthError(403, "insufficient_scope", "required MCP scope is missing", missing)
-        return {
-            "sub": caller.owner_id,
-            "iss": "astral-framework",
-            "aud": MCP_AUDIENCE,
-            "scope": " ".join(MCP_SCOPES),
-            "realm_access": {"roles": ["user"]},
-            "_framework_credential_id": caller.credential_id,
-            "_framework_scopes": sorted(caller.scopes),
-            "_framework_caller": caller,
-        }
-    try:
-        payload = await decode_mcp_token(token)
-    except MCPAuthError:
-        raise
-    except Exception as exc:
-        raise MCPAuthError(401, "invalid_token", "invalid bearer token", required) from exc
-    require_mcp_entry_role(payload, required)
-    missing = tuple(scope for scope in required if scope not in effective_mcp_scopes(payload))
-    if missing:
-        raise MCPAuthError(403, "insufficient_scope", "required MCP scope is missing", missing)
-    return dict(payload)
+) -> NoReturn:
+    refuse_on_personal_node(required_scopes)
 
 
 __all__ = [
