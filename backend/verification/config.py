@@ -10,14 +10,6 @@ from dataclasses import dataclass, field
 from typing import List, Literal, Optional
 
 # Names only; values must never be logged, stored, or embedded.
-KEYCLOAK_CRED_ENV_NAMES: tuple[str, ...] = (
-    "KEYCLOAK_AUTHORITY",
-    "KEYCLOAK_CLIENT_ID",
-    "KEYCLOAK_CLIENT_SECRET",
-    "KEYCLOAK_REALM",
-    "KEYCLOAK_TOKEN_URL",
-)
-
 OTHER_SECRET_ENV_NAMES: tuple[str, ...] = (
     "OPENAI_API_KEY",
     "AUDIT_HMAC_SECRET",
@@ -31,7 +23,6 @@ OTHER_SECRET_ENV_NAMES: tuple[str, ...] = (
 )
 
 Mode = Literal["in_process", "external"]
-AuthMode = Literal["real_keycloak", "mock_inprocess"]
 
 
 @dataclass
@@ -67,16 +58,10 @@ class RunConfig:
         return os.path.join(self.out_dir, self.run_id)
 
     def secret_values(self) -> List[str]:
-        names = KEYCLOAK_CRED_ENV_NAMES + OTHER_SECRET_ENV_NAMES
+        names = OTHER_SECRET_ENV_NAMES
         out: List[str] = []
         for name in names:
             val = os.environ.get(name)
             if val and len(val.strip()) >= 6:
                 out.append(val.strip())
         return out
-
-    def keycloak_available(self) -> bool:
-        return all(
-            os.environ.get(n)
-            for n in ("KEYCLOAK_AUTHORITY", "KEYCLOAK_CLIENT_ID", "KEYCLOAK_CLIENT_SECRET")
-        )

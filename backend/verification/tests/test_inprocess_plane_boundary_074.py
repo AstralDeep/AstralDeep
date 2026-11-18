@@ -15,7 +15,6 @@ import pytest
 import verification.drivers.in_process as in_process_module
 from verification.drivers.in_process import InProcessDriver
 from verification.isolation import Principal
-from shared.node_identity import canonical_owner_id, issuer_digest
 
 
 _AUTHORITY = "https://verification.invalid/realms/plane-boundary"
@@ -106,32 +105,6 @@ def test_driver_initializes_empty_blob_owner_inventory(tmp_path) -> None:
 
     assert driver._uploaded_blob_owners == set()
     assert driver._execution_principals == {}
-
-
-def test_two_driver_executions_map_same_logical_principal_to_unique_owners(
-    tmp_path,
-) -> None:
-    config = SimpleNamespace(
-        run_dir=str(tmp_path),
-        run_id="__verif__local",
-    )
-    logical = Principal("__verif__local_everyday_primary")
-    first = InProcessDriver(config)
-    second = InProcessDriver(config)
-    first._fixture_identity = _fixture_identity()
-    second._fixture_identity = _fixture_identity()
-
-    first_owner = first._execution_principal(logical)
-    second_owner = second._execution_principal(logical)
-
-    assert first._execution_principal(first_owner) is first_owner
-    assert second._execution_principal(second_owner) is second_owner
-    assert first_owner.user_id != second_owner.user_id
-    prefix = canonical_owner_id(_AUTHORITY, "__verif__local_everyday_primary_exec_")
-    assert first_owner.user_id.startswith(prefix)
-    assert second_owner.user_id.startswith(prefix)
-    assert len(first_owner.user_id) <= 255
-    assert len(second_owner.user_id) <= 255
 
 
 def test_run_scenario_uses_one_execution_identity_at_every_boundary(
@@ -304,70 +277,6 @@ def test_driver_source_has_no_deep_database_or_raw_sql_boundary() -> None:
     assert "materialize_stream(" in source
     assert "draft_store.create_draft_agent" in source
     assert "draft_store.delete_draft_agent" in source
-
-
-def test_fixture_upload_streams_off_loop_through_application_plane(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    from verification.isolation import Principal
-    from verification.personas import Fixture
-
-    runtime = _Runtime()
-    repositories = SimpleNamespace(artifacts=object())
-    calls: list[dict[str, object]] = []
-
-    class Materializer:
-        async def materialize_stream(self, **values):
-            payload = b"".join([chunk async for chunk in values.pop("chunks")])
-            calls.append({**values, "payload": payload})
-            return SimpleNamespace(attachment_id=values["attachment_id"])
-
-    purges = _Purges()
-    driver = _driver_with_plane(
-        runtime,
-        repositories,
-        materializer=Materializer(),
-        purges=purges,
-    )
-    driver._tmp = str(tmp_path / "fixtures")
-    fixture = Fixture(
-        category="spreadsheet",
-        extension="csv",
-        filename="cohort.csv",
-        writer=lambda path: Path(path).write_bytes(b"id,value\n1,2\n"),
-    )
-
-    result = asyncio.run(
-        driver.upload_as(
-            Principal("__verif__plane-boundary_blob_owner"),
-            fixture,
-        )
-    )
-
-    assert result["filename"] == "cohort.csv"
-    owner_id = str(calls[0]["owner_id"])
-    assert owner_id.startswith(canonical_owner_id(_AUTHORITY, "__verif__plane-boundary_blob_owner_exec_"))
-    assert calls[0]["payload"] == b"id,value\n1,2\n"
-    assert driver._uploaded_blob_owners == {owner_id}
-
-    cleanup_calls = []
-    monkeypatch.setattr(
-        in_process_module,
-        "teardown",
-        lambda **kwargs: cleanup_calls.append(kwargs) or 0,
-    )
-    asyncio.run(driver.teardown())
-
-    assert cleanup_calls == [
-        {
-            "plane_runtime": runtime,
-            "plane_repositories": repositories,
-            "run_id": "__verif__plane-boundary",
-            "owner_issuer_hash": issuer_digest(_AUTHORITY),
-        }
-    ]
-    assert purges.owners == [owner_id]
 
 
 def test_failed_fixture_materialization_still_tracks_owner_for_teardown(

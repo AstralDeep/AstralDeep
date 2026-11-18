@@ -22,13 +22,15 @@ _SECRET_ENV_DENYLIST = (
     # Uniquely required to keep the audit chain tamper-evident
     "AUDIT_HMAC_SECRET",
     "GITHUB_TOKEN",
-    "KEYCLOAK_CLIENT_SECRET", "AGENT_SERVICE_CLIENT_SECRET",
+    "AGENT_SERVICE_CLIENT_SECRET",
     "VOICE_CONTROL_SECRET", "LIVEKIT_API_SECRET", "LIVEKIT_API_KEY",
     "DATABASE_URL",
     "TYPESAFE_API_KEY", "TYPESAFE_BASE_URL", "TYPESAFE_DEFAULT_MODEL",
 )
 
 _SECRET_ENV_PREFIXES = ("AUDIT_HMAC_SECRET_",)
+_SECRET_ENV_SUFFIXES = ("_SECRET", "_PASSWORD", "_TOKEN", "_API_KEY", "_PRIVATE_KEY")
+_SECRET_ENV_KEEP = frozenset({"AGENT_API_KEY", "DB_PASSWORD"})
 
 
 def sandbox_enabled() -> bool:
@@ -97,7 +99,7 @@ def sandbox_env(base_env: Optional[Dict[str, str]], tmpdir: str) -> Dict[str, st
     env = dict(base_env if base_env is not None else os.environ)
     for key in _SECRET_ENV_DENYLIST:
         env.pop(key, None)
-    for key in [k for k in env if k.startswith(_SECRET_ENV_PREFIXES)]:
+    for key in [k for k in env if k.startswith(_SECRET_ENV_PREFIXES) or (k.endswith(_SECRET_ENV_SUFFIXES) and k not in _SECRET_ENV_KEEP)]:
         env.pop(key, None)
     env["TMPDIR"] = tmpdir
     env["TEMP"] = tmpdir

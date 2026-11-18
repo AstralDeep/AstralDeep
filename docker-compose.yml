@@ -55,6 +55,7 @@ services:
     env_file:
       - .env
     environment:
+      ASTRAL_NODE_PROFILE: personal
       DB_HOST: postgres
       DB_PORT: 5432
       HOST_PROC: /host/proc
@@ -121,6 +122,7 @@ services:
       # Local Compose uses plaintext only on its private bridge; make that
       # development posture explicit so production remains fail-closed.
       ASTRAL_ENV: development
+      ASTRAL_NODE_PROFILE: personal
       VOICE_WORKER_IDENTITY: ${VOICE_WORKER_IDENTITY:-voice-worker-local-1}
       VOICE_WORKER_MAX_SESSIONS: ${VOICE_WORKER_MAX_SESSIONS:-4}
       # Feature 066: optional endpoint-silence tuning in milliseconds

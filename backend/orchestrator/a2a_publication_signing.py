@@ -68,7 +68,7 @@ class NodeKeySigner:
 
 
 def is_personal_profile() -> bool:
-    return os.getenv(PROFILE_ENV, "").strip().lower() == _PERSONAL
+    return os.getenv(PROFILE_ENV) == _PERSONAL
 
 
 def key_path() -> Path:

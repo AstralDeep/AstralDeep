@@ -71,7 +71,6 @@ touch "$env_file"
 chmod 600 "$env_file"
 add_value ASTRAL_NODE_PROFILE personal
 add_value ASTRAL_NODE_DATA_DIR "$data_dir"
-add_value WEB_SESSION_ENC_KEY "$(random_fernet)"
 add_value CREDENTIAL_ENCRYPTION_KEY "$(random_fernet)"
 add_value AUDIT_HMAC_SECRET "$(random_hex)"
 add_value AGENT_API_KEY "$(random_hex)"

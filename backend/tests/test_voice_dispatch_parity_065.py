@@ -50,19 +50,6 @@ class _Delegation:
     def __init__(self) -> None:
         self.calls: list[tuple[Any, ...]] = []
 
-    async def exchange_token_for_agent(
-        self,
-        raw_token: str,
-        agent_id: str,
-        allowed_tools: list[str],
-        user_id: str,
-        scopes: list[str],
-    ) -> dict[str, str]:
-        self.calls.append(
-            (raw_token, agent_id, tuple(allowed_tools), user_id, tuple(scopes))
-        )
-        return {"access_token": "attenuated-parity-token"}
-
 
 def _sockets() -> tuple[_TypedSocket, DurableUserTurnWebSocket]:
     typed = _TypedSocket()

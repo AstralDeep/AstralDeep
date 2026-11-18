@@ -14,8 +14,12 @@ SCAN_ROOTS = ("backend", "scripts", "sdk")
 SKIP_PARTS = {".venv", "venv", "node_modules", "__pycache__", "data", "tmp", "build"}
 
 REMOVED_MODULES = (
+    "orchestrator.delegation",
     "orchestrator.device_login",
     "orchestrator.institution_api",
+    "orchestrator.institution_meshes",
+    "orchestrator.institution_policy",
+    "orchestrator.institution_runtime",
     "orchestrator.mesh_admission",
     "orchestrator.mesh_api",
     "orchestrator.mesh_web",
@@ -28,7 +32,11 @@ REMOVED_MODULES = (
     "orchestrator.work_continuation_authority",
     "orchestrator.work_resume",
     "orchestrator.work_wake",
+    "shared.auth_clients",
+    "shared.institution_profile",
+    "shared.jwks_cache",
     "shared.qr",
+    "shared.token_verify",
 )
 
 
@@ -88,3 +96,14 @@ def test_no_file_references_a_removed_module():
 def test_orchestrator_mounts_no_sign_in_router(name):
     source = (REPO / "backend" / "orchestrator" / "orchestrator.py").read_text(encoding="utf-8")
     assert name not in source
+
+
+def test_no_module_defines_or_calls_the_issuer_owner_derivation():
+    offenders = []
+    for path in _python_files():
+        if path.name in {Path(__file__).name, "test_one_profile_boot.py"}:
+            continue
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        if "canonical_owner_id" in text or "accepted_issuers" in text:
+            offenders.append(str(path.relative_to(REPO)))
+    assert offenders == []

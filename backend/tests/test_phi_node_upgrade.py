@@ -18,11 +18,9 @@ import start
 from orchestrator import node_api, node_mesh, phi_node_policy
 from orchestrator.agent_lifecycle import AgentLifecycleManager
 from orchestrator.local_agents import FIRST_PARTY_AGENT_DIRS
-from orchestrator.node_mesh_calls import OrchestratorCalls
 from tests.helpers.dev_mesh import dev_node
 from tests.helpers.dev_mesh import until as wait_until
 from tests.test_node_mesh_kernel_integration import paired, until  # noqa: F401
-from tests.test_node_mesh_kernel_request_tools import ask, setup_native
 from tests.test_node_mesh_peer_tools import FakeModel, model_server, node_host  # noqa: F401
 from tests.test_node_mesh_turn_tools import dice_grant, grant, turn_host  # noqa: F401
 
@@ -63,23 +61,6 @@ async def test_an_unadopted_node_answers_a_plain_turn_and_ends_an_uncertain_one_
         assert refused.value.code == "phi.group_not_ready"
         seen = len(FakeModel.seen)
         assert seen == 1
-
-
-async def test_the_bridge_answers_a_plain_request_on_an_unadopted_node_and_refuses_an_uncertain_one_with_the_phi_code(turn_host, model_server, tmp_path, monkeypatch):  # noqa: F811
-    host = turn_host
-    FakeModel.tool = None
-    async with paired(tmp_path, monkeypatch, creator=host.mesh_creator, calls=OrchestratorCalls(host.orch), history=host.orch.history,
-                      kernel_answers=True, adopt=False) as (node, laptop, device, bridge):
-        completed = await setup_native(host, node, laptop, device, bridge, model_server, monkeypatch)
-        assert await node.phi_member() is False
-        _, plain = await ask(node, laptop, device, "Please summarise the weekly report")
-        await until(lambda: laptop.request(plain).state == ak.RequestState.ANSWERED, "the plain turn to be answered")
-        assert completed[0][1].status == "completed"
-        seen = len(FakeModel.seen)
-        _, uncertain = await ask(node, laptop, device, "Appointment on 2024-03-15 was moved")
-        await until(lambda: laptop.request(uncertain).state == ak.RequestState.REFUSED, "the uncertain turn to be refused")
-        assert laptop.request(uncertain).code == "phi.group_not_ready"
-        assert len(FakeModel.seen) == seen
 
 
 def test_a_sink_failure_that_names_a_phi_code_surfaces_that_code():

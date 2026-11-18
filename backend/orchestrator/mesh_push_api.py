@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from orchestrator.api import _get_orchestrator
 from orchestrator.auth import verify_user
 from orchestrator.mesh_push_registry import MAX_REVISION, MeshPushError
-from shared import node_identity, token_verify
+from shared import node_identity
 
 mesh_push_router = APIRouter(prefix="/api/push/mesh", tags=["Mesh push"])
 
@@ -34,19 +34,11 @@ class WakeRevocation(WakeTarget):
 
 
 async def _owner(principal: dict = Depends(verify_user)) -> str:
-    try:
-        issuer = principal.get(token_verify.IDP_ISSUER_CLAIM)
-        owner = node_identity.canonical_owner_id(issuer, principal.get(token_verify.IDP_SUBJECT_CLAIM))
-        if (principal.get("sub") != owner
-                or node_identity.normalize_issuer(principal.get("iss")) != issuer):
-            raise node_identity.NodeIdentityError
-        return owner
-    except (AttributeError, node_identity.NodeIdentityError):
-        raise HTTPException(401, "Not authenticated") from None
+    raise HTTPException(401, "Not authenticated")
 
 
 def _publisher(request: Request):
-    if node_identity.is_personal() or node_identity.is_institution():
+    if node_identity.is_personal():
         raise HTTPException(503, "publisher_unavailable")
     publisher = getattr(_get_orchestrator(request), "mesh_push_publisher", None)
     if publisher is None or not publisher.available:

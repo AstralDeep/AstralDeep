@@ -1,5 +1,5 @@
 """Sends publisher-owned silent APNs wakes only after capability admission and a final current-target check.
-Personal and institution nodes cannot instantiate this publisher; push_wake.py uses their separate HTTPS client."""
+Personal nodes cannot instantiate this publisher; push_wake.py uses their separate HTTPS client."""
 
 from __future__ import annotations
 
@@ -77,7 +77,7 @@ class MeshPushPublisher:
 
 
 def publisher_for(orch: Any, *, enabled: bool | None = None, adapter: Any = None) -> MeshPushPublisher | None:
-    if node_identity.is_personal() or node_identity.is_institution():
+    if node_identity.is_personal():
         return None
     if enabled is None:
         enabled = os.environ.get(PUBLISHER_ENABLED_ENV, "").strip().lower() in {"1", "true", "yes", "on"}

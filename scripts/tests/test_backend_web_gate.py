@@ -444,6 +444,9 @@ with open(os.environ["FAKE_DOCKER_LOG"], "a", encoding="utf-8") as log:
     log.write(json.dumps(arguments) + "\\n")
 if arguments[:1] == ["exec"]:
     print("{{}}")
+if arguments[:1] == ["run"] and any(argument.endswith("-unset-profile") for argument in arguments):
+    print("node.profile_removed")
+    sys.exit(78)
 if arguments[:1] == ["run"] and any(argument.endswith("-negative") for argument in arguments):
     sys.exit(78)
 """, encoding="utf-8")

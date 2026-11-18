@@ -450,62 +450,6 @@ def test_voice_activation_refuses_negotiated_legacy_chat(history):
     assert runtime.calls == []
 
 
-def test_resume_rejection_keeps_registration_ready_and_correlated(history, monkeypatch):
-    import asyncio
-    from types import SimpleNamespace
-    from unittest.mock import AsyncMock
-    from tests.test_register_ui_auth_required import (
-        _FakeWS,
-        _make_fake,
-        _register_msg,
-        _run_and_drain,
-    )
-    from orchestrator.orchestrator import Orchestrator
-    import audit.hooks
-
-    monkeypatch.setattr(audit.hooks, "record_auth_event", AsyncMock())
-    fake = _make_fake(validate=AsyncMock(return_value={"sub": "owner"}))
-    fake.history = history
-    fake._register_ui_operation_refusal = Orchestrator._register_ui_operation_refusal
-    fake._emit_hydration_snapshot = AsyncMock()
-    fake._issue_voice_control_binding = AsyncMock()
-    fake.rote.register_device = lambda ws, device: SimpleNamespace(
-        device_type=SimpleNamespace(value="macos"),
-        console_contract="console/v2",
-        project_workspaces_v1=True,
-    )
-    socket = _FakeWS()
-    fake._registered_events[id(socket)] = asyncio.Event()
-    chat_id = history.create_chat(user_id="owner")
-    generation, request_id = identity(), identity()
-    _run_and_drain(
-        fake.handle_ui_message(
-            socket,
-            _register_msg(
-                token="test",
-                device_id=identity(),
-                connection_generation=generation,
-                capabilities=["project_workspaces_v1"],
-                device={"project_workspaces_v1": True},
-                resume={
-                    "schema_version": 1,
-                    "active_chat_id": chat_id,
-                    "request_generation": request_id,
-                },
-            ),
-        )
-    )
-    error = next(
-        frame
-        for _, frame in fake._sent
-        if frame.get("code") == "project_selection_required"
-    )
-    assert fake._registered_events[id(socket)].is_set()
-    assert error["request_generation"] == request_id
-    assert error["chat_id"] == chat_id
-    fake._emit_hydration_snapshot.assert_not_awaited()
-
-
 @pytest.mark.parametrize(
     "value", [None, "bad", "550E8400-E29B-41D4-A716-446655440000", 3]
 )

@@ -67,23 +67,34 @@ _DEV_PLACEHOLDER_SECRETS = (
 )
 
 
+PROFILE_REMOVED = "node.profile_removed"
+
+
+def refuse_removed_profile() -> None:
+    from shared import node_identity
+
+    if os.getenv(node_identity.PROFILE_ENV) != node_identity.PERSONAL:
+        logger.critical(
+            "%s: %s must be exactly %r. The server and institution profiles were removed. "
+            "No data was read or changed.",
+            PROFILE_REMOVED, node_identity.PROFILE_ENV, node_identity.PERSONAL,
+        )
+        raise SystemExit(78)
+
+
 def assert_production_posture() -> None:
     from shared import node_identity
 
+    refuse_removed_profile()
     refuse_snapshot_links_on_personal_node()
-    if node_identity.is_institution():
-        from shared import institution_profile
-
-        institution_profile.enforce()
     mock_requested = os.getenv("USE_MOCK_AUTH", "").strip().lower() in ("1", "true", "yes")
     if is_dev_mode():
         if mock_requested:
             logger.warning("USE_MOCK_AUTH is ignored: mock auth was removed.")
-        if node_identity.is_personal():
-            problems = _personal_node_problems(node_identity)
-            if problems:
-                logger.error("Personal node refuses to start:\n%s", "\n".join(f"  {p}" for p in problems))
-                raise SystemExit(78)
+        problems = _personal_node_problems(node_identity)
+        if problems:
+            logger.error("Personal node refuses to start:\n%s", "\n".join(f"  {p}" for p in problems))
+            raise SystemExit(78)
         warn_on_typesafe_environment()
         return
     problems = []
@@ -101,8 +112,7 @@ def assert_production_posture() -> None:
     if mock_requested:
         problems.append(
             "USE_MOCK_AUTH is set but mock auth was removed. Unset USE_MOCK_AUTH; "
-            "a personal node authenticates with mesh keys and a server node "
-            "needs KEYCLOAK_*."
+            "a personal node authenticates with mesh keys."
         )
     if not os.getenv("CREDENTIAL_ENCRYPTION_KEY", "").strip():
         problems.append(
@@ -117,13 +127,7 @@ def assert_production_posture() -> None:
             "AUDIT_HMAC_SECRET is unset or still the shipped dev placeholder — "
             "the audit hash chain would be forgeable. Set a high-entropy value."
         )
-    personal = node_identity.is_personal()
-    if not personal:
-        for var in ("KEYCLOAK_AUTHORITY", "KEYCLOAK_CLIENT_ID", "KEYCLOAK_CLIENT_SECRET"):
-            if not os.getenv(var, "").strip():
-                problems.append(f"{var} is unset — the OIDC flow cannot operate.")
-    if personal:
-        problems.extend(_personal_node_problems(node_identity))
+    problems.extend(_personal_node_problems(node_identity))
     try:
         node_identity.bind_host()
     except node_identity.NodeIdentityError as exc:

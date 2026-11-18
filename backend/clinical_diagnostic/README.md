@@ -170,7 +170,7 @@ verified by the real `validate_token` path, and a scripted model response. It pr
   transport dispatch**;
 - the audit chain still verifies after the denial.
 
-This is local synthetic staging evidence. Real Keycloak users, a deployed backend, real
+This is local synthetic staging evidence. Real users, a deployed backend, real
 providers, and affected clients still require separate live qualification.
 
 ## Opt-in public-data comparison (never required CI)

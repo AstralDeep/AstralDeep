@@ -323,29 +323,6 @@ def test_tool_security_blocked_helper():
     assert fake._tool_security_blocked(None, "tstream") is False
 
 
-async def test_validate_token_rejects_iss_mismatch(monkeypatch):
-    import shared.jwks_cache as jwks_cache
-    from shared import token_verify
-    from orchestrator.orchestrator import Orchestrator
-
-    monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://kc.example/realms/astral")
-    monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-frontend")
-
-    async def _fake_get_jwks(url, token=None):
-        return {}
-
-    monkeypatch.setattr(jwks_cache, "get_jwks", _fake_get_jwks)
-    monkeypatch.setattr(
-        token_verify.jose_jwt, "decode",
-        lambda *a, **k: {"iss": "https://evil.example/realms/other", "azp": "astral-frontend"},
-    )
-
-    fake = SimpleNamespace()
-    fake.validate_token = types.MethodType(Orchestrator.validate_token, fake)
-    result = await fake.validate_token("a.b.c")
-    assert result is None
-
-
 class _SafeFlipAgentRepository:
     def __init__(self, get_ownership):
         self._get_ownership = get_ownership

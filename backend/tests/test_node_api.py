@@ -25,7 +25,6 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv(ni.DATA_DIR_ENV, str(tmp_path / "node"))
     monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://idp.example/realms/a")
     monkeypatch.delenv(ni.OWNER_ENV, raising=False)
-    monkeypatch.delenv(ni.ISSUERS_ENV, raising=False)
     ni.reset_cache()
     app = FastAPI()
     app.include_router(node_api.node_router)
@@ -47,7 +46,7 @@ async def test_descriptor_is_public_and_describes_the_node(env):
     assert body["node_id"] == identity.node_id
     assert body["node_key"] == identity.public_jwk()
     assert body["format"] == "astral.node.descriptor/v2"
-    assert "accepted_issuers" not in body and "idp.example" not in json.dumps(body)
+    assert "issuers" not in json.dumps(body) and "idp.example" not in json.dumps(body)
     assert body["owner_hash"] is None
     assert body["transport_addresses"] == []
     assert "mesh-pairing" in body["capabilities"]

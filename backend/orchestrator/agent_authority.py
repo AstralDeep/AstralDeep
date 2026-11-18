@@ -5,8 +5,6 @@ import base64
 import hashlib
 import hmac
 import json
-import os
-import secrets
 import time
 from typing import Dict, List, Optional
 
@@ -60,7 +58,6 @@ def recursive_delegation_enabled() -> bool:
 
 
 _DELEGATION_ISSUER = "astral-delegation"
-_process_dev_key: Optional[bytes] = None
 _NODE_HS256_INFO = "astral.delegation.hs256/v1"
 
 
@@ -74,19 +71,7 @@ def _node_identity_or_config_error():
 def _child_signing_key() -> bytes:
     if node_identity.is_personal():
         return _node_identity_or_config_error().derive_secret(_NODE_HS256_INFO)
-    key = os.getenv("DELEGATION_CHILD_SIGNING_KEY") or os.getenv("MEMORY_HMAC_KEY")
-    if key:
-        return key.encode("utf-8")
-    from orchestrator.boot_posture import is_dev_mode
-    if not is_dev_mode():
-        raise DelegationConfigError(
-            "child delegation minting requires DELEGATION_CHILD_SIGNING_KEY "
-            "(or MEMORY_HMAC_KEY) to be set in production posture — refusing "
-            "to sign with a derived or committed key.")
-    global _process_dev_key
-    if _process_dev_key is None:
-        _process_dev_key = secrets.token_bytes(32)
-    return _process_dev_key
+    raise DelegationConfigError("child delegation is signed by a personal node only")
 
 
 def _audience_list(value) -> List[str]:
@@ -130,15 +115,6 @@ def verify_signed_delegation(token: str, *, audience: Optional[str] = None,
                 token, audience=audience)
         except node_identity.NodeIdentityError as exc:
             raise RecursiveDelegationError(f"delegation signature refused: {exc}") from exc
-    elif alg == "HS256" and not node_identity.is_personal():
-        from jose import jwt as jose_jwt
-        try:
-            claims = jose_jwt.decode(
-                token, _child_signing_key(), algorithms=["HS256"], audience=audience,
-                issuer=issuer, options={"verify_aud": audience is not None,
-                                        "require_exp": True})
-        except Exception as exc:
-            raise RecursiveDelegationError("delegation signature refused") from exc
     else:
         raise RecursiveDelegationError("delegation signature algorithm refused")
     if issuer is not None and claims.get("iss") != issuer:

@@ -1,4 +1,4 @@
-"""REST boundary for owner-bound mobile push: Keycloak-authenticated destination
+"""REST boundary for owner-bound mobile push: Authenticated destination
 enrollment, listing, revocation, client acknowledgment, and per-notification
 delivery-outcome introspection, composing push_destinations.py and
 push_delivery.py. Mounted by orchestrator.py alongside the other routers.

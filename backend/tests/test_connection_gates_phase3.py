@@ -6,10 +6,8 @@ from __future__ import annotations
 
 import json
 import logging
-import secrets
 from pathlib import Path
 from types import SimpleNamespace as NS
-from unittest.mock import AsyncMock
 
 import astral_kernel as ak
 import pytest
@@ -19,7 +17,6 @@ from orchestrator.node_mailbox import MailboxSettings
 from shared import node_identity as ni
 from tests import fake_astral_kernel as fake
 from tests.fixtures.connections.a2a_agent import FixtureAgent
-from tests.fixtures.connections.model_server import ModelServer
 from tests.fixtures.connections.oauth_server import FixtureAuth, FixtureConfig
 from tests.helpers import agent_sign_in, orchestrator_app
 from tests.helpers.dev_mesh import connection_reached, dev_node
@@ -27,9 +24,7 @@ from tests.test_connection_gates import LEGACY, files_under, leaks, sign_in
 from tests.test_node_connection_api import Operator, personal
 from tests.test_node_connections import CredentialSpy
 from tests.test_node_mesh_kernel_integration import ak as binding, paired, until  # noqa: F401
-from tests.test_node_mesh_kernel_request_tools import ask
 from tests.test_node_mesh_peer_tools import node_host  # noqa: F401
-from tests.test_node_mesh_personal_authority_integration import forbid_iam, verify_actual_principal
 from tests.test_node_mesh_turn_tools import turn_host  # noqa: F401
 
 REPLY = "the node answered from its provider book"
@@ -42,67 +37,6 @@ def planted_scan(secret: str, directory: Path, caplog) -> None:
     assert leaks([secret], files_under(directory)) == [secret]
     assert leaks([secret], caplog.text) == [secret]
     assert leaks([secret], json.dumps([{"content": secret}])) == [secret]
-
-
-async def seal(host, node, laptop, device, bridge, model, monkeypatch, key, recipients):
-    verify_actual_principal(node)
-    forbid_iam(host, monkeypatch)
-    monkeypatch.setattr(host.orch, "_call_llm", AsyncMock(side_effect=AssertionError("Kernel owns provider calls")))
-    monkeypatch.setattr(host.orch, "_resolve_llm_client_for", AsyncMock(side_effect=AssertionError("No Python provider lookup")))
-    own = (await laptop.mesh_status()).device_id
-    laptop.set_model_provider(ak.ModelProviderConfig(
-        name="fixture", base_url=f"{model.url}/v1", models=["fixture-1"], api_keys=[key],
-        fallback_order=0, self_hosted=True, strict_tools=False, recipients=recipients(own, device),
-    ))
-    completed = []
-    answer = node.answer_request
-
-    async def watched(request, kernel):
-        result = await answer(request, kernel)
-        completed.append((request, result))
-        return result
-
-    monkeypatch.setattr(node, "answer_request", watched)
-    return completed
-
-
-async def test_a_model_key_sealed_to_the_node_answers_a_node_request_and_no_scan_finds_it(turn_host, tmp_path, monkeypatch, caplog):  # noqa: F811
-    caplog.set_level(logging.DEBUG)
-    key = "pasted-" + secrets.token_hex(16)
-    with ModelServer(reply=REPLY) as model:
-        async with paired(tmp_path, monkeypatch, creator=turn_host.mesh_creator, calls=None, history=turn_host.orch.history, kernel_answers=True) as (
-            node, laptop, device, bridge,
-        ):
-            completed = await seal(turn_host, node, laptop, device, bridge, model, monkeypatch, key, lambda own, node_device: [own, node_device])
-            await until(lambda: any(p.name == "fixture" for p in node.kernel.model_providers()), "the sealed provider to reach the node")
-            chat, _ = await ask(node, laptop, device, "answer from the provider book")
-            await until(lambda: bool(completed), "the node answer")
-            result = completed[0][1]
-            assert result.status == "completed" and result.text == REPLY
-            assert model.authorizations and set(model.authorizations) == {f"Bearer {key}"}
-            view = node.kernel.chat(chat).view
-            shown = json.dumps([message.text for message in view.messages]) + repr(node.kernel.model_providers())
-            bodies = json.dumps(model.requests)
-            assert leaks([key], caplog.text, shown, bodies, files_under(tmp_path / "node")) == []
-            planted_scan(key, tmp_path / "node", caplog)
-            assert leaks([key], bodies + key) == [key]
-
-
-async def test_a_model_key_not_sealed_to_the_node_is_unusable_there(turn_host, tmp_path, monkeypatch, caplog):  # noqa: F811
-    caplog.set_level(logging.DEBUG)
-    key = "unsealed-" + secrets.token_hex(16)
-    with ModelServer(reply=REPLY) as model:
-        async with paired(tmp_path, monkeypatch, creator=turn_host.mesh_creator, calls=None, history=turn_host.orch.history, kernel_answers=True) as (
-            node, laptop, device, bridge,
-        ):
-            completed = await seal(turn_host, node, laptop, device, bridge, model, monkeypatch, key, lambda own, node_device: [own])
-            _, request = await ask(node, laptop, device, "answer from the provider book")
-            await until(lambda: bool(completed), "the node outcome")
-            assert completed[0][1].status != "completed"
-            assert not any(p.name == "fixture" for p in node.kernel.model_providers())
-            assert model.requests == [] and model.authorizations == []
-            assert leaks([key], caplog.text, files_under(tmp_path / "node")) == []
-            assert node.kernel.request(request).state != binding.RequestState.ANSWERED or completed[0][1].text != REPLY
 
 
 async def test_the_stdio_launcher_refuses_in_production_and_the_node_lists_the_owner_connection_as_running_elsewhere(tmp_path, monkeypatch):

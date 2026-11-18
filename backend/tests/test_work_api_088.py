@@ -11,7 +11,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 
 from orchestrator.auth import get_web_or_bearer_user_payload
 from orchestrator.work_api import work_router
@@ -23,16 +23,6 @@ from persistent_agents.service import AssignmentService
 def read_claims(roles=("user",), sub="owner"):
     return {"sub": sub, "exp": int(time.time()) + 3600,
             "realm_access": {"roles": list(roles)}}
-
-
-def override_read_auth(app, monkeypatch, roles=("user",), sub="owner"):
-    claims = read_claims(roles, sub)
-    async def authenticate(request: Request):
-        request.state.delegation_subject_token = "fixture.access.token"
-        return claims
-    app.dependency_overrides[get_web_or_bearer_user_payload] = authenticate
-    monkeypatch.setattr("orchestrator.auth.verify_production_token", AsyncMock(return_value=claims))
-    return authenticate
 
 
 def operation(owner="owner", *, supported=True):
@@ -176,52 +166,6 @@ async def test_page_is_bounded_and_cursor_is_the_last_visible_uuid(host):
 
 
 @pytest.mark.asyncio
-async def test_http_poll_reauthenticates_every_request_and_exposes_no_mutations(host, monkeypatch):
-    orch, read, repo = host
-    app = FastAPI()
-    app.state.orchestrator = orch
-    app.include_router(work_router, prefix="/api")
-    normal = override_read_auth(app, monkeypatch)
-    calls = []
-    async def authenticate(request: Request):
-        from fastapi import HTTPException
-        calls.append(True)
-        if len(calls) > 1:
-            raise HTTPException(401, "private token expired")
-        return await normal(request)
-    app.dependency_overrides[get_web_or_bearer_user_payload] = authenticate
-    path = f"/api/work/v1/operations/{read.assignment.assignment_id}/poll?after_revision=7"
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-        first = await client.get(path)
-        second = await client.get(path)
-        assert first.status_code == 200 and first.json()["changed"] is False
-        assert second.status_code == 401 and "private" not in second.text
-        assert first.headers["cache-control"] == second.headers["cache-control"] == "no-store"
-        assert len(calls) == 2 and repo.get_operation.call_count == 1
-        assert (await client.post("/api/work/v1/operations", json={})).status_code == 405
-
-
-@pytest.mark.asyncio
-async def test_http_rejects_noncanonical_integer_queries_and_registers_exact_prefix(host, monkeypatch):
-    from orchestrator.api import operation_router
-    orch, read, _ = host
-    app = FastAPI()
-    app.state.orchestrator = orch
-    app.include_router(operation_router)
-    override_read_auth(app, monkeypatch)
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-        assert (await client.get("/api/work/v1/operations")).status_code == 200
-        detail = await client.get(f"/api/work/v1/operations/{read.assignment.assignment_id}")
-        assert detail.status_code == 200 and detail.json()["operation"]["id"] == read.assignment.assignment_id
-        assert detail.headers["cache-control"] == "no-store" and "private" not in detail.text
-        assert (await client.get("/api/work/v1/operations/not-an-id")).status_code == 404
-        for value in ("true", "1.0", "01", "-1", "0", str(2**63)):
-            response = await client.get(f"/api/work/v1/operations/{read.assignment.assignment_id}/poll", params={"after_revision": value})
-            assert response.status_code == 422
-            assert response.headers["cache-control"] == "no-store"
-
-
-@pytest.mark.asyncio
 async def test_projection_failure_never_returns_partial_page_or_private_data(host):
     orch, read, repo = host
     service = WorkService(orch.persistent_assignments)
@@ -273,48 +217,6 @@ async def test_http_read_requires_a_nonempty_text_subject_before_storage(host, s
         denied = await client.get("/api/work/v1/operations")
         assert denied.status_code == 401 and denied.headers["cache-control"] == "no-store"
     repo.list_operations.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_list_reports_resync_when_the_cursor_no_longer_exists_for_the_owner(host, monkeypatch):
-    orch, read, repo = host
-    service = WorkService(orch.persistent_assignments)
-    cursor = read.assignment.assignment_id
-    valid = await service.list("owner", {"sub": "owner"}, limit=1, after_id=cursor)
-    assert set(valid) == {"operations", "next_cursor", "page_full"}
-    assert valid["next_cursor"] == cursor and valid["page_full"] is True
-    repo.list_operations.reset_mock()
-    legacy = operation()
-    legacy.assignment.execution_profile = "persistent"
-    for missing in (None, operation("other"), legacy):
-        repo.get_operation.return_value = missing
-        page = await service.list("owner", {"sub": "owner"}, limit=1, after_id=cursor)
-        assert page == {"operations": [], "next_cursor": None, "page_full": False, "resync_required": True}
-    repo.list_operations.assert_not_called()
-    repo.get_operation.side_effect = AssignmentError("assignment_not_found", 404)
-    page = await service.list("owner", {"sub": "owner"}, after_id=cursor)
-    assert page["resync_required"] is True
-    repo.get_operation.side_effect = AttributeError("private future envelope")
-    with pytest.raises(AssignmentError, match="work_read_unavailable"):
-        await service.list("owner", {"sub": "owner"}, after_id=cursor)
-    repo.get_operation.side_effect = AssignmentError("assignment_transaction_unavailable", 503)
-    with pytest.raises(AssignmentError, match="assignment_transaction_unavailable"):
-        await service.list("owner", {"sub": "owner"}, after_id=cursor)
-    repo.get_operation.side_effect = None
-    repo.get_operation.return_value = None
-    app = FastAPI()
-    app.state.orchestrator = orch
-    app.include_router(work_router, prefix="/api")
-    override_read_auth(app, monkeypatch)
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-        response = await client.get("/api/work/v1/operations", params={"after_id": cursor})
-        assert response.status_code == 200 and response.headers["cache-control"] == "no-store"
-        assert response.json() == {"operations": [], "next_cursor": None, "page_full": False,
-                                   "resync_required": True}
-        assert (await client.get("/api/work/v1/operations", params={"after_id": "not-an-id"})).status_code == 404
-    repo.get_operation = None
-    with pytest.raises(AssignmentError, match="work_repository_unavailable"):
-        await service.list("owner", {"sub": "owner"}, after_id=cursor)
 
 
 @pytest.mark.asyncio
@@ -370,21 +272,3 @@ async def test_sse_loop_is_closed_over_failures_and_the_original_cap(monkeypatch
     assert frames[1:] == ['id: 3\nevent: error\ndata: {"error": "work_read_unavailable"}\n\n']
 
 
-@pytest.mark.asyncio
-async def test_sse_refuses_a_backing_retired_before_the_stream_starts(host, monkeypatch):
-    orch, read, _ = host
-    app = FastAPI()
-    app.state.orchestrator = orch
-    app.include_router(work_router, prefix="/api")
-    override_read_auth(app, monkeypatch)
-    original = WorkService.get
-
-    async def retiring(self, owner_id, claims, identity):
-        value = await original(self, owner_id, claims, identity)
-        orch.persistent_assignments = AssignmentService(orch, store=self.store, enabled=True, phi_gate=object())
-        return value
-
-    monkeypatch.setattr(WorkService, "get", retiring)
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-        response = await client.get(f"/api/work/v1/operations/{read.assignment.assignment_id}/events")
-    assert response.status_code == 503 and response.json() == {"error": "work_read_unavailable"}

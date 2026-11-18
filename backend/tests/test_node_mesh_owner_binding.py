@@ -2,7 +2,6 @@
 Only the Kernel's signed-state accessor is faked; startup, bridge selection, durable owner custody and the Plane history rows are real.
 """
 
-import ast
 import asyncio
 from pathlib import Path
 from types import SimpleNamespace as NS
@@ -436,52 +435,5 @@ PERSONAL_FUNCTIONS = {
     "orchestrator/boot_posture.py": ("_personal_node_problems",),
     "shared/a2a_security.py": ("_validate_node_token",),
 }
-ISSUER_NAMES = frozenset({
-    "canonical_owner_id", "with_owner_identity", "accepted_issuers", "issuer_digest", "normalize_issuer",
-    "bind_owner", "ISSUERS_ENV",
-})
 
 
-def issuer_uses(tree):
-    found = []
-    for item in ast.walk(tree):
-        if isinstance(item, ast.Attribute):
-            name = item.attr
-        elif isinstance(item, ast.Name):
-            name = item.id
-        elif isinstance(item, ast.alias):
-            name = item.name.rsplit(".", 1)[-1]
-        elif isinstance(item, ast.Constant) and isinstance(item.value, str) and item.value.startswith("oidc."):
-            name = item.value
-        else:
-            continue
-        if name in ISSUER_NAMES or name.startswith("oidc."):
-            found.append(name)
-    return found
-
-
-@pytest.mark.parametrize("module", PERSONAL_MODULES)
-def test_no_personal_module_derives_or_writes_an_issuer_owner(module):
-    assert issuer_uses(ast.parse((BACKEND / module).read_text())) == []
-
-
-@pytest.mark.parametrize("module", sorted(PERSONAL_FUNCTIONS))
-def test_no_personal_function_in_a_shared_module_derives_or_writes_an_issuer_owner(module):
-    tree = ast.parse((BACKEND / module).read_text())
-    functions = {item.name: item for item in ast.walk(tree) if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))}
-    for name in PERSONAL_FUNCTIONS[module]:
-        assert name in functions, f"{module} lost {name}"
-        assert issuer_uses(functions[name]) == [], f"{module}:{name}"
-
-
-def test_the_static_check_finds_each_issuer_derivation_form():
-    source = '''
-from shared.node_identity import canonical_owner_id
-def a(): return node_identity.with_owner_identity(1, 2)
-def b(): return accepted_issuers()
-def c(): return f"oidc.{x}.{y}"
-def d(): node_identity.bind_owner("x")
-'''
-    assert sorted(issuer_uses(ast.parse(source))) == sorted([
-        "canonical_owner_id", "with_owner_identity", "accepted_issuers", "oidc.", "bind_owner",
-    ])

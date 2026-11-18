@@ -50,7 +50,6 @@ from orchestrator.tool_permissions import ToolPermissionManager
 from orchestrator import turn_steer
 from orchestrator import side_question
 from orchestrator.credential_manager import CredentialManager
-from orchestrator.delegation import DelegationService
 from orchestrator.tool_security import ToolSecurityAnalyzer
 from orchestrator.compaction import compact_messages
 from llm_config import deadlines as llm_deadlines
@@ -1432,8 +1431,6 @@ class Orchestrator:
                 plane_repositories=self.runtime_composition.plane.repositories,
             )
         )
-
-        self.delegation = DelegationService()
 
         self.security_analyzer = ToolSecurityAnalyzer()
         self.security_flags: Dict[str, Dict[str, Any]] = {}
@@ -19975,16 +19972,12 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     err_msg = (
                         "Tool execution is disabled: this unattended task could not "
                         f"obtain delegated authorization for agent '{agent_id}'. "
-                        "An administrator must verify the Keycloak token-exchange "
-                        "configuration before the task can use tools."
+                        "Unattended tasks have no delegated authorization on this node."
                     )
                 else:
                     err_msg = (
                         "Tool execution is disabled: delegated authorization "
-                        "(RFC 8693 token exchange) is unavailable for agent "
-                        f"'{agent_id}'. An operator must register the tools:* "
-                        "client scopes on the identity provider (see "
-                        "docs/keycloak_agent_delegation_setup.md), or set "
+                        f"is unavailable for agent '{agent_id}'. Set "
                         "DELEGATION_REQUIRED=false to accept unscoped dispatch."
                     )
                 logger.error(
@@ -25898,7 +25891,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
             {"name": "Components", "description": "Saved UI component management — save, list, delete, combine, and condense components."},
             {"name": "Agents", "description": "Connected agent discovery and information."},
             {"name": "System", "description": "System dashboard and configuration."},
-            {"name": "Auth", "description": "Authentication token proxy (Keycloak BFF)."},
+            {"name": "Auth", "description": "Authentication."},
             {"name": "Files", "description": "File upload and download."},
             {"name": "Audit", "description": "Per-user audit log (HIPAA + NIST AU). Read-only; admin-blind."},
         ]
@@ -25911,7 +25904,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 "The orchestrator provides two communication channels:\n\n"
                 "1. **REST API** (documented below) — Request/response endpoints for CRUD operations\n"
                 "2. **WebSocket** (`ws://<host>:<port>/ws`) — Real-time streaming for chat responses and live updates\n\n"
-                "Both channels share the same authentication (Keycloak JWT Bearer tokens).\n\n"
+                "Both channels share the same authentication (mesh caller tickets).\n\n"
                 "---\n"
                 + WS_PROTOCOL_DOCS
             ),
@@ -26146,7 +26139,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 setup_orchestrator_a2a(app, self)
                 logger.warning(
                     "A2A JSON-RPC endpoint mounted at /a2a/ (FF_A2A_SERVER=true). "
-                    "POST /a2a requires a first-party Keycloak bearer and "
+                    "POST /a2a refuses every bearer token and "
                     "dispatches through the tool authorization gate; the "
                     "anonymous agent card lists only capabilities the owner "
                     "explicitly published for A2A. "
@@ -26209,10 +26202,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         except Exception:
             logger.exception("Feature 040: in-process agent registration failed")
 
-        self._track_startup_background_task(
-            self._jwks_warm_loop(),
-            name="jwks-warm-loop",
-        )
 
         self._track_startup_background_task(
             self._work_recovery_loop(),
@@ -26614,39 +26603,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                             list(errors),
                         )
 
-    async def _jwks_warm_loop(self):
-        from shared import jwks_cache, node_identity
-        if node_identity.is_personal():
-            logger.info("jwks warm: skipped (a personal node trusts no identity server)")
-            return
-        authority = (os.getenv("KEYCLOAK_AUTHORITY") or "").strip()
-        if not authority:
-            logger.info("jwks warm: skipped (no authority configured)")
-            return
-        jwks_url = f"{authority.rstrip('/')}/protocol/openid-connect/certs"
-        interval = float(os.getenv("JWKS_REFRESH_SECONDS", "500"))
-        backoff = 5.0
-        warmed = False
-        while True:
-            try:
-                if warmed:
-                    # Calls _fetch directly; get_jwks would no-op inside the TTL
-                    await jwks_cache._fetch(jwks_url)
-                else:
-                    with perf_span("boot.jwks_warm"):
-                        await jwks_cache.get_jwks(jwks_url)
-                    warmed = True
-                    logger.info("jwks warm: keys cached for %s", jwks_url)
-                backoff = 5.0
-                await asyncio.sleep(interval)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                logger.warning("jwks warm/refresh failed (%s) — retrying in %.0fs",
-                               exc, backoff)
-                await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, 300.0)
-
     def _start_phi_warm(self):
         if os.getenv("FF_PHI_WARM", "true").lower() not in ("true", "1", "yes"):
             logger.info("phi warm: disabled via FF_PHI_WARM")
@@ -26807,55 +26763,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 )
 
     async def validate_token(self, token: str) -> Optional[Dict]:
-        from shared import node_identity
-        if node_identity.is_personal():
-            logger.warning("Token refused for a UI session: node_bearer_refused")
-            return None
-        try:
-            authority = os.getenv("KEYCLOAK_AUTHORITY")
-            expected_client = os.getenv("KEYCLOAK_CLIENT_ID")
-
-            if not authority or not expected_client:
-                logger.warning("Auth not configured (KEYCLOAK_AUTHORITY/CLIENT_ID missing)")
-                return None
-
-            from shared.token_verify import TokenRefused, verify_idp_token
-            try:
-                payload = await verify_idp_token(token)
-            except TokenRefused as refused:
-                logger.warning("Token refused for a UI session: %s", refused.reason)
-                return None
-
-            # Only the audience marks a token as agent, not user
-            from shared.auth_clients import is_first_party_user_claims
-            ok, reason = is_first_party_user_claims(payload)
-            if not ok:
-                logger.warning(
-                    "Refusing non-first-party token for a UI session: %s",
-                    reason,
-                )
-                return None
-
-            client_id = os.getenv("KEYCLOAK_CLIENT_ID", "astral-frontend")
-            roles = payload.get("realm_access", {}).get("roles", [])
-            if "resource_access" in payload:
-                if client_id in payload["resource_access"]:
-                    client_roles = payload["resource_access"][client_id].get("roles", [])
-                    roles.extend(client_roles)
-                if "account" in payload["resource_access"]:
-                    account_roles = payload["resource_access"]["account"].get("roles", [])
-                    roles.extend(account_roles)
-            
-            logger.debug(f"Token validation: extracted roles {roles} from payload keys {list(payload.keys())}")
-            
-            if "admin" not in roles and "user" not in roles:
-                logger.warning(f"Token unauthorized (Requires 'admin' or 'user' role). Found roles: {roles}")
-                return None
-
-            return payload
-        except Exception as e:
-            logger.error(f"Token validation failed: {e}")
-            return None
+        logger.warning("Token refused for a UI session: node_bearer_refused")
+        return None
 
     def _get_user_id(self, websocket) -> str:
         if websocket not in self.ui_sessions:
@@ -27000,12 +26909,7 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         if not user_id or user_id == "legacy":
             return
         try:
-            roles = list(set(
-                user_data.get("realm_access", {}).get("roles", []) +
-                user_data.get("resource_access", {}).get(
-                    os.getenv("KEYCLOAK_CLIENT_ID", "astral-frontend"), {}
-                ).get("roles", [])
-            ))
+            roles = list(set(user_data.get("realm_access", {}).get("roles", [])))
             from orchestrator.plane_repository_context import (
                 plane_source_from_orchestrator,
             )

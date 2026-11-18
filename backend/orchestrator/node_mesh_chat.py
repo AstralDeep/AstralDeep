@@ -1,4 +1,4 @@
-"""Routes personal and institution node text requests through the Kernel's sealed provider book and serves ticketed peer calls through the orchestrator's normal gates.
+"""Routes personal node text requests through the Kernel's sealed provider book and serves ticketed peer calls through the orchestrator's normal gates.
 Explicit Python runners remain available for conformance and nonproduction integrations; node_mesh_admission.py bounds their exact tools and credentials.
 The bridge also mirrors committed thin-client turns, computes label floors and recovers requested turns without replaying unknown effects."""
 
@@ -962,11 +962,6 @@ async def start_for(orch: Any) -> None:
     from orchestrator import node_mesh
     from shared import node_identity
 
-    if node_identity.is_institution():
-        from orchestrator import institution_runtime
-
-        await institution_runtime.start_for(orch)
-        return
     mesh = await node_mesh.start_configured()
     if mesh is None or not mesh.requests_supported:
         return
@@ -990,8 +985,6 @@ async def start_for(orch: Any) -> None:
 async def stop_all() -> None:
     from orchestrator import node_mesh
 
-    from orchestrator import institution_runtime
-
     global _wake
     bridge, wake, _wake = _bridge, _wake, None
     install(None)
@@ -1001,7 +994,4 @@ async def stop_all() -> None:
         if bridge is not None:
             await bridge.stop()
     finally:
-        try:
-            await institution_runtime.shutdown()
-        finally:
-            await node_mesh.shutdown()
+        await node_mesh.shutdown()

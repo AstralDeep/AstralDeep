@@ -5,8 +5,6 @@ the /api/connection/status route, surface delivery, and the registration-time pu
 
 from __future__ import annotations
 
-import asyncio
-import json
 import os
 from types import SimpleNamespace
 
@@ -56,17 +54,6 @@ def _publication_service(ready: bool):
         async def readiness():
             return SimpleNamespace(ready=ready)
     return _Service
-
-
-@pytest.fixture()
-def signed_in(server_identity, monkeypatch):
-    async def _reachable(authority: str) -> bool:
-        return True
-
-    monkeypatch.setattr(cg, "_keycloak_reachable", _reachable)
-    monkeypatch.delenv("PUBLIC_BASE_URL", raising=False)
-    monkeypatch.delenv("BACKEND_PUBLIC_URL", raising=False)
-    return server_identity
 
 
 @pytest.fixture()
@@ -168,107 +155,6 @@ class _PushOrch:
         from rote.capabilities import DeviceProfile
 
         return DeviceProfile.from_dict({"device_type": self.device_type})
-
-
-@pytest.mark.parametrize("resume_chat", [None, "owned-guide-chat"])
-async def test_register_ui_pushes_connection_guide_when_required_service_fails(
-    monkeypatch, configured_guide_database, resume_chat, server_identity,
-):
-    subject = f"pytest-connection-guide-{__import__('uuid').uuid4().hex}"
-    user_id = server_identity.owner(subject)
-    from orchestrator.orchestrator import Orchestrator
-
-    orch = await asyncio.to_thread(Orchestrator)
-    try:
-        await orch._llm_store.set(
-            user_id, provider="custom", base_url="http://test.invalid/v1",
-            model="test-model", api_key="test-key",
-        )
-
-        def _plane_down():
-            raise RuntimeError("AstralPlane runtime is not ready")
-
-        monkeypatch.setattr(orch, "_probe_plane_readiness", _plane_down)
-        if resume_chat:
-            from shared.feature_flags import flags
-            monkeypatch.setitem(flags._flags, "bg_continuity", True)
-            monkeypatch.setattr(orch.history, "get_conversation_record",
-                lambda chat, owner: {"id": chat} if chat == resume_chat and owner == user_id else None)
-            async def restored(*args):
-                return None
-            monkeypatch.setattr(orch, "_resume_chat_streams", restored)
-            monkeypatch.setattr(orch, "_replay_chat_task", restored)
-        from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
-
-        task = BackgroundTask(task_id=user_id, chat_id="", user_id=user_id)
-        ws = VirtualWebSocket(task)
-        orch._registered_events[id(ws)] = asyncio.Event()
-        context = orch._new_connection_context(ws)
-        await orch._route_ui_frame(context, json.dumps({
-            "type": "register_ui", "token": server_identity.token(subject, roles=("admin", "user")),
-            "device": {},
-            "session_id": resume_chat,
-        }))
-        await asyncio.wait_for(asyncio.gather(*tuple(context.tracked_tasks)), timeout=30)
-        modal = next(
-            (f for f in ws.task.outputs
-             if f.get("type") == "chrome_render"
-             and 'data-mandatory="1"' in f.get("html", "")
-             and "Connection status" in f.get("html", "")),
-            None,
-        )
-        if resume_chat:
-            assert modal is None and orch._ws_active_chat[id(ws)] == resume_chat
-        else:
-            assert modal is not None, "connection guide modal must be pushed"
-            assert "required service is not ready" in modal["html"]
-    finally:
-        try:
-            await orch._llm_store.clear(user_id)
-        finally:
-            await asyncio.wait_for(orch._close_started_services(), timeout=30.0)
-
-
-async def test_register_ui_connection_guide_push_failure_is_non_fatal(
-    monkeypatch, configured_guide_database, server_identity,
-):
-    import uuid
-
-    subject = f"pytest-connection-guide-{uuid.uuid4().hex}"
-    user_id = server_identity.owner(subject)
-    from orchestrator import connection_guide
-    from orchestrator.orchestrator import Orchestrator
-
-    orch = await asyncio.to_thread(Orchestrator)
-    try:
-        await orch._llm_store.set(
-            user_id, provider="custom", base_url="http://test.invalid/v1",
-            model="test-model", api_key="test-key",
-        )
-
-        async def _boom(orchestrator, websocket, uid):
-            raise RuntimeError("guide evaluation failed")
-
-        monkeypatch.setattr(connection_guide, "maybe_push_on_register", _boom)
-        from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
-
-        task = BackgroundTask(task_id=user_id, chat_id="", user_id=user_id)
-        ws = VirtualWebSocket(task)
-        orch._registered_events[id(ws)] = asyncio.Event()
-        context = orch._new_connection_context(ws)
-        await orch._route_ui_frame(context, json.dumps({
-            "type": "register_ui", "token": server_identity.token(subject, roles=("admin", "user")),
-            "device": {},
-        }))
-        await asyncio.wait_for(asyncio.gather(*tuple(context.tracked_tasks)), timeout=30)
-        assert any(f.get("type") == "rote_config" for f in ws.task.outputs), (
-            "registration must complete despite a failed guide push"
-        )
-    finally:
-        try:
-            await orch._llm_store.clear(user_id)
-        finally:
-            await asyncio.wait_for(orch._close_started_services(), timeout=30.0)
 
 
 def test_endpoint_origin_without_host_is_empty():

@@ -1,8 +1,5 @@
 # astral-sdk
 
-For personal-device enrollment, possession proofs, and encrypted signing-key
-custody, see [personal mesh enrollment](MESH.md) and install `astral-sdk[mesh]`.
-
 Python SDK for driving Astral's **Work** operations from your own external
 tooling — a script, an agent framework, an MCP-aware host — using an
 owner-issued **framework credential** rather than a live interactive session.
@@ -127,7 +124,7 @@ Start and input require an exact approval in a fresh signed-in web review tab wi
 The operator must configure an isolated SSH runtime with `TERMINAL_SSH_PROFILE_FILE`
 and enroll its exact machine and host key through the normal encrypted owner settings.
 Execution is unavailable without that profile; the orchestrator never opens a host shell.
-Terminal sessions are owner-only: they require a current Keycloak owner
+Terminal sessions are owner-only: they require a current owner
 access token, and framework credentials (`afk_…`) are refused locally with
 `terminal_owner_authentication_required` before any request is sent.
 
@@ -170,8 +167,7 @@ The client methods (`create_terminal_session`, `write_terminal`,
 
 `emergency-status` and `emergency-stop` accept a framework credential with the
 corresponding read or control scope. `emergency-resume --expected-revision N`
-requires a current owner Keycloak access token obtained through the existing
-product sign-in. Owner tokens use `/api/emergency-stop`; framework credentials
+requires a current owner access token. Owner tokens use `/api/emergency-stop`; framework credentials
 use MCP for status and stop and are refused for resume. The SDK never retries
 owner control writes automatically after a transport failure: check status
 before making another explicit decision.

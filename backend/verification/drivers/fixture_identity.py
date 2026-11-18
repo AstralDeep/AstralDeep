@@ -1,10 +1,10 @@
-"""Signed fixture identities for the in-process harness (backend/shared/jwks_cache.py):
-supplies only local JWKS retrieval while the product's real JWT signature, issuer,
-and role checks still run; never real Keycloak.
+"""Signed fixture identities for the in-process harness: mints locally signed claims and tokens
+for namespaced verification runs and never reaches a real identity server.
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
 import time
 import uuid
@@ -19,8 +19,6 @@ class FixtureIdentity:
     _active = None
 
     def __init__(self, run_id: str, *, authority: str | None = None) -> None:
-        from shared import jwks_cache
-
         if os.environ.get("ASTRAL_ENV") != "development":
             raise ValueError("synthetic verification IAM requires explicit development mode")
         if not run_id.startswith("__verif__"):
@@ -34,7 +32,6 @@ class FixtureIdentity:
                 raise ValueError("synthetic IAM issuer must remain on verification.invalid")
         self.run_id = run_id
         self.authority = authority or f"https://verification.invalid/realms/{uuid.uuid4().hex}"
-        self.url = f"{self.authority}/protocol/openid-connect/certs"
         self.kid = f"fixture-{uuid.uuid4().hex}"
         key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
         self.private_key = key.private_bytes(
@@ -47,15 +44,6 @@ class FixtureIdentity:
         self.jwks = {"keys": [jwk.construct(public, algorithm="RS256").to_dict() | {
             "kid": self.kid, "use": "sig",
         }]}
-        self.values = {
-            "KEYCLOAK_AUTHORITY": self.authority,
-            "KEYCLOAK_CLIENT_ID": "astral-frontend",
-            "KEYCLOAK_ALLOWED_AZP": "astral-frontend",
-        }
-        self.previous = {key: os.environ.get(key) for key in self.values}
-        os.environ.update(self.values)
-        self.cache = jwks_cache._cache
-        self.cache[self.url] = {"jwks": self.jwks, "fetched_at": time.time()}
         self.closed = False
         type(self)._active = self
 
@@ -67,7 +55,6 @@ class FixtureIdentity:
             "iat": int(time.time()), "exp": int(time.time()) + 300,
         }
         token = jwt.encode(issued, self.private_key, algorithm="RS256", headers={"kid": self.kid})
-        self.cache[self.url] = {"jwks": self.jwks, "fetched_at": time.time()}
         return issued, token
 
     def close(self) -> None:
@@ -75,10 +62,13 @@ class FixtureIdentity:
             return
         self.closed = True
         type(self)._active = None
-        self.cache.pop(self.url, None)
         self.private_key = b""
-        for key, value in self.previous.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
+
+
+
+def fixture_issuer_digest(issuer: str) -> str:
+    return hashlib.sha256(issuer.strip().rstrip("/").encode()).hexdigest()[:16]
+
+
+def fixture_owner_id(issuer: str, subject: str) -> str:
+    return f"fixture.{fixture_issuer_digest(issuer)}.{subject}"

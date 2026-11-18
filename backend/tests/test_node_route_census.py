@@ -76,7 +76,7 @@ def plane_runtime():
 
 
 @pytest.fixture
-def app(plane_runtime, server_identity, monkeypatch):
+def app(plane_runtime, node_data_dir, monkeypatch):
     return orchestrator_app.build(monkeypatch, orchestrator_app.host(plane_runtime))
 
 

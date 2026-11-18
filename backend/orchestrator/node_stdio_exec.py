@@ -1,5 +1,5 @@
 """The node's real sandbox backend for local stdio MCP servers: it fills the launch policy's workspace, loads and selects it through astral_exec, hands the credential environment to run.py over an inherited pipe and starts the server through the run.py launch command with its own stdio piped back.
-node_stdio_launcher.py drives it through the SandboxBackend protocol, and node_mesh.py and institution_meshes.py install it only when this machine can confine a tool.
+node_stdio_launcher.py drives it through the SandboxBackend protocol, and node_mesh.py installs it only when this machine can confine a tool.
 """
 
 from __future__ import annotations
