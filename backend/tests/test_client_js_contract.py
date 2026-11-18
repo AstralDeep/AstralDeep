@@ -65,23 +65,25 @@ def test_no_retired_bearer_literal_in_executable_code(client_js):
     assert not re.search(r"""\|\|\s*['"]""" + retired + r"""['"]""", client_js)
 
 
-def test_auth_required_case_refreshes_then_falls_back_to_login(client_js):
+def test_auth_required_case_never_redirects_and_shows_the_no_sign_in_notice(client_js):
     block = _norm(_case_block(client_js, "auth_required"))
-    assert "refreshToken(" in block, "auth_required must try a silent session refresh"
-    assert "gotoLogin()" in block, "auth_required must fall back to interactive login"
+    assert "gotoLogin" not in block and "location.href" not in block and "location.assign" not in block
     assert "authRetried" in block
-    assert "else { gotoLogin(); }" in block
-    assert block.index("refreshToken(") < block.index("gotoLogin()")
+    assert "else { showNotice(); }" in block
     assert "sendRegistration(true)" in block
     registration = _norm(_js_function(client_js, "sendRegistration"))
     assert 'type: "register_ui"' in registration and "token: token" in registration
+    notice = _norm(_js_function(client_js, "showNotice"))
+    assert 'panel.id = "astral-not-available-notice"' in notice
+    assert "Astral runs in the Mac and iPhone apps" in notice
+    assert "https://astraldeep.github.io/downloads.html" in client_js
 
 
-def test_gotologin_builds_next_from_current_location(client_js):
-    fn = _norm(_js_function(client_js, "gotoLogin"))
-    assert "encodeURIComponent(location.pathname + location.search)" in fn
-    assert '"/auth/login?next=" + next' in fn
-    assert "location.href" in fn
+def test_browser_has_no_sign_in_or_stored_bearer_token(client_js):
+    for removed in ("gotoLogin", "/auth/login", "TOKEN_KEY", "sessionStorage.getItem(\"astral_token"):
+        assert removed not in client_js, f"client.js still carries the removed sign-in path {removed!r}"
+    assert "sessionStorage.setItem(TOKEN" not in client_js
+    assert "function gotoLogin(" not in client_js
 
 
 def _astral_action_handler(client_js: str) -> str:
@@ -173,13 +175,11 @@ def test_reconnect_refetches_session_before_register(client_js):
     assert "token = j.access_token" in rt
 
 
-def test_full_shell_load_prefers_current_server_session_over_prior_tab_token(client_js):
+def test_token_bootstrap_has_no_tab_storage_fallback(client_js):
     bootstrap = re.search(r"var token = ([^;]+);", client_js)
     assert bootstrap is not None
-    expression = bootstrap.group(1)
-    assert expression.index("window.__ASTRAL_TOKEN__") < expression.index(
-        "sessionStorage.getItem(TOKEN_KEY)"
-    )
+    assert bootstrap.group(1).strip() == 'window.__ASTRAL_TOKEN__ || ""'
+    assert "sessionStorage" not in bootstrap.group(1)
 
 
 def test_definitive_sign_out_clears_cached_token_and_account_marker(client_js):
@@ -187,7 +187,7 @@ def test_definitive_sign_out_clears_cached_token_and_account_marker(client_js):
     end = client_js.index(clear) + len(clear)
     handler = client_js[client_js.rindex("accountSignedOut = true;", 0, end) : end]
     assert "token = \"\"" in handler
-    assert "sessionStorage.removeItem(TOKEN_KEY)" in handler
+    assert "TOKEN_KEY" not in handler
     assert "sessionStorage.removeItem(ACCOUNT_SESSION_KEY)" in handler
     assert 'clearActiveChatLocator("definitive_sign_out", activeChatId)' in handler
 
