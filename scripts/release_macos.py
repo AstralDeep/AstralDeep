@@ -594,6 +594,13 @@ class Release:
         if "worked" not in validated.stdout:
             raise ReleaseError("Stapled ticket did not validate")
 
+    def expand_prefix(self, value: object) -> object:
+        if isinstance(value, list):
+            return [self.expand_prefix(item) for item in value]
+        if isinstance(value, str):
+            return value.replace("$(AppIdentifierPrefix)", f"{TEAM_ID}.").replace("$(TeamIdentifierPrefix)", f"{TEAM_ID}.")
+        return value
+
     def profile_allows(self, granted: object, wanted: object) -> bool:
         if granted == "*":
             return True
@@ -630,7 +637,8 @@ class Release:
             raise ReleaseError(f"The Developer ID profile expired on {expires:%Y-%m-%d}")
         wanted = plistlib.loads((self.projection / DIRECT_ENTITLEMENTS).read_bytes())
         for key, value in wanted.items():
-            if key.startswith(RESTRICTED_ENTITLEMENT_PREFIXES) and not self.profile_allows(entitlements.get(key), value):
+            if key.startswith(RESTRICTED_ENTITLEMENT_PREFIXES) and not self.profile_allows(
+                    entitlements.get(key), self.expand_prefix(value)):
                 raise ReleaseError(f"The Developer ID profile does not allow the {key} entitlement")
         home = Path(self.environ.get("HOME") or Path.home())
         for folder in PROFILE_INSTALL_DIRS:
