@@ -1,5 +1,5 @@
-"""Checks verification owner propagation against the real fixture JWT verifier.
-The in-process driver must use the same issuer-scoped owner for state and socket authority.
+"""Checks verification owner propagation into node-session claims.
+The in-process driver must use the same issuer-scoped owner for state and session authority.
 """
 
 from __future__ import annotations

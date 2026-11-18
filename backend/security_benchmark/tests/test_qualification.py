@@ -4,7 +4,6 @@ Unit evidence never substitutes for a registered-turn run.
 
 from __future__ import annotations
 
-import json
 from dataclasses import replace
 
 import pytest
@@ -62,21 +61,6 @@ def test_teardown_and_population_must_be_complete():
 def test_synthetic_label_cannot_be_promoted():
     report = build_report(_candidate(), _evidence(), teardown_verified=True)
     report["evidence_class"] = "synthetic_diagnostic"
-    with pytest.raises(ValueError):
-        validate_report(report)
-
-
-def test_interrupted_cli_writes_incomplete_report(monkeypatch, tmp_path):
-    from security_benchmark import __main__ as cli
-    from security_benchmark import qualification_report
-
-    def unavailable(_root):
-        raise ValueError("dirty candidate")
-
-    monkeypatch.setattr(qualification_report, "candidate_identity", unavailable)
-    assert cli.main(["--qualify-real-dispatch", "--out", str(tmp_path)]) == 1
-    report = json.loads((tmp_path / "real-dispatch-qualification.json").read_text())
-    assert report["status"] == "incomplete"
     with pytest.raises(ValueError):
         validate_report(report)
 

@@ -1,18 +1,13 @@
-"""Signed fixture identities for the in-process harness: mints locally signed claims and tokens
-for namespaced verification runs and never reaches a real identity server.
+"""Fixture owner namespaces for the in-process harness: one active issuer-scoped namespace per verification run, with no token minting.
+verification/drivers/in_process.py builds node-session claims for the owners it derives here.
 """
 
 from __future__ import annotations
 
 import hashlib
 import os
-import time
 import uuid
 from urllib.parse import urlsplit
-
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
-from jose import jwk, jwt
 
 
 class FixtureIdentity:
@@ -32,37 +27,14 @@ class FixtureIdentity:
                 raise ValueError("synthetic IAM issuer must remain on verification.invalid")
         self.run_id = run_id
         self.authority = authority or f"https://verification.invalid/realms/{uuid.uuid4().hex}"
-        self.kid = f"fixture-{uuid.uuid4().hex}"
-        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        self.private_key = key.private_bytes(
-            serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
-            serialization.NoEncryption(),
-        )
-        public = key.public_key().public_bytes(
-            serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo,
-        )
-        self.jwks = {"keys": [jwk.construct(public, algorithm="RS256").to_dict() | {
-            "kid": self.kid, "use": "sig",
-        }]}
         self.closed = False
         type(self)._active = self
-
-    def claims_and_token(self, claims: dict) -> tuple[dict, str]:
-        if self.closed or not claims.get("sub", "").startswith(self.run_id + "_"):
-            raise ValueError("fixture principal is outside the active run")
-        issued = dict(claims) | {
-            "iss": self.authority, "azp": "astral-frontend", "aud": "account",
-            "iat": int(time.time()), "exp": int(time.time()) + 300,
-        }
-        token = jwt.encode(issued, self.private_key, algorithm="RS256", headers={"kid": self.kid})
-        return issued, token
 
     def close(self) -> None:
         if self.closed:
             return
         self.closed = True
         type(self)._active = None
-        self.private_key = b""
 
 
 

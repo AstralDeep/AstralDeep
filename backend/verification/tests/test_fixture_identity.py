@@ -1,7 +1,5 @@
-"""Tests for the synthetic fixture IAM
-(backend/verification/drivers/fixture_identity.py, backend/orchestrator/auth.py):
-signature verification, trust scoped to one namespaced run, and refusal of foreign or
-overlapping realms.
+"""Tests for the fixture owner namespace (backend/verification/drivers/fixture_identity.py):
+one active namespaced run and development-only construction.
 """
 
 from __future__ import annotations
@@ -15,19 +13,11 @@ from verification.drivers.fixture_identity import FixtureIdentity
 @pytest.fixture
 def identity(monkeypatch):
     monkeypatch.setenv("ASTRAL_ENV", "development")
-    monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://prior.invalid")
-    monkeypatch.delenv("KEYCLOAK_ALLOWED_AZP", raising=False)
     value = FixtureIdentity("__verif__signed")
     try:
         yield value
     finally:
         value.close()
-
-
-@pytest.mark.parametrize("claims", [{}, {"sub": "foreign"}, {"sub": "__verif__signedOTHER"}])
-def test_foreign_principals_refused(identity, claims):
-    with pytest.raises(ValueError, match="outside"):
-        identity.claims_and_token(claims)
 
 
 def test_overlapping_realm_owners_refused(identity):

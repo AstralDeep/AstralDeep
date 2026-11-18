@@ -160,6 +160,7 @@ docker run --init --name "$namespace-test" --network "container:$namespace-dev" 
   --env DATABASE_URL="$url" --env ASTRALPLANE_TEST_DATABASE_URL="$url" \
   --env ASTRALPLANE_TEST_POSTGRES_DSN="$url" --env ASTRAL_TEST_ISOLATED=1 \
   --env PYTHON_DOTENV_DISABLED=1 --env PYTHONDONTWRITEBYTECODE=1 \
+  --env ASTRAL_NODE_PROFILE=personal \
   --env ATTACHMENT_UPLOAD_ROOT=/tmp/test-blobs --env PERSONAL_AGENT_ARTIFACT_ROOT=/tmp/test-agents \
   --env ASTRALDEEP_SOURCE_REPO=/workspace --env ASTRAL_GATE_GROUP="$group" \
   --env PATH=/opt/astral-kernel/bin:/opt/ci-node:/usr/local/bin:/usr/bin:/bin \
