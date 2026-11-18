@@ -1448,7 +1448,7 @@ jobs:
           set -euo pipefail
           rustup toolchain install 1.99.1 --profile minimal
           rustup target add --toolchain 1.99.1 aarch64-apple-darwin
-          export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$GITHUB_WORKSPACE=/build/workspace --remap-path-prefix=$RUNNER_TEMP=/build/temp --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/build/cargo --remap-path-prefix=${RUSTUP_HOME:-$HOME/.rustup}=/build/rustup"
+          export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$GITHUB_WORKSPACE=/build/workspace --remap-path-prefix=$RUNNER_TEMP=/build/temp --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/build/cargo --remap-path-prefix=${RUSTUP_HOME:-$HOME/.rustup}=/build/rustup -C link-arg=-Wl,-install_name,@rpath/libastral_kernel_ffi.dylib"
           export CFLAGS="${CFLAGS:-} -ffile-prefix-map=$GITHUB_WORKSPACE=/build/workspace -ffile-prefix-map=$RUNNER_TEMP=/build/temp"
           bash components/AstralKernel/scripts/build-python-macos.sh --out "$RUNNER_TEMP/kernel-macos"
           python3 scripts/node_bundle/assemble.py --platform macos-arm64 --kernel-dir "$RUNNER_TEMP/kernel-macos" \
