@@ -326,8 +326,8 @@ and for redacting messages and scalar metadata before storing or emitting diagno
 
 AstralPlane owns qualification of its Python source, architecture boundary, PostgreSQL migration
 and repository behavior, and standalone package compatibility. Pull requests, merge groups, and `main` pushes run
-the repository-owned `.github/workflows/ci.yml` jobs `quality`, `postgresql`, and
-`package-compatibility`; the `gates` aggregate fails closed unless every owner job succeeds. The
+the Deep `.github/workflows/ci.yml` jobs `plane-quality`, `plane-postgres`, and
+`plane-package-compatibility`; the `gates` aggregate fails closed unless every owner job succeeds. The
 PostgreSQL lane runs the complete Python 3.11 suite against PostgreSQL 17 with a measured-baseline
 combined branch-coverage floor of 88.75% and a changed-line coverage threshold of 90%.
 `scripts/check_changed_coverage.py` decides changed-line coverage from diff-cover's JSON report for
@@ -391,7 +391,7 @@ uv run --frozen --group ci python scripts/check_changed_coverage.py \
   --report changed-coverage.json --base-sha "$BASE_SHA" --fail-under 90
 uv lock --check
 uv build --build-constraints tooling/python-ci/build-requirements.lock.txt --require-hashes
-actionlint .github/workflows/ci.yml
+actionlint ../.github/workflows/ci.yml
 ```
 
 PostgreSQL integration checks use an isolated test database and the synthetic non-PHI fixture under

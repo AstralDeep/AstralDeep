@@ -57,16 +57,7 @@ MOVED_PACKAGES = (
         folder="plane",
         distribution="astralplane",
         command=None,
-        github_files=frozenset(
-            {
-                "PR_TRIAGE.md",
-                "pull_request_template.md",
-                "ISSUE_TEMPLATE/issue.md",
-                "workflows/ci.yml",
-                "workflows/pr-ci-notifications.yml",
-                "workflows/pr-triage.yml",
-            }
-        ),
+        github_files=frozenset(),
         import_name="astralplane",
         image_copies=frozenset(
             {

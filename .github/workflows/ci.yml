@@ -488,6 +488,73 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  plane-quality:
+    name: Plane lock, lint, dependency direction and review diagnostics
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          submodules: false
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.26"
+          python-version: "3.11"
+      - working-directory: plane
+        run: |
+          set -euo pipefail
+          uv lock --check
+          uv sync --frozen --group ci
+          uv run --frozen --group ci ruff check .
+          uv run --frozen --group ci python tests/architecture/test_dependency_direction.py
+      - name: Record immutable Plane test and qualification policy changes
+        working-directory: plane
+        env:
+          REVIEW_BASE: ${{ github.event.pull_request.base.sha || github.event.before || inputs.base_sha }}
+          REVIEW_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          uv run --frozen --group ci python scripts/ci_review_diagnostics.py \
+            --base "$REVIEW_BASE" --head "$REVIEW_HEAD" --output ci-review-diagnostics.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: plane-ci-review
+          path: plane/ci-review-diagnostics.json
+          if-no-files-found: error
+          retention-days: 14
+
+  plane-package-compatibility:
+    name: Plane wheel on Python ${{ matrix.python-version }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.14"]
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: false
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.26"
+          python-version: ${{ matrix.python-version }}
+      - working-directory: plane
+        run: |
+          set -euo pipefail
+          uv lock --check
+          uv build --build-constraints tooling/python-ci/build-requirements.lock.txt --require-hashes
+      - name: Install and import the wheel in a clean environment
+        working-directory: plane
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv venv --python "${{ matrix.python-version }}" --seed .package-smoke
+          .package-smoke/bin/python -m pip install --no-deps dist/*.whl
+          .package-smoke/bin/python -c "import astralplane; assert astralplane.CONTRACT_VERSION == 'astralplane.contract/v1'"
+
   backend-changed-coverage:
     name: Immutable changed Python coverage at least 90 percent
     needs: [backend-web, voice-worker-test]
@@ -1284,6 +1351,8 @@ jobs:
       - composition-declarations
       - voice-worker-test
       - secret-scan
+      - plane-quality
+      - plane-package-compatibility
       - vessel-lint
       - vessel-test
       - vessel-isolation
@@ -1308,6 +1377,8 @@ jobs:
           [[ '${{ needs.composition-declarations.result }}' == 'success' ]]
           [[ '${{ needs.voice-worker-test.result }}' == 'success' ]]
           [[ '${{ needs.secret-scan.result }}' == 'success' ]]
+          [[ '${{ needs.plane-quality.result }}' == 'success' ]]
+          [[ '${{ needs.plane-package-compatibility.result }}' == 'success' ]]
           [[ '${{ needs.vessel-lint.result }}' == 'success' ]]
           [[ '${{ needs.vessel-test.result }}' == 'success' ]]
           [[ '${{ needs.vessel-isolation.result }}' == 'success' ]]
