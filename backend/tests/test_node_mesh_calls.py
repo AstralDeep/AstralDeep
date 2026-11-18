@@ -79,20 +79,19 @@ async def test_unknown_and_ambiguous_tools_are_refused(pairs, requested, code):
     assert caught.value.code == code
 
 
-async def test_authority_is_derived_for_the_one_scope_of_the_tool():
-    orch = Orch()
+async def test_a_call_with_no_bound_admission_is_refused(monkeypatch):
+    monkeypatch.setenv("ASTRAL_NODE_PROFILE", "personal")
     resolved = nmcalls.ResolvedTool("agent-1", "write_note", "tools:write", DEFINITION)
-    assert await nmcalls.OrchestratorCalls(orch).authorize(OWNER, resolved) == "authority"
-    assert orch.events[0][1] == {"user_id": OWNER, "agent_id": "agent-1", "turn_class": "mesh_request", "consented_scopes": ["tools:write"]}
-
-
-async def test_missing_authority_is_refused_with_a_dotted_code():
-    from orchestrator.chain_authority import AuthoritySkip
-
-    orch = Orch(authority=AuthoritySkip("empty_scopes", "gone"))
     with pytest.raises(nmcalls.CallRefused) as caught:
-        await nmcalls.OrchestratorCalls(orch).authorize(OWNER, nmcalls.ResolvedTool("a", "t", "tools:read", DEFINITION))
-    assert caught.value.code == "node.authority_empty_scopes"
+        await nmcalls.OrchestratorCalls(Orch()).authorize(OWNER, resolved)
+    assert caught.value.code == "request.call_mismatch"
+
+
+async def test_a_node_outside_the_personal_profile_refuses_every_call(monkeypatch):
+    monkeypatch.delenv("ASTRAL_NODE_PROFILE", raising=False)
+    with pytest.raises(nmcalls.CallRefused) as caught:
+        await nmcalls.OrchestratorCalls(Orch()).authorize(OWNER, nmcalls.ResolvedTool("a", "t", "tools:read", DEFINITION))
+    assert caught.value.code == "node.mesh_admission_unavailable"
 
 
 RESOLVED = nmcalls.ResolvedTool("agent-1", "lookup", "tools:read", DEFINITION)

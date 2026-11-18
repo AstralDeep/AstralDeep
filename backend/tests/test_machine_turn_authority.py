@@ -42,14 +42,6 @@ def _store():
     return st
 
 
-def _grants(valid=True, token="consent-token"):
-    g = MagicMock()
-    g.is_valid = MagicMock(return_value=valid)
-    g.latest_valid_for = MagicMock(return_value=None)
-    g.mint_access_token = AsyncMock(return_value=token)
-    return g
-
-
 def _orch(current_scopes=None):
     scopes = ({"tools:read": True, "tools:search": True}
               if current_scopes is None else current_scopes)
@@ -63,71 +55,9 @@ def _orch(current_scopes=None):
 
 
 @pytest.mark.asyncio
-async def test_scheduled_run_threads_consent_derived_authority():
-    orch, store, grants = _orch(), _store(), _grants()
-    outcome = await JobRunner(orch, store, grants).run_job(_job())
-    assert outcome == "success"
-    grants.mint_access_token.assert_awaited_once_with(
-        "grant-1",
-        user_id="u1",
-    )
-    kwargs = orch.run_scheduled_turn.await_args.kwargs
-    authority = kwargs["authority"]
-    assert isinstance(authority, MachineAuthority)
-    assert authority.access_token == "consent-token"
-    assert authority.principal == "machine:scheduled_job"
-    assert authority.consent_ref == "grant-1"
-    assert kwargs["allowed_scopes"] == ["tools:read", "tools:search"]
-
-
-@pytest.mark.asyncio
-async def test_authority_never_wider_than_current_grants():
-    orch = _orch(current_scopes={"tools:read": True, "tools:search": False})
-    store, grants = _store(), _grants()
-    await JobRunner(orch, store, grants).run_job(_job())
-    kwargs = orch.run_scheduled_turn.await_args.kwargs
-    assert kwargs["allowed_scopes"] == ["tools:read"]
-    assert kwargs["authority"].allowed_scopes == ["tools:read"]
-
-
-@pytest.mark.asyncio
-async def test_safe_baseline_user_is_not_mistaken_for_having_no_grants():
-    orch = _orch()
-    orch.tool_permissions.get_agent_scopes = MagicMock(return_value={})
-    orch.tool_permissions.get_enabled_scope_names = MagicMock(
-        return_value=["tools:read", "tools:search"])
-    store, grants = _store(), _grants()
-
-    outcome = await JobRunner(orch, store, grants).run_job(_job())
-
-    assert outcome == "success"
-    kwargs = orch.run_scheduled_turn.await_args.kwargs
-    assert kwargs["allowed_scopes"] == ["tools:read", "tools:search"]
-    orch.tool_permissions.get_agent_scopes.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_effective_revocation_still_skips():
-    orch = _orch()
-    orch.tool_permissions.get_enabled_scope_names = MagicMock(return_value=[])
-    store, grants = _store(), _grants()
-
-    outcome = await JobRunner(orch, store, grants).run_job(_job())
-
-    assert outcome == "skipped_auth"
-    orch.run_scheduled_turn.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("setup,reason", [
-    (lambda g: setattr(g, "is_valid", MagicMock(return_value=False)), "revoked"),
-    (lambda g: setattr(g, "mint_access_token",
-                       AsyncMock(side_effect=RuntimeError("kc revoked"))), "mint"),
-])
-async def test_skip_dispatches_nothing_and_pauses(setup, reason):
-    orch, store, grants = _orch(), _store(), _grants()
-    setup(grants)
-    outcome = await JobRunner(orch, store, grants).run_job(_job())
+async def test_a_scheduled_run_without_durable_consent_dispatches_nothing_and_pauses():
+    orch, store = _orch(), _store()
+    outcome = await JobRunner(orch, store).run_job(_job())
     assert outcome == "skipped_auth"
     orch.run_scheduled_turn.assert_not_awaited()
     assert store.finish_run.call_args.kwargs["outcome"] == "skipped_auth"
@@ -136,35 +66,29 @@ async def test_skip_dispatches_nothing_and_pauses(setup, reason):
 
 
 @pytest.mark.asyncio
-async def test_missing_consent_skips():
-    orch, store, grants = _orch(), _store(), _grants()
-    outcome = await JobRunner(orch, store, grants).run_job(
-        _job(offline_grant_id=None))
+async def test_a_job_with_no_consent_reference_skips():
+    orch, store = _orch(), _store()
+    outcome = await JobRunner(orch, store).run_job(_job(offline_grant_id=None))
     assert outcome == "skipped_auth"
     orch.run_scheduled_turn.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_empty_scope_intersection_skips():
+async def test_a_job_whose_scopes_are_all_revoked_skips():
     orch = _orch(current_scopes={"tools:read": False, "tools:search": False})
-    store, grants = _store(), _grants()
-    outcome = await JobRunner(orch, store, grants).run_job(_job())
+    store = _store()
+    outcome = await JobRunner(orch, store).run_job(_job())
     assert outcome == "skipped_auth"
     orch.run_scheduled_turn.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_revocation_pauses_with_one_notification():
-    orch, store, grants = _orch(), _store(), _grants(valid=False)
-    runner = JobRunner(orch, store, grants)
+async def test_repeated_skips_pause_with_one_notification():
+    orch, store = _orch(), _store()
+    runner = JobRunner(orch, store)
     for _ in range(4):
         assert await runner.run_job(_job()) == "skipped_auth"
     assert orch.notify_user.await_count == 1
-    grants.is_valid = MagicMock(return_value=True)
-    assert await runner.run_job(_job()) == "success"
-    grants.is_valid = MagicMock(return_value=False)
-    assert await runner.run_job(_job()) == "skipped_auth"
-    assert orch.notify_user.await_count == 3
 
 
 @pytest.fixture

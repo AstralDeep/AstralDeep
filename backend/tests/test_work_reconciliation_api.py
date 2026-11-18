@@ -9,26 +9,33 @@ import sys
 from unittest.mock import MagicMock, AsyncMock
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from orchestrator.api import async_task_router  # noqa: E402
+from orchestrator.auth import refuse_node_bearer, require_user_id  # noqa: E402
 from orchestrator.work_reconciliation import (  # noqa: E402
     ReconciliationRefused,
 )
 
 OWNER_SUBJECT = "owner-user-id"
 STRANGER_SUBJECT = "stranger-user-id"
-OWNER = ""
-STRANGER = ""
-_IDENTITY = None
+OWNER = OWNER_SUBJECT
+STRANGER = STRANGER_SUBJECT
+SUBJECT_HEADER = "x-test-subject"
 
 
 def _auth(sub: str) -> dict:
-    subject = OWNER_SUBJECT if sub == OWNER else STRANGER_SUBJECT
-    return _IDENTITY.headers(subject)
+    return {SUBJECT_HEADER: sub}
+
+
+async def _subject(request: Request) -> str:
+    subject = request.headers.get(SUBJECT_HEADER)
+    if not subject:
+        refuse_node_bearer()
+    return subject
 
 
 BODY = {
@@ -59,6 +66,7 @@ def _app(service) -> TestClient:
     app = FastAPI()
     app.state.orchestrator = orch
     app.include_router(async_task_router)
+    app.dependency_overrides[require_user_id] = _subject
     return TestClient(app)
 
 

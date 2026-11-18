@@ -21,11 +21,12 @@ from fastapi import FastAPI  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from orchestrator.api import _csv_body, export_router  # noqa: E402
+from orchestrator.auth import require_user_id_or_web_session  # noqa: E402
 from shared.feature_flags import flags  # noqa: E402
 
 
 SUBJECT = "pytest-export-user"
-USER_ID = ""
+USER_ID = SUBJECT
 AUTH: dict = {}
 
 
@@ -67,11 +68,17 @@ def orch():
 
 
 @pytest.fixture()
-def client(orch):
+def unauthenticated_client(orch):
     app = FastAPI()
     app.include_router(export_router)
     app.state.orchestrator = orch
     return TestClient(app)
+
+
+@pytest.fixture()
+def client(orch, unauthenticated_client):
+    unauthenticated_client.app.dependency_overrides[require_user_id_or_web_session] = lambda: USER_ID
+    return unauthenticated_client
 
 
 @pytest.fixture(autouse=True)
@@ -306,10 +313,11 @@ def test_flag_off_both_routes_404_route_absent_body(client, orch):
     assert r2.json() == {"detail": "Not Found"}
 
 
-def test_bearer_with_an_unsigned_token_is_refused(client, orch):
-    r = client.get("/api/export/component/wc_tbl1.csv", params={"chat_id": CHAT_ID},
+def test_bearer_with_an_unsigned_token_is_refused(unauthenticated_client, orch):
+    r = unauthenticated_client.get("/api/export/component/wc_tbl1.csv", params={"chat_id": CHAT_ID},
                    headers={"Authorization": "Bearer e30.e30.sig", "Accept": "application/json"})
     assert r.status_code == 401
+    assert r.json() == {"detail": "node.bearer_refused"}
     orch.workspace.aget_by_component_id.assert_not_awaited()
 
 

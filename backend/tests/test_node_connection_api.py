@@ -311,12 +311,12 @@ async def test_the_gate_compares_the_secret_in_constant_time(node, monkeypatch):
     assert compared == [(node.secret.encode(), b"wrong")]
 
 
-async def test_a_stopped_mesh_and_a_server_profile_refuse(node, monkeypatch):
+async def test_a_stopped_mesh_and_an_inactive_profile_refuse(node, monkeypatch):
     node_mesh.install(None)
     unavailable = await node.op.send("GET", ROOT)
     assert (unavailable.status_code, unavailable.json()) == (503, {"detail": "mesh_unavailable"})
     node_mesh.install(node.mesh)
-    monkeypatch.setenv(ni.PROFILE_ENV, ni.INSTITUTION)
+    monkeypatch.delenv(ni.PROFILE_ENV, raising=False)
     ni.reset_cache()
     refused = await node.op.send("GET", ROOT)
     assert (refused.status_code, refused.json()) == (404, {"detail": "node_profile_inactive"})
@@ -453,9 +453,9 @@ async def test_the_node_keeps_its_secret_across_a_restart(node):
     assert path.read_text() == node.secret
 
 
-async def test_a_server_node_writes_no_operator_secret(tmp_path, monkeypatch):
+async def test_a_node_without_the_personal_profile_writes_no_operator_secret(tmp_path, monkeypatch):
     home = personal(monkeypatch, tmp_path)
-    monkeypatch.setenv(ni.PROFILE_ENV, ni.INSTITUTION)
+    monkeypatch.delenv(ni.PROFILE_ENV, raising=False)
     ni.reset_cache()
     mesh = node_mesh.NodeMesh(data_dir=home, binding=fake,
                               settings=node_mesh.MeshSettings(mailbox=MailboxSettings(enabled=False)))

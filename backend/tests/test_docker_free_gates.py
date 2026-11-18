@@ -140,8 +140,7 @@ def production(tmp_path, monkeypatch):
         "USE_MOCK_AUTH": "false",
     }.items():
         monkeypatch.setenv(name, value)
-    for name in ("KEYCLOAK_CLIENT_SECRET", ni.OWNER_ENV, ni.ISSUERS_ENV):
-        monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv(ni.OWNER_ENV, raising=False)
     ni.reset_cache()
     yield
     ni.reset_cache()

@@ -724,6 +724,7 @@ def test_socket_teardown_revokes_scope_and_trace_redacts_bearer(monkeypatch) -> 
     assert id(websocket) not in orchestrator._voice_control_bindings
 
     sink = _NonClosingStringIO()
+    monkeypatch.setenv("ASTRAL_FRAME_TRACE_DIR", "/trace")
     monkeypatch.setattr("orchestrator.orchestrator.os.path.exists", lambda _path: True)
     monkeypatch.setattr("builtins.open", lambda *_args, **_kwargs: sink)
     bearer = "never-write-this-binding-bearer-value"

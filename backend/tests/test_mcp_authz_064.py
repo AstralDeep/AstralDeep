@@ -37,16 +37,13 @@ def test_canonical_resource_rejects_ambiguous_origins(monkeypatch, value, reason
         mcp_authz.canonical_public_base_url(value)
 
 
-def test_metadata_requires_authority_and_normalizes_config(monkeypatch):
+def test_metadata_normalizes_the_resource_and_names_no_authorization_server(monkeypatch):
     monkeypatch.setenv("ASTRAL_ENV", "development")
-    monkeypatch.delenv("KEYCLOAK_AUTHORITY", raising=False)
-    with pytest.raises(RuntimeError, match="KEYCLOAK_AUTHORITY"):
-        mcp_authz.protected_resource_metadata("http://mcp.test")
-
-    monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://idp.test/realm/")
     metadata = mcp_authz.protected_resource_metadata("http://MCP.TEST/")
     assert metadata["resource"] == "http://mcp.test/mcp"
-    assert metadata["authorization_servers"] == ["https://idp.test/realm"]
+    assert metadata["bearer_methods_supported"] == []
+    assert "authorization_servers" not in metadata
+    assert metadata["scopes_supported"] == list(mcp_authz.MCP_SCOPES)
     assert mcp_authz.resource_metadata_url("http://MCP.TEST/").endswith(
         "/.well-known/oauth-protected-resource/mcp"
     )
