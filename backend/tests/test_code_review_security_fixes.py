@@ -83,43 +83,41 @@ def test_normalize_hop_parent_leaves_existing_chain_untouched():
     assert dg.normalize_hop_parent(already, "agent:b") is already
 
 
-def test_child_signing_key_fails_closed_in_production(monkeypatch):
+def test_child_signing_key_fails_closed_outside_the_personal_profile(monkeypatch):
+    monkeypatch.delenv("ASTRAL_NODE_PROFILE", raising=False)
     monkeypatch.delenv("ASTRAL_ENV", raising=False)
-    monkeypatch.delenv("DELEGATION_CHILD_SIGNING_KEY", raising=False)
-    monkeypatch.delenv("MEMORY_HMAC_KEY", raising=False)
     with pytest.raises(dg.DelegationConfigError):
         dg._child_signing_key()
 
 
-def test_child_signing_key_uses_configured_key(monkeypatch):
-    monkeypatch.delenv("ASTRAL_ENV", raising=False)
-    monkeypatch.delenv("MEMORY_HMAC_KEY", raising=False)
-    monkeypatch.setenv("DELEGATION_CHILD_SIGNING_KEY", "real-key")
-    assert dg._child_signing_key() == b"real-key"
-
-
-def test_child_signing_key_dev_fallback(monkeypatch):
+@pytest.mark.parametrize("variable", ["DELEGATION_CHILD_SIGNING_KEY", "MEMORY_HMAC_KEY"])
+def test_a_configured_secret_never_becomes_the_child_signing_key(monkeypatch, variable):
+    monkeypatch.delenv("ASTRAL_NODE_PROFILE", raising=False)
     monkeypatch.setenv("ASTRAL_ENV", "development")
-    monkeypatch.delenv("DELEGATION_CHILD_SIGNING_KEY", raising=False)
-    monkeypatch.delenv("MEMORY_HMAC_KEY", raising=False)
-    key = dg._child_signing_key()
-    assert len(key) == 32 and key != b"mock-delegation-secret"
-    assert dg._child_signing_key() == key
-    monkeypatch.setattr(dg, "_process_dev_key", None)
-    assert dg._child_signing_key() != key
+    monkeypatch.setenv(variable, "real-key")
+    with pytest.raises(dg.DelegationConfigError):
+        dg._child_signing_key()
 
 
-def test_a_token_signed_with_the_former_constant_is_refused(monkeypatch):
+@pytest.mark.parametrize("profile", [None, "personal"])
+def test_a_token_signed_with_the_former_constant_is_refused(monkeypatch, tmp_path, profile):
     from jose import jwt as jose_jwt
+    from shared import node_identity
 
     monkeypatch.setenv("ASTRAL_ENV", "development")
-    monkeypatch.delenv("DELEGATION_CHILD_SIGNING_KEY", raising=False)
-    monkeypatch.delenv("MEMORY_HMAC_KEY", raising=False)
-    monkeypatch.setattr(dg, "_process_dev_key", None)
+    monkeypatch.setenv(node_identity.DATA_DIR_ENV, str(tmp_path / "node"))
+    if profile is None:
+        monkeypatch.delenv("ASTRAL_NODE_PROFILE", raising=False)
+    else:
+        monkeypatch.setenv("ASTRAL_NODE_PROFILE", profile)
+    node_identity.reset_cache()
     forged = jose_jwt.encode({"sub": "u", "exp": int(__import__("time").time()) + 60},
                              b"mock-delegation-secret", algorithm="HS256")
-    with pytest.raises(dg.RecursiveDelegationError):
-        dg.verify_signed_delegation(forged)
+    try:
+        with pytest.raises(dg.RecursiveDelegationError):
+            dg.verify_signed_delegation(forged)
+    finally:
+        node_identity.reset_cache()
 
 
 from orchestrator import mas_defense as mas  # noqa: E402

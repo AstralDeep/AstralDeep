@@ -27,6 +27,7 @@ def home(tmp_path, monkeypatch):
     monkeypatch.setenv("ATTACHMENT_UPLOAD_ROOT", str(root / "blobs"))
     monkeypatch.setenv("PERSONAL_AGENT_ARTIFACT_ROOT", str(root / "artifacts"))
     monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("ASTRALPLANE_IDENTITY", f"existing-node-{root.name}")
     monkeypatch.delenv(ni.OWNER_ENV, raising=False)
     ni.reset_cache()
     yield root / "node"

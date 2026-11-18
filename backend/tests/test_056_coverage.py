@@ -212,14 +212,28 @@ def test_from_json_decodes_hop_frames():
     assert isinstance(resp, AgentHopResponse) and resp.response == {"result": "ok"}
 
 
-def test_encode_decode_roundtrip():
-    from orchestrator import agent_authority as dg
+def test_encode_decode_roundtrip(tmp_path, monkeypatch):
+    import time
 
-    payload = {"sub": "u1", "act": {"sub": "agent:a"}, "scope": "tools:read",
-               "exp": 123, "delegation": True}
-    token = dg.encode_delegation_payload(payload)
-    assert token.count(".") == 2
-    assert dg.decode_token_payload(token) == payload
+    from orchestrator import agent_authority as dg
+    from shared import node_identity
+
+    monkeypatch.setenv(node_identity.PROFILE_ENV, node_identity.PERSONAL)
+    monkeypatch.setenv(node_identity.DATA_DIR_ENV, str(tmp_path / "node"))
+    node_identity.reset_cache()
+    try:
+        now = int(time.time())
+        payload = {"sub": "u1", "act": {"sub": "agent:a"}, "scope": "tools:read",
+                   "iat": now, "exp": now + 60, "aud": ["agent-service"], "delegation": True}
+        token = dg.encode_delegation_payload(payload)
+        assert token.count(".") == 2
+        decoded = dg.decode_token_payload(token)
+        assert {key: decoded[key] for key in payload if key != "aud"} == {
+            key: value for key, value in payload.items() if key != "aud"}
+        assert "agent-service" in decoded["aud"]
+        assert dg.verify_signed_delegation(token, audience="agent-service")["sub"] == "u1"
+    finally:
+        node_identity.reset_cache()
 
 
 def test_decode_rejects_malformed():
@@ -228,22 +242,6 @@ def test_decode_rejects_malformed():
     assert dg.decode_token_payload("") is None
     assert dg.decode_token_payload("not-a-token") is None
     assert dg.decode_token_payload("a.b") is None
-
-
-def test_child_signing_key_prefers_env(monkeypatch):
-    from orchestrator import agent_authority as dg
-
-    monkeypatch.setenv("ASTRAL_ENV", "development")
-
-    monkeypatch.setenv("DELEGATION_CHILD_SIGNING_KEY", "dedicated-key")
-    assert dg._child_signing_key() == b"dedicated-key"
-    monkeypatch.delenv("DELEGATION_CHILD_SIGNING_KEY")
-    monkeypatch.setenv("MEMORY_HMAC_KEY", "shared-key")
-    assert dg._child_signing_key() == b"shared-key"
-    monkeypatch.delenv("MEMORY_HMAC_KEY")
-    first = dg._child_signing_key()
-    assert len(first) == 32 and first != b"mock-delegation-secret"
-    assert dg._child_signing_key() == first
 
 
 @pytest.fixture

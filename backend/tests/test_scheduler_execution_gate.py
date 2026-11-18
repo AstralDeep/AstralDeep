@@ -31,11 +31,10 @@ def test_flag_off_starts_no_scheduler_loop(orchestrator_factory):
     assert getattr(o, "_scheduler_loop", None) is None
 
 
-def test_consent_capture_is_independent_of_the_flag():
+def test_chat_scheduling_is_independent_of_the_flag():
     from orchestrator import scheduling_chat
 
     src = inspect.getsource(scheduling_chat)
-    assert "_capture_consent" in src
     assert "scheduler_execution" not in src
 
 

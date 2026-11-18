@@ -26,13 +26,14 @@ from orchestrator.api import (  # noqa: E402
     draft_router,
     user_router,
 )
-from orchestrator.auth import auth_router  # noqa: E402
+from orchestrator.auth import auth_router, get_current_user_payload  # noqa: E402
 from tests.helpers.voice_plane_runtime import isolated_plane_runtime  # noqa: E402
 
 
 SUBJECT = "dev-user-id"
-OWNER = ""
+OWNER = SUBJECT
 AUTH_HEADER: dict = {}
+PRINCIPAL = {"sub": SUBJECT, "realm_access": {"roles": ["admin", "user"]}}
 
 
 class _FakeSkill:
@@ -178,6 +179,7 @@ def _create_test_app(plane_runtime, *, data_dir: str):
     mock_orch.lifecycle_manager = lifecycle
 
     app.state.orchestrator = mock_orch
+    app.dependency_overrides[get_current_user_payload] = lambda: PRINCIPAL
 
     app.include_router(chat_router)
     app.include_router(component_router)
@@ -219,8 +221,13 @@ def _restore_process_globals():
 
 
 @pytest.fixture
-def client(app_and_orch):
+def client(app_and_orch, monkeypatch):
     app, _ = app_and_orch
+
+    async def _principal(request, credentials=None):
+        return PRINCIPAL
+
+    monkeypatch.setattr("orchestrator.api.get_current_user_payload", _principal)
     with TestClient(app) as test_client:
         yield test_client
 
@@ -251,7 +258,13 @@ class TestOpenAPI:
 
 class TestChatEndpoints:
     def test_list_chats_requires_auth(self, client):
+        client.app.dependency_overrides.clear()
         resp = client.get("/api/chats")
+        assert resp.status_code == 401
+
+    def test_a_bearer_is_refused_even_with_a_well_formed_header(self, client):
+        client.app.dependency_overrides.clear()
+        resp = client.get("/api/chats", headers={"Authorization": "Bearer e30.e30.sig"})
         assert resp.status_code == 401
 
 
@@ -358,8 +371,10 @@ class TestComponentEndpoints:
 
 class TestAgentEndpoints:
     def test_list_agents_empty(self, client):
-        resp = client.get("/api/agents")
-        assert resp.status_code == 401
+        app = client.app
+        app.dependency_overrides.clear()
+        assert client.get("/api/agents").status_code == 401
+        app.dependency_overrides[get_current_user_payload] = lambda: PRINCIPAL
 
         resp = client.get("/api/agents", headers=AUTH_HEADER)
         assert resp.status_code == 200

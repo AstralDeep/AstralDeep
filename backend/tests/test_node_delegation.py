@@ -100,13 +100,16 @@ def test_chain_verification_checks_the_signature_when_a_token_is_given(personal)
 
 
 def test_hmac_tokens_are_not_accepted_on_a_personal_node(personal, monkeypatch):
-    monkeypatch.delenv(ni.PROFILE_ENV)
-    monkeypatch.setenv("DELEGATION_CHILD_SIGNING_KEY", "shared-secret")
+    from jose import jwt as jose_jwt
+
     now = int(time.time())
-    legacy = dg.encode_delegation_payload({"sub": "u", "iat": now, "exp": now + 60, "aud": "x", "iss": "i"})
-    assert dg.verify_signed_delegation(legacy, audience="x", issuer="i")["sub"] == "u"
+    claims = {"sub": "u", "iat": now, "exp": now + 60, "aud": "x", "iss": "i"}
+    legacy = jose_jwt.encode(claims, b"shared-secret", algorithm="HS256")
     with pytest.raises(dg.RecursiveDelegationError):
-        dg.verify_signed_delegation(legacy.rsplit(".", 1)[0] + ".AAAA", audience="x")
+        dg.verify_signed_delegation(legacy, audience="x", issuer="i")
+    monkeypatch.delenv(ni.PROFILE_ENV)
+    with pytest.raises(dg.RecursiveDelegationError):
+        dg.verify_signed_delegation(legacy, audience="x", issuer="i")
     monkeypatch.setenv(ni.PROFILE_ENV, "personal")
     with pytest.raises(dg.RecursiveDelegationError):
         dg.verify_signed_delegation(legacy)

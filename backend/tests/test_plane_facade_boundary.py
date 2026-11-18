@@ -27,7 +27,6 @@ FROZEN_INTERNAL_IMPORTERS: frozenset[str] = frozenset(
         "backend/tests/test_plane_integration.py",
         "backend/tests/test_plane_sqlite_selection.py",
         "backend/tests/test_voice_migration_065.py",
-        "backend/tests/test_voice_plane_clone_postgres.py",
         "backend/tests/test_voice_transcript_proof_065.py",
         "backend/tests/test_voice_zero_retention_065.py",
     }
