@@ -14,6 +14,7 @@ RUN apt-get update \
 
 WORKDIR /opt/astralvessel
 COPY pyproject.toml README.md ./
+COPY config/node-bundle.json ./config/node-bundle.json
 COPY astralvessel ./astralvessel
 COPY examples/field-guide ./examples/field-guide
 COPY examples/sample-data ./examples/sample-data
