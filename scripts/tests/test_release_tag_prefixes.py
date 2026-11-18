@@ -11,6 +11,7 @@ import yaml
 
 WORKFLOWS = Path(__file__).resolve().parents[2] / ".github" / "workflows"
 WINDOWS = "release-windows.yml"
+VESSEL = "release-vessel.yml"
 
 
 def _glob_to_regex(pattern: str) -> re.Pattern[str]:
@@ -59,9 +60,14 @@ def test_a_plain_version_tag_starts_only_the_windows_release() -> None:
     assert _starting("v2.0.25") == {WINDOWS}
 
 
-@pytest.mark.parametrize("tag", ["vessel-v0.8.0", "macos-v2.0.25-98", "vessel-v0.8.0rc1", "release"])
+@pytest.mark.parametrize("tag", ["macos-v2.0.25-98", "release"])
 def test_other_prefixes_start_no_tag_workflow(tag: str) -> None:
     assert _starting(tag) == set()
+
+
+@pytest.mark.parametrize("tag", ["vessel-v0.8.0", "vessel-v0.8.0rc1"])
+def test_a_vessel_tag_starts_only_the_vessel_release(tag: str) -> None:
+    assert _starting(tag) == {VESSEL}
 
 
 def test_the_matcher_follows_the_filter_syntax() -> None:
