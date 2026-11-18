@@ -10,6 +10,7 @@ import platform
 import shutil
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -54,9 +55,29 @@ def verified(directory: Path, entry: Dict[str, str]) -> Path:
     path = directory / entry["file"]
     if not path.is_file():
         raise BindingError(f"missing artifact {entry['file']}")
-    if sha256(path) != entry["sha256"]:
-        raise BindingError(f"digest mismatch for {entry['file']}")
+    actual = sha256(path)
+    if actual != entry["sha256"]:
+        raise BindingError(mismatch_report(path, entry["sha256"], actual))
     return path
+
+
+def record_lines(path: Path) -> List[str]:
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = [name for name in archive.namelist() if name.endswith(".dist-info/RECORD")]
+            if not names:
+                return ["RECORD: not present in archive"]
+            text = archive.read(names[0]).decode("utf-8", "replace")
+    except (zipfile.BadZipFile, OSError, KeyError, RuntimeError) as exc:
+        return [f"RECORD: unreadable ({type(exc).__name__}: {exc})"]
+    return ["RECORD (path,hash,size):"] + [f"  {line}" for line in text.splitlines() if line.strip()]
+
+
+def mismatch_report(path: Path, expected: str, actual: str) -> str:
+    lines = [f"digest mismatch for {path.name}", f"  expected sha256: {expected}", f"  actual sha256:   {actual}"]
+    if path.suffix == ".whl":
+        lines.extend(record_lines(path))
+    return "\n".join(lines)
 
 
 def artifacts_for(manifest: Dict[str, Any], key: str) -> Dict[str, Dict[str, str]]:
