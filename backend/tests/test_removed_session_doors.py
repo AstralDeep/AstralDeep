@@ -132,3 +132,14 @@ def test_the_mcp_token_decoder_and_ui_token_validator_refuse_every_bearer():
     host = SimpleNamespace()
     assert asyncio.run(types.MethodType(Orchestrator.validate_token, host)("a.b.c")) is None
     assert mcp_authz.protected_resource_metadata("https://node.invalid")["bearer_methods_supported"] == []
+
+
+def test_a_sandboxed_child_sees_no_secret_shaped_variable(monkeypatch, tmp_path):
+    from orchestrator.sandbox import sandbox_env
+
+    base = {"KEYCLOAK_CLIENT_SECRET": "a", "FOO_PASSWORD": "b", "BAR_API_KEY": "c", "BAZ_TOKEN": "d",
+            "QUX_PRIVATE_KEY": "e", "PATH": "/usr/bin"}
+    env = sandbox_env(base, str(tmp_path))
+    assert env["PATH"] == "/usr/bin"
+    for name in ("KEYCLOAK_CLIENT_SECRET", "FOO_PASSWORD", "BAR_API_KEY", "BAZ_TOKEN", "QUX_PRIVATE_KEY"):
+        assert name not in env

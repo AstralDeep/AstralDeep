@@ -31,14 +31,14 @@ def driver(tmp_path):
 def test_foreign_or_changed_principals_do_not_gain_owner_mapping(driver):
     driver._execution_principal(Principal("__verif__owners_primary"))
     with pytest.raises(ValueError, match="namespace"):
-        driver._execution_principal(Principal("oidc.foreign.__verif__owners_primary"))
+        driver._execution_principal(Principal("fixture.foreign.__verif__owners_primary"))
     with pytest.raises(RuntimeError, match="roles changed"):
         driver._execution_principal(Principal("__verif__owners_primary", ["admin"]))
 
 
 def test_long_subject_preserves_canonical_blob_owner_limit(driver):
     principal = driver._execution_principal(Principal("__verif__owners_" + "x" * 300))
-    assert principal.user_id.startswith("oidc.")
+    assert principal.user_id.startswith("fixture.")
     assert len(principal.user_id) == 255
 
 
@@ -61,14 +61,6 @@ def test_unstorable_namespace_is_refused_before_owner_mapping(driver):
     with pytest.raises(ValueError, match="namespace is too long"):
         driver._execution_principal(Principal(driver.config.run_id + "_primary"))
     assert driver._execution_principals == {}
-
-
-def test_session_rejects_subject_mapping_that_disagrees_with_owner(driver):
-    principal = driver._execution_principal(Principal("__verif__owners_primary"))
-    driver._execution_subjects[principal.user_id] = "__verif__owners_other"
-    with pytest.raises(RuntimeError, match="authenticated owner differs"):
-        asyncio.run(driver._register_session(principal))
-    assert driver.orch.ui_sessions == {}
 
 
 class _Runtime:

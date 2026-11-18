@@ -75,7 +75,6 @@ def _socket_method(message):
 
 def _socket_policy():
     return tuple(os.getenv(key) for key in (
-        "KEYCLOAK_AUTHORITY", "KEYCLOAK_CLIENT_ID", "KEYCLOAK_ALLOWED_AZP",
         "PUBLIC_BASE_URL", "BACKEND_PUBLIC_URL",
     ))
 
