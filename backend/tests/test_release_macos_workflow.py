@@ -23,6 +23,7 @@ SECRETS = {
     "APPLE_DEVELOPER_ID_APP_CERT_P12_BASE64", "APPLE_DEVELOPER_ID_CERT_PASSWORD", "ASC_KEY_ID", "ASC_ISSUER_ID",
     "ASC_KEY_P8_BASE64", "SPARKLE_ED25519_PRIVATE_KEY",
 }
+PACKS = {"node-pack-linux-aarch64", "node-pack-linux-x86-64"}
 PBXPROJ = "components/AstralProjection/apple-clients/AstralApp/AstralApp.xcodeproj/project.pbxproj"
 
 
@@ -81,7 +82,7 @@ def test_runs_after_green_ci_on_main_or_by_dispatch_that_defaults_to_a_dry_run(f
 
 
 def workflow_allows(entry, *, event="workflow_dispatch", ref="refs/heads/main", dry_run=True,
-                    framework_only=False, skip="false"):
+                    framework_only=False, skip="false", hold=""):
     values = {
         "github.event_name": event, "github.ref": ref, "github.repository": "AstralDeep/AstralDeep",
         "github.event.workflow_run.conclusion": "success", "github.event.workflow_run.event": "push",
@@ -89,19 +90,20 @@ def workflow_allows(entry, *, event="workflow_dispatch", ref="refs/heads/main", 
         "github.event.workflow_run.head_repository.full_name": "AstralDeep/AstralDeep",
         "inputs.dry_run": dry_run, "inputs.framework_only": framework_only,
         "needs.decide.outputs.skip": skip, "needs.native-check.result": "success",
+        "vars.RELEASE_MACOS_HOLD": hold,
     }
     expression = re.sub(r"(?<!')\btrue\b(?!')", "True", condition(entry))
     expression = re.sub(r"(?<!')\bfalse\b(?!')", "False", expression)
-    expression = re.sub(r"\b(?:github|inputs|needs)\.[\w.-]+", lambda match: repr(values[match[0]]), expression)
+    expression = re.sub(r"\b(?:github|inputs|needs|vars)\.[\w.-]+", lambda match: repr(values[match[0]]), expression)
     return eval(expression.replace("&&", " and ").replace("||", " or "), {"__builtins__": {}})
 
 
 @pytest.mark.parametrize("event,dry_run,framework_only,skip,expected", [
-    ("workflow_dispatch", False, False, "false", {"decide", "native-check", "apple-artifacts", "node-pack", "release"}),
-    ("workflow_dispatch", True, False, "false", {"decide", "native-check", "apple-artifacts", "node-pack", "release"}),
+    ("workflow_dispatch", False, False, "false", PACKS | {"decide", "native-check", "apple-artifacts", "node-pack", "release"}),
+    ("workflow_dispatch", True, False, "false", PACKS | {"decide", "native-check", "apple-artifacts", "node-pack", "release"}),
     ("workflow_dispatch", True, True, "false", {"decide", "native-check", "apple-artifacts"}),
     ("workflow_dispatch", True, False, "true", {"decide"}),
-    ("workflow_run", False, False, "false", {"decide", "native-check", "apple-artifacts", "node-pack", "release"}),
+    ("workflow_run", False, False, "false", PACKS | {"decide", "native-check", "apple-artifacts", "node-pack", "release"}),
     ("workflow_run", False, False, "true", {"decide"}),
 ])
 def test_framework_mode_runs_only_the_source_bound_producer_jobs(flow, event, dry_run, framework_only, skip, expected):
@@ -206,7 +208,7 @@ def test_decide_is_cheap_unprivileged_and_guarded(flow):
 def test_release_job_runs_only_for_a_green_main_commit_that_is_not_released(flow):
     job = flow["jobs"]["release"]
     assert job["runs-on"] == "macos-26" and job["timeout-minutes"] == 30
-    assert job["needs"] == ["decide", "native-check", "apple-artifacts", "node-pack"]
+    assert job["needs"] == ["decide", "native-check", "apple-artifacts", "node-pack", *sorted(PACKS)]
     assert job["permissions"] == {"contents": "write"}
     assert job["environment"] == "release-macos"
     expression = condition(job)
@@ -340,6 +342,41 @@ def test_native_check_requires_decided_head_and_gitlink(flow, tmp_path):
     assert result.returncode != 0 and queries == []
     result, queries = execute_native_check(flow, tmp_path / "missing-link", [native_run()], projection="missing")
     assert result.returncode != 0 and queries == []
+
+
+@pytest.mark.parametrize("hold,event,runs", [
+    ("true", "workflow_run", False),
+    ("false", "workflow_run", True),
+    ("", "workflow_run", True),
+    ("true", "workflow_dispatch", True),
+])
+def test_hold_stops_only_the_automatic_path(flow, hold, event, runs):
+    for name in ("decide", "release"):
+        assert workflow_allows(flow["jobs"][name], event=event, hold=hold, dry_run=False) is runs
+
+
+def test_hold_gates_exactly_the_two_privileged_entry_points(flow):
+    clause = "vars.RELEASE_MACOS_HOLD != 'true'"
+    assert [name for name, job in flow["jobs"].items() if clause in condition(job)] == ["decide", "release"]
+    assert flow["jobs"]["decide"]["if"].count(clause) == 1
+
+
+def test_the_bundle_release_keeps_every_signing_and_trust_gate(flow, text):
+    job = flow["jobs"]["release"]
+    names = [entry.get("name", "") for entry in job["steps"]]
+    assert names.index("Import the Developer ID identity into an ephemeral keychain") < names.index(
+        "Sign the Mac node pack with the hardened runtime and try notarizing it") < names.index("Build, notarize and publish")
+    sign = step(job, "Sign the Mac node pack with the hardened runtime and try notarizing it")["run"]
+    assert "--hardened" in sign and "notarytool submit" in sign and '!= "Accepted"' not in sign and "Accepted" in sign
+    assert "Developer ID Application: Personalized AI Labs LLC (593LGH35GS)" in sign
+    build = step(job, "Build, notarize and publish")["run"]
+    assert '--node-bundle-dir "$RUNNER_TEMP/bundle" --node-team-id 593LGH35GS' in build and "--node-pack-dir" not in build
+    assert step(job, "Require release secrets") and step(job, "Require the decided commit")
+    assert flow["jobs"]["native-check"]["needs"] == ["decide"] and "native-check" in job["needs"]
+    for name in PACKS:
+        pack = flow["jobs"][name]
+        assert pack["timeout-minutes"] == 30 and pack["permissions"] == {"contents": "read"}
+        assert pack["runs-on"] in {"ubuntu-24.04", "ubuntu-24.04-arm"} and "secrets." not in yaml.safe_dump(pack)
 
 
 def test_node_pack_and_framework_producers_are_read_only_and_bounded(flow):

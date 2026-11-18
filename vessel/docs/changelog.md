@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.8.0
+
+The release workflow `release-vessel.yml` publishes this version when `vessel-v0.8.0` is tagged. It builds the images for amd64 and arm64 with `astral_exec` installed, pushes them to GHCR, then uploads the package to PyPI by GitHub OIDC trusted publishing from the `release-vessel` environment.
 
 Vessel runs a node from a node pack as host processes. Docker is for container mode only.
 

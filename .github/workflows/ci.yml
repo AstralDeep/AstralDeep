@@ -488,6 +488,73 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  plane-quality:
+    name: Plane lock, lint, dependency direction and review diagnostics
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          submodules: false
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.26"
+          python-version: "3.11"
+      - working-directory: plane
+        run: |
+          set -euo pipefail
+          uv lock --check
+          uv sync --frozen --group ci
+          uv run --frozen --group ci ruff check .
+          uv run --frozen --group ci python tests/architecture/test_dependency_direction.py
+      - name: Record immutable Plane test and qualification policy changes
+        working-directory: plane
+        env:
+          REVIEW_BASE: ${{ github.event.pull_request.base.sha || github.event.before || inputs.base_sha }}
+          REVIEW_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          uv run --frozen --group ci python scripts/ci_review_diagnostics.py \
+            --base "$REVIEW_BASE" --head "$REVIEW_HEAD" --output ci-review-diagnostics.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: plane-ci-review
+          path: plane/ci-review-diagnostics.json
+          if-no-files-found: error
+          retention-days: 14
+
+  plane-package-compatibility:
+    name: Plane wheel on Python ${{ matrix.python-version }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.14"]
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: false
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.26"
+          python-version: ${{ matrix.python-version }}
+      - working-directory: plane
+        run: |
+          set -euo pipefail
+          uv lock --check
+          uv build --build-constraints tooling/python-ci/build-requirements.lock.txt --require-hashes
+      - name: Install and import the wheel in a clean environment
+        working-directory: plane
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv venv --python "${{ matrix.python-version }}" --seed .package-smoke
+          .package-smoke/bin/python -m pip install --no-deps dist/*.whl
+          .package-smoke/bin/python -c "import astralplane; assert astralplane.CONTRACT_VERSION == 'astralplane.contract/v1'"
+
   backend-changed-coverage:
     name: Immutable changed Python coverage at least 90 percent
     needs: [backend-web, voice-worker-test]
@@ -745,6 +812,8 @@ jobs:
         run: python -m pip install --require-hashes -r tooling/python-ci/requirements.lock.txt
       - name: Lint Deep-owned Python
         run: ruff check .
+      - name: Check the moved packages stay their own, with the pinned ruff on PATH
+        run: python -m pytest -q scripts/tests/test_moved_packages.py
   ui-v2-contracts:
     name: Backend UI v2 contracts
     runs-on: ubuntu-24.04
@@ -991,6 +1060,44 @@ jobs:
             --deselect=scripts/tests/test_install_local_components.py::test_real_initialized_sources_match_the_declarations \
             --deselect=scripts/tests/test_verify_composition.py::test_current_composition_has_exact_pins_canonical_urls_and_contracts \
             --deselect=scripts/tests/test_verify_composition.py::test_real_checkout_verification_executes_only_local_git_commands
+      - name: Install the contract reference packages
+        run: python -m pip install -r specs/105-decentralized-personal-mesh/contracts/reference/requirements.txt
+      - name: Check the 106 contract vectors, reference tests and lint
+        shell: bash
+        run: |
+          set -euo pipefail
+          reference=specs/106-sign-in-free-clients/contracts/reference
+          for generator in generate_caller_vectors generate_local_vectors generate_exec_vectors generate_connection_vectors generate_a2a_vectors generate_credential_vectors generate_phi_vectors generate_phi_destination_vectors generate_contact_vectors generate_share_vectors; do
+            python "$reference/$generator.py" --check
+          done
+          python -m pytest "$reference/tests" -q
+          ruff check specs/106-sign-in-free-clients/contracts
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.14"
+      - name: Check the four standard-library table generators on Python 3.14
+        shell: bash
+        run: |
+          set -euo pipefail
+          reference=specs/106-sign-in-free-clients/contracts/reference
+          for generator in generate_label_classes generate_path_fold generate_phi_fold generate_html_entities; do
+            python "$reference/$generator.py" --check
+          done
+
+  no-keycloak:
+    name: No Keycloak in tracked product files
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+      - run: python scripts/check_no_keycloak.py --repo . --config scripts/no_keycloak.json
+      - run: python -m pytest -q scripts/tests/test_check_no_keycloak.py
 
   composition-declarations:
     runs-on: ubuntu-24.04
@@ -1122,6 +1229,254 @@ jobs:
           --gitleaks-ignore-path "$GITHUB_WORKSPACE/.gitleaksignore"
           --log-opts="--all" "$GITHUB_WORKSPACE"
 
+  vessel-kernel-binding:
+    name: Vessel Kernel binding for Linux amd64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+      - name: Build the manifest-pinned Vessel Kernel source for Linux amd64
+        working-directory: vessel
+        run: python scripts/build_kernel_binding.py produce --source "$RUNNER_TEMP/astral-kernel" --output "$RUNNER_TEMP/kernel-artifacts" --platform linux/amd64
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: vessel-kernel-artifacts-linux-amd64
+          path: ${{ runner.temp }}/kernel-artifacts
+          if-no-files-found: error
+          retention-days: 1
+
+  vessel-lint:
+    name: Vessel lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - run: pip install ruff==0.17.4
+      - working-directory: vessel
+        run: ruff check .
+
+  vessel-test:
+    name: Vessel tests on Python ${{ matrix.python }}
+    needs: [vessel-kernel-binding]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: vessel-kernel-artifacts-linux-amd64
+          path: ${{ runner.temp }}/kernel-artifacts
+      - name: Install ripgrep from its release, checksum pinned
+        run: |
+          f=ripgrep-14.1.1-x86_64-unknown-linux-musl.tar.gz
+          curl -fsSL --retry 3 -o "$f" "https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/$f"
+          echo "4cf9f2741e6c465ffdb7c26f38056a59e2a2544b51f7cc128ef28337eeae4d8e  $f" | sha256sum -c -
+          tar xzf "$f" && sudo install "${f%.tar.gz}/rg" /usr/local/bin/rg && rg --version
+      - working-directory: vessel
+        run: pip install -e . pytest==9.2.0 pytest-asyncio==1.4.1.post1 -r egress/requirements.txt
+      - name: Install and import the verified Kernel binding
+        working-directory: vessel
+        run: |
+          python scripts/install_kernel.py "$RUNNER_TEMP/kernel-artifacts" --binding config/kernel-binding.json --bin-dir "$RUNNER_TEMP/kernel-bin"
+          echo "$RUNNER_TEMP/kernel-bin" >> "$GITHUB_PATH"
+          python -c "import astral_kernel"
+      - working-directory: vessel
+        run: python -m pytest -q -rs
+
+  vessel-isolation:
+    name: Vessel isolation probes
+    needs: [vessel-kernel-binding]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: vessel-kernel-artifacts-linux-amd64
+          path: ${{ runner.temp }}/kernel-artifacts
+      - working-directory: vessel
+        run: pip install -e .
+      - name: Prepare a deployment bound to this run's Kernel artifacts
+        working-directory: vessel
+        run: python scripts/build_kernel_binding.py prepare-deployment --artifacts "$RUNNER_TEMP/kernel-artifacts" --output deploy/deployment.ci.toml --platform linux/amd64
+      - name: Start the executor, the sandboxes and no node
+        working-directory: vessel/deploy
+        run: |
+          echo "VESSEL_SANDBOX_TOKEN=$(openssl rand -hex 32)" > .env
+          astralvessel deploy deployment.ci.toml
+          docker compose -f compose.generated.yml --env-file .env up -d --build executor
+          for ((attempt = 0; attempt < 60; attempt++)); do
+            ready=$(docker compose -f compose.generated.yml --env-file .env exec -T executor python -c "import json,urllib.request,os;body=json.load(urllib.request.urlopen('http://'+os.environ['VESSEL_HOST']+':8700/health'));agents=body.get('agents');print(isinstance(agents,dict) and all(agents.get(name) is True for name in ('field-guide','field-guide-reader')))" || true)
+            [ "$ready" = True ] && exit 0
+            sleep 5
+          done
+          docker compose -f compose.generated.yml --env-file .env logs
+          exit 1
+      - name: Isolation probes
+        working-directory: vessel/deploy
+        run: astralvessel check --isolation-only
+      - name: Logs on failure
+        if: failure()
+        working-directory: vessel/deploy
+        run: docker compose -f compose.generated.yml --env-file .env logs --tail 50
+      - name: Stop the isolation stack
+        if: always()
+        working-directory: vessel/deploy
+        run: docker compose -f compose.generated.yml --env-file .env down -v --remove-orphans || true
+
+  vessel-docs:
+    name: Vessel documentation build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - run: pip install -r vessel/docs/requirements.txt
+      - working-directory: vessel
+        env:
+          PYTHONPATH: .
+        run: mkdocs build --strict
+
+  node-pack-linux:
+    name: Build the linux-x86_64 node pack
+    needs: [kernel-binding]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: recursive
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: kernel-binding
+          path: build/kernel-binding
+      - name: Build the pack from the current-run Kernel binding
+        run: |
+          set -euo pipefail
+          python scripts/install_kernel_binding.py verify --artifacts build/kernel-binding
+          python scripts/node_bundle/linux/build_linux.py --platform linux-x86_64 --kernel-dir build/kernel-binding --out "$RUNNER_TEMP/pack"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: node-pack-linux
+          path: ${{ runner.temp }}/pack
+          if-no-files-found: error
+          retention-days: 1
+
+  node-pack-macos:
+    name: Build the macOS node pack
+    runs-on: macos-26
+    timeout-minutes: 30
+    env:
+      RUSTUP_TOOLCHAIN: "1.99.1"
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: recursive
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+      - name: Build the pack from the pinned Kernel source
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.99.1 --profile minimal
+          rustup target add --toolchain 1.99.1 aarch64-apple-darwin
+          bash components/AstralKernel/scripts/build-python-macos.sh --out "$RUNNER_TEMP/kernel-macos"
+          python3 scripts/node_bundle/assemble.py --platform macos-arm64 --kernel-dir "$RUNNER_TEMP/kernel-macos" \
+            --out "$RUNNER_TEMP/pack" --work "$RUNNER_TEMP/nodepack-work"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: node-pack-macos
+          path: ${{ runner.temp }}/pack
+          if-no-files-found: error
+          retention-days: 1
+
+  no-docker-macos:
+    name: Install and run the node with no Docker on macos-26
+    needs: [node-pack-macos]
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: node-pack-macos
+          path: ${{ runner.temp }}/pack
+      - name: Run the pack with no Docker on PATH
+        run: python scripts/no_docker_check.py --pack "$RUNNER_TEMP/pack"
+
+  no-docker-linux:
+    name: Install and run the node with no Docker on ubuntu-24.04
+    needs: [node-pack-linux]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: node-pack-linux
+          path: ${{ runner.temp }}/pack
+      - name: Print the runner Landlock ABI
+        run: |
+          uname -srm
+          python - <<'PY'
+          import ctypes
+          libc = ctypes.CDLL(None, use_errno=True)
+          abi = libc.syscall(444, None, 0, 1)
+          print("landlock abi:", abi if abi >= 0 else f"unavailable (errno {ctypes.get_errno()})")
+          PY
+      - name: Run the pack with no Docker on PATH
+        run: python scripts/no_docker_check.py --pack "$RUNNER_TEMP/pack"
+
   gates:
     name: Deep owner CI aggregate
     if: always()
@@ -1141,6 +1496,15 @@ jobs:
       - composition-declarations
       - voice-worker-test
       - secret-scan
+      - no-keycloak
+      - plane-quality
+      - plane-package-compatibility
+      - no-docker-macos
+      - no-docker-linux
+      - vessel-lint
+      - vessel-test
+      - vessel-isolation
+      - vessel-docs
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -1161,4 +1525,13 @@ jobs:
           [[ '${{ needs.composition-declarations.result }}' == 'success' ]]
           [[ '${{ needs.voice-worker-test.result }}' == 'success' ]]
           [[ '${{ needs.secret-scan.result }}' == 'success' ]]
+          [[ '${{ needs.no-keycloak.result }}' == 'success' ]]
+          [[ '${{ needs.plane-quality.result }}' == 'success' ]]
+          [[ '${{ needs.plane-package-compatibility.result }}' == 'success' ]]
+          [[ '${{ needs.no-docker-macos.result }}' == 'success' ]]
+          [[ '${{ needs.no-docker-linux.result }}' == 'success' ]]
+          [[ '${{ needs.vessel-lint.result }}' == 'success' ]]
+          [[ '${{ needs.vessel-test.result }}' == 'success' ]]
+          [[ '${{ needs.vessel-isolation.result }}' == 'success' ]]
+          [[ '${{ needs.vessel-docs.result }}' == 'success' ]]
           echo "Backend/web CI passed. Native qualification is deferred; protected real-authentication, LETS-enforce, migration and recovery staging remain required before release."

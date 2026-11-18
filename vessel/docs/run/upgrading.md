@@ -34,3 +34,9 @@ Back up `.generated/node.env` and the data volumes together. The secrets encrypt
 ## How releases are made
 
 Releases come from a `vessel-v<version>` tag on `main` in the AstralDeep repository, where AstralVessel now lives in the `vessel/` folder. Set `version` in `vessel/pyproject.toml`, run the release workflow by hand for a dry run, then push the tag `vessel-v<version>`. Release builds pass the pinned kernel artifacts as the `kernel-artifacts` build context so the executor image can verify tickets. Tags that start with a plain `v` belong to the Windows client and never start a Vessel release.
+
+## How a release is published
+
+A `vessel-v<version>` tag on AstralDeep starts `.github/workflows/release-vessel.yml`. The tag must match `vessel/pyproject.toml`. The workflow builds the Kernel artifacts from the pinned source on both architectures, builds the executor and egress images with `astral_exec` installed, pushes them to `ghcr.io/astraldeep/astralvessel` and `...-egress`, then uploads the package to PyPI.
+
+Publishing runs in the `release-vessel` environment and uses PyPI trusted publishing, so no PyPI token is stored. The jobs refuse to run until the environment holds the variable `RELEASE_VESSEL_READY=true`. A manual run of the workflow is a dry run that builds everything and pushes nothing.

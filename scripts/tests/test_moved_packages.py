@@ -51,27 +51,13 @@ MOVED_PACKAGES = (
         folder="vessel",
         distribution="astralvessel",
         command="astralvessel",
-        github_files=frozenset(
-            {
-                "dependabot.yml",
-                "workflows/ci.yml",
-            }
-        ),
+        github_files=frozenset(),
     ),
     MovedPackage(
         folder="plane",
         distribution="astralplane",
         command=None,
-        github_files=frozenset(
-            {
-                "PR_TRIAGE.md",
-                "pull_request_template.md",
-                "ISSUE_TEMPLATE/issue.md",
-                "workflows/ci.yml",
-                "workflows/pr-ci-notifications.yml",
-                "workflows/pr-triage.yml",
-            }
-        ),
+        github_files=frozenset(),
         import_name="astralplane",
         image_copies=frozenset(
             {
