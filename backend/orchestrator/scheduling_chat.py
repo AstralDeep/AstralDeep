@@ -251,23 +251,6 @@ async def _consented_scopes_for(orch, user_id: str,
     return [n for n in (names or []) if n not in _UNREVIEWED_MUTATING_SCOPES]
 
 
-async def _capture_consent(orch, user_id: str, agent_id: Optional[str],
-                          consented: List[str], *, selected_session=None):
-    try:
-        from orchestrator.session_consent import ConsentSession
-        if not isinstance(selected_session, ConsentSession):
-            logger.info("consent_capture: no selected live session for user=%s "
-                        "— job created without unattended authority", user_id)
-            return None
-        selected_session.reference(user_id)
-        grants = orch.offline_grants
-        return await asyncio.to_thread(
-            grants.prepare_capture, user_id, selected_session, agent_id)
-    except Exception:
-        logger.warning("consent preparation unavailable user=%s agent=%s", user_id, agent_id)
-        return None
-
-
 async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]) -> None:
     proposal_id = str(payload.get("proposal_id") or "")
     decision = str(payload.get("decision") or "")
@@ -305,9 +288,6 @@ async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]
         return
 
     args = prop["args"]
-    from orchestrator.session_consent import select_consent_session
-    selected = await select_consent_session(
-        websocket, principal=registration, store=getattr(orch, "web_sessions", None))
     if not current_registration():
         return
     try:
@@ -320,19 +300,9 @@ async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]
     consented: List[str] = await _consented_scopes_for(
         orch, user_id, cleaned["agent_id"] or None)
 
-    if not current_registration():
-        return
-    prepared = await _capture_consent(
-        orch, user_id, cleaned["agent_id"] or None, consented,
-        selected_session=selected)
-    if not current_registration():
-        return
-
     store = _scheduler_store(orch)
-    consent_kwargs = {"consent_current": current_registration}
-    if prepared is not None:
-        consent_kwargs.update(prepared_consent=prepared, offline_grants=orch.offline_grants)
-    from orchestrator.offline_grant import OfflineGrantError
+    if not current_registration():
+        return
     from scheduler.store import ScheduleActionError
     try:
         job = await asyncio.to_thread(
@@ -341,42 +311,21 @@ async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]
             schedule_kind=cleaned["schedule_kind"], schedule_expr=cleaned["schedule_expr"],
             timezone=cleaned["timezone"], consented_scopes=consented,
             agent_id=cleaned["agent_id"], target_chat_id=prop.get("chat_id"),
-            next_run_at=next_run, offline_grant_id=None, **consent_kwargs)
-    except OfflineGrantError:
-        await _say("Your sign-in changed or consent expired. Approve this schedule again.", "warning")
+            next_run_at=next_run, offline_grant_id=None)
+    except ScheduleActionError:
+        await _say("Couldn’t confirm the schedule was saved. Check your schedules before trying again.", "warning")
         return
-    except ScheduleActionError as exc:
-        message = ("Your sign-in changed or consent expired. Approve this schedule again."
-                   if exc.code == "schedule_consent_unavailable" else
-                   "Couldn’t confirm the schedule was saved. Check your schedules before trying again.")
-        await _say(message, "warning")
-        return
-    grant_id = job.get("offline_grant_id")
     _proposals(orch).pop(proposal_id, None)
-    if grant_id:
-        agent_id = cleaned["agent_id"] or None
-        await _audit(user_id, "schedule.consent_captured",
-                     (f"Captured durable offline consent for agent '{agent_id}'"
-                      if agent_id else "Captured durable offline consent for an agent-less job"),
-                     correlation_id=grant_id,
-                     inputs_meta={"agent_id": agent_id, "consented_scopes": consented,
-                                  "grant_id": grant_id, "durable_days": 365})
     await _audit(user_id, "schedule.create",
                  f"Created scheduled job '{cleaned['name']}' from chat consent",
                  correlation_id=proposal_id, chat_id=prop.get("chat_id"),
                  inputs_meta={"job_id": job["id"], "kind": cleaned["schedule_kind"],
                               "consented_scopes": consented,
-                              "durable_consent": bool(grant_id)})
-    logger.info("schedule created from chat: job=%s user=%s name=%r consent=%s",
-                job["id"], user_id, cleaned["name"], bool(grant_id))
+                              "durable_consent": False})
+    logger.info("schedule created from chat: job=%s user=%s name=%r",
+                job["id"], user_id, cleaned["name"])
 
-    if grant_id:
-        offline_hint = (" It can run while you are signed out; revoke that access "
-                        "any time in Settings → Personalization → Schedule (signing "
-                        "out everywhere also revokes it).")
-    else:
-        offline_hint = (" It cannot run while you are signed out yet — grant offline "
-                        "access in Settings → Personalization → Schedule.")
+    offline_hint = " It cannot run unattended on this node."
     if not current_registration():
         return
     await orch.send_ui_render(websocket, [

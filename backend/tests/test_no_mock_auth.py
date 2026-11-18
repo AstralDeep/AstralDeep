@@ -13,7 +13,7 @@ FORBIDDEN = ("USE_MOCK_AUTH", "dev-token", "dev-mcp-token")
 SKIPPED_PREFIXES = ("specs/",)
 
 ALLOWED: dict[str, tuple[tuple[str, ...], str]] = {
-    "backend/orchestrator/session_store.py": (("USE_MOCK_AUTH",), "the production posture refusal and development warning"),
+    "backend/orchestrator/boot_posture.py": (("USE_MOCK_AUTH",), "the production posture refusal and development warning"),
     "scripts/install_doctor.py": (("USE_MOCK_AUTH",), "mirrors the posture refusal for operators"),
     "scripts/run_backend_web_qualification.py": (("USE_MOCK_AUTH",), "qualification refuses a leftover setting"),
     "backend/tests/test_no_mock_auth.py": (FORBIDDEN, "the guard itself"),
@@ -83,7 +83,7 @@ def test_specs_are_exempt_and_binary_files_are_tolerated(tmp_path):
 
 def test_an_allowed_file_may_not_use_other_tokens(tmp_path):
     (tmp_path / "backend" / "orchestrator").mkdir(parents=True)
-    (tmp_path / "backend/orchestrator/session_store.py").write_text("dev-mcp-token USE_MOCK_AUTH", encoding="utf-8")
-    assert violations(tmp_path, ["backend/orchestrator/session_store.py"]) == [
-        "backend/orchestrator/session_store.py: dev-mcp-token"
+    (tmp_path / "backend/orchestrator/boot_posture.py").write_text("dev-mcp-token USE_MOCK_AUTH", encoding="utf-8")
+    assert violations(tmp_path, ["backend/orchestrator/boot_posture.py"]) == [
+        "backend/orchestrator/boot_posture.py: dev-mcp-token"
     ]

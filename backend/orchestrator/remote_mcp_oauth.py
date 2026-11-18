@@ -1,5 +1,5 @@
 """Runs owner-bound OAuth authorization code and PKCE for remote MCP connectors, and
-completes each sign-in only in the browser that remote_mcp_api.py bound to it at start.
+completes each sign-in only in the browser that bound it at start.
 The connector service supplies bounded outbound HTTP and encrypted owner storage.
 """
 

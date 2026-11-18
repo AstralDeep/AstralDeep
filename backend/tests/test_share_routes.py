@@ -20,7 +20,6 @@ if str(BACKEND_DIR) not in sys.path:
 from fastapi import FastAPI  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
-import orchestrator.web_auth as web_auth  # noqa: E402
 from orchestrator.api import share_router  # noqa: E402
 from orchestrator.artifact_share import (  # noqa: E402
     ShareGrantStore,
@@ -272,64 +271,6 @@ def test_component_not_found_is_404(client, orch, user, sharing_on):
 def test_empty_canvas_is_404(client, orch, user, sharing_on):
     orch._canvas_components.return_value = []
     assert _mint(client, user, scope="canvas", component_id=None).status_code == 404
-
-
-def _no_session(monkeypatch):
-    async def _none(request):
-        return None
-    monkeypatch.setattr(web_auth, "ensure_session", _none)
-
-
-def test_api_routes_require_auth(client, user, sharing_on, monkeypatch):
-    _no_session(monkeypatch)
-    assert client.post("/api/share", json={"chat_id": CHAT_ID, "scope": "canvas"}).status_code == 401
-    assert client.get("/api/share").status_code == 401
-    assert client.delete("/api/share/1").status_code == 401
-
-
-def test_unauthenticated_browser_navigation_redirects(client, sharing_on, monkeypatch):
-    _no_session(monkeypatch)
-    accept = {"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"}
-    r = client.get("/api/share", headers=accept, follow_redirects=False)
-    assert r.status_code == 302
-    assert r.headers["location"] == "/auth/login?next=%2Fapi%2Fshare"
-    r = client.post("/api/share", json={"chat_id": CHAT_ID, "scope": "canvas"},
-                    headers=accept, follow_redirects=False)
-    assert r.status_code == 401
-
-
-def test_cookie_session_mints_and_lists(
-    plane_runtime, client, user, sharing_on, monkeypatch
-):
-    session_token = _IDENTITY.token(user)
-
-    async def _sess(request):
-        return {"access_token": session_token, "refresh_token": "",
-                "sub": user, "created_at": 0, "resumed": True, "sid": "s"}
-    monkeypatch.setattr(web_auth, "ensure_session", _sess)
-
-    r = client.post("/api/share", json={"chat_id": CHAT_ID, "scope": "component",
-                                        "component_id": "wc_shared"})
-    assert r.status_code == 201
-    minted_id = r.json()["id"]
-    assert _grant_rows(plane_runtime, user)[0]["id"] == minted_id
-    listed = client.get("/api/share")
-    assert listed.status_code == 200
-    assert minted_id in [s["id"] for s in listed.json()["shares"]]
-
-
-def test_cookie_session_with_an_unsigned_access_token_is_refused(
-    plane_runtime, client, user, sharing_on, monkeypatch
-):
-    async def _sess(request):
-        return {"access_token": "e30.e30.sig", "refresh_token": "",
-                "sub": user, "created_at": 0, "resumed": True, "sid": "s"}
-    monkeypatch.setattr(web_auth, "ensure_session", _sess)
-
-    r = client.post("/api/share", json={"chat_id": CHAT_ID, "scope": "component",
-                                        "component_id": "wc_shared"})
-    assert r.status_code == 401
-    assert _grant_rows(plane_runtime, user) == []
 
 
 def test_dashboard_with_dates_and_large_values_mints_and_serves(

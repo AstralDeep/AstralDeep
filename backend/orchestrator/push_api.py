@@ -18,8 +18,7 @@ from orchestrator.auth import verify_user
 from orchestrator.push_delivery import (
     PushDeliveryError,
 )
-from orchestrator.push_destinations import MAX_DESTINATION_REVISION, DestinationStoreUnavailable, PushDestinationError
-from orchestrator.session_consent import select_consent_session
+from orchestrator.push_destinations import MAX_DESTINATION_REVISION, PushDestinationError
 
 logger = logging.getLogger("Orchestrator.PushAPI")
 
@@ -97,10 +96,6 @@ async def enroll_destination(
         )
     store = coordinator.destinations
     try:
-        selected = await select_consent_session(request, principal=principal,
-            store=getattr(_get_orchestrator(request), "web_sessions", None))
-        if body.expected_destination_revision is not None and selected is None:
-            raise DestinationStoreUnavailable("current destination session is unavailable")
         destination = store.enroll(
             owner_id,
             device_id=body.device_id,
@@ -108,8 +103,6 @@ async def enroll_destination(
             token=body.token,
             label=body.label,
             expected_destination_revision=body.expected_destination_revision,
-            consent_session=selected,
-            principal=principal,
         )
     except PushDestinationError as exc:
         raise _destination_error(exc) from None

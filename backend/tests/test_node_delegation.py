@@ -9,7 +9,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from orchestrator import agent_authority as dg
-from orchestrator import mesh_admission as ma
 from orchestrator.emergency_stop import EmergencyStopCoordinator, EmergencyStopRefused
 from shared import node_identity as ni
 
@@ -276,67 +275,6 @@ def test_unavailable_node_key_is_a_delegation_config_error(tmp_path, monkeypatch
         dg.encode_delegation_payload({"sub": "u"})
     with pytest.raises(dg.DelegationConfigError):
         dg._child_signing_key()
-
-
-def member_claims(personal, **changes):
-    now = int(time.time())
-    payload = {
-        "sub": OWNER,
-        "act": {"sub": "mesh-member:m1"},
-        "scope": "tools:read",
-        "iss": ma.MEMBER_ISSUER,
-        "aud": ma.MEMBER_AUDIENCE,
-        "iat": now,
-        "exp": now + 120,
-        "delegation": True,
-        "jti": "jti-1",
-        "cnf": {"jkt": "thumb"},
-        ma.MEMBER_CLAIM: {
-            "mesh_id": "mesh-1", "member_id": "m1", "membership_epoch": 1, "revocation_epoch": 0,
-            "member_version": 1, "authority_revision": 1, "agent_id": None, "session_incarnation": "inc",
-        },
-    }
-    payload.update(changes)
-    return payload
-
-
-def test_member_tokens_are_signed_by_the_node_and_verified_against_it(personal):
-    token = dg.encode_delegation_payload(member_claims(personal))
-    claims = ma.verify_member_token(token)
-    assert claims["iss"] == personal.node_id
-    assert ma.MEMBER_AUDIENCE in claims["aud"] and personal.node_id in claims["aud"]
-    assert claims["sub"] == OWNER
-
-
-def test_member_tokens_from_another_node_or_scheme_are_refused(personal, tmp_path, monkeypatch):
-    token = dg.encode_delegation_payload(member_claims(personal))
-    other_node(tmp_path, monkeypatch)
-    with pytest.raises(ma.MeshAdmissionError):
-        ma.verify_member_token(token)
-    monkeypatch.delenv(ni.PROFILE_ENV)
-    monkeypatch.setenv("ASTRAL_ENV", "development")
-    with pytest.raises(ma.MeshAdmissionError):
-        ma.verify_member_token(token)
-
-
-def test_member_token_structure_is_still_enforced(personal):
-    for bad in (
-        member_claims(personal, scope="admin:everything"),
-        member_claims(personal, act={"sub": "mesh-member:other"}),
-        member_claims(personal, cnf={}),
-        member_claims(personal, delegation=False),
-    ):
-        with pytest.raises(ma.MeshAdmissionError):
-            ma.verify_member_token(dg.encode_delegation_payload(bad))
-    with pytest.raises(ma.MeshAdmissionError):
-        ma.verify_member_token("garbage")
-
-
-def test_member_audience_helper_accepts_string_and_list():
-    assert ma._has_member_audience({"aud": ma.MEMBER_AUDIENCE})
-    assert ma._has_member_audience({"aud": [ma.MEMBER_AUDIENCE, "node"]})
-    assert not ma._has_member_audience({"aud": ["other"]})
-    assert not ma._has_member_audience({})
 
 
 async def test_agents_accept_node_delegation_for_their_audience_and_owner_only(personal, tmp_path, monkeypatch):

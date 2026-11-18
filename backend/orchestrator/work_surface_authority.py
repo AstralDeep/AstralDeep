@@ -17,7 +17,7 @@ from starlette.websockets import WebSocketState
 from orchestrator.session_store import SessionRefreshUnavailable, WebSessionStore
 from orchestrator.work_api import _ReadDelivery, _read_expiry
 from orchestrator.work_service import WorkService
-from orchestrator.work_submit_authority import _signed_selection
+from orchestrator.work_submit_authority import refuse_session_cookie
 from persistent_agents.models import AssignmentError
 from persistent_agents.service import AssignmentService
 
@@ -103,12 +103,8 @@ class WorkSurfaceRead:
         self.deadline = time.monotonic() + 15
         headers = _transport_headers(websocket)
         self.connection = HTTPConnection({"type": "websocket", "headers": headers})
-        self.session_id = _signed_selection(self.connection)
-        from orchestrator import web_auth
-        supplied = [part.strip().split("=", 1)[0] for header in
-                    self.connection.headers.getlist("cookie") for part in header.split(";")]
-        if web_auth.COOKIE_NAME in supplied and self.session_id is None:
-            raise AssignmentError("work_authentication_required", 401)
+        refuse_session_cookie(self.connection)
+        self.session_id = None
         if not hasattr(orch, "_work_surface_reads"):
             orch._work_surface_reads = {}
         orch._work_surface_reads[websocket] = self

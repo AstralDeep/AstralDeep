@@ -433,7 +433,7 @@ PERSONAL_FUNCTIONS = {
         "owner_id_for_mesh", "mesh_id_for_owner", "_stored_owner", "_owner_file", "bound_owner", "bound_mesh_owner",
         "_bind_owner_file", "_require_owner", "bind_mesh_owner", "enforce_owner",
     ),
-    "orchestrator/session_store.py": ("_personal_node_problems",),
+    "orchestrator/boot_posture.py": ("_personal_node_problems",),
     "shared/a2a_security.py": ("_validate_node_token",),
 }
 ISSUER_NAMES = frozenset({

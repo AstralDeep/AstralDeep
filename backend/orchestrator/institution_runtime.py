@@ -1,5 +1,5 @@
 """Starts an institution node's per-owner mesh peers and gives each one its own request bridge with the institution's admission policy, so every owner's requests run through the node's own gates and never meet another owner's.
-node_mesh_chat.start_for and stop_all call it, institution_api.py asks it to serve an owner when that owner opens a pairing offer, and the wake trigger attaches to each peer here.
+node_mesh_chat.start_for and stop_all call it, and the wake trigger attaches to each peer here.
 """
 
 from __future__ import annotations

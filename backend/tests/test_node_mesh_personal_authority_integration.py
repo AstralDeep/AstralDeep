@@ -21,11 +21,6 @@ from tests.test_node_mesh_turn_tools import (  # noqa: F401
 
 
 def forbid_iam(host, monkeypatch):
-    class NoGrants:
-        def __getattr__(self, _name):
-            raise AssertionError("Offline IAM grants are not personal mesh authority")
-
-    monkeypatch.setattr(host.orch, "offline_grants", NoGrants())
     monkeypatch.setattr(host.orch, "derive_machine_authority", AsyncMock(side_effect=AssertionError("No per-request IAM")))
     monkeypatch.setattr(host.orch.delegation, "exchange_token_for_agent", AsyncMock(side_effect=AssertionError("No Keycloak exchange")))
 

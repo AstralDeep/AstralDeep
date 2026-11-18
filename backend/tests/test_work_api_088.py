@@ -18,7 +18,6 @@ from orchestrator.work_api import work_router
 from orchestrator.work_service import WorkService
 from persistent_agents.models import AssignmentError
 from persistent_agents.service import AssignmentService
-from shared.node_identity import canonical_owner_id
 
 
 def read_claims(roles=("user",), sub="owner"):
@@ -223,68 +222,6 @@ async def test_http_rejects_noncanonical_integer_queries_and_registers_exact_pre
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("transport", ["cookie", "bearer"])
-async def test_original_auth_path_rechecks_credential_and_roles(host, monkeypatch, transport):
-    from jose import JWTError
-    from orchestrator import auth, web_auth
-    orch, read, repo = host
-    monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-frontend")
-    monkeypatch.setattr(auth, "_get_keycloak_config", lambda: ("https://iam.example/realms/test", "astral-frontend", ""))
-    monkeypatch.setattr("shared.jwks_cache.get_jwks", AsyncMock(return_value={"keys": []}))
-    session = AsyncMock(return_value={"access_token": "fixture.access.token",
-        "sid": "fixture-sid", "incarnation_id": "fixture-incarnation"})
-    monkeypatch.setattr(web_auth, "ensure_session", session)
-    issuer = {"iss": "https://iam.example/realms/test", "azp": "astral-frontend", "aud": "account"}
-    owner = canonical_owner_id(issuer["iss"], "owner")
-    read.assignment.owner_id = owner
-    orch.persistent_assignments.store.plane_runtime.repositories.history.sessions.get_execution_state.return_value.credential.owner_id = owner
-    decode = Mock(return_value=read_claims() | issuer)
-    monkeypatch.setattr("jose.jwt.decode", decode)
-    app = FastAPI()
-    app.state.orchestrator = orch
-    app.include_router(work_router, prefix="/api")
-    headers = {"Authorization": "Bearer fixture.access.token"} if transport == "bearer" else {}
-    path = f"/api/work/v1/operations/{read.assignment.assignment_id}/poll"
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-        first = await client.get(path, headers=headers)
-        assert first.status_code == 200, first.text
-        decode.return_value = {"sub": "owner", "realm_access": {"roles": []}} | issuer
-        denied = await client.get(path, headers=headers)
-        assert denied.status_code == 403 and denied.headers["cache-control"] == "no-store"
-        decode.side_effect = JWTError("fixture credential expired")
-        expired = await client.get(path, headers=headers)
-        assert expired.status_code == 401 and "fixture" not in expired.text
-        assert decode.call_count == 4 and repo.get_operation.call_count == 1
-        assert session.call_count == (3 if transport == "cookie" else 0)
-
-
-@pytest.mark.asyncio
-async def test_signed_out_cookie_invalid_and_missing_service_are_safe(host, monkeypatch):
-    from orchestrator import web_auth
-    orch, _, repo = host
-    session = AsyncMock(return_value=None)
-    monkeypatch.setattr(web_auth, "ensure_session", session)
-    app = FastAPI()
-    app.state.orchestrator = orch
-    app.include_router(work_router, prefix="/api")
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-        denied = await client.get("/api/work/v1/operations")
-        assert denied.status_code == 401 and denied.headers["www-authenticate"] == "Bearer"
-        redirect = await client.get("/api/work/v1/operations", headers={"Accept": "text/html"})
-        assert redirect.status_code == 302 and redirect.headers["location"].startswith("/auth/login?next=")
-        assert redirect.headers["cache-control"] == "no-store"
-        override_read_auth(app, monkeypatch, roles=("admin",))
-        del app.state.orchestrator
-        response = await client.get("/api/work/v1/operations")
-        assert response.status_code == 503 and response.json() == {"error": "work_read_unavailable"}
-        app._root_app = SimpleNamespace(state=SimpleNamespace(orchestrator=orch))
-        assert (await client.get("/api/work/v1/operations")).status_code == 200
-        repo.list_operations.side_effect = AssignmentError("private upstream message", 503)
-        response = await client.get("/api/work/v1/operations")
-        assert response.status_code == 503 and "private" not in response.text
-
-
-@pytest.mark.asyncio
 async def test_projection_failure_never_returns_partial_page_or_private_data(host):
     orch, read, repo = host
     service = WorkService(orch.persistent_assignments)
@@ -312,31 +249,6 @@ async def test_projection_failure_never_returns_partial_page_or_private_data(hos
     repo.get_operation.side_effect = ValueError("private adapter error")
     with pytest.raises(AssignmentError, match="work_read_unavailable"):
         await service.get("owner", {"sub": "owner"}, read.assignment.assignment_id)
-
-
-@pytest.mark.asyncio
-async def test_revoked_cookie_cannot_reuse_the_previous_poll_identity(host, monkeypatch):
-    from orchestrator import auth, web_auth
-    orch, read, repo = host
-    session = AsyncMock(side_effect=[{"access_token": "fixture.access.token",
-        "sid": "fixture-sid", "incarnation_id": "fixture-incarnation"}, None])
-    monkeypatch.setattr(web_auth, "ensure_session", session)
-    claims = read_claims()
-    async def verify(request, credentials):
-        request.state.delegation_subject_token = credentials.credentials
-        return claims
-    validate = AsyncMock(side_effect=verify)
-    monkeypatch.setattr(auth, "get_current_user_payload", validate)
-    monkeypatch.setattr(auth, "verify_production_token", AsyncMock(return_value=claims))
-    app = FastAPI()
-    app.state.orchestrator = orch
-    app.include_router(work_router, prefix="/api")
-    path = f"/api/work/v1/operations/{read.assignment.assignment_id}/poll"
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-        assert (await client.get(path)).status_code == 200
-        revoked = await client.get(path)
-        assert revoked.status_code == 401 and revoked.headers["cache-control"] == "no-store"
-        assert session.call_count == 2 and validate.call_count == repo.get_operation.call_count == 1
 
 
 @pytest.mark.asyncio

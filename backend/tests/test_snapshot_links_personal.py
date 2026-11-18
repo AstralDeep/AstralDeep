@@ -1,5 +1,5 @@
 """Proves snapshot links are off on a personal node whatever FF_ARTIFACT_SHARING says: the flag reads false, /share/{token} answers 404, the /api/share routes refuse through their dependency, the chrome reports share off, one boot warning is logged, and stored share rows keep their bytes while node status counts them.
-It drives shared/feature_flags.py, orchestrator/api.py, chrome_availability.py, session_store.py and node_mesh.py against the real Plane-backed ShareGrantStore."""
+It drives shared/feature_flags.py, orchestrator/api.py, chrome_availability.py, boot_posture.py and node_mesh.py against the real Plane-backed ShareGrantStore."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ if str(BACKEND_DIR) not in sys.path:
 from fastapi import FastAPI  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
-from orchestrator import chrome_availability, node_mesh, session_store  # noqa: E402
+from orchestrator import chrome_availability, node_mesh, boot_posture  # noqa: E402
 from orchestrator.api import share_router  # noqa: E402
 from orchestrator.artifact_share import ShareGrantStore, set_share_store  # noqa: E402
 from personalization.phi_gate import PHIGate, set_phi_gate  # noqa: E402
@@ -140,8 +140,8 @@ def test_chrome_reports_share_off_on_a_personal_node(monkeypatch):
 def test_the_boot_warns_once_and_forces_the_variable_off_on_a_personal_node(monkeypatch, caplog):
     monkeypatch.setenv(ni.PROFILE_ENV, ni.PERSONAL)
     monkeypatch.setenv(ENV, "yes")
-    with caplog.at_level(logging.WARNING, logger=session_store.logger.name):
-        assert session_store.refuse_snapshot_links_on_personal_node() is True
+    with caplog.at_level(logging.WARNING, logger=boot_posture.logger.name):
+        assert boot_posture.refuse_snapshot_links_on_personal_node() is True
     warnings = [record for record in caplog.records if ENV in record.getMessage()]
     assert len(warnings) == 1
     import os
@@ -155,11 +155,11 @@ def test_the_boot_warns_once_and_forces_the_variable_off_on_a_personal_node(monk
 def test_the_boot_stays_silent_when_unset_or_on_another_profile(monkeypatch, caplog):
     monkeypatch.setenv(ni.PROFILE_ENV, ni.PERSONAL)
     monkeypatch.delenv(ENV, raising=False)
-    with caplog.at_level(logging.WARNING, logger=session_store.logger.name):
-        assert session_store.refuse_snapshot_links_on_personal_node() is False
+    with caplog.at_level(logging.WARNING, logger=boot_posture.logger.name):
+        assert boot_posture.refuse_snapshot_links_on_personal_node() is False
         monkeypatch.delenv(ni.PROFILE_ENV)
         monkeypatch.setenv(ENV, "true")
-        assert session_store.refuse_snapshot_links_on_personal_node() is False
+        assert boot_posture.refuse_snapshot_links_on_personal_node() is False
     import os
 
     assert os.environ[ENV] == "true"

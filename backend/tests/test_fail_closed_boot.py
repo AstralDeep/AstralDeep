@@ -1,4 +1,4 @@
-"""Tests for the production boot gate (orchestrator/auth.py, session_store.py):
+"""Tests for the production boot gate (orchestrator/auth.py, boot_posture.py):
 mock-auth refusal outside declared dev mode, required production secrets (session
 key, audit secret, Keycloak config), and agent-key fail-closed posture.
 """
@@ -8,7 +8,7 @@ import uuid
 import pytest
 
 from orchestrator.auth import validate_agent_api_key
-from orchestrator.session_store import assert_production_posture, is_dev_mode
+from orchestrator.boot_posture import assert_production_posture, is_dev_mode
 
 
 @pytest.mark.parametrize("posture", [None, "production", "unknown"])
@@ -19,8 +19,6 @@ def test_entrypoint_refuses_missing_secrets_before_durable_construction(monkeypa
         monkeypatch.delenv("ASTRAL_ENV", raising=False)
     else:
         monkeypatch.setenv("ASTRAL_ENV", posture)
-    monkeypatch.delenv("WEB_SESSION_ENC_KEY", raising=False)
-    monkeypatch.delenv("OFFLINE_GRANT_ENC_KEY", raising=False)
 
     def forbidden_runtime():
         pytest.fail("production refusal must precede durable runtime construction")
@@ -53,7 +51,6 @@ def test_entrypoint_admits_configured_startup(monkeypatch, posture):
 
 
 def _configure_production_secrets(monkeypatch):
-    monkeypatch.setenv("WEB_SESSION_ENC_KEY", "x" * 44)
     monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", "y" * 44)
     monkeypatch.setenv("AUDIT_HMAC_SECRET", f"high-entropy-{uuid.uuid4()}")
     monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://idp.example/realms/r")
@@ -111,14 +108,12 @@ def test_mock_auth_false_is_ignored_in_production(monkeypatch, caplog):
     assert "mock auth was removed" not in caplog.text
 
 
-def test_production_without_session_key_refuses(monkeypatch):
+def test_production_without_session_key_boots(monkeypatch):
     monkeypatch.delenv("ASTRAL_ENV", raising=False)
     _configure_production_secrets(monkeypatch)
     monkeypatch.delenv("WEB_SESSION_ENC_KEY", raising=False)
     monkeypatch.delenv("OFFLINE_GRANT_ENC_KEY", raising=False)
-    with pytest.raises(SystemExit) as exc:
-        assert_production_posture()
-    assert exc.value.code == 78
+    assert_production_posture()
 
 
 def test_production_with_placeholder_audit_secret_refuses(monkeypatch):
@@ -142,8 +137,7 @@ def test_production_without_keycloak_config_refuses(monkeypatch):
 
 def test_dev_mode_skips_production_secret_checks(monkeypatch):
     monkeypatch.setenv("ASTRAL_ENV", "development")
-    for var in ("WEB_SESSION_ENC_KEY", "OFFLINE_GRANT_ENC_KEY",
-                "AUDIT_HMAC_SECRET", "KEYCLOAK_AUTHORITY"):
+    for var in ("AUDIT_HMAC_SECRET", "KEYCLOAK_AUTHORITY"):
         monkeypatch.delenv(var, raising=False)
     assert_production_posture()
 
@@ -263,14 +257,12 @@ def test_a_personal_node_with_no_keycloak_setting_starts_in_production(monkeypat
     assert observed == ["constructed", "started"]
 
 
-@pytest.mark.parametrize("change", ["placeholder_audit", "missing_session_key", "missing_credential_key"])
+@pytest.mark.parametrize("change", ["placeholder_audit", "missing_credential_key"])
 def test_a_personal_node_with_env_unset_still_refuses_before_durable_construction(monkeypatch, tmp_path, change):
     node_identity = _personal_node(monkeypatch, tmp_path)
     monkeypatch.delenv("ASTRAL_ENV", raising=False)
     if change == "placeholder_audit":
         monkeypatch.setenv("AUDIT_HMAC_SECRET", "dev-audit-hmac-secret-change-me-in-prod")
-    elif change == "missing_session_key":
-        monkeypatch.delenv("WEB_SESSION_ENC_KEY")
     else:
         monkeypatch.delenv("CREDENTIAL_ENCRYPTION_KEY")
     _entrypoint_refuses(monkeypatch)

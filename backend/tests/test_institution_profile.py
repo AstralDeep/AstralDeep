@@ -8,7 +8,7 @@ import uuid
 import pytest
 from cryptography.hazmat.primitives.asymmetric import ec
 
-from orchestrator.session_store import assert_production_posture
+from orchestrator.boot_posture import assert_production_posture
 from shared import institution_profile as ip
 from shared import node_identity as ni
 

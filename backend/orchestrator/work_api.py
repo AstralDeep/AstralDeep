@@ -1,5 +1,5 @@
 """Owner-authenticated REST and SSE reads plus lifecycle controls for Work operations,
-composing work_service.py, work_controls.py, work_publication.py, and work_resume.py
+composing work_service.py, work_controls.py and work_publication.py
 behind one frozen per-request credential. Mounted by api.py.
 """
 
@@ -36,9 +36,7 @@ from orchestrator.work_continuations import (
 from orchestrator.work_publication import (
     WorkPublicationService, WorkResultProposalRequest, WorkResultSaveRequest,
 )
-from orchestrator.work_resume import WorkResumeService
 from orchestrator.work_service import WorkService
-from orchestrator.work_wake import WorkOwnerWakeRequest, WorkWakeService
 from orchestrator.work_write_boundary import cache_work_write_body, freeze_work_request
 from persistent_agents.models import AssignmentError
 
@@ -364,12 +362,6 @@ async def delete_work(identity: str, body: WorkDeleteRequest, request: Request):
         caller.context.owner_id, caller.context.claims, identity, body, caller=caller))
 
 
-@work_router.post("/{identity}/resume")
-async def resume_work(identity: str, body: WorkControlRequest, request: Request):
-    return _json(await WorkResumeService(_service(request).assignments).resume(
-        identity, body, caller=_write_caller(request)))
-
-
 @work_router.post("/{identity}/wait")
 async def wait_work(identity: str, body: WorkOwnerWaitRequest, request: Request):
     return _json(await WorkContinuationService(_service(request).assignments).wait(
@@ -398,12 +390,6 @@ async def reconcile_work(identity: str, action_id: str, body: WorkReconcileReque
 async def decide_work(identity: str, action_id: str, body: WorkDecideRequest, request: Request):
     return _json(await WorkControlService(_service(request).assignments).decide(
         identity, action_id, body, caller=_write_caller(request)))
-
-
-@work_router.post("/{identity}/wake")
-async def wake_work(identity: str, body: WorkOwnerWakeRequest, request: Request):
-    return _json(await WorkWakeService(_service(request).assignments).wake(
-        identity, body, caller=_write_caller(request)))
 
 
 @work_router.post("/{identity}/continuations/proposals")

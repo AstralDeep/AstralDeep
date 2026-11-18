@@ -84,7 +84,7 @@ def test_rerun_keeps_every_existing_value_and_adds_only_what_is_missing(tmp_path
 
 
 def test_the_written_env_passes_the_production_posture_without_keycloak(tmp_path, monkeypatch):
-    from orchestrator.session_store import assert_production_posture
+    from orchestrator.boot_posture import assert_production_posture
 
     home = tmp_path / "home"
     assert run(home).returncode == 0

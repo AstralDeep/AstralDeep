@@ -1,6 +1,6 @@
 """Sends a sandboxed agent's tool call, with its signed action and ticket, to the AstralVessel executor and maps the answer to a tool response.
 orchestrator.py dispatches here for agents whose card names a Vessel sandbox, node_mesh_calls.py supplies the ticket, tool_visibility.py lists the tools this module registers, and node_mesh_chat.py publishes them to the mesh catalog.
-session_store.py asks configuration_problems() so a production node refuses to start on a broken executor setting."""
+boot_posture.py asks configuration_problems() so a production node refuses to start on a broken executor setting."""
 
 from __future__ import annotations
 

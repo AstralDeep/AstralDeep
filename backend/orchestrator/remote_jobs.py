@@ -1,7 +1,7 @@
 """Durable tracking for submitted remote Slurm jobs: a background poller (started in
 Orchestrator.start) reads job status read-only over SSH via remote_transport.py and
 refreshes the job's canvas card in place through the detached-mutation boundary.
-Guarded work_resume.py can reconcile one paused target's terminal tracked-job wait.
+Work continuations can reconcile one paused target's terminal tracked-job wait.
 """
 
 from __future__ import annotations

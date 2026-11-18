@@ -12,10 +12,10 @@ import json
 import math
 import re
 
-from astralplane.repositories.history import SessionConsentObservation, SessionExecutionObservation
+from astralplane.repositories.history import SessionConsentObservation
 from fastapi import HTTPException, Request
 
-from orchestrator import auth, web_auth
+from orchestrator import auth
 from orchestrator.session_store import SessionRefreshUnavailable, WebSessionStore
 from orchestrator.work_write_boundary import freeze_work_request
 from persistent_agents.models import AssignmentError
@@ -42,15 +42,14 @@ def _expiry(claims, owner=None):
         _refuse()
 
 
-def _signed_selection(request):
-    cookies = [part.strip() for header in request.headers.getlist("cookie")
-               for part in header.split(";")]
-    values = [part.split("=", 1)[1] for part in cookies
-              if "=" in part and part.split("=", 1)[0].strip() == web_auth.COOKIE_NAME]
-    if len(values) != 1 or len(values[0]) > 289:
-        return None
-    sid = web_auth._unsign(values[0])
-    return sid if isinstance(sid, str) and _SID.fullmatch(sid) else None
+SESSION_COOKIE = "astral_session"
+
+
+def refuse_session_cookie(connection):
+    supplied = [part.strip().split("=", 1)[0] for header in connection.headers.getlist("cookie")
+                for part in header.split(";")]
+    if SESSION_COOKIE in supplied:
+        _refuse("work_authentication_required", 401)
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,17 +72,6 @@ class AuthenticatedWorkRequest:
             _refuse()
 
 
-@dataclass(frozen=True, slots=True)
-class WorkSubmissionAuthority:
-    observation: SessionExecutionObservation = field(repr=False)
-    _claims_json: str = field(repr=False)
-    plane_runtime: object = field(repr=False)
-
-    @property
-    def claims(self):
-        return json.loads(self._claims_json)
-
-
 async def _authenticate_work_request(
     request: Request, *, sessions: WebSessionStore, plane_runtime, methods, read_only=False,
 ) -> tuple[AuthenticatedWorkRequest, str | None]:
@@ -94,7 +82,7 @@ async def _authenticate_work_request(
                 or sessions._sessions.plane_runtime is not plane_runtime):
             _refuse()
         snapshot = freeze_work_request(request)
-        sid = _signed_selection(snapshot)
+        refuse_session_cookie(snapshot)
         credentials = await auth.security(snapshot)
         claims = await auth.verify_user(await auth.get_web_or_bearer_user_payload(snapshot, credentials))
         expiry = _expiry(claims)
@@ -105,7 +93,7 @@ async def _authenticate_work_request(
             from orchestrator.work_api import _write_owner
             await _write_owner(snapshot, claims["sub"])
         context = AuthenticatedWorkRequest(claims["sub"], expiry,
-            json.dumps(claims, allow_nan=False, separators=(",", ":")), sid,
+            json.dumps(claims, allow_nan=False, separators=(",", ":")), None,
             getattr(snapshot.state, "_authenticated_cookie_session", None), plane_runtime)
         context.assert_current(plane_runtime)
         return context, getattr(snapshot.state, "delegation_subject_token", None)
@@ -119,10 +107,7 @@ async def _authenticate_work_request(
 
 
 async def capture_human_caller(snapshot, *, context, sessions, until):
-    supplied = [part.strip().split("=", 1)[0] for header in snapshot.headers.getlist("cookie")
-                for part in header.split(";")]
-    if web_auth.COOKIE_NAME in supplied and context.session_id is None:
-        _refuse("work_authentication_required", 401)
+    refuse_session_cookie(snapshot)
     if context.session_id is None:
         return None
     try:
@@ -147,37 +132,3 @@ async def authenticate_work_submission_request(
     context, _token = await _authenticate_work_request(
         request, sessions=sessions, plane_runtime=plane_runtime, methods=("POST",))
     return context
-
-
-async def refresh_work_submission_authority(
-    context: AuthenticatedWorkRequest, *, sessions: WebSessionStore,
-) -> WorkSubmissionAuthority:
-    try:
-        async with asyncio.timeout(15):
-            if (type(context) is not AuthenticatedWorkRequest
-                    or not isinstance(sessions, WebSessionStore)
-                    or sessions._sessions.plane_runtime is not context.plane_runtime
-                    or context.session_id is None):
-                _refuse()
-            context.assert_current(context.plane_runtime)
-            reference = await asyncio.to_thread(sessions.capture_execution_reference,
-                owner_id=context.owner_id, session_id=context.session_id)
-            context.assert_current(context.plane_runtime)
-            if (context.cookie_session is not None and context.cookie_session != (
-                    reference.state.credential.session_id, reference.state.credential.incarnation_id)):
-                _refuse()
-            candidate = await sessions.refresh_for_execution(reference, exchange=web_auth._exchange_session_refresh,
-                bound_exchange=web_auth._exchange_bound_session_refresh)
-            claims = await auth.verify_user(await auth.verify_production_token(candidate.access_token))
-            expiry = _expiry(claims, context.owner_id)
-            if candidate.credential.incarnation_id != reference.state.credential.incarnation_id:
-                _refuse()
-            observation = SessionExecutionObservation(candidate.credential, candidate.started_at,
-                min(candidate.started_at + timedelta(seconds=15), expiry, context.principal_expires_at,
-                    datetime.fromtimestamp(candidate.credential.hard_expires_at, timezone.utc)))
-            await asyncio.to_thread(sessions.assert_execution_observation, observation)
-            context.assert_current(context.plane_runtime)
-            return WorkSubmissionAuthority(observation,
-                json.dumps(claims, allow_nan=False, separators=(",", ":")), context.plane_runtime)
-    except Exception:
-        _refuse()

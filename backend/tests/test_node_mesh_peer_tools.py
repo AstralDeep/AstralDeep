@@ -57,17 +57,6 @@ class FakeModel(BaseHTTPRequestHandler):
         pass
 
 
-class Grants:
-    def latest_valid_for(self, user_id, agent_id=None):
-        return "grant-1"
-
-    def is_valid(self, grant_id, *, user_id):
-        return True
-
-    async def mint_access_token(self, grant_id, *, user_id):
-        return "consent-token"
-
-
 @pytest.fixture
 def model_server():
     FakeModel.seen = []
@@ -105,15 +94,10 @@ async def node_host(orchestrator_factory, monkeypatch, tmp_path):
     agent = DiceRollerAgent(port=0)
     await orch.register_agent(None, RegisterAgent(agent_card=agent.card, api_key=key))
     orch.local_agents[agent.agent_id] = agent
-    stored = orch.offline_grants
-    orch.offline_grants = Grants()
     owner = node_identity.owner_id_for_mesh(mesh_creator.owner)
     orch.tool_permissions.set_agent_scopes(owner, AGENT, {"tools:read": True})
     skill = next(s for s in agent.card.skills if s.id == TOOL)
-    try:
-        yield SimpleNamespace(orch=orch, agent=agent, skill=skill, owner=owner, mesh_creator=mesh_creator)
-    finally:
-        orch.offline_grants = stored
+    yield SimpleNamespace(orch=orch, agent=agent, skill=skill, owner=owner, mesh_creator=mesh_creator)
 
 
 def peer_spec(host, *, description=None):

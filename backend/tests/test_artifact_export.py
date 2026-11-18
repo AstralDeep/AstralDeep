@@ -20,7 +20,6 @@ if str(BACKEND_DIR) not in sys.path:
 from fastapi import FastAPI  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
-import orchestrator.web_auth as web_auth  # noqa: E402
 from orchestrator.api import _csv_body, export_router  # noqa: E402
 from shared.feature_flags import flags  # noqa: E402
 
@@ -314,64 +313,6 @@ def test_flag_off_both_routes_404_route_absent_body(client, orch):
     assert r2.json() == {"detail": "Not Found"}
 
 
-def _no_session(monkeypatch):
-    async def _none(request):
-        return None
-    monkeypatch.setattr(web_auth, "ensure_session", _none)
-
-
-def test_unauthenticated_api_requests_are_401(client, orch, monkeypatch):
-    _no_session(monkeypatch)
-    orch.workspace.aget_by_component_id.return_value = _row(_table_cd())
-    headers = {"Accept": "application/json"}
-    r1 = client.get(f"/api/export/component/wc_tbl1.csv?chat_id={CHAT_ID}",
-                    headers=headers)
-    r2 = client.get(f"/api/export/canvas/{CHAT_ID}.html", headers=headers)
-    assert (r1.status_code, r2.status_code) == (401, 401)
-
-
-def test_unauthenticated_browser_navigation_redirects_to_login(client, monkeypatch):
-    from urllib.parse import quote
-    _no_session(monkeypatch)
-    accept = {"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"}
-    csv_path = f"/api/export/component/wc_tbl1.csv?chat_id={CHAT_ID}"
-    r1 = client.get(csv_path, headers=accept, follow_redirects=False)
-    assert r1.status_code == 302
-    assert r1.headers["location"] == f"/auth/login?next={quote(csv_path, safe='')}"
-    html_path = f"/api/export/canvas/{CHAT_ID}.html"
-    r2 = client.get(html_path, headers=accept, follow_redirects=False)
-    assert r2.status_code == 302
-    assert r2.headers["location"] == f"/auth/login?next={quote(html_path, safe='')}"
-
-
-def test_cookie_session_serves_export(client, orch, monkeypatch, server_identity):
-    session_token = server_identity.token(SUBJECT)
-
-    async def _sess(request):
-        return {"access_token": session_token, "refresh_token": "",
-                "sub": SUBJECT, "created_at": 0, "resumed": True, "sid": "s"}
-    monkeypatch.setattr(web_auth, "ensure_session", _sess)
-
-    orch.workspace.aget_by_component_id.return_value = _row(_table_cd())
-    r = client.get("/api/export/component/wc_tbl1.csv", params={"chat_id": CHAT_ID})
-    assert r.status_code == 200
-    assert r.headers["content-type"].startswith("text/csv")
-    orch.workspace.aget_by_component_id.assert_awaited_once_with(
-        CHAT_ID, USER_ID, "wc_tbl1")
-
-
-def test_cookie_session_with_an_unsigned_token_is_refused(client, orch, monkeypatch):
-    async def _sess(request):
-        return {"access_token": "e30.e30.sig", "refresh_token": "",
-                "sub": SUBJECT, "created_at": 0, "resumed": True, "sid": "s"}
-    monkeypatch.setattr(web_auth, "ensure_session", _sess)
-    orch.workspace.aget_by_component_id.return_value = _row(_table_cd())
-    r = client.get("/api/export/component/wc_tbl1.csv", params={"chat_id": CHAT_ID},
-                   headers={"Accept": "application/json"})
-    assert r.status_code == 401
-    orch.workspace.aget_by_component_id.assert_not_awaited()
-
-
 def test_bearer_with_an_unsigned_token_is_refused(client, orch):
     r = client.get("/api/export/component/wc_tbl1.csv", params={"chat_id": CHAT_ID},
                    headers={"Authorization": "Bearer e30.e30.sig", "Accept": "application/json"})
@@ -379,9 +320,3 @@ def test_bearer_with_an_unsigned_token_is_refused(client, orch):
     orch.workspace.aget_by_component_id.assert_not_awaited()
 
 
-def test_bearer_takes_precedence_over_cookie(client, orch, monkeypatch):
-    async def _boom(request):
-        raise AssertionError("ensure_session must not be called when a Bearer token exists")
-    monkeypatch.setattr(web_auth, "ensure_session", _boom)
-    orch.workspace.aget_by_component_id.return_value = _row(_table_cd())
-    assert _csv_get(client).status_code == 200

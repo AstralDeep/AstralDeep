@@ -27,7 +27,7 @@ doctor = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = doctor
 spec.loader.exec_module(doctor)
 
-from orchestrator.session_store import assert_production_posture  # noqa: E402
+from orchestrator.boot_posture import assert_production_posture  # noqa: E402
 
 POSTURE_VARIABLES = (
     "ASTRAL_ENV",

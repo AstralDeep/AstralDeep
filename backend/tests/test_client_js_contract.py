@@ -1,7 +1,3 @@
-"""Tests for the web client's source contract (AstralProjection's client.js, shell.html,
-web_auth.py via resources.py): auth-required recovery, timeline read-only guards, no
-local-credential UI, and status reducers.
-"""
 
 import re
 from pathlib import Path
@@ -12,7 +8,6 @@ from astralprojection.resources import static_path, template_path
 BACKEND = Path(__file__).resolve().parent.parent
 CLIENT_JS = static_path("client.js")
 SHELL_HTML = template_path("shell.html")
-WEB_AUTH_PY = BACKEND / "orchestrator" / "web_auth.py"
 
 
 def _read(path: Path) -> str:
@@ -49,14 +44,6 @@ def _js_function(src: str, name: str) -> str:
     raise AssertionError(f"unbalanced braces extracting function {name}")
 
 
-def _py_function(src: str, name: str) -> str:
-    sig = f"def {name}("
-    assert sig in src, f"web_auth.py has no {sig}"
-    start = src.index(sig)
-    nxt = re.compile(r"\n(?:def |async def |class |@)").search(src, start + 1)
-    return src[start : nxt.start()] if nxt else src[start:]
-
-
 @pytest.fixture(scope="module")
 def client_js() -> str:
     return _read(CLIENT_JS)
@@ -65,11 +52,6 @@ def client_js() -> str:
 @pytest.fixture(scope="module")
 def shell_html() -> str:
     return _read(SHELL_HTML)
-
-
-@pytest.fixture(scope="module")
-def web_auth_src() -> str:
-    return _read(WEB_AUTH_PY)
 
 
 def test_no_retired_bearer_literal_in_executable_code(client_js):
@@ -222,30 +204,6 @@ def test_shell_injects_token_and_resumed_placeholders(shell_html):
 
 
 FORBIDDEN_FR010 = ("remember me", "remember-me", "biometric", "webauthn")
-
-
-@pytest.mark.parametrize(
-    "path", [CLIENT_JS, SHELL_HTML, WEB_AUTH_PY], ids=lambda p: p.name
-)
-def test_fr010_no_local_credential_ui(path):
-    low = _read(path).lower()
-    for term in FORBIDDEN_FR010:
-        assert term not in low, f"{path.name} contains forbidden FR-010 term {term!r}"
-
-
-def test_fr010_error_pages_offer_no_local_credential_capture(web_auth_src):
-    no_access = _py_function(web_auth_src, "_no_access_page")
-    error_page = _py_function(web_auth_src, "_error_page")
-    assert "No access" in no_access
-    assert "Sign-in problem" in error_page
-    for name, fn in (("_no_access_page", no_access), ("_error_page", error_page)):
-        low = fn.lower()
-        for term in FORBIDDEN_FR010:
-            assert term not in low, f"{name} contains forbidden FR-010 term {term!r}"
-        assert "/auth/login" in fn, f"{name} must route recovery through /auth/login"
-        assert "<input" not in low and "<form" not in low, (
-            f"{name} must not render local credential inputs"
-        )
 
 
 def test_operation_status_reducer_is_scoped_monotonic_and_first_terminal(client_js):
