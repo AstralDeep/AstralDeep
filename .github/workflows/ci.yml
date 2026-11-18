@@ -1370,6 +1370,104 @@ jobs:
           PYTHONPATH: .
         run: mkdocs build --strict
 
+  node-pack-linux:
+    name: Build the linux-x86_64 node pack
+    needs: [kernel-binding]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: recursive
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: kernel-binding
+          path: build/kernel-binding
+      - name: Build the pack from the current-run Kernel binding
+        run: |
+          set -euo pipefail
+          python scripts/install_kernel_binding.py verify --artifacts build/kernel-binding
+          python scripts/node_bundle/linux/build_linux.py --platform linux-x86_64 --kernel-dir build/kernel-binding --out "$RUNNER_TEMP/pack"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: node-pack-linux
+          path: ${{ runner.temp }}/pack
+          if-no-files-found: error
+          retention-days: 1
+
+  node-pack-macos:
+    name: Build the macOS node pack
+    runs-on: macos-26
+    timeout-minutes: 30
+    env:
+      RUSTUP_TOOLCHAIN: "1.99.1"
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: recursive
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+      - name: Build the pack from the pinned Kernel source
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.99.1 --profile minimal
+          rustup target add --toolchain 1.99.1 aarch64-apple-darwin
+          bash components/AstralKernel/scripts/build-python-macos.sh --out "$RUNNER_TEMP/kernel-macos"
+          python3 scripts/node_bundle/assemble.py --platform macos-arm64 --kernel-dir "$RUNNER_TEMP/kernel-macos" \
+            --out "$RUNNER_TEMP/pack" --work "$RUNNER_TEMP/nodepack-work"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: node-pack-macos
+          path: ${{ runner.temp }}/pack
+          if-no-files-found: error
+          retention-days: 1
+
+  no-docker:
+    name: Install and run the node with no Docker on ${{ matrix.name }}
+    needs: [node-pack-linux, node-pack-macos]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macos-26
+            runner: macos-26
+            pack: node-pack-macos
+          - name: ubuntu-24.04
+            runner: ubuntu-24.04
+            pack: node-pack-linux
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ matrix.pack }}
+          path: ${{ runner.temp }}/pack
+      - name: Print the runner Landlock ABI
+        if: ${{ runner.os == 'Linux' }}
+        run: |
+          uname -srm
+          python - <<'PY'
+          import ctypes
+          libc = ctypes.CDLL(None, use_errno=True)
+          abi = libc.syscall(444, None, 0, 1)
+          print("landlock abi:", abi if abi >= 0 else f"unavailable (errno {ctypes.get_errno()})")
+          PY
+      - name: Run the pack with no Docker on PATH
+        run: python scripts/no_docker_check.py --pack "$RUNNER_TEMP/pack"
+
   gates:
     name: Deep owner CI aggregate
     if: always()
@@ -1392,6 +1490,7 @@ jobs:
       - no-keycloak
       - plane-quality
       - plane-package-compatibility
+      - no-docker
       - vessel-lint
       - vessel-test
       - vessel-isolation
@@ -1419,6 +1518,7 @@ jobs:
           [[ '${{ needs.no-keycloak.result }}' == 'success' ]]
           [[ '${{ needs.plane-quality.result }}' == 'success' ]]
           [[ '${{ needs.plane-package-compatibility.result }}' == 'success' ]]
+          [[ '${{ needs.no-docker.result }}' == 'success' ]]
           [[ '${{ needs.vessel-lint.result }}' == 'success' ]]
           [[ '${{ needs.vessel-test.result }}' == 'success' ]]
           [[ '${{ needs.vessel-isolation.result }}' == 'success' ]]
