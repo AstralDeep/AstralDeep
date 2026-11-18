@@ -3,14 +3,20 @@
 AstralDeep is a **server-driven UI (SDUI) backend service**: one Python
 process serves the web shell, static assets, REST API, WebSocket channel, and
 the rendered UI itself on port **8001**. There is no frontend build step, no
-Node toolchain, and no separate static server — `astralprims` defines the
+Node toolchain, and no separate static server. `astralprims` defines the
 primitives, the orchestrator renders them (`components/AstralProjection/backend/webrender/`), and ROTE
 adapts the output per device.
 
-Companion docs: [keycloak-realm-settings.md](keycloak-realm-settings.md)
-(identity provider), [keycloak_agent_delegation_setup.md](keycloak_agent_delegation_setup.md)
-(RFC 8693 agent delegation), [byo-client-agents.md](byo-client-agents.md)
-(features 057/058 — user-authored, desktop-hosted BYO agents; `FF_BYO_AGENTS`).
+This guide covers one personal node in production posture. A personal node
+serves one owner and has no sign-in. Callers authenticate by a roster-listed
+device key with a mesh ticket, or by an owner-minted caller ticket. Two hosts
+run it. The Mac node host runs the node from the installer, and Vessel runs it
+in Docker with a sandbox executor.
+
+Companion docs: [personal-node.md](personal-node.md) (install, pairing, mesh
+peer, sandboxed tools), the [Vessel README](../vessel/README.md) (the Docker
+deployment), [byo-client-agents.md](byo-client-agents.md) (user-authored,
+client-hosted BYO agents, `FF_BYO_AGENTS`).
 
 ## Fail-closed posture (read this first)
 
@@ -20,9 +26,9 @@ serve (exit code 78, one consolidated operator checklist in the log) unless:
 | Requirement | Why |
 |---|---|
 | No mock-auth setting | Mock auth was removed. A leftover setting refuses to boot. |
-| `WEB_SESSION_ENC_KEY` (or `OFFLINE_GRANT_ENC_KEY`) set | Durable web sessions are Fernet-encrypted at rest; refused unencrypted. |
 | `AUDIT_HMAC_SECRET` set to a real value | The audit hash chain is forgeable under the shipped placeholder. |
-| `KEYCLOAK_AUTHORITY` / `KEYCLOAK_CLIENT_ID` / `KEYCLOAK_CLIENT_SECRET` set | The OIDC flow cannot operate without them. |
+| Node key and data directory writable | The node signs tickets and mesh events with its own key. |
+| Pinned Plane schema revision and digests match | The node refuses a database that differs from `config/astral-composition.json`. |
 
 Additionally, in production mode:
 
@@ -38,9 +44,10 @@ Additionally, in production mode:
   only after the peer answers an unauthenticated probe with the
   `AstralAgentKey` challenge, and only to a destination listed under
   `AGENT_KEY_TRUSTED_HOSTS` (see below).
-- Unauthenticated shell requests redirect to Keycloak; unauthenticated
-  REST/WS requests are refused. Entry requires the `user` or `admin` realm
-  role.
+- The browser shell has no sign-in until a browser mesh client exists.
+  REST and WebSocket requests without a roster-listed device key and a mesh
+  ticket, or an owner-minted caller ticket, are refused. Bearer JWTs are
+  refused.
 
 Local development opts out explicitly with `ASTRAL_ENV=development`.
 
@@ -77,7 +84,7 @@ deployment-wide default for user traffic:
 - **Migration from pre-054 deployments**: the legacy env vars
   (`OPENAI_API_KEY`, `OPENAI_BASE_URL`, `LLM_MODEL`, `KNOWLEDGE_LLM_MODEL`)
   are **inert** — remove them from the host `.env`. They are never
-  migrated into any store: each user configures fresh at next sign-in,
+  migrated into any store: the owner configures fresh at the next start,
   and an admin sets the System LLM in-app if background features are
   wanted. Boot does not require any LLM configuration.
 
@@ -131,14 +138,11 @@ reverse proxy (nginx, Caddy, Traefik) in front of it in production:
    `X-Forwarded-Proto` / `X-Forwarded-For` (every mainstream proxy's default).
 2. The orchestrator trusts those headers only from `FORWARDED_ALLOW_IPS`
    (default `127.0.0.1`; set to your proxy's address or `*` inside a private
-   network). This is what makes `request.base_url` https — which drives the
-   session cookie's `secure` flag and the OIDC `redirect_uri`.
+   network). This is what makes `request.base_url` https.
 3. WebSockets: ensure the proxy upgrades `/ws` (and `/agent` if agents
    connect through it). nginx needs the standard
    `proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection "upgrade";`.
-4. Set `PUBLIC_BASE_URL`/`BACKEND_PUBLIC_URL` to the public https origin and
-   register `https://your-host/auth/callback` as a valid redirect URI on the
-   Keycloak client.
+4. Set `PUBLIC_BASE_URL`/`BACKEND_PUBLIC_URL` to the public https origin.
 
 ## Conversational voice (features 065/066/075) — deployment topology contract
 
@@ -355,92 +359,13 @@ In `shadow` or `enforce` mode it reads:
   unchanged). Admins can read the full redacted projection at
   `GET /lets/health`.
 
-## Sessions, sign-out, multi-instance
-
-- Sessions live in Postgres (`web_session`, encrypted) — restarts and N>1
-  instances do not log anyone out. All instances must share
-  `WEB_SESSION_ENC_KEY` (cookie signatures fall back to it via
-  `WEB_SESSION_SECRET → WEB_SESSION_ENC_KEY → OFFLINE_GRANT_ENC_KEY`).
-- Silent renewal is server-side and never extends the 365-day interactive
-  anchor; sign-out revokes the Keycloak refresh token (queued in
-  `auth_revocation_queue` and retried when the IdP is unreachable) plus all
-  feature-025 offline grants.
-
-## Native clients (Windows, Android, Apple) & device sign-in
-
-- The native clients (feature 044/041/051: `components/AstralProjection/windows-client/`, `components/AstralProjection/android-client/`,
-  `components/AstralProjection/apple-clients/` iOS + macOS + watchOS) consume the same public origin as the
-  browser — no extra ports or services. They authenticate as **public PKCE
-  clients**: `astral-desktop` (Windows + macOS), `astral-mobile`
-  (Android + iOS), `astral-watch` (watch). All must appear in
-  `KEYCLOAK_ALLOWED_AZP` and exist in the realm per
-  [keycloak-realm-settings.md](keycloak-realm-settings.md).
-- **Watch QR sign-in (feature 051)** is the backend-brokered OAuth 2.0 Device
-  Authorization Grant (RFC 8628): the watch calls
-  `POST /api/auth/device/{start,poll,refresh}` and never contacts the IdP.
-  Requirements: `FF_DEVICE_LOGIN=true` (default) and the **device grant
-  enabled on the `astral-watch` client** in the realm (a per-client toggle;
-  see keycloak-realm-settings.md §051). Fail-closed: flag off, IdP
-  unreachable, or grant not enabled all yield a clean 503 with an actionable
-  message on the watch — never a hung or partial session.
-- Device-login start/poll are rate-limited per client address and codes are
-  single-use + TTL-bound; the lifecycle is audited (`auth` class,
-  `auth.device_login_*`). Token material is never logged.
-- Apple/Android/Windows sign-out calls `POST /api/auth/logout` with its
-  client id; revocation is queued offline-tolerantly
-  (`auth_revocation_queue.client_id`) exactly like the web client.
-- iOS/macOS refresh directly against the IdP token endpoint (Windows
-  precedent); the watch refreshes via the backend broker (single TLS peer).
-  Silent refresh never extends the 365-day interactive anchor.
-
 ## Apple clients (App Store)
 
-Feature 053 ships the `components/AstralProjection/apple-clients/` family — iOS + macOS (one multiplatform
-`AstralApp` target) plus an embedded watchOS companion (`AstralWatch`) — to the
-App Store as a single Universal Purchase record (bundle id
-`com.personalailabs.astraldeep`). Two things are operator-facing: the backend
-`.env` the shipped apps expect, and the signed release pipeline.
-
-### Production `.env` the Apple clients depend on
-
-A stock App Store build compiles in `https://sandbox.ai.uky.edu` and
-`https://iam.ai.uky.edu/realms/Astral` as its endpoint
-(`components/AstralProjection/apple-clients/Config/Release.xcconfig` → both Info.plists → `AstralConfig`).
-The endpoint can be repointed at runtime (FR-011 override) or by rebuilding, but
-a stock build talks to that exact host — so the production posture there must
-satisfy:
-
-| Key | Value | Why the Apple clients need it |
-|---|---|---|
-| `ASTRAL_ENV` | unset (== production) | Fail-closed. Missing or placeholder secrets refuse to boot. |
-| `KEYCLOAK_AUTHORITY` | `https://iam.ai.uky.edu/realms/Astral` | Must match the authority the Release build ships with. |
-| `KEYCLOAK_ALLOWED_AZP` | includes `astral-mobile`, `astral-desktop`, **and** `astral-watch` | iOS→`astral-mobile`, macOS→`astral-desktop`, watch→`astral-watch`; a token whose `azp` is not listed is rejected. |
-| `KEYCLOAK_DEVICE_CLIENTS` | `astral-watch` | Only the watch may use the backend-brokered device grant. |
-| `FF_DEVICE_LOGIN` | `true` | Enables `POST /api/auth/device/*`; off ⇒ watch QR sign-in returns a clean 503. |
-| `FF_LLM_STREAMING` | `true` (default) | Token-wise narrative streaming the clients render live; any provider error falls back to the non-streamed call. |
-| high-entropy secret set | `WEB_SESSION_ENC_KEY` / `OFFLINE_GRANT_ENC_KEY` (Fernet), `AUDIT_HMAC_SECRET`, `AGENT_API_KEY`, `KEYCLOAK_CLIENT_SECRET` | The exit-78 boot gate refuses placeholders. |
-| `FORWARDED_ALLOW_IPS` | the TLS proxy's address | Makes `request.base_url` https so the OIDC `redirect_uri` the clients round-trip is https. |
-
-Also size the connection pool for the added client fan-in: **`DB_POOL_MAX` ×
-(app process count) must stay below Postgres `max_connections`**. Each instance
-holds up to `DB_POOL_MAX` connections (default 10); N app processes plus the
-`postgres` service's own overhead have to fit under the server ceiling, or a
-sign-in storm exhausts it.
-
-### Realm prerequisites
-
-Per [keycloak-realm-settings.md](keycloak-realm-settings.md) §051 (native Apple
-clients):
-
-- **`astral-mobile`** (shared with Android) serves iOS and **`astral-desktop`**
-  (shared with Windows) serves macOS — both standard flow + PKCE. No realm
-  change beyond registering the Apple redirect URIs already documented for those
-  shared clients.
-- **`astral-watch`** is a dedicated *public* client with **OAuth 2.0 Device
-  Authorization Grant** enabled (Capability config). Append it to
-  `KEYCLOAK_ALLOWED_AZP` and keep `KEYCLOAK_DEVICE_CLIENTS=astral-watch`.
-- All three clients must exist in the realm; the watch never contacts the IdP
-  directly (the backend brokers the device grant).
+The `components/AstralProjection/apple-clients/` family (iOS, macOS and an
+embedded watchOS companion) ships to the App Store as one Universal Purchase
+record (bundle id `com.personalailabs.astraldeep`). The apps embed the kernel
+and pair with a node through the offer flow in [personal-node.md](personal-node.md).
+They need no sign-in. The signed release pipeline follows.
 
 ### Direct Mac download preparation
 
@@ -717,9 +642,6 @@ provisioning profiles / ASC API key, and the on-device verification evidence.
   falls back to the non-streamed call automatically. Set `false` to disable.
 - `FF_PHI_WARM` (default on) — pre-loads the PHI analyzer in a background
   thread at boot so the first personalization write does not stall.
-- `JWKS_REFRESH_SECONDS` (default 500) — background refresh interval for the
-  identity-provider signing keys warmed at boot; token validation stays
-  fail-closed regardless.
 - `UI_DESIGNER_MAX_ROUNDS` — the adaptive UI designer now defaults to **1**
   design pass per turn (was 3); raise it to restore multi-round refinement.
   Components are always delivered to clients before the designer runs.
@@ -731,14 +653,14 @@ provisioning profiles / ASC API key, and the on-device verification evidence.
 - `LOG_LEVEL` (default `info`) controls uvicorn/app verbosity; health-probe
   and agent-card polls are filtered out of access logs.
 - Timing spans (feature 052) are logged as `perf <name> duration_ms=<int>`
-  lines (surface renders, sign-in phases, chat-turn phases, boot phases);
+  lines (surface renders, chat-turn phases, boot phases);
   summarize with `python scripts/perf_report.py` (run from `backend/`,
   feeding it the app log).
 - The tamper-evident audit trail (per-user HMAC hash chain) is queryable via
   `GET /api/audit` (per-user) and verifiable server-side:
   `python -m audit.cli verify-chain --user-id <id>`.
 
-## Deploying to sandbox.ai.uky.edu (GHCR path)
+## Deploying the node image (GHCR path)
 
 The composed backend image is published by `.github/workflows/publish-image.yml`.
 It fires only after the owner CI aggregate (`ci.yml`) completes successfully for
@@ -754,6 +676,19 @@ remain local/owner decisions, and the voice-worker image stays behind the
 
 Deploy only from a `sha-<commit>` tag whose commit you have qualified. A green
 Deep owner-CI run proves the source-free gates, not a release decision.
+
+### Mac node host
+
+Run `scripts/node/install-personal-node.sh` as described in
+[personal-node.md](personal-node.md). It writes `~/.astral-node/node.env` and
+leaves `ASTRAL_ENV` unset, so the node starts in production posture on
+`127.0.0.1` with SQLite. Pair the Mac or iPhone app with the offer flow.
+
+### Vessel
+
+`astralvessel up` runs the node image with the executor and a sandbox per
+agent. See the [Vessel README](../vessel/README.md). The node image comes from
+the steps below.
 
 ### 1. Pull the image
 
@@ -773,7 +708,7 @@ and `depends_on` all still apply) and add a `docker-compose.override.yml`
 on the host that swaps the local build for the registry image:
 
 ```yaml
-# docker-compose.override.yml (sandbox host)
+# docker-compose.override.yml (node host)
 services:
   astraldeep:
     image: ghcr.io/<owner>/<repo>:sha-<commit>
@@ -786,35 +721,15 @@ On older compose without `!reset`, omit that line and start with
 ### 3. Host `.env` posture
 
 Everything in [Fail-closed posture](#fail-closed-posture-read-this-first)
-applies; for sandbox.ai.uky.edu specifically:
+applies. For a node behind a public origin:
 
 ```bash
-# Public origin (TLS proxy in front — see below)
-PUBLIC_BASE_URL=https://sandbox.ai.uky.edu
-BACKEND_PUBLIC_URL=https://sandbox.ai.uky.edu
+# Public origin (TLS proxy in front, see below)
+PUBLIC_BASE_URL=https://node.example.com
+BACKEND_PUBLIC_URL=https://node.example.com
 
-# Identity — realm + client settings per docs/keycloak-realm-settings.md
-KEYCLOAK_AUTHORITY=https://iam.ai.uky.edu/realms/<realm>
-KEYCLOAK_CLIENT_ID=astral-frontend
-KEYCLOAK_CLIENT_SECRET=<client credentials tab>
-
-# Native clients — tokens from the Windows/macOS (astral-desktop), Android/iOS
-# (astral-mobile) and watch (astral-watch) public clients are ACCEPTED ONLY when
-# their azp is listed here (empty/unset ⇒ web-only: every native sign-in is
-# rejected while the web keeps working, and the Android/Apple release builds ship
-# pointing at this very host). Client provisioning:
-# docs/keycloak-windows-client-setup.md, docs/keycloak-android-client-setup.md,
-# and docs/keycloak-realm-settings.md §051 (Apple).
-KEYCLOAK_ALLOWED_AZP=astral-desktop,astral-mobile,astral-watch
-
-# Watch QR sign-in (device grant) — Apple watchOS + any watch client
-KEYCLOAK_DEVICE_CLIENTS=astral-watch
-FF_DEVICE_LOGIN=true
-
-# Production posture — the exit-78 boot gate checks all of these
+# Production posture, checked by the exit-78 boot gate
 # (leave ASTRAL_ENV unset: unset == production, fail closed)
-WEB_SESSION_ENC_KEY=<generated Fernet key>
-OFFLINE_GRANT_ENC_KEY=<generated Fernet key>
 AUDIT_HMAC_SECRET=<high-entropy value>
 AGENT_API_KEY=<random secret>
 # Hosts that may RECEIVE AGENT_API_KEY on outbound agent connections, beyond
@@ -840,19 +755,14 @@ DB_NAME=astraldeep
 DB_PORT=5432
 ```
 
-### 4. Reverse proxy + Keycloak client
+### 4. Reverse proxy
 
-- TLS terminates at the proxy: `https://sandbox.ai.uky.edu/` →
+- TLS terminates at the proxy: `https://node.example.com/` →
   `http://127.0.0.1:8001`, forwarding `X-Forwarded-Proto`/`X-Forwarded-For`.
 - The orchestrator trusts those headers **only** from `FORWARDED_ALLOW_IPS`
-  (set it to the proxy's address — this is what makes the session cookie
-  `secure` and the OIDC `redirect_uri` https).
+  (set it to the proxy's address).
 - The proxy must upgrade WebSockets on `/ws` (and `/agent` if agents connect
   through it).
-- On the Keycloak `astral-frontend` client, register
-  `https://sandbox.ai.uky.edu/auth/callback` as a valid redirect URI and
-  `https://sandbox.ai.uky.edu/` as a post-logout redirect URI
-  ([keycloak-realm-settings.md](keycloak-realm-settings.md)).
 
 The exit-78 boot gate is the final guard: if the host `.env` is incomplete,
 the pulled image refuses to serve and prints one consolidated checklist in
@@ -865,30 +775,19 @@ the pulled image refuses to serve and prints one consolidated checklist in
     not a local build)
 [ ] docker-compose.override.yml points services.astraldeep.image at that tag
     (build: dropped or compose started with --no-build)
-[ ] ASTRAL_ENV unset (or =production) on the host — NOT development
+[ ] ASTRAL_ENV unset (or =production) on the host, NOT development
 [ ] no leftover mock-auth setting in the environment (it refuses to boot)
-[ ] WEB_SESSION_ENC_KEY + OFFLINE_GRANT_ENC_KEY generated (Fernet)
 [ ] AUDIT_HMAC_SECRET high-entropy (placeholder is refused at boot)
 [ ] AGENT_API_KEY set (agents refuse to register without it; it is ALSO the
-    credential this orchestrator presents outbound — 16+ ASCII chars)
+    credential this orchestrator presents outbound, 16+ ASCII chars)
 [ ] AGENT_KEY_TRUSTED_HOSTS set IF a client-hosted agent is reached at
     anything other than loopback or a Docker host alias (else its card
     fetch 401s and the agent never registers)
-[ ] KEYCLOAK_* configured; realm per docs/keycloak-realm-settings.md
-    (incl. Remember Me OFF, Offline Session ≥ 365 d, roles user/admin)
-[ ] KEYCLOAK_ALLOWED_AZP lists the native clients (astral-desktop,
-    astral-mobile, astral-watch) — unset means Windows/macOS/Android/iOS/watch
-    sign-ins are rejected
-[ ] Native client redirect URIs registered: 127.0.0.1 loopback on
-    astral-desktop (Windows + macOS), com.personalailabs.astraldeep:/oauth2redirect
-    on astral-mobile (Android + iOS) (see the per-client setup docs)
 [ ] PUBLIC_BASE_URL/BACKEND_PUBLIC_URL = public https origin
 [ ] Reverse proxy terminates TLS, forwards X-Forwarded-*, upgrades /ws
 [ ] FORWARDED_ALLOW_IPS = proxy address
-[ ] https://host/auth/callback registered on the Keycloak client
+[ ] Node data directory backed up, including the node key and mesh keys
 [ ] docker compose up -d; container healthcheck goes healthy (/readyz)
-[ ] Boot log shows no posture warnings; GET / redirects to Keycloak
-[ ] Native clients: astral-desktop/astral-mobile/astral-watch in
-    KEYCLOAK_ALLOWED_AZP; device grant enabled on astral-watch
-    (watch QR sign-in); FF_DEVICE_LOGIN=true
+[ ] Boot log shows no posture warnings
+[ ] Pair the Mac or iPhone app (docs/personal-node.md) and send a turn
 ```

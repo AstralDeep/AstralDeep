@@ -23,18 +23,6 @@
       "bound_by": ".github/workflows/release-readiness-protected.yml"
     },
     {
-      "path": ".gitignore",
-      "until": "T10"
-    },
-    {
-      "path": "AGENTS.md",
-      "until": "T10"
-    },
-    {
-      "path": "README.md",
-      "until": "T10"
-    },
-    {
       "path": "backend/clinical_diagnostic/README.md",
       "until": "T9"
     },
@@ -214,62 +202,6 @@
       "path": "docker-compose.staging.yml",
       "until": "T8.6",
       "bound_by": "scripts/run_candidate_staging.py"
-    },
-    {
-      "path": "docs/byo-client-agents.md",
-      "until": "T10"
-    },
-    {
-      "path": "docs/institution-node.md",
-      "until": "T10"
-    },
-    {
-      "path": "docs/keycloak-android-client-setup.md",
-      "until": "T10"
-    },
-    {
-      "path": "docs/keycloak-move.md",
-      "until": "T10"
-    },
-    {
-      "path": "docs/keycloak-orcid-identity.md",
-      "until": "T10"
-    },
-    {
-      "path": "docs/keycloak-realm-settings.md",
-      "until": "T10"
-    },
-    {
-      "path": "docs/keycloak-windows-client-setup.md",
-      "until": "T10"
-    },
-    {
-      "path": "docs/keycloak_agent_delegation_setup.md",
-      "until": "T10"
-    },
-    {
-      "path": "docs/lets-external-warden.md",
-      "until": "T10"
-    },
-    {
-      "path": "docs/mcp-openai-tunnel-qualification.md",
-      "until": "T10"
-    },
-    {
-      "path": "docs/mcp-server-endpoint.md",
-      "until": "T10"
-    },
-    {
-      "path": "docs/personal-node.md",
-      "until": "T10"
-    },
-    {
-      "path": "docs/production-deployment.md",
-      "until": "T10"
-    },
-    {
-      "path": "docs/remote-compute-agents.md",
-      "until": "T10"
     },
     {
       "path": "plane/README.md",
