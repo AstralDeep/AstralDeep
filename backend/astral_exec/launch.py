@@ -16,8 +16,10 @@ import stat as stat_module
 import subprocess
 import sys
 import tempfile
+import threading
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -469,6 +471,26 @@ def _end(proc: subprocess.Popen, watch: Any, log: _DigestLog) -> bool:
     return survivors == set()
 
 
+@contextmanager
+def _deferred_stop() -> Iterator[None]:
+    # A stop signal taken by any thread trips the main thread's handler despite the mask, so the handler is swapped out until the sweep ends.
+    seen: list[int] = []
+    swapped: dict[int, Any] = {}
+    if threading.current_thread() is threading.main_thread():
+        for signum in STOP_SIGNALS:
+            if signal.getsignal(signum) is _stop:
+                swapped[signum] = signal.signal(
+                    signum, lambda number, _frame: seen.append(number)
+                )
+    try:
+        yield
+    finally:
+        for signum, handler in swapped.items():
+            signal.signal(signum, handler)
+    if seen:
+        _stop(seen[0], None)
+
+
 _SIGNAL_CODES = {
     -signal.SIGXFSZ: "exec.file_limit",
     -signal.SIGXCPU: "exec.time_limit",
@@ -513,20 +535,34 @@ def _supervise(
             log.warning("exec monitor failed: %s", type(error).__name__)
             code = "exec.launch_failed"
         finally:
-            blocked = signal.pthread_sigmask(signal.SIG_BLOCK, STOP_SIGNALS)
-            try:
-                ended = _end(proc, watch, log)
-                if streams is not None:
-                    streams.drain(DRAIN_SECONDS, log)
+            swept = False
+
+            def sweep() -> None:
+                nonlocal ended, reaped, swept
+                blocked = signal.pthread_sigmask(signal.SIG_BLOCK, STOP_SIGNALS)
                 try:
-                    proc.wait(timeout=TEARDOWN_WAIT_SECONDS)
-                except subprocess.TimeoutExpired:
-                    reaped = False
-                    log.warning(
-                        "exec child did not exit after teardown pid=%d", proc.pid
-                    )
-            finally:
-                signal.pthread_sigmask(signal.SIG_SETMASK, blocked)
+                    ended = _end(proc, watch, log)
+                    if streams is not None:
+                        streams.drain(DRAIN_SECONDS, log)
+                    try:
+                        proc.wait(timeout=TEARDOWN_WAIT_SECONDS)
+                    except subprocess.TimeoutExpired:
+                        reaped = False
+                        log.warning(
+                            "exec child did not exit after teardown pid=%d", proc.pid
+                        )
+                    swept = True
+                finally:
+                    signal.pthread_sigmask(signal.SIG_SETMASK, blocked)
+
+            try:
+                with _deferred_stop():
+                    sweep()
+            except _Stopped:
+                # A stop that lands before the handler is swapped has already set the signals to ignore, so this sweep runs to the end.
+                if not swept:
+                    sweep()
+                raise
     finally:
         if streams is not None:
             streams.close()

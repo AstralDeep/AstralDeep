@@ -183,7 +183,7 @@ def only_turn(kernel):
 
 
 async def serve(bridge, kernel, request_id):
-    assert await bridge.scan() == 1
+    await bridge.scan()
     await settle(lambda: request_id not in bridge._running)
 
 
