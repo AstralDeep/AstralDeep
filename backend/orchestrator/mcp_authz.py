@@ -190,7 +190,7 @@ async def decode_mcp_token(token: str) -> dict[str, Any]:
 
 def refuse_on_personal_node(required_scopes: Iterable[str]) -> None:
     if node_identity.is_personal():
-        raise MCPAuthError(401, NODE_BEARER_REFUSED, "this node refuses bearer tokens", tuple(required_scopes))
+        raise MCPAuthError(401, NODE_BEARER_REFUSED, caller_tickets.reason_for(NODE_BEARER_REFUSED), tuple(required_scopes))
 
 
 def require_mcp_entry_role(
@@ -216,7 +216,7 @@ async def authorize_mcp_caller(
         if method.startswith("resources/"):
             raise caller_tickets.refusal(caller_tickets.TOOL_NOT_COVERED)
     except caller_tickets.CallerRefused as exc:
-        raise MCPAuthError(exc.status, exc.code, "this node refuses the caller", required) from None
+        raise MCPAuthError(exc.status, exc.code, caller_tickets.reason_for(exc.code), required) from None
     return claims
 
 

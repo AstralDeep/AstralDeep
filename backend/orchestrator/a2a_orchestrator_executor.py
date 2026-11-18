@@ -473,8 +473,9 @@ def build_orchestrator_a2a_card(orchestrator) -> A2AAgentCard:
         ))
     skills.append(A2AAgentSkill(
         id="chat", name="chat",
-        description="Send a natural language message for LLM-powered routing "
-                    "(authenticated; tools are listed per caller)",
+        description="Send a natural language message for LLM-powered routing. "
+                    + ("Requires an owner-minted caller ticket that covers a2a.message. Tools are listed per ticket."
+                       if node_identity.is_personal() else "Authenticated; tools are listed per caller."),
         tags=["routing"],
     ))
 
@@ -528,14 +529,15 @@ def build_orchestrator_a2a_card(orchestrator) -> A2AAgentCard:
     return card
 
 
-def _unauthenticated_response(message="Authentication required", *, status=401, error=NODE_BEARER_REFUSED):
+def _unauthenticated_response(message="Authentication required", *, status=401, error=NODE_BEARER_REFUSED, reason=None):
     from starlette.responses import JSONResponse
 
     return JSONResponse(
         {
             "jsonrpc": "2.0",
             "id": None,
-            "error": {"code": -32001, "message": message},
+            "error": {"code": -32001, "message": message,
+                      **({"data": {"code": error, "reason": reason}} if reason else {})},
         },
         status_code=status,
         headers={"WWW-Authenticate": node_caller_challenge("astral-a2a", error) if node_identity.is_personal()
@@ -577,7 +579,8 @@ def setup_orchestrator_a2a(app, orchestrator):
                 try:
                     principal = await _caller_principal(request)
                 except caller_tickets.CallerRefused as exc:
-                    return _unauthenticated_response(exc.code, status=exc.status, error=exc.code)
+                    return _unauthenticated_response(
+                        exc.code, status=exc.status, error=exc.code, reason=caller_tickets.reason_for(exc.code))
                 request.scope[PRINCIPAL_SCOPE_KEY] = principal
                 return await endpoint(request)
             # Must run before the SDK parses a method, or tasks/* bypass this
