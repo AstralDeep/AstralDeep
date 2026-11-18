@@ -1,6 +1,7 @@
 # Security review: draft agents that run unconfined
 
 **Date:** 2026-11-18. **Status:** open. The disposition in section 6 waits for the owner.
+**Tracking:** issue 682.
 
 **Scope.** Model-written agent servers on a personal node. That is a draft the owner is testing, and
 a generated agent the node starts at boot. Read at Deep `350759eb`. Nothing was run. Every finding

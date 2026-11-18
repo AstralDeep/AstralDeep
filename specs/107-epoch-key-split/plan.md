@@ -1,6 +1,6 @@
 # Plan for spec 107: split the epoch key
 
-**Date:** 2026-11-18. **Status:** planned. Nothing here is built.
+**Date:** 2026-11-18. **Status:** planned. Nothing here is built. **Tracking:** issue 681.
 
 This is the plan for "Design A", which the owner ruled on 2026-11-16. It covers the design, the
 questions the owner still has to answer, the phases, and how to tell each phase is finished. A
