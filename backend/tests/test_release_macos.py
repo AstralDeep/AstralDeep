@@ -861,6 +861,19 @@ def test_listed_associated_domains_in_the_profile_are_matched_by_pattern(env):
     assert subject.profile_allows("same", "same") and not subject.profile_allows("same", "different")
 
 
+def test_keychain_groups_with_the_build_prefix_are_matched_against_the_profile(env):
+    entitlements = env.projection / release.DIRECT_ENTITLEMENTS
+    entitlements.write_bytes(plistlib.dumps({
+        **DIRECT_ENTITLEMENTS, "keychain-access-groups": ["$(AppIdentifierPrefix)com.personalailabs.astraldeep"]}))
+    subject, runner = env.release()
+    subject.prepare_profile()
+    assert subject.expand_prefix(["$(TeamIdentifierPrefix)x", 1]) == ["593LGH35GS.x", 1]
+    runner.profile = decoded_profile(Entitlements={
+        k: v for k, v in decoded_profile()["Entitlements"].items() if k != "keychain-access-groups"})
+    with pytest.raises(release.ReleaseError, match="does not allow the keychain-access-groups"):
+        subject.prepare_profile()
+
+
 @pytest.mark.parametrize("embedded", [None, PROFILE_BYTES + b"x"])
 def test_export_without_the_pinned_profile_embedded_is_refused(env, embedded):
     subject, runner = env.release()
