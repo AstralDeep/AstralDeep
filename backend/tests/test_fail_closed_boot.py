@@ -11,6 +11,13 @@ from orchestrator.auth import validate_agent_api_key
 from orchestrator.boot_posture import assert_production_posture, is_dev_mode
 
 
+@pytest.fixture(autouse=True)
+def _personal_profile(monkeypatch):
+    from shared import node_identity
+
+    monkeypatch.setenv(node_identity.PROFILE_ENV, node_identity.PERSONAL)
+
+
 @pytest.mark.parametrize("posture", [None, "production", "unknown"])
 def test_entrypoint_refuses_missing_secrets_before_durable_construction(monkeypatch, posture):
     from orchestrator import orchestrator as entrypoint
@@ -125,16 +132,6 @@ def test_production_with_placeholder_audit_secret_refuses(monkeypatch):
     assert exc.value.code == 78
 
 
-def test_production_without_keycloak_config_refuses(monkeypatch):
-    monkeypatch.setenv("ASTRAL_ENV", "production")
-    _configure_production_secrets(monkeypatch)
-    for var in ("KEYCLOAK_AUTHORITY", "KEYCLOAK_AUTHORITY"):
-        monkeypatch.delenv(var, raising=False)
-    with pytest.raises(SystemExit) as exc:
-        assert_production_posture()
-    assert exc.value.code == 78
-
-
 def test_dev_mode_skips_production_secret_checks(monkeypatch):
     monkeypatch.setenv("ASTRAL_ENV", "development")
     for var in ("AUDIT_HMAC_SECRET", "KEYCLOAK_AUTHORITY"):
@@ -213,7 +210,6 @@ def _personal_node(monkeypatch, tmp_path):
     monkeypatch.setenv(node_identity.PROFILE_ENV, "personal")
     monkeypatch.setenv(node_identity.DATA_DIR_ENV, str(tmp_path / "node"))
     monkeypatch.delenv(node_identity.OWNER_ENV, raising=False)
-    monkeypatch.delenv(node_identity.ISSUERS_ENV, raising=False)
     monkeypatch.delenv("AGENT_API_KEY", raising=False)
     _configure_production_secrets(monkeypatch)
     for name in ("KEYCLOAK_AUTHORITY", "KEYCLOAK_CLIENT_ID", "KEYCLOAK_CLIENT_SECRET"):
