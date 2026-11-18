@@ -71,7 +71,7 @@ NODE_PACK_RELEASE_PATHS = {
 }
 
 
-PACK_PLATFORMS = ("macos-arm64", "linux-aarch64", "linux-x86_64")
+PACK_PLATFORMS = ("macos-arm64", "linux-x86_64")
 NODE_BUNDLE_DIR = Path(__file__).resolve().parent / "node_bundle"
 
 
@@ -357,7 +357,7 @@ class Release:
         if self.dry:
             return self.dry_node_pack(root)
         if not root.is_dir() or root.is_symlink() or {path.name for path in root.iterdir()} != set(PACK_PLATFORMS):
-            raise ReleaseError("Node bundle folder must hold exactly the macos-arm64, linux-aarch64 and linux-x86_64 packs")
+            raise ReleaseError("Node bundle folder must hold exactly the macos-arm64 and linux-x86_64 packs")
         composition = json.loads((self.deep / "config/astral-composition.json").read_text(encoding="utf-8"))
         for name, entry in composition["components"].items():
             tree = self.git(self.deep, "ls-tree", "HEAD", entry["path"]).stdout.split()
