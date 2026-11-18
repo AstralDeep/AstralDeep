@@ -44,6 +44,16 @@ def _detail(response: httpx.Response) -> str:
         return ""
 
 
+def _refusal(response: httpx.Response) -> tuple[str, str]:
+    try:
+        error = response.json().get("error") or {}
+        data = error.get("data") or {}
+        code, reason = str(data.get("code") or error.get("message") or ""), str(data.get("reason") or "")
+    except (ValueError, AttributeError):
+        return _detail(response), ""
+    return code[:200], reason[:300]
+
+
 def health(node: NodeSection) -> str:
     # "ok" when the node reports itself ready with its database up; otherwise why not.
     try:
@@ -140,8 +150,9 @@ def converse(node: NodeSection, caller: Caller, text: str, context: str | None =
         message["contextId"] = context
     response = a2a_call(node, caller, "SendMessage", message, timeout=600)
     if response.status_code in (401, 403):
-        raise NodeError(f"the node refused the caller ticket ({_detail(response) or response.status_code}): the owner "
-                        "must mint a current one that covers A2A messages for this node")
+        code, reason = _refusal(response)
+        raise NodeError(f"the node refused the caller ticket ({code or response.status_code}): "
+                        + (reason or "the owner must mint a current one that covers A2A messages for this node"))
     try:
         body = response.json()
     except ValueError:

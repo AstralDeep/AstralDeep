@@ -310,8 +310,10 @@ def _discover_result() -> dict[str, Any]:
         "capabilities": capabilities,
         "instructions": (
             "Astral exposes the requesting user's authorized tools. "
-            "Destructive unattended calls are refused."
-        ),
+            "Destructive unattended calls are refused. "
+            + ("Call with an owner-minted caller ticket and a fresh holder proof on every request. "
+               "a refusal carries a code and a reason in error.data." if node_identity.is_personal() else "")
+        ).strip(),
         "ttlMs": MCP_DISCOVERY_TTL_MS,
         "cacheScope": "private",
         "_meta": {"io.modelcontextprotocol/serverInfo": _server_info()},
@@ -764,6 +766,7 @@ def create_mcp_router(orchestrator: Any, *, public_base_url: str) -> APIRouter:
                         MCP_INVALID_REQUEST,
                         "MCP authorization failed",
                         exc.status_code,
+                        data={"code": exc.error, "reason": exc.description} if node_identity.is_personal() else None,
                         headers={"WWW-Authenticate": challenge},
                     ),
                     origin,
@@ -925,6 +928,7 @@ def create_mcp_router(orchestrator: Any, *, public_base_url: str) -> APIRouter:
                             return _with_origin(
                                 _json_error(
                                     request_id, MCP_INVALID_REQUEST, "MCP authorization failed", 403,
+                                    data={"code": refused_code, "reason": caller_tickets.reason_for(refused_code)},
                                     headers={"WWW-Authenticate": challenge_header(
                                         base_url, error=refused_code, required_scopes=required_scopes,
                                     )},

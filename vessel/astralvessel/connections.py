@@ -66,9 +66,19 @@ status, body, retry = node_call("operator-secret", "Astral-Node-Operator", reque
 print(json.dumps({"status": status, "body": body, "retry_after": retry}))
 '''
 REFUSALS = {
-    "node.loopback_required": "the node only serves this to its own machine; run the command on the node's host",
+    "node.loopback_required": "the node only serves this to its own machine. Run the command on the node's host",
     "node.operator_secret_required": "the node did not accept its operator secret; restart the node so it writes "
                                      "one, then run the command again",
+    "node.rate_limited": "too many sign-in attempts. Wait a minute, then run the command again",
+    "node.request_too_large": "the node refused the request as too large. Paste only the address you ended on",
+    "node.request_invalid": "the node could not read the request. Check the connection name and the pasted address",
+    "node.sign_in_failed": "the connection refused the sign-in. Run the command again and finish before it expires",
+    "connection.unknown": "no connection has that name or id. Run astralvessel connections list to see them",
+    "connection.flow_unknown": "that sign-in is no longer open. Run astralvessel connections sign-in again",
+    "connection.flow_expired": "that sign-in expired. Run astralvessel connections sign-in again",
+    "connection.not_signed_in": "the node is not signed in to that connection. Run connections sign-in NAME first",
+    "mesh_unavailable": "the node's mesh is not running yet. Wait for astralvessel check to pass, then retry",
+    "node_profile_inactive": "this deployment is not a personal node, so it has no outside connections",
 }
 
 
@@ -102,8 +112,8 @@ def call(stack: Stack, method: str, path: str, body: dict[str, Any] | None = Non
         detail = answer.get("detail")
         detail = detail if isinstance(detail, str) and DETAIL.fullmatch(detail) else f"http.{status}"
         retry = reply.get("retry_after")
-        raise ConnectionsError(REFUSALS.get(detail, f"the node refused: {detail}"), status,
-                               int(retry) if isinstance(retry, str) and retry.isdigit() else 0)
+        message = f"{REFUSALS[detail]} ({detail})" if detail in REFUSALS else f"the node refused: {detail}"
+        raise ConnectionsError(message, status, int(retry) if isinstance(retry, str) and retry.isdigit() else 0)
     return answer
 
 

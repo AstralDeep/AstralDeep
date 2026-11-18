@@ -45,6 +45,41 @@ class CallerRefused(Exception):
         self.status = status
 
 
+REASONS = {
+    BEARER_REFUSED: "This node does not accept bearer tokens. Send an owner-minted caller ticket in the Authorization header with the astral-caller-proof header, and never put a token in the URL.",
+    MESH_UNAVAILABLE: "The node's mesh is not running yet. Retry shortly, or ask the owner to check the node.",
+    OWNER_UNBOUND: "This node has no owner bound to it. The owner must pair it in the AstralDeep app before any caller can use it.",
+    MESH_MISMATCH: "The ticket was minted for a different mesh. Ask the owner to mint a ticket for this node.",
+    TOOL_UNAVAILABLE: "The tool is not published by this node or is not available to this caller. List the node's tools and call one of those.",
+    TOOL_CHANGED: "The tool's definition changed after the ticket was minted. Ask the owner to mint a new ticket.",
+    TOOL_NOT_COVERED: "The ticket does not cover this tool or method. Ask the owner to mint a ticket that includes it.",
+    "caller.malformed": "The ticket or request is malformed, or the body is over the size limit. Send the ticket text exactly as minted and keep the body under 1 MiB.",
+    "caller.proof_malformed": "The holder proof is missing or malformed. Sign every request with the caller key and send it in the astral-caller-proof header.",
+    "caller.bad_signature": "The ticket signature does not verify. Ask the owner to mint a new ticket.",
+    "caller.proof_bad_signature": "The holder proof was not signed by the ticket's holder key. Use the caller key whose public holder key the owner minted the ticket for.",
+    "caller.wrong_node": "The ticket was minted for another node. Ask the owner to mint one for this node.",
+    "caller.device_removed": "The device that minted the ticket was removed from the mesh. Ask the owner to mint a new ticket.",
+    "caller.wrong_minter": "The ticket was not minted by a device that may mint caller tickets. Ask the owner to mint it from their own device.",
+    "caller.stopped": "The owner stopped caller access. Wait for the owner to lift the stop, then retry.",
+    "caller.expired": "The ticket has expired. Ask the owner to mint a new one.",
+    "caller.not_yet_valid": "The ticket is not valid yet. Check this machine's clock, then retry.",
+    "caller.revoked": "The owner revoked this ticket. Ask the owner to mint a new one.",
+    "caller.proof_mismatch": "The holder proof does not match this request's method, path and body. Build a fresh proof for each request.",
+    "caller.proof_stale": "The holder proof is too old. Build a fresh proof for each request and check this machine's clock.",
+    "caller.replayed": "This holder proof was already used. Build a fresh proof for each request.",
+    "caller.replay_full": "The node is busy checking proofs. Retry shortly.",
+    node_mesh.DEVELOPMENT_MESH: "This node runs on a development mesh, which never accepts caller tickets. Pair it with a real owner mesh first.",
+    "mesh.not_enrolled": "The node has not joined a mesh yet. The owner must pair it in the AstralDeep app first.",
+}
+DEFAULT_REASON = "The node refused the caller. Ask the owner to mint a new caller ticket for this node."
+
+
+def reason_for(code: str) -> str:
+    if code.startswith("gate."):
+        return "A node safety gate refused the call. Ask the owner to review the node's approvals."
+    return REASONS.get(code, DEFAULT_REASON)
+
+
 def status_for(code: str) -> int:
     if code in UNAUTHORIZED or code == BEARER_REFUSED:
         return 401
