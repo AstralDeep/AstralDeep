@@ -1,5 +1,5 @@
 """Defines paired attack/control cases and fail-closed evidence for host qualification.
-Only a signed registered turn with observed fixture effects can earn a real-dispatch label.
+Only a personal-node turn with observed fixture effects can earn a real-dispatch label.
 """
 
 from __future__ import annotations
@@ -33,6 +33,7 @@ class CaseEvidence:
     audit_event_ids: tuple[str, ...]
     benign_completed: bool
     support_reason: str = "supported_fixture"
+    refusal: str = ""
 
     @property
     def status(self) -> str:

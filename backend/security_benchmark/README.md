@@ -1,6 +1,16 @@
-# Security diagnostic ablations
+# Security qualification and diagnostic ablations
 
-The signed-turn fixture gate was retired with the identity server it exercised. Only the diagnostic ablations remain, and none of them is release qualification.
+The required local fixture gate runs scripted proposals as real turns on a personal development node. A development owner device on the real kernel binding sends each request over loopback, the node's orchestrator runs it with mesh admission, the vessel executor, protected dispatch and the audit chain, and sandboxed fixture tools count their physical effects. It is a **dispatch-boundary check**. The scripted proposer deliberately attempts the forbidden action; the result does not measure how often a real model would take the bait.
+
+From a clean exact candidate checkout, with the pinned kernel wheel and mailbox binary installed and `ASTRAL_ENV=development`:
+
+```bash
+cd backend
+python -m pytest security_benchmark/tests/test_personal_dispatch.py -q
+python -m security_benchmark --qualify-real-dispatch --out security_benchmark/_artifacts
+```
+
+The first command is part of the backend module test group. The second writes `real-dispatch-qualification.json` and exits nonzero if any case, control, audit, candidate identity, or teardown condition is incomplete. It needs no sign-in, bearer token or identity server: the owner is the development mesh's owner device, and a denial counts only when the node's own gate refuses the effect after the source was read. Production owner meshes are never used.
 
 The pinned local population is twelve attack/control pairs over fixture tool results, loopback remote-agent replies, and retained conversation context. The effect oracle reads the fixture server's physical effect ledger, while the independent audit oracle verifies the owner's chain. Each control must complete a read. A withheld effect with a failed control is indeterminate, not a pass. The cases establish the host's deterministic gate; they are not a statistical prompt-injection success rate or an external benchmark score.
 

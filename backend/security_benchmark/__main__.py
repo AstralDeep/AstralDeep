@@ -1,9 +1,12 @@
-"""Routes the legacy diagnostic ablation benchmarks; none of them produces a qualification report."""
+"""Routes the personal-node real-dispatch qualification and the legacy diagnostic ablations.
+Only the explicit real-dispatch command can produce a qualification report."""
 
 from __future__ import annotations
 
 import argparse
+import asyncio
 import sys
+from pathlib import Path
 from typing import List, Optional
 
 from security_benchmark.config import RunConfig
@@ -16,7 +19,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
                                 description="ASR harness for the Astral trust envelope")
     p.add_argument("--mode", default="synthetic",
                    choices=["synthetic", "in_process", "external", "chained_real"],
-                   help="legacy diagnostic ablation mode")
+                   help="legacy diagnostic ablation mode; use --qualify-real-dispatch for the personal-node gate")
     p.add_argument("--benchmark", action="append", dest="benchmarks", default=[],
                    help="benchmark id (repeatable): agentdojo | asb | injecagent | chained")
     p.add_argument("--model", default="scripted-deterministic",
@@ -28,11 +31,51 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument("--stamp", default="local")
     p.add_argument("--asr-threshold", type=float, default=None,
                    help="diagnostic sample-ASR threshold; not release qualification")
+    p.add_argument("--qualify-real-dispatch", action="store_true",
+                   help="run the paired cases as real turns on a personal development node")
     return p.parse_args(argv)
+
+
+def _qualify(args: argparse.Namespace) -> int:
+    from security_benchmark.drivers.personal_dispatch import run_personal_qualification
+    from security_benchmark.qualification_report import (
+        build_report, candidate_identity, validate_report, write_report,
+    )
+
+    root = Path(__file__).resolve().parents[2]
+    output = Path(args.out or "backend/security_benchmark/_artifacts")
+    if not output.is_absolute():
+        output = root / output
+    path = output / "real-dispatch-qualification.json"
+    candidate = None
+    report_written = False
+    try:
+        candidate = candidate_identity(root)
+        evidence, teardown_verified = asyncio.run(run_personal_qualification(args.run_id))
+        report = build_report(candidate, evidence, teardown_verified=teardown_verified)
+        write_report(path, report)
+        report_written = True
+        validate_report(report, expected_candidate=candidate)
+    except Exception as exc:
+        if not report_written:
+            try:
+                write_report(path, {"schema": "astraldeep.security-qualification/v1",
+                    "evidence_class": "real_dispatch_scripted_proposer",
+                    "candidate": candidate, "status": "incomplete", "cases": [],
+                    "errors": [f"execution_failed:{type(exc).__name__}"],
+                    "teardown": {"status": "unverified"}})
+            except OSError:
+                pass
+        print(f"real-dispatch qualification incomplete: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+    print(f"real-dispatch qualification passed: {path}")
+    return 0
 
 
 def main(argv: Optional[List[str]] = None) -> int:
     args = parse_args(argv)
+    if args.qualify_real_dispatch:
+        return _qualify(args)
     config = RunConfig(
         mode=args.mode,
         model=args.model,
