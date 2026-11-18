@@ -575,7 +575,7 @@ def _positive_float(
 
 
 def _personal_profile(values: Mapping[str, str]) -> bool:
-    return values.get(PROFILE_ENV, "").strip().lower() == PERSONAL
+    return values.get(PROFILE_ENV) == PERSONAL
 
 
 def _personal_sqlite_url(values: Mapping[str, str]) -> str:

@@ -19,6 +19,7 @@ from verification.evidence import CapturedEvidence, flatten_components
 from verification.isolation import Principal, require_issuer_scoped_cleanup, teardown
 from verification.personas import Fixture, materialize
 from verification.scenarios import Scenario
+from verification.drivers.fixture_identity import fixture_issuer_digest, fixture_owner_id
 from verification.drivers.scripted_llm import scripted_llm_for
 
 logger = logging.getLogger("verification.in_process")
@@ -164,7 +165,6 @@ class InProcessDriver:
         return runtime, repositories, blobs
 
     def _execution_principal(self, principal: Principal) -> Principal:
-        from shared.node_identity import canonical_owner_id
 
         identity = getattr(self, "_fixture_identity", None)
         if identity is None or identity.closed:
@@ -179,12 +179,12 @@ class InProcessDriver:
             raise ValueError("verification principal is outside the configured run namespace")
         identity_digest = hashlib.sha256(principal.user_id.encode("utf-8")).hexdigest()[:12]
         suffix = f"_exec_{self._execution_nonce}_{identity_digest}"
-        owner_prefix_length = len(canonical_owner_id(identity.authority, "x")) - 1
+        owner_prefix_length = len(fixture_owner_id(identity.authority, "x")) - 1
         maximum_base = 255 - owner_prefix_length - len(suffix)
         if len(expected_prefix) > maximum_base:
             raise ValueError("verification run namespace is too long for blob ownership")
         subject = f"{principal.user_id[:maximum_base]}{suffix}"
-        scoped_id = canonical_owner_id(identity.authority, subject)
+        scoped_id = fixture_owner_id(identity.authority, subject)
         scoped = Principal(user_id=scoped_id, roles=list(principal.roles))
         self._execution_subjects[scoped_id] = subject
         self._execution_principals[principal.user_id] = scoped
@@ -718,9 +718,8 @@ class InProcessDriver:
             try:
                 scope = {}
                 if getattr(self, "_execution_subjects", {}):
-                    from shared.node_identity import issuer_digest
 
-                    scope["owner_issuer_hash"] = issuer_digest(self._fixture_identity.authority)
+                    scope["owner_issuer_hash"] = fixture_issuer_digest(self._fixture_identity.authority)
                 await asyncio.to_thread(
                     teardown,
                     plane_runtime=plane_runtime,

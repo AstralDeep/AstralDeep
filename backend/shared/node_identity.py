@@ -33,12 +33,9 @@ logger = logging.getLogger("shared.node_identity")
 PROFILE_ENV = "ASTRAL_NODE_PROFILE"
 DATA_DIR_ENV = "ASTRAL_NODE_DATA_DIR"
 HOST_ENV = "ORCHESTRATOR_HOST"
-SERVER_HOST = "0.0.0.0"
 PERSONAL_HOST = "127.0.0.1"
 OWNER_ENV = "ASTRAL_NODE_OWNER"
-ISSUERS_ENV = "ASTRAL_ACCEPTED_ISSUERS"
 PERSONAL = "personal"
-INSTITUTION = "institution"
 
 KEY_FILE = "node-ed25519.pem"
 OWNER_FILE = "owner"
@@ -74,17 +71,13 @@ class OwnerMismatch(NodeIdentityError):
 
 
 def is_personal() -> bool:
-    return os.getenv(PROFILE_ENV, "").strip().lower() == PERSONAL
-
-
-def is_institution() -> bool:
-    return os.getenv(PROFILE_ENV, "").strip().lower() == INSTITUTION
+    return os.getenv(PROFILE_ENV) == PERSONAL
 
 
 def bind_host() -> str:
     configured = os.getenv(HOST_ENV, "").strip()
     if not configured:
-        return PERSONAL_HOST if is_personal() else SERVER_HOST
+        return PERSONAL_HOST
     if configured != "localhost":
         try:
             ipaddress.ip_address(configured)
@@ -98,35 +91,6 @@ def data_dir() -> Path:
     if configured:
         return Path(configured).expanduser()
     return Path(__file__).resolve().parent.parent / "data" / "node"
-
-
-def normalize_issuer(value: Any) -> str:
-    return value.strip().rstrip("/") if isinstance(value, str) else ""
-
-
-def accepted_issuers(extra: Iterable[str] = ()) -> List[str]:
-    found: List[str] = []
-    candidates = [os.getenv("KEYCLOAK_AUTHORITY", ""), *extra]
-    candidates += os.getenv(ISSUERS_ENV, "").split(",")
-    for raw in candidates:
-        issuer = normalize_issuer(raw)
-        if issuer and issuer not in found:
-            found.append(issuer)
-    return found
-
-
-def issuer_digest(issuer: str) -> str:
-    return hashlib.sha256(normalize_issuer(issuer).encode()).hexdigest()[:16]
-
-
-def canonical_owner_id(issuer: Any, subject: Any) -> str:
-    normalized = normalize_issuer(issuer)
-    if not normalized or not isinstance(subject, str) or not subject or subject != subject.strip():
-        raise NodeIdentityError("issuer and subject are required")
-    owner = f"oidc.{issuer_digest(normalized)}.{subject}"
-    if len(owner) > 255 or not set(owner) <= _SAFE_OWNER_CHARS:
-        raise NodeIdentityError("subject cannot form a storable owner id")
-    return owner
 
 
 def is_mesh_owner(value: Any) -> bool:

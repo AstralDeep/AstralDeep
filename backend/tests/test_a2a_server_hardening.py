@@ -15,11 +15,9 @@ from fastapi import FastAPI
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from shared.node_identity import canonical_owner_id  # noqa: E402
 from shared.protocol import MCPResponse  # noqa: E402
 
 ALICE = "alice-sub"
-ALICE_OWNER = canonical_owner_id("https://iam.example/realms/astral", ALICE)
 BOB = "bob-sub"
 
 

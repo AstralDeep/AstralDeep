@@ -4,6 +4,7 @@ for namespaced verification runs and never reaches a real identity server.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import time
 import uuid
@@ -75,3 +76,11 @@ class FixtureIdentity:
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
+
+
+def fixture_issuer_digest(issuer: str) -> str:
+    return hashlib.sha256(issuer.strip().rstrip("/").encode()).hexdigest()[:16]
+
+
+def fixture_owner_id(issuer: str, subject: str) -> str:
+    return f"fixture.{fixture_issuer_digest(issuer)}.{subject}"
