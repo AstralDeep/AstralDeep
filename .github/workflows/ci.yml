@@ -1499,6 +1499,12 @@ jobs:
           abi = libc.syscall(444, None, 0, 1)
           print("landlock abi:", abi if abi >= 0 else f"unavailable (errno {ctypes.get_errno()})")
           PY
+      - name: Install bubblewrap and allow unprivileged user namespaces
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          bwrap --ro-bind / / --unshare-user true
       - name: Run the pack with no Docker on PATH
         run: python scripts/no_docker_check.py --pack "$RUNNER_TEMP/pack"
 
