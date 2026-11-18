@@ -44,7 +44,6 @@ from orchestrator.mcp_work_resources import (
     resource_scope,
 )
 from orchestrator.work_admission import AdmissionClass, OperationState
-from shared import node_identity
 from shared.protocol import (
     MCP_HEADER_MISMATCH,
     MCP_INVALID_PARAMS,
@@ -310,8 +309,8 @@ def _discover_result() -> dict[str, Any]:
         "instructions": (
             "Astral exposes the requesting user's authorized tools. "
             "Destructive unattended calls are refused. "
-            + ("Call with an owner-minted caller ticket and a fresh holder proof on every request. "
-               "a refusal carries a code and a reason in error.data." if node_identity.is_personal() else "")
+            + "Call with an owner-minted caller ticket and a fresh holder proof on every request. "
+            "a refusal carries a code and a reason in error.data."
         ).strip(),
         "ttlMs": MCP_DISCOVERY_TTL_MS,
         "cacheScope": "private",
@@ -742,7 +741,7 @@ def create_mcp_router(orchestrator: Any, *, public_base_url: str) -> APIRouter:
                         MCP_INVALID_REQUEST,
                         "MCP authorization failed",
                         exc.status_code,
-                        data={"code": exc.error, "reason": exc.description} if node_identity.is_personal() else None,
+                        data={"code": exc.error, "reason": exc.description},
                         headers={"WWW-Authenticate": challenge},
                     ),
                     origin,

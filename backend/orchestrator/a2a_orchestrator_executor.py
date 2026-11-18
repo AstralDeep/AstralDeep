@@ -37,7 +37,6 @@ from shared.a2a_bridge import (
     make_data_part,
 )
 from shared.a2a_publication import A2APublicationRegistry
-from shared import node_identity
 from shared.a2a_security import A2ASecurityValidator
 from orchestrator import a2a_publication_signing as publication_signing
 from orchestrator import caller_tickets
@@ -429,8 +428,7 @@ def build_orchestrator_a2a_card(orchestrator) -> A2AAgentCard:
     skills.append(A2AAgentSkill(
         id="chat", name="chat",
         description="Send a natural language message for LLM-powered routing. "
-                    + ("Requires an owner-minted caller ticket that covers a2a.message. Tools are listed per ticket."
-                       if node_identity.is_personal() else "Authenticated; tools are listed per caller."),
+                    + "Requires an owner-minted caller ticket that covers a2a.message. Tools are listed per ticket.",
         tags=["routing"],
     ))
 
@@ -474,8 +472,7 @@ def _unauthenticated_response(message="Authentication required", *, status=401, 
                       **({"data": {"code": error, "reason": reason}} if reason else {})},
         },
         status_code=status,
-        headers={"WWW-Authenticate": node_caller_challenge("astral-a2a", error) if node_identity.is_personal()
-                 else 'Bearer realm="astral-a2a"'},
+        headers={"WWW-Authenticate": node_caller_challenge("astral-a2a", error)},
     )
 
 
