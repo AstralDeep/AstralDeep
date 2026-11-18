@@ -379,9 +379,11 @@ def test_the_forwarder_relays_bytes_between_the_two_sockets():
 def test_the_forwarder_survives_an_upstream_that_cannot_connect(tmp_path):
     listener = forwarder.build_listener("127.0.0.1", 0)
     attempts = []
+    reached = threading.Event()
 
     def refuse(path):
         attempts.append(path)
+        reached.set()
         raise OSError("no upstream")
 
     worker = threading.Thread(
@@ -394,6 +396,7 @@ def test_the_forwarder_survives_an_upstream_that_cannot_connect(tmp_path):
     first.close()
     second = socket.create_connection(listener.getsockname())
     second.close()
+    reached.wait(timeout=5)
     listener.close()
     worker.join(timeout=5)
     assert len(attempts) >= 1
