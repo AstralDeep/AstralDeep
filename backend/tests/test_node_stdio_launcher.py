@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import sys
 import urllib.error
 import urllib.request
 from types import SimpleNamespace as NS
@@ -241,3 +242,12 @@ async def test_stopping_the_node_stops_every_running_child(tmp_path, monkeypatch
         mesh.node._launcher.start(spec(ident="held"))
         assert mesh.node.stdio_refusal is None and sandbox.children[0].poll() is None
     assert sandbox.children[0].poll() is not None
+
+
+def test_a_child_that_exits_during_startup_fails_the_start():
+    sandbox = FixtureSandbox(argv=[sys.executable, "-c", "raise SystemExit(3)"])
+    launcher = NodeStdioLauncher(sandbox)
+    with pytest.raises(LaunchRefused) as raised:
+        launcher.start(spec())
+    assert raised.value.code == SANDBOX_UNAVAILABLE
+    assert launcher.running() == ()

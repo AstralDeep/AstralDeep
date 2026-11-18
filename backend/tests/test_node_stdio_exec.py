@@ -208,3 +208,40 @@ def test_a_launcher_bridges_the_confined_server_and_stops_it(sandbox, script):
     finally:
         launcher.stop_all()
     assert launcher.running() == ()
+
+
+def test_the_credentials_travel_over_an_inherited_pipe_and_no_file_holds_them(monkeypatch, sandbox, script, tmp_path):
+    monkeypatch.setattr(node_stdio_exec, "select", lambda policy, facts, data_dir: object())
+    seen = {}
+
+    class FakeProcess:
+        stdin = stdout = None
+
+        def __init__(self, argv, **kwargs):
+            descriptor = int(argv[argv.index("--env-file") + 1].rsplit("/", 1)[1])
+            seen["argv"] = argv
+            seen["pass_fds"] = kwargs["pass_fds"]
+            seen["env"] = kwargs["env"]
+            seen["orig"] = descriptor
+            seen["fd"] = os.dup(descriptor)
+            seen["files"] = sorted(p.name for c in (tmp_path / "scratch").iterdir() for p in c.iterdir())
+            self.pid = 1
+
+        def poll(self):
+            return 0
+
+    monkeypatch.setattr(node_stdio_exec.subprocess, "Popen", FakeProcess)
+    secret = "s3cr3t-" + "x" * 100000
+    process = sandbox.spawn(spec_for(script, env={"SERVICE_TOKEN": secret}))
+    chunks = []
+    while True:
+        block = os.read(seen["fd"], 65536)
+        if not block:
+            break
+        chunks.append(block)
+    os.close(seen["fd"])
+    assert json.loads(b"".join(chunks)) == {"SERVICE_TOKEN": secret}
+    assert seen["pass_fds"] == (seen["orig"],)
+    assert seen["files"] == ["policy.json"]
+    assert secret not in " ".join(seen["argv"]) and secret not in json.dumps(seen["env"])
+    process._scratch.clear()
