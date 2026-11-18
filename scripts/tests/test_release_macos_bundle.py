@@ -22,8 +22,7 @@ SPEC.loader.exec_module(release)
 pytestmark = needs_macos
 
 NAMES = {"astral-projection": "components/AstralProjection", "astral-kernel": "components/AstralKernel",
-         "astral-plane": "components/AstralPlane", "astral-primitives": "components/AstralPrimitives",
-         "lets": "components/LETS"}
+         "astral-primitives": "components/AstralPrimitives", "lets": "components/LETS"}
 PROJECTION = "b" * 40
 
 
@@ -173,11 +172,11 @@ def test_a_source_commit_other_than_the_release_commit_is_refused(tmp_path):
 
 def test_composition_drift_is_refused(tmp_path):
     bundle = Bundle(tmp_path)
-    bundle.components["astral-plane"]["commit"] = "9" * 40
+    bundle.components["astral-primitives"]["commit"] = "9" * 40
     bundle.build()
-    with pytest.raises(release.ReleaseError, match="astral-plane differs from the release composition"):
+    with pytest.raises(release.ReleaseError, match="astral-primitives differs from the release composition"):
         bundle.release().verify_node_bundle()
-    bundle.components["astral-plane"]["commit"] = "3" * 40
+    bundle.components["astral-primitives"]["commit"] = "3" * 40
     del bundle.components["lets"]
     bundle.build()
     with pytest.raises(release.ReleaseError, match="component inventory differs"):
