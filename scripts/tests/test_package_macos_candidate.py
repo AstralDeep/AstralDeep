@@ -39,7 +39,7 @@ def bundle(tmp_path, monkeypatch):
     monkeypatch.setattr(candidate.platform, "system", lambda: "Darwin")
     state = {
         "signature": f"Authority=Developer ID Application: Example\nTeamIdentifier={TEAM}\nflags=0x10000(runtime)\nTimestamp=example",
-        "entitlements": {"com.apple.security.device.audio-input": True}, "architectures": "arm64",
+        "entitlements": candidate.approved_entitlements(TEAM), "architectures": "arm64",
         "fail": None, "calls": [],
     }
 
@@ -121,6 +121,9 @@ def test_unsigned_foreign_team_debug_and_unsupported_bundles_are_rejected(bundle
     with pytest.raises(candidate.CandidateError):
         candidate.inspect_app(app, TEAM)
     state["entitlements"] = {"com.apple.security.device.audio-input": True}
+    with pytest.raises(candidate.CandidateError):
+        candidate.inspect_app(app, TEAM)
+    state["entitlements"] = candidate.approved_entitlements(TEAM)
     for architectures, expected in [("x86_64", "x86_64"), ("x86_64 arm64", "universal")]:
         state["architectures"] = architectures
         assert candidate.inspect_app(app, TEAM)["architecture"] == expected
