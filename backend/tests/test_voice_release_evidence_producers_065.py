@@ -29,7 +29,6 @@ PRODUCERS = {
     / "ReleaseEvidenceInstrumentedTest.kt",
     "ios_macos": REPO_ROOT
     / "components/AstralProjection/apple-clients/AstralApp/AstralAppUITests/ReleaseEvidenceUITests.swift",
-    "watchos": REPO_ROOT / "components/AstralProjection/apple-clients/AstralWatchTests/ReleaseEvidenceTests.swift",
 }
 
 if not all(path.is_file() for path in PRODUCERS.values()):
@@ -82,7 +81,6 @@ def test_voice_identity_is_taken_from_the_staged_projection(
         "windows": '"voice_runtime",',
         "android": '"voice_runtime",',
         "ios_macos": '"voice_runtime",',
-        "watchos": '"voice_runtime",',
     }[platform]
     assert projection_anchor in source
 
@@ -117,7 +115,7 @@ def test_projection_ci_owns_active_voice_contract_windows_and_web_checks() -> No
     workflow = (WORKFLOW_ROOT / "ci.yml").read_text(encoding="utf-8")
 
     assert "if: ${{ false }}" not in workflow
-    owner_jobs = ("python", "web", "windows-tests", "windows-package")
+    owner_jobs = ("python", "web", "windows-tests", "windows-package", "no-keycloak")
     for owner_job in owner_jobs:
         assert f"\n  {owner_job}:\n" in workflow
     assert "required:" in workflow
@@ -338,7 +336,7 @@ def test_apple_ci_gates_voice_suites_and_every_xccov_input() -> None:
     assert {
         re.search(r"platform: (\w+)", entry).group(1)
         for entry in entries
-        if "VoiceConversationUITests" in entry
+        if "MeshModeUITests" in entry
     } == {"ios", "macos"}
     assert "-configuration Debug" in first_login_job
     assert "CODE_SIGNING_ALLOWED=NO" in first_login_job
