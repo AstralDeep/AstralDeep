@@ -1078,8 +1078,18 @@ class RunnerOrch:
         self.calls["handled"] = (text, chat_id, user_id)
 
 
-async def test_a_runner_outside_a_node_turn_gets_no_scopes_and_no_tools():
+async def test_a_personal_runner_outside_a_node_turn_is_refused():
+    orch = RunnerOrch()
+    with pytest.raises(node_mesh.NodeMeshError) as refused:
+        await nmc.orchestrator_runner(orch)(OWNER, "local-1", "hello")
+    assert refused.value.code == "request.call_mismatch"
+    assert "derive" not in orch.calls and "handled" not in orch.calls
+
+
+async def test_a_runner_outside_a_node_turn_gets_no_scopes_and_no_tools(monkeypatch):
     from orchestrator.chain_authority import AuthoritySkip
+
+    monkeypatch.setenv("ASTRAL_NODE_PROFILE", "institution")
 
     orch = RunnerOrch()
     await nmc.orchestrator_runner(orch)(OWNER, "local-1", "hello")
@@ -1092,8 +1102,10 @@ async def test_a_runner_outside_a_node_turn_gets_no_scopes_and_no_tools():
     assert refused.value.code == "authority_missing_consent"
 
 
-async def test_a_runner_inside_a_node_turn_binds_exactly_the_granted_tools_and_their_scopes(tmp_path):
+async def test_a_runner_inside_a_node_turn_binds_exactly_the_granted_tools_and_their_scopes(tmp_path, monkeypatch):
     from orchestrator import node_mesh_admission
+
+    monkeypatch.setenv("ASTRAL_NODE_PROFILE", "institution")
 
     mesh, kernel, history, bridge = await build(tmp_path, start=False)
     tools = {("b", "two", DEFINITION): "tools:write", ("a", "one", DEFINITION): "tools:read", ("c", "three", DEFINITION): "tools:read"}

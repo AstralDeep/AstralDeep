@@ -62,7 +62,7 @@ async def test_full_canvas_and_snapshot_keep_original_table_actions_after_real_r
     await host.send_ui_render(socket, original, speak=False)
     render = json.loads(host._safe_send.await_args.args[1])
     received = render["components"][0]
-    assert actions(received) == ["refine", "history", "csv", "share"]
+    assert actions(received) == ["refine", "history", "csv"]
     assert received["versions"] == [{"version_no": 1, "reason": "", "created_at": "", "title": ""}]
     assert "astral-export-csv" in render["html"]
     if device != "browser":
@@ -113,7 +113,7 @@ async def test_upsert_uses_each_receivers_profile_and_preserves_remove_fanout():
         if socket is watch:
             assert "component_chrome" not in received and "versions" not in received
         else:
-            assert actions(received) == ["refine", "history", "csv", "share"]
+            assert actions(received) == ["refine", "history", "csv"]
             assert "astral-export-csv" in payload["ops"][0]["html"]
     assert comp == before
 
@@ -176,7 +176,7 @@ def test_snapshot_consolidation_keeps_unambiguous_survivor_actions(device):
     result = host._adapt_conversation_snapshot(socket, value)
     received, = result["canvas"]["components"]
     assert received["component_id"] == "wc_second"
-    assert actions(received) == ["refine", "history", "csv", "share"]
+    assert actions(received) == ["refine", "history", "csv"]
     assert received["versions"] == [{"version_no": 1, "reason": "", "created_at": "", "title": ""}]
     assert "private prior body" not in json.dumps(result)
     assert result["transcript"][0]["parts"][0]["text"] == "Retained transcript"
@@ -235,7 +235,7 @@ async def test_html_failure_keeps_the_same_safe_native_inventory(monkeypatch):
     await host.send_ui_render(socket, [table()], speak=False)
     payload = json.loads(host._safe_send.await_args.args[1])
     assert payload.get("html") is None
-    assert actions(payload["components"][0]) == ["refine", "history", "csv", "share"]
+    assert actions(payload["components"][0]) == ["refine", "history", "csv"]
     monkeypatch.setattr(webrender, "render_component_fragment", broken)
     await host.send_ui_upsert(socket, "chat", "owner", [{"op": "upsert", "component_id": "wc_table", "component": table()}])
     op = json.loads(host._safe_send.await_args.args[1])["ops"][0]
@@ -298,7 +298,7 @@ async def test_real_update_device_legacy_fallback_rebuilds_metadata_from_raw_cac
     assert [frame["type"] for frame in frames] == ["rote_config", "ui_update"]
     received = frames[-1]["components"][0]
     assert received["type"] == "text"
-    assert actions(received) == (["refine", "history", "csv", "share"] if enabled else [])
+    assert actions(received) == (["refine", "history", "csv"] if enabled else [])
     assert received["versions"] == [{"version_no": 1, "reason": "", "created_at": "", "title": ""}]
     assert original == before and host.rote.get_cached_components(socket) == before
 
@@ -339,3 +339,10 @@ async def test_viewport_send_held_across_registration_change_drops_captured_cont
         release.set()
         await asyncio.wait_for(pending, 2)
     assert [frame["type"] for frame in frames] == ["rote_config"]
+
+
+async def test_a_personal_node_withholds_the_share_action_even_with_the_flag_on():
+    host, socket = harness("browser")
+    await host.send_ui_render(socket, [table()], speak=False)
+    received = json.loads(host._safe_send.await_args.args[1])["components"][0]
+    assert "share" not in actions(received)

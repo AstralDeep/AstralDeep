@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 import sys
+from types import SimpleNamespace
 from unittest.mock import MagicMock, AsyncMock
 
 import pytest
@@ -58,6 +59,12 @@ def _service():
         "operation_state": "retryable",
     }
     return service
+
+
+@pytest.fixture(autouse=True)
+def current_human(monkeypatch):
+    monkeypatch.setattr("orchestrator.human_request_authority.authenticate_current_human_request",
+                        AsyncMock(return_value=SimpleNamespace(owner_id=OWNER)))
 
 
 def _app(service) -> TestClient:

@@ -91,8 +91,8 @@ CURRENT_DEPENDENCY_AUTHORITIES = {
     "scripts/node_bundle/linux/Dockerfile": "12165b6182217673c434e17492c392282537f14bc1181fff52a9b8847c9edb59",
     "tooling/contract-ref/requirements.in": "d3a35d4c88066ef69d8323917e8be4df3663acd3c71c6b49b118bfa7e73ce6f9",
     "tooling/contract-ref/requirements.lock.txt": "98c7d84a2a18e04f5e592e7d4df8713e9608545ba361838dac11325ea17771bf",
-    "tooling/vessel-ci/requirements.in": "7be319d70fa5006881fd8ed02f5fe0eee1547a693ecc067aa02ddc49a34f41dc",
-    "tooling/vessel-ci/requirements.lock.txt": "74cc6d27c76cd8e0af31110059c1bb88dd9fc370836b1773656c7bb81917ce48",
+    "tooling/vessel-ci/requirements.in": "bfddbee7910123bcd85b33363a9346ad544f7e31717df72a5735e7596e4bac55",
+    "tooling/vessel-ci/requirements.lock.txt": "143d770408181f9cd9680db98a05e23b11405cbf76642c0be98b0b10fbb3134b",
     "uv.lock": "9ac083ef3b758ad4ceb6867290b7bd7116e0a008af86fb90d91afe6613e1d92e",
 }
 DEEP_DEPENDENCY_AUTHORITY_POLICY = {

@@ -7,13 +7,14 @@ import asyncio
 import logging
 from typing import Any, Optional, Set
 
+from astral_exec.constants import AGENT_SERVER_REASONS, MESSAGES
 from orchestrator import node_mesh
 
 logger = logging.getLogger(__name__)
 
 CODE = "exec.agent_server_unsupported"
-REASON = "phi_node"
-MESSAGE = "This node is in your PHI group, so agents you create cannot run on it. Exclude the node from the PHI group to run them here."
+REASON = AGENT_SERVER_REASONS[0]
+MESSAGE = MESSAGES[REASON]
 
 
 class AgentServerUnsupported(ValueError):

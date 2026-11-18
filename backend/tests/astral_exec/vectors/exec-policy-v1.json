@@ -1,5 +1,8 @@
 {
   "constants": {
+    "agent_server_reasons": [
+      "phi_node"
+    ],
     "backend_reasons": [
       "landlock_abi",
       "bwrap_missing",
@@ -117,6 +120,7 @@
       "exec.shadow_refused": "Shadow mode never runs untrusted code.",
       "exec.time_limit": "The tool ran past its time limit and was stopped.",
       "landlock_abi": "This Linux kernel offers Landlock ABI {observed} and untrusted tools need ABI {required} or newer.",
+      "phi_node": "This node is in your PHI group, so agents you create cannot run on it. Exclude the node from the PHI group to run them here.",
       "platform_unsupported": "No confinement backend exists for {platform}.",
       "root_node": "This node runs as root, and bubblewrap would map root to root inside the sandbox. Run the node as an unprivileged user.",
       "sandbox_exec_missing": "/usr/bin/sandbox-exec is missing, and untrusted tools need it on macOS.",

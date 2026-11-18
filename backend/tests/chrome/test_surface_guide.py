@@ -10,7 +10,7 @@ from webrender.chrome import guide_content
 from webrender.chrome.surfaces import guide
 
 EXPECTED_SLUGS = [
-    "intro", "signing-in", "dashboard", "chat", "attachments", "voice",
+    "intro", "dashboard", "chat", "attachments", "voice",
     "agents", "components", "feedback", "audit", "tutorial", "tooltips",
     "preferences", "device", "privacy", "admin",
 ]
