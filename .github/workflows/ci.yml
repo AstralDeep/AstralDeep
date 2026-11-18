@@ -553,6 +553,8 @@ jobs:
         run: |
           set -euo pipefail
           uv venv --python "${{ matrix.python-version }}" --seed .package-smoke
+          uv export --frozen --no-dev --no-emit-project --format requirements-txt -o .package-smoke/requirements.txt
+          .package-smoke/bin/python -m pip install --require-hashes -r .package-smoke/requirements.txt
           .package-smoke/bin/python -m pip install --no-deps dist/*.whl
           .package-smoke/bin/python -c "import astralplane; assert astralplane.CONTRACT_VERSION == 'astralplane.contract/v1'"
 
@@ -1098,6 +1100,7 @@ jobs:
         with:
           python-version: "3.11"
       - run: python scripts/check_no_keycloak.py --repo . --config scripts/no_keycloak.json
+      - run: python -m pip install pytest==9.2.0
       - run: python -m pytest -q scripts/tests/test_check_no_keycloak.py
 
   composition-declarations:
