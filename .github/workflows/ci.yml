@@ -1060,6 +1060,44 @@ jobs:
             --deselect=scripts/tests/test_install_local_components.py::test_real_initialized_sources_match_the_declarations \
             --deselect=scripts/tests/test_verify_composition.py::test_current_composition_has_exact_pins_canonical_urls_and_contracts \
             --deselect=scripts/tests/test_verify_composition.py::test_real_checkout_verification_executes_only_local_git_commands
+      - name: Install the contract reference packages
+        run: python -m pip install -r specs/105-decentralized-personal-mesh/contracts/reference/requirements.txt
+      - name: Check the 106 contract vectors, reference tests and lint
+        shell: bash
+        run: |
+          set -euo pipefail
+          reference=specs/106-sign-in-free-clients/contracts/reference
+          for generator in generate_caller_vectors generate_local_vectors generate_exec_vectors generate_connection_vectors generate_a2a_vectors generate_credential_vectors generate_phi_vectors generate_phi_destination_vectors generate_contact_vectors generate_share_vectors; do
+            python "$reference/$generator.py" --check
+          done
+          python -m pytest "$reference/tests" -q
+          ruff check specs/106-sign-in-free-clients/contracts
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.14"
+      - name: Check the four standard-library table generators on Python 3.14
+        shell: bash
+        run: |
+          set -euo pipefail
+          reference=specs/106-sign-in-free-clients/contracts/reference
+          for generator in generate_label_classes generate_path_fold generate_phi_fold generate_html_entities; do
+            python "$reference/$generator.py" --check
+          done
+
+  no-keycloak:
+    name: No Keycloak in tracked product files
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+      - run: python scripts/check_no_keycloak.py --repo . --config scripts/no_keycloak.json
+      - run: python -m pytest -q scripts/tests/test_check_no_keycloak.py
 
   composition-declarations:
     runs-on: ubuntu-24.04
@@ -1351,6 +1389,7 @@ jobs:
       - composition-declarations
       - voice-worker-test
       - secret-scan
+      - no-keycloak
       - plane-quality
       - plane-package-compatibility
       - vessel-lint
@@ -1377,6 +1416,7 @@ jobs:
           [[ '${{ needs.composition-declarations.result }}' == 'success' ]]
           [[ '${{ needs.voice-worker-test.result }}' == 'success' ]]
           [[ '${{ needs.secret-scan.result }}' == 'success' ]]
+          [[ '${{ needs.no-keycloak.result }}' == 'success' ]]
           [[ '${{ needs.plane-quality.result }}' == 'success' ]]
           [[ '${{ needs.plane-package-compatibility.result }}' == 'success' ]]
           [[ '${{ needs.vessel-lint.result }}' == 'success' ]]

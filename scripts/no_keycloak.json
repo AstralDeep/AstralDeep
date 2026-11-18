@@ -9,6 +9,7 @@
     "provenance/**",
     "**/provenance/**",
     ".gitleaksignore",
+    ".github/workflows/ci.yml",
     "scripts/check_no_keycloak.py",
     "scripts/no_keycloak.json"
   ],

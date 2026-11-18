@@ -1787,6 +1787,7 @@ def test_ci_has_no_stale_composed_or_client_release_claims() -> None:
         "composition-declarations",
         "voice-worker-test",
         "secret-scan",
+        "no-keycloak",
         "plane-quality",
         "plane-package-compatibility",
         "vessel-kernel-binding",
