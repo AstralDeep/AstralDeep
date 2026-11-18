@@ -1263,6 +1263,27 @@ def test_a_stop_signal_taken_by_another_thread_during_teardown_still_kills_the_c
         proc.wait()
 
 
+def test_a_stop_signal_before_the_sweep_defers_stops_still_kills_the_child(monkeypatch):
+    previous = {sig: signal.signal(sig, launch._stop) for sig in launch.STOP_SIGNALS}
+    proc = spawn("import time; time.sleep(600)")
+
+    def stopped_on_entry():
+        launch._stop(signal.SIGTERM, None)
+
+    monkeypatch.setattr(launch, "_deferred_stop", stopped_on_entry)
+    try:
+        with pytest.raises(launch._Stopped) as stopped:
+            supervise(proc, FakeWatch(), wall_ms=200)
+        assert stopped.value.signum == signal.SIGTERM
+        assert proc.wait(timeout=30) == -signal.SIGKILL
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait()
+
+
 def test_the_command_adds_an_nproc_backstop_only_when_fork_is_allowed(
     monkeypatch, real_call
 ):
