@@ -40,3 +40,16 @@ def test_the_container_entry_point_is_left_out_and_nothing_a_user_runs_names_doc
     for path in sorted((ap.HERE / "launcher").glob("*.py")) + sorted((ap.REPO / "scripts" / "node").glob("*")):
         text = path.read_text(errors="replace").lower()
         assert "start-docker" not in text and "docker" not in text, path.name
+
+
+def test_the_kernel_pin_is_the_commit_of_the_pinned_component():
+    import subprocess
+
+    listing = subprocess.run(
+        ["git", "ls-tree", "HEAD", "components/AstralKernel"], cwd=ap.REPO, capture_output=True, text=True, check=False
+    )
+    if listing.returncode != 0 or not listing.stdout.startswith("160000 commit "):
+        import pytest
+
+        pytest.skip("the checkout carries no Kernel gitlink")
+    assert listing.stdout.split()[2] == ap.load_pins()["kernel"]["commit"]

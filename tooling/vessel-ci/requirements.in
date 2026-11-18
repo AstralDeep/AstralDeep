@@ -1,0 +1,12 @@
+# CI-only Vessel tooling; requirements.lock.txt carries the transitive hashes and is never installed into a shipping artifact.
+hatchling==1.29.0
+pytest==9.2.0
+pytest-asyncio==1.4.1.post1
+ruff==0.17.4
+cryptography>=43
+packaging>=24
+httpx>=0.28.1
+pydantic>=2.7
+starlette>=0.40
+uvicorn[standard]>=0.54.0
+fastapi>=0.162.6

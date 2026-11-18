@@ -1,0 +1,5 @@
+# CI-only contract reference tooling; requirements.lock.txt carries the transitive hashes.
+cryptography==50.0.2
+pynacl==1.6.2
+biscuit-python==0.4.0
+pytest==9.2.0

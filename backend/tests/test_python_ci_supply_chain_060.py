@@ -263,6 +263,7 @@ def test_release_tooling_job_covers_owned_scripts_with_exact_omissions() -> None
         "scripts/windows_release_candidate.py",
         "scripts/export_work_contract.py",
         "scripts/dev_mesh.py",
+        "scripts/no_docker_check.py",
     }
     assert not any("*" in omission for omission in omissions)
 
@@ -283,6 +284,7 @@ def test_release_tooling_job_covers_owned_scripts_with_exact_omissions() -> None
         "merge_xccov_line_coverage.py",
         "check_changed_coverage.py",
         "check_doc_links.py",
+        "check_no_keycloak.py",
         "dev_mesh.py",
         "export_work_contract.py",
         "export_xccov_line_coverage.py",
@@ -296,6 +298,7 @@ def test_release_tooling_job_covers_owned_scripts_with_exact_omissions() -> None
         "macos_release_notes.py",
         "merge_backend_web_coverage.py",
         "next_macos_release.py",
+        "no_docker_check.py",
         "prepare_plane_upgrade_baseline.py",
         "package_macos_candidate.py",
         "release_macos.py",
@@ -376,6 +379,8 @@ def test_release_tooling_job_covers_owned_scripts_with_exact_omissions() -> None
         "scripts/tests/test_verify_primitive_coverage.py",
         "scripts/tests/test_verify_persistent_agents_079.py",
         "scripts/tests/test_csharp_native_coverage_079.py",
+        "scripts/tests/test_check_no_keycloak.py",
+        "scripts/tests/test_no_docker_check.py",
     }
     array = job.partition("RELEASE_TOOL_TESTS=(")[2].partition(")")[0]
     assert set(re.findall(r"(?m)^\s+([^\s]+\.py)\s*$", array)) == expected_test_paths

@@ -101,6 +101,10 @@ def test_public_ci_contains_only_repository_owned_qualification() -> None:
         "voice-worker-test",
         "secret-scan",
         "gates",
+        "no-keycloak", "no-docker-linux", "no-docker-macos",
+        "node-pack-linux", "node-pack-macos",
+        "plane-package-compatibility", "plane-quality",
+        "vessel-kernel-binding", "vessel-lint", "vessel-test", "vessel-isolation", "vessel-docs",
     }
     assert not (REPOSITORY_ROOT / ".github/workflows/android-ci.yml").exists()
     assert not (REPOSITORY_ROOT / ".github/workflows/apple-ci.yml").exists()
