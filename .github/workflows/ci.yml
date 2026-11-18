@@ -693,6 +693,20 @@ jobs:
           ASTRAL_REVIEWED_START
           )
           printf '%s' "$state" | /usr/bin/python3 -I -c 'import json,re,sys; value=json.load(sys.stdin)["fixture_id"]; assert isinstance(value,str) and re.fullmatch("[0-9a-f]{16}",value); print("fixture_id="+value)' >> "$GITHUB_OUTPUT"
+      - name: Let the reviewed firewall start from /run on runners that mount it noexec
+        shell: bash --noprofile --norc -euo pipefail {0}
+        run: |
+          before=$(/usr/bin/findmnt -no OPTIONS /run)
+          printf '/run options before: %s\n' "$before"
+          if [[ ",$before," == *,noexec,* ]]; then
+            /usr/bin/sudo --non-interactive /usr/bin/mount -o remount,exec /run
+          fi
+          after=$(/usr/bin/findmnt -no OPTIONS /run)
+          printf '/run options after: %s\n' "$after"
+          if [[ ",$after," == *,noexec,* ]]; then
+            printf '/run is still mounted noexec\n' >&2
+            exit 1
+          fi
       - name: Install the reviewed Fence egress firewall in block mode
         uses: openai/fence@f9751ca5d767dc0199e88733c2b286bd4800a008 # v0.12.5
         with:
