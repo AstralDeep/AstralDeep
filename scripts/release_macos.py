@@ -71,6 +71,8 @@ NODE_PACK_RELEASE_PATHS = {
 }
 
 
+BUILD_RECEIPT = "node-pack-build.json"
+BUILD_RECEIPT_KEYS = {"platform", "deep_commit", "kernel_artifacts", "builder_base", "relocation_image", "apt_snapshot", "builder_image_id"}
 PACK_PLATFORMS = ("macos-arm64", "linux-x86_64")
 NODE_BUNDLE_DIR = Path(__file__).resolve().parent / "node_bundle"
 
@@ -328,15 +330,38 @@ class Release:
         if not isinstance(archive_name, str) \
                 or not re.fullmatch(rf"astral-node-pack-[A-Za-z0-9.-]+-{re.escape(platform)}\.tar\.gz", archive_name):
             raise ReleaseError("Node pack archive name is invalid")
-        if {path.name for path in folder.iterdir()} != {"node-pack.json", "node-pack-manifest.json", archive_name}:
+        required = {"node-pack.json", "node-pack-manifest.json", archive_name}
+        present = {path.name for path in folder.iterdir()}
+        receipt_path = folder / BUILD_RECEIPT if platform.startswith("linux-") else None
+        allowed = [required] + ([required | {BUILD_RECEIPT}] if receipt_path else [])
+        if present not in allowed:
             raise ReleaseError("Node pack folder must hold exactly its descriptor, manifest and archive")
-        if not all(path.is_file() for path in (descriptor_path, manifest_path, archive_path)):
+        files = [descriptor_path, manifest_path, archive_path] + ([folder / BUILD_RECEIPT] if BUILD_RECEIPT in present else [])
+        if not all(path.is_file() for path in files):
             raise ReleaseError("Node pack assets must be regular files")
         if descriptor.get("format") != "astral.nodepack-descriptor/v1" or descriptor.get("platform") != platform:
             raise ReleaseError("Node pack descriptor format or platform is invalid")
         if manifest.get("format") != "astral.nodepack-manifest/v1" or manifest.get("platform") != platform:
             raise ReleaseError("Node pack manifest format or platform is invalid")
+        if receipt_path is not None and receipt_path.exists():
+            self.check_build_receipt(receipt_path, platform, manifest)
         return raw, descriptor, manifest, archive_path
+
+    def check_build_receipt(self, path: Path, platform: str, manifest: dict) -> None:
+        try:
+            receipt = json.loads(path.read_bytes())
+        except (OSError, ValueError) as error:
+            raise ReleaseError(f"Node pack build receipt is unreadable: {error}") from error
+        if not isinstance(receipt, dict) or set(receipt) != BUILD_RECEIPT_KEYS:
+            raise ReleaseError("Node pack build receipt has unexpected fields")
+        artifacts = receipt["kernel_artifacts"]
+        if not isinstance(artifacts, dict) or set(artifacts) != {"wheel", "mailbox"} \
+                or not all(isinstance(value, str) and value for value in artifacts.values()) \
+                or not all(isinstance(receipt[key], str) and receipt[key] for key in BUILD_RECEIPT_KEYS - {"kernel_artifacts"}):
+            raise ReleaseError("Node pack build receipt has malformed values")
+        deep = manifest.get("deep")
+        if receipt["platform"] != platform or receipt["deep_commit"] != (deep.get("commit") if isinstance(deep, dict) else None):
+            raise ReleaseError(f"Node pack {platform} build receipt names another platform or source commit")
 
     def pack_digests(
         self, folder: Path, raw: bytes, descriptor: dict, manifest: dict, archive_path: Path,
