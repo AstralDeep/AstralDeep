@@ -22,6 +22,16 @@ The lint job follows one fixed order:
 
 The bootstrap uses the runner's system Python before dependencies exist; its source remains Python3.11 compatible. Helper identity updates require a separately reviewed and qualified default-branch merge, followed by a coordinated digest/workflow update and fresh pilot qualification.
 
+## Runners that mount /run noexec
+
+The Fence action copies its binary to `/run/fence-launcher/<id>/action/bin/fence` and starts it with `systemd-run`. GitHub serves `ubuntu-24.04` jobs from two fleets. On the AWS-hosted fleet `/run` is mounted `rw,nosuid,nodev,noexec`. There `systemd-run` fails at once with `Permission denied` and the action reports only that it could not confirm the resident started. On the Azure-hosted fleet `/run` has no `noexec` and the step passes.
+
+Observed images: the AWS fleet on 20261111.127.1 and 20261116.133.1 with kernel 7.0.0-1014-aws, and the Azure fleet on 20261111.370.1 and 20261116.376.1. A stand-in binary at the same path started on all seven AWS samples after `mount -o remount,exec /run`. The remount changed nothing on Azure. The real Fence binary was not part of that experiment.
+
+The step "Let the reviewed firewall start from /run on runners that mount it noexec" runs just before the Fence action. It prints the mount options of `/run`. When they contain `noexec` it runs `mount -o remount,exec /run`, then prints the options again and fails the job if `noexec` is still present. It uses no network, no retry and no `continue-on-error`.
+
+The remount only removes `noexec` from the runner's own `/run` tmpfs for the life of the job. `nosuid` and `nodev` stay set. The pilot verifier requires this step, with exactly this command shape, in this position. The upstream report is openai/fence issue 233.
+
 ## Reviewed egress
 
 The action's explicit allowlist is exactly:
