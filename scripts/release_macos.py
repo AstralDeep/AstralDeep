@@ -336,7 +336,8 @@ class Release:
         allowed = [required] + ([required | {BUILD_RECEIPT}] if receipt_path else [])
         if present not in allowed:
             raise ReleaseError("Node pack folder must hold exactly its descriptor, manifest and archive")
-        if not all(path.is_file() for path in (descriptor_path, manifest_path, archive_path)):
+        files = [descriptor_path, manifest_path, archive_path] + ([folder / BUILD_RECEIPT] if BUILD_RECEIPT in present else [])
+        if not all(path.is_file() for path in files):
             raise ReleaseError("Node pack assets must be regular files")
         if descriptor.get("format") != "astral.nodepack-descriptor/v1" or descriptor.get("platform") != platform:
             raise ReleaseError("Node pack descriptor format or platform is invalid")
@@ -358,7 +359,8 @@ class Release:
                 or not all(isinstance(value, str) and value for value in artifacts.values()) \
                 or not all(isinstance(receipt[key], str) and receipt[key] for key in BUILD_RECEIPT_KEYS - {"kernel_artifacts"}):
             raise ReleaseError("Node pack build receipt has malformed values")
-        if receipt["platform"] != platform or receipt["deep_commit"] != manifest.get("deep", {}).get("commit"):
+        deep = manifest.get("deep")
+        if receipt["platform"] != platform or receipt["deep_commit"] != (deep.get("commit") if isinstance(deep, dict) else None):
             raise ReleaseError(f"Node pack {platform} build receipt names another platform or source commit")
 
     def pack_digests(
