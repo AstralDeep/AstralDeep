@@ -32,6 +32,16 @@ The step "Let the reviewed firewall start from /run on runners that mount it noe
 
 The remount only removes `noexec` from the runner's own `/run` tmpfs for the life of the job. `nosuid` and `nodev` stay set. The pilot verifier requires this step, with exactly this command shape, in this position. The upstream report is openai/fence issue 233.
 
+## The AWS-hosted fleet is not supported by Fence v0.12.5
+
+The remount is needed and it is not enough. With it, the real Fence binary starts on the AWS-hosted fleet and then stops at its readiness check with `local_control_inventory_unavailable` and `unavailable_inputs: socket_ownership`. The `lint` job fails there and stays failed.
+
+Fence lists the local listening sockets and their owners, and accepts only owners on a list built into the binary. That list names the Azure agent and no AWS one. The same list is in v0.13.1. The resident's journal names no socket or owner.
+
+Ten samples of the real `lint` job ran on each fleet from a scratch branch. Every Azure sample reached "Fence ready" and passed. Every AWS sample failed, with the ACPI daemon masked and its socket removed, and again with `irqbalance` masked as well. Those two were the only services seen listening on the AWS fleet alone. No preparation step is known that makes the check pass.
+
+Until Fence supports that fleet, a `lint` job that lands on it fails for this reason alone. Read the image version in "Set up job" and re-run the job. A job on 20261111.127.1 or 20261116.133.1 is on the AWS fleet. Nothing in the workflow retries it, and the firewall is never skipped.
+
 ## Reviewed egress
 
 The action's explicit allowlist is exactly:
