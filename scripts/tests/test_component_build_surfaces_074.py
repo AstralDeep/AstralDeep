@@ -102,7 +102,7 @@ def test_public_ci_contains_only_repository_owned_qualification() -> None:
         "secret-scan",
         "gates",
         "no-keycloak", "no-docker-linux", "no-docker-macos",
-        "node-pack-linux", "node-pack-macos",
+        "node-pack-linux", "node-pack-linux-arm64", "node-pack-macos",
         "plane-package-compatibility", "plane-quality",
         "vessel-kernel-binding", "vessel-lint", "vessel-test", "vessel-isolation", "vessel-docs",
     }

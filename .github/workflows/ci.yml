@@ -1422,6 +1422,36 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  node-pack-linux-arm64:
+    name: Build the linux-aarch64 node pack
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: recursive
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+      - name: Build the pinned Kernel binding natively on arm64
+        run: python scripts/build_kernel_binding.py --root . --output build/kernel-binding --platform linux-aarch64
+      - name: Build the pack from the arm64 Kernel binding
+        run: |
+          set -euo pipefail
+          python scripts/install_kernel_binding.py verify --artifacts build/kernel-binding --platform linux-aarch64
+          python scripts/node_bundle/linux/build_linux.py --platform linux-aarch64 --kernel-dir build/kernel-binding --out "$RUNNER_TEMP/pack"
+      - name: Keep the built Kernel binding and pack as evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: node-pack-evidence-linux-aarch64
+          path: |
+            build/kernel-binding
+            ${{ runner.temp }}/pack
+          if-no-files-found: ignore
+          retention-days: 3
+
   node-pack-macos:
     name: Build the macOS node pack
     runs-on: macos-26
@@ -1553,6 +1583,7 @@ jobs:
       - vessel-docs
       - vessel-kernel-binding
       - node-pack-linux
+      - node-pack-linux-arm64
       - node-pack-macos
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -1585,5 +1616,6 @@ jobs:
           [[ '${{ needs.vessel-docs.result }}' == 'success' ]]
           [[ '${{ needs.vessel-kernel-binding.result }}' == 'success' ]]
           [[ '${{ needs.node-pack-linux.result }}' == 'success' ]]
+          [[ '${{ needs.node-pack-linux-arm64.result }}' == 'success' ]]
           [[ '${{ needs.node-pack-macos.result }}' == 'success' ]]
           echo "Backend/web CI passed. Native qualification is deferred; protected real-authentication, LETS-enforce, migration and recovery staging remain required before release."
