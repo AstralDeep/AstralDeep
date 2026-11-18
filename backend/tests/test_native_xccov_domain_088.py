@@ -190,9 +190,16 @@ def _ios_skip(summary, tests, identifier, reason):
     summary["skippedTests"] += 1
 
 
+KEYCHAIN_SKIP = "Keychain needs a signed host; unsigned test builds have none"
+
+
 def test_ios_unit_accepts_only_exact_declared_host_checks():
     checks = {
-        "MeshDeviceKeysTests/testKeychainStoreRoundTrip()": "Keychain needs a signed host; unsigned simulator test builds have none",
+        "ConnectionKeychainTests/testConnectionItemsLeaveTheMeshDeviceItemsUnchanged()": KEYCHAIN_SKIP,
+        "ConnectionKeychainTests/testRoundTripReplaceRemoveAndAbsent()": KEYCHAIN_SKIP,
+        "ConnectionKeychainTests/testStoredItemsReadBackAsThisDeviceOnlyAndNotSynchronizable()": KEYCHAIN_SKIP,
+        "ConnectionKeychainTests/testTwoIssuersForOneConnectionDoNotCollide()": KEYCHAIN_SKIP,
+        "MeshDeviceKeysTests/testKeychainStoreRoundTrip()": KEYCHAIN_SKIP,
         "OnDeviceFallbackModelTests/testRealVerifiedTextFallbackWhenExplicitlyRequested()": "Set ASTRAL_VERIFIED_MODEL_TEST_ROOT to a verified installed model root for this local hardware check.",
     }
     assert domain.IOS_SKIP_DISPOSITIONS["unit"] == checks
@@ -929,9 +936,11 @@ def test_mac_native_union_refuses_relabelled_platform_binary_lane_or_architectur
 
 _QOS_WARNING = "[Internal] Thread running at User-interactive quality-of-service class waiting on a lower QoS thread running at Default quality-of-service class. Investigate ways to avoid priority inversions"
 _FOCUS_WARNING = "Accessing FocusState's value outside of the body of a View. This will result in a constant Binding of the initial value and will not update."
+_REAL_MESH_QOS_WARNING = "Thread running at User-initiated quality-of-service class waiting on a lower QoS thread running at Default quality-of-service class. Investigate ways to avoid priority inversions"
+_PHI_BRIDGE_QOS_WARNING = "Thread running at User-interactive quality-of-service class waiting on a lower QoS thread running at Default quality-of-service class. Investigate ways to avoid priority inversions"
 
 
-@pytest.mark.parametrize("text", [_QOS_WARNING, _FOCUS_WARNING])
+@pytest.mark.parametrize("text", [_QOS_WARNING, _FOCUS_WARNING, _PHI_BRIDGE_QOS_WARNING])
 @pytest.mark.parametrize(
     "location",
     [
@@ -999,6 +1008,7 @@ def test_mac_diagnostic_acceptance_does_not_hide_unknown_failure_or_nested_resul
             )
     elif mutation == "lane":
         lane = "ui"
+        warning["name"] = _FOCUS_WARNING
         summary, tests = _mac_metadata(lane)
     _case(tests)["children"] = (
         warning if mutation == "not_list" else [warning] * (17 if mutation == "too_many" else 1)
@@ -1193,3 +1203,16 @@ def test_mac_repetition_never_hides_invalid_final_result_or_attempt_identity(mut
         del retry["duration"]
     with pytest.raises(domain.DomainError):
         domain.test_identity(summary, tests, lane, platform="macos", architecture="arm64")
+
+
+@pytest.mark.parametrize("text", [_QOS_WARNING, _REAL_MESH_QOS_WARNING])
+def test_mac_ui_accepts_only_the_priority_inversion_warnings(text):
+    summary, tests = _mac_metadata("ui")
+    _case(tests)["children"] = [{"nodeType": "Runtime Warning", "name": text}]
+    domain.test_identity(summary, tests, "ui", platform="macos", architecture="arm64")
+    _case(tests)["children"] = [
+        {"nodeType": "Runtime Warning", "name": text},
+        {"nodeType": "Runtime Warning", "name": _FOCUS_WARNING},
+    ]
+    with pytest.raises(domain.DomainError):
+        domain.test_identity(summary, tests, "ui", platform="macos", architecture="arm64")
