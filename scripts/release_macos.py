@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import base64
 import datetime as dt
+import fnmatch
 import hashlib
 import importlib.util
 import json
@@ -35,6 +36,13 @@ SCHEME = "AstralAppDirectDownload"
 CONFIGURATION = "DirectDownload"
 PROJECT = "apple-clients/AstralApp/AstralApp.xcodeproj"
 PIN_PATH = "components/AstralProjection"
+PROFILE_PATH = "config/apple/AstralDeep-DeveloperID.provisionprofile"
+PROFILE_SHA256 = "b7936b1610f47d58531526100214340f8ff959374830f8f008e4bc1e4fef5c8e"
+PROFILE_UUID = "f63c6cd4-51bd-4d18-ae4b-0ed4d6f583f5"
+PROFILE_INSTALL_DIRS = ("Library/Developer/Xcode/UserData/Provisioning Profiles", "Library/MobileDevice/Provisioning Profiles")
+DIRECT_ENTITLEMENTS = "apple-clients/AstralApp/AstralApp-DirectDownload.entitlements"
+ASSOCIATED_DOMAINS = ("applinks:astraldeep.github.io", "webcredentials:astraldeep.github.io")
+RESTRICTED_ENTITLEMENT_PREFIXES = ("com.apple.developer.", "com.apple.application-identifier", "keychain-access-groups")
 SPARKLE_PUBLIC_KEY = "eg4hW6POM2f99hfVp8K+U5bx5Hpl8+P+IYLuW0+pPzw="
 SPARKLE_NAMESPACE = "http://www.andymatuschak.org/xml-namespaces/sparkle"
 FEED_URL = "https://astraldeep.github.io/appcast.xml"
@@ -59,7 +67,7 @@ NODE_PACK_METADATA_PATH = "apple-clients/NodePack/pins.json"
 NODE_PACK_RELEASE_PATHS = {
     ".github/workflows/release-macos.yml", "backend/tests/test_release_macos.py",
     "backend/tests/test_release_macos_workflow.py", "components/AstralProjection",
-    "config/astral-composition.json", "scripts/release_macos.py",
+    "config/astral-composition.json", "scripts/release_macos.py", PROFILE_PATH,
 }
 
 
@@ -586,7 +594,67 @@ class Release:
         if "worked" not in validated.stdout:
             raise ReleaseError("Stapled ticket did not validate")
 
+    def profile_allows(self, granted: object, wanted: object) -> bool:
+        if granted == "*":
+            return True
+        if isinstance(granted, list):
+            patterns = [str(item) for item in granted]
+            wanted_items = wanted if isinstance(wanted, list) else [wanted]
+            return all(any(fnmatch.fnmatchcase(str(item), pattern) for pattern in patterns) for item in wanted_items)
+        return granted == wanted
+
+    def prepare_profile(self) -> None:
+        source = self.deep / PROFILE_PATH
+        if not source.is_file() or sha256_file(source) != PROFILE_SHA256:
+            raise ReleaseError(f"{PROFILE_PATH} is missing or differs from the pinned Developer ID profile")
+        if self.dry:
+            return
+        decoded = self.runner.run(["security", "cms", "-D", "-i", source])
+        try:
+            profile = plistlib.loads(decoded.stdout.encode("utf-8"))
+            entitlements = profile["Entitlements"]
+            team, application = profile["TeamIdentifier"], entitlements["com.apple.application-identifier"]
+            platform_names, everywhere = profile["Platform"], profile["ProvisionsAllDevices"]
+            expires, uuid = profile["ExpirationDate"], profile["UUID"]
+        except (ValueError, KeyError, TypeError, plistlib.InvalidFileException) as error:
+            raise ReleaseError("The Developer ID profile could not be decoded") from error
+        if uuid != PROFILE_UUID:
+            raise ReleaseError(f"The Developer ID profile UUID {uuid} differs from the pinned {PROFILE_UUID}")
+        if team != [TEAM_ID] or entitlements.get("com.apple.developer.team-identifier") != TEAM_ID:
+            raise ReleaseError(f"The Developer ID profile does not belong to team {TEAM_ID}")
+        if application != f"{TEAM_ID}.{BUNDLE_ID}":
+            raise ReleaseError(f"The Developer ID profile is not for {BUNDLE_ID}")
+        if platform_names != ["OSX"] or everywhere is not True:
+            raise ReleaseError("The profile is not a macOS Developer ID profile")
+        if expires.replace(tzinfo=dt.timezone.utc) <= self.clock():
+            raise ReleaseError(f"The Developer ID profile expired on {expires:%Y-%m-%d}")
+        wanted = plistlib.loads((self.projection / DIRECT_ENTITLEMENTS).read_bytes())
+        for key, value in wanted.items():
+            if key.startswith(RESTRICTED_ENTITLEMENT_PREFIXES) and not self.profile_allows(entitlements.get(key), value):
+                raise ReleaseError(f"The Developer ID profile does not allow the {key} entitlement")
+        home = Path(self.environ.get("HOME") or Path.home())
+        for folder in PROFILE_INSTALL_DIRS:
+            destination = home / folder
+            destination.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, destination / f"{PROFILE_UUID}.provisionprofile")
+
+    def verify_profile(self, app: Path) -> None:
+        if self.dry:
+            return
+        embedded = app / "Contents/embedded.provisionprofile"
+        if not embedded.is_file() or sha256_file(embedded) != PROFILE_SHA256:
+            raise ReleaseError("The exported app does not embed the pinned Developer ID profile")
+        shown = self.runner.run(["codesign", "--display", "--entitlements", ":-", "--xml", app])
+        try:
+            signed = plistlib.loads(shown.stdout.encode("utf-8"))
+        except (ValueError, plistlib.InvalidFileException) as error:
+            raise ReleaseError("The signed entitlements of the exported app are unreadable") from error
+        domains = signed.get("com.apple.developer.associated-domains")
+        if not isinstance(domains, list) or any(domain not in domains for domain in ASSOCIATED_DOMAINS):
+            raise ReleaseError("The signed app lacks the associated domains for the sign-in callback")
+
     def build_app(self) -> tuple[Path, dict[str, object]]:
+        self.prepare_profile()
         archive = self.work / "AstralDeep.xcarchive"
         export = self.work / "export"
         options = self.work / "export-options.plist"
@@ -596,6 +664,7 @@ class Release:
             options.write_bytes(plistlib.dumps({
                 "method": "developer-id", "teamID": TEAM_ID, "signingStyle": "manual",
                 "signingCertificate": "Developer ID Application", "destination": "export",
+                "provisioningProfiles": {BUNDLE_ID: PROFILE_UUID},
             }))
             source_plist = self.projection / "apple-clients/AstralApp/Info.plist"
             info = plistlib.loads(source_plist.read_bytes())
@@ -608,13 +677,14 @@ class Release:
             "-archivePath", archive, "-derivedDataPath", self.work / "dd",
             f"ASTRAL_DEVELOPMENT_TEAM={TEAM_ID}", "CODE_SIGN_STYLE=Manual", f"CODE_SIGN_IDENTITY={SIGNING_IDENTITY}",
             "ARCHS=arm64", f"MARKETING_VERSION={self.version}", f"CURRENT_PROJECT_VERSION={self.build}",
-            f"INFOPLIST_FILE={offer_plist}",
+            f"INFOPLIST_FILE={offer_plist}", f"ASTRAL_PROFILE_DIRECT={PROFILE_UUID}",
         ])
         self.runner.run([
             "xcodebuild", "-exportArchive", "-archivePath", archive, "-exportPath", export,
             "-exportOptionsPlist", options,
         ])
         app = export / "AstralDeep.app"
+        self.verify_profile(app)
         identity = self.inspect(app)
         self.verify_sparkle(app)
         return app, identity
