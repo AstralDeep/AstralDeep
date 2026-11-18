@@ -22,7 +22,6 @@ def reset_fake():
     node_mesh.install(None)
 
 
-
 class StubMailbox:
     def __init__(self, fail=False):
         self.fail = fail
@@ -482,40 +481,3 @@ async def test_start_configured_is_off_without_the_profile_or_binding(tmp_path, 
     await node_mesh.shutdown()
 
 
-async def test_default_issuers_fetch_keys_and_skip_failures(monkeypatch):
-    from shared import jwks_cache
-    from orchestrator import institution_meshes
-
-    monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://idp.example/realms/a")
-    monkeypatch.delenv(ni.ISSUERS_ENV, raising=False)
-    monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "client")
-
-    async def get(url, token=None):
-        return {"keys": [{"kid": "k"}]}
-
-    monkeypatch.setattr(jwks_cache, "get_jwks", get)
-    found = await institution_meshes.default_issuers()
-    assert found == [{"issuer": "https://idp.example/realms/a", "client_id": "client", "jwks_json": '{"keys": [{"kid": "k"}]}'}]
-
-    async def fail(url, token=None):
-        raise RuntimeError("down")
-
-    monkeypatch.setattr(jwks_cache, "get_jwks", fail)
-    assert await institution_meshes.default_issuers() == []
-    monkeypatch.delenv("KEYCLOAK_CLIENT_ID")
-    assert await institution_meshes.default_issuers() == []
-
-
-async def test_personal_kernel_startup_does_not_consult_external_identity_provider(tmp_path, monkeypatch):
-    from shared import jwks_cache
-
-    async def forbidden(*_args, **_kwargs):
-        pytest.fail("personal Kernel startup must not request issuer keys")
-
-    monkeypatch.setattr(jwks_cache, "get_jwks", forbidden)
-    monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://idp.example.test")
-    monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "existing-institution-client")
-    mesh = make(tmp_path)
-    await mesh.start()
-    assert mesh.started
-    await mesh.stop()

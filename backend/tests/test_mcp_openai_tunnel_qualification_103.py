@@ -7,23 +7,13 @@ coverage, all offline.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
 
-from orchestrator.mcp_server_endpoint import (
-    MCP_BODY_LIMIT,
-    _admitted_request,
-    _wait_for_disconnect,
-    install_mcp_server,
-)
 from orchestrator.runtime_observability import RuntimeObservability
 from orchestrator.work_admission import (
     AdmissionClass,
@@ -34,7 +24,7 @@ from orchestrator.work_admission import (
     OwnerScope,
     WorkAdmissionCoordinator,
 )
-from shared.feature_flags import FeatureFlags, flags
+from shared.feature_flags import FeatureFlags
 from shared.protocol import AgentCard, AgentSkill, MCPResponse
 
 TUNNEL_CLIENT_PIN = "fda241e2343ddd49dd63a7da3e1afab2a6e91722"
@@ -276,17 +266,6 @@ class _Orchestrator:
         )
 
 
-@pytest.fixture
-def tunnel_endpoint(monkeypatch, server_identity):
-    monkeypatch.setenv("ASTRAL_ENV", "development")
-    monkeypatch.setitem(globals(), "_identity", server_identity)
-    monkeypatch.setitem(flags._flags, "mcp_server", False)
-    orchestrator = _Orchestrator()
-    app = FastAPI()
-    install_mcp_server(app, orchestrator, public_base_url=BASE)
-    return TestClient(app), orchestrator
-
-
 def test_tunnel_client_pins_manifest_matches_reviewed_sources():
     manifest = json.loads(PIN_MANIFEST_PATH.read_text())
     assert manifest["tunnel_client"]["pin"] == TUNNEL_CLIENT_PIN
@@ -315,251 +294,3 @@ def test_mcp_flag_stays_off_by_default(monkeypatch):
     assert FeatureFlags().is_enabled("mcp_server") is False
 
 
-def test_reviewed_probe_sequence_leaves_legacy_fallback_not_ready(tunnel_endpoint):
-    client, orchestrator = tunnel_endpoint
-    profile = TunnelProbeProfile(client)
-
-    token = _owner_token()
-    ready = profile.reviewed_startup_fallback(fallback_token=token)
-
-    assert [entry["step"] for entry in profile.transcript.entries] == [
-        "metadata",
-        "modern_discovery",
-        "legacy_initialize",
-        "legacy_initialize",
-    ]
-    assert [entry["status"] for entry in profile.transcript.entries] == [200, 401, 400, 400]
-    assert all(entry["status"] // 100 != 5 for entry in profile.transcript.entries)
-    assert ready is False
-
-    metadata = client.get(METADATA_PATH)
-    assert metadata.status_code == 200
-    assert metadata.json()["resource"] == f"{BASE}/mcp"
-    assert metadata.json()["authorization_servers"] == [_identity.issuer.authority]
-
-    body, headers = _modern_request("server/discover", token=None)
-    modern_unauthenticated = client.post("/mcp", json=body, headers=headers)
-    assert modern_unauthenticated.status_code == 401
-    challenge = modern_unauthenticated.headers["WWW-Authenticate"]
-    assert f'resource_metadata="{BASE}{METADATA_PATH}"' in challenge
-    assert 'scope="mcp:discover"' in challenge
-    assert 'error="invalid_token"' in challenge
-    assert modern_unauthenticated.json()["error"]["message"] == "MCP authorization failed"
-    assert body["params"]["_meta"]["io.modelcontextprotocol/protocolVersion"] == "2026-07-28"
-
-    assert orchestrator.calls == []
-    assert token not in profile.transcript.serialized()
-    assert "Bearer" not in profile.transcript.serialized()
-    assert "authorization" not in profile.transcript.serialized()
-
-
-def test_legacy_initialize_is_refused_before_dispatch_with_or_without_credentials(
-    tunnel_endpoint,
-):
-    client, orchestrator = tunnel_endpoint
-    unauthenticated, unauthenticated_headers = _legacy_initialize()
-    refused = client.post(
-        "/mcp", content=json.dumps(unauthenticated), headers=unauthenticated_headers
-    )
-    assert refused.status_code == 400
-    assert refused.json()["error"]["code"] == -32602
-
-    authenticated, authenticated_headers = _legacy_initialize(token=_owner_token())
-    still_refused = client.post(
-        "/mcp", content=json.dumps(authenticated), headers=authenticated_headers
-    )
-    assert still_refused.status_code == 400
-    assert still_refused.json()["error"]["code"] == -32602
-    assert orchestrator.calls == []
-
-
-def test_valid_owner_token_completes_modern_discovery(tunnel_endpoint):
-    client, _ = tunnel_endpoint
-    profile = TunnelProbeProfile(client)
-    body, headers = _modern_request("server/discover")
-    response = client.post("/mcp", json=body, headers=headers)
-    profile.transcript.record("modern_discovery_authorized", "/mcp", headers, response.status_code)
-    assert response.status_code == 200
-    result = response.json()["result"]
-    assert result["resultType"] == "complete"
-    assert result["supportedVersions"] == ["2026-07-28"]
-    assert result["capabilities"] == {"tools": {}}
-    assert result["cacheScope"] == "private"
-    assert response.headers["MCP-Protocol-Version"] == "2026-07-28"
-
-
-def test_expired_and_unverifiable_tokens_are_denied_with_challenge(tunnel_endpoint):
-    from tests.helpers.idp_tokens import FakeIssuer
-
-    client, _ = tunnel_endpoint
-    foreign_key = FakeIssuer(_identity.issuer.authority)
-    denied_tokens = (
-        _identity.mcp_token("test_user", exp=1),
-        foreign_key.token("test_user", aud="astral-mcp"),
-    )
-    for denied_token in denied_tokens:
-        body, headers = _modern_request("server/discover", token=denied_token)
-        response = client.post("/mcp", json=body, headers=headers)
-        assert response.status_code == 401
-        assert response.json()["error"]["message"] == "MCP authorization failed"
-        challenge = response.headers["WWW-Authenticate"]
-        assert f'resource_metadata="{BASE}{METADATA_PATH}"' in challenge
-        assert 'error="invalid_token"' in challenge
-        assert denied_token not in response.text
-        assert "expired" not in response.text
-        assert "signature" not in response.text
-
-
-def test_cross_owner_tool_projection_is_isolated(tunnel_endpoint):
-    client, orchestrator = tunnel_endpoint
-    alice = _identity.owner("alice")
-    orchestrator.tool_permissions.allowed = False
-    orchestrator.tool_permissions.allowed_by_identity = {
-        (alice, "reader-1", "read_value"): True,
-    }
-
-    body, headers = _modern_request("tools/list", token=_identity.mcp_token("alice"))
-    alice_tools = client.post("/mcp", json=body, headers=headers)
-    assert [tool["name"] for tool in alice_tools.json()["result"]["tools"]] == ["read_value"]
-
-    body, headers = _modern_request("tools/list", token=_identity.mcp_token("bob"))
-    bob_tools = client.post("/mcp", json=body, headers=headers)
-    assert bob_tools.json()["result"]["tools"] == []
-
-    body, headers = _modern_request(
-        "tools/call",
-        {"name": "read_value", "arguments": {"value": "cross"}},
-        token=_identity.mcp_token("bob"),
-        request_id=7,
-    )
-    headers["Mcp-Name"] = "read_value"
-    denied_call = client.post("/mcp", json=body, headers=headers)
-    assert denied_call.status_code == 200
-    denied_result = denied_call.json()["result"]
-    assert denied_result["isError"] is True
-    assert denied_result["structuredContent"] == {}
-    assert denied_result["content"][0]["text"] == "Tool is unavailable or no longer authorized"
-    assert orchestrator.calls == []
-
-    body, headers = _modern_request(
-        "tools/call",
-        {"name": "read_value", "arguments": {"value": "own"}},
-        token=_identity.mcp_token("alice"),
-        request_id=8,
-    )
-    headers["Mcp-Name"] = "read_value"
-    allowed_call = client.post("/mcp", json=body, headers=headers)
-    assert allowed_call.status_code == 200
-    assert allowed_call.json()["result"]["isError"] is False
-    assert len(orchestrator.calls) == 1
-    assert orchestrator.calls[0]["user_id"] == alice
-
-
-def test_bounded_payload_and_error_refusals(tunnel_endpoint):
-    client, orchestrator = tunnel_endpoint
-
-    wrong_media = client.post(
-        "/mcp",
-        content=b"{}",
-        headers={"Content-Type": "text/plain", "Authorization": f"Bearer {_owner_token()}"},
-    )
-    assert wrong_media.status_code == 415
-
-    oversized = client.post(
-        "/mcp",
-        content=b"0" * (MCP_BODY_LIMIT + 1),
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {_owner_token()}"},
-    )
-    assert oversized.status_code == 413
-    assert "MCP request body exceeds 1 MiB" in oversized.json()["error"]["message"]
-
-    malformed = client.post(
-        "/mcp",
-        content=b"{not json",
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {_owner_token()}"},
-    )
-    assert malformed.status_code == 400
-    assert malformed.json()["error"]["code"] == -32600
-
-    body, headers = _modern_request("ping")
-    removed_method = client.post("/mcp", json=body, headers=headers)
-    assert removed_method.status_code == 404
-    assert removed_method.json()["error"]["code"] == -32601
-
-    body, headers = _modern_request("subscriptions/listen", request_id=None)
-    del body["id"]
-    notified = client.post("/mcp", json=body, headers=headers)
-    assert notified.status_code == 202
-    assert notified.content == b""
-    assert orchestrator.calls == []
-
-
-@pytest.mark.asyncio
-async def test_disconnect_cancels_without_replay_and_reconnect_recovers(tunnel_endpoint):
-    client, orchestrator = tunnel_endpoint
-    effects = []
-
-    class _DisconnectedRequest:
-        async def is_disconnected(self):
-            return True
-
-    async def inflight_tool():
-        effects.append("started")
-        await asyncio.Event().wait()
-
-    with pytest.raises(asyncio.CancelledError):
-        async with _admitted_request(
-            orchestrator, user_id="test_user", method="tools/call"
-        ):
-            await _wait_for_disconnect(_DisconnectedRequest(), inflight_tool())
-
-    assert effects == ["started"]
-    assert orchestrator.calls == []
-    status = orchestrator.work_admission.inspect_admission_class(AdmissionClass.MCP)
-    assert status.active_count == 0
-    assert status.queued_count == 0
-
-    body, headers = _modern_request(
-        "tools/call",
-        {"name": "read_value", "arguments": {"value": "reconnected"}},
-        request_id=9,
-    )
-    headers["Mcp-Name"] = "read_value"
-    reconnect = client.post("/mcp", json=body, headers=headers)
-    assert reconnect.status_code == 200
-    assert reconnect.json()["result"]["isError"] is False
-    assert len(orchestrator.calls) == 1
-    assert orchestrator.calls[0]["arguments"] == {"value": "reconnected"}
-    assert effects == ["started"]
-
-
-def test_probe_transcript_never_carries_credentials_or_arguments(tunnel_endpoint):
-    client, _ = tunnel_endpoint
-    profile = TunnelProbeProfile(client)
-    profile.probe_metadata()
-    profile.probe_modern_discovery()
-    token = _owner_token()
-    profile.probe_legacy_initialize(token=token)
-    profile.probe_modern_discovery(token=token)
-    serialized = profile.transcript.serialized()
-    assert token not in serialized
-    assert "Bearer" not in serialized
-    assert "authorization" not in serialized
-    assert all(
-        set(entry["request"]["headers"]) <= {
-            "Content-Type", "MCP-Protocol-Version", "Mcp-Method", "Mcp-Name",
-        }
-        for entry in profile.transcript.entries
-    )
-
-
-def test_modern_readiness_verdict_is_ready_for_conforming_clients(tunnel_endpoint):
-    client, orchestrator = tunnel_endpoint
-    profile = TunnelProbeProfile(client)
-    authorized = profile.probe_modern_discovery(token=_owner_token())
-    assert authorized.status_code == 200
-    modern_ready = any(
-        entry["status"] // 100 == 2 for entry in profile.transcript.entries
-    )
-    assert modern_ready is True
-    assert orchestrator.calls == []

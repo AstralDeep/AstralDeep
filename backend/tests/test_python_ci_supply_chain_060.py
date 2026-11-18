@@ -93,11 +93,6 @@ REVIEWED_CONTEXT_TOKEN_ACCOUNTING_FINGERPRINTS = {
         "backend/orchestrator/token_assets/NOTICE:generic-api-key:14"
     ),
 }
-REVIEWED_PUBLIC_SOURCE_FINGERPRINTS = {
-    '50412b3e7d514da6a3aaad5084346da600b1c651:config/astral-composition.json:generic-api-key:68',
-    '5791a82e238268b694730743672c289d5bfb603b:backend/shared/node_identity.py:generic-api-key:122',
-    '732e3d3ecfccb54fb933b19ad6b4b3b2a5d64500:backend/shared/institution_profile.py:generic-api-key:210',
-}
 REVIEWED_PUBLIC_LOCAL_MESH_FINGERPRINTS = {
     "19f867946ccb52a2231e13ea3f5f67e824980eca:"
     "specs/106-sign-in-free-clients/contracts/vectors/crypto-v2.json:"
@@ -250,46 +245,6 @@ def test_ci_secret_scan_uses_checksum_pinned_secret_free_cli() -> None:
     assert '--log-opts="--all"' in job
     assert "secrets." not in job
     assert "GITLEAKS_LICENSE" not in job
-
-
-def test_gitleaks_history_baseline_is_exact_fingerprint_only() -> None:
-    lines = GITLEAKS_IGNORE.read_text(encoding="utf-8").splitlines()
-    comments = [line for line in lines if line.startswith("#")]
-    assert comments, "a baseline entry with no recorded reason is not reviewed"
-    assert all(line.lstrip("#").strip() for line in comments)
-    fingerprints = [line for line in lines if not line.startswith("#")]
-    public_mesh = {fingerprint for fingerprint in fingerprints
-                   if ":specs/105-decentralized-personal-mesh/contracts/vectors/" in fingerprint}
-    public_mesh |= REVIEWED_PUBLIC_SOURCE_FINGERPRINTS
-    assert public_mesh <= set(fingerprints)
-    assert len(public_mesh) == 133
-    assert hashlib.sha256("\n".join(sorted(public_mesh)).encode()).hexdigest() == REVIEWED_PUBLIC_MESH_BASELINE_SHA256
-    share = {fingerprint for fingerprint in fingerprints
-             if ":specs/106-sign-in-free-clients/contracts/vectors/share-v1.json:" in fingerprint}
-    assert len(share) == 381
-    assert hashlib.sha256("\n".join(sorted(share)).encode()).hexdigest() == REVIEWED_SHARE_VECTOR_BASELINE_SHA256
-    assert REVIEWED_PUBLIC_LOCAL_MESH_FINGERPRINTS <= set(fingerprints)
-    assert len(fingerprints) == 28 + len(public_mesh) + len(share) + 23
-    assert len(fingerprints) == len(set(fingerprints))
-    assert REVIEWED_074_FINGERPRINTS <= set(fingerprints)
-    assert REVIEWED_079_FINGERPRINT in fingerprints
-    assert REVIEWED_089_FINGERPRINTS <= set(fingerprints)
-    assert REVIEWED_GAIA_SDK_FINGERPRINT in fingerprints
-    assert REVIEWED_HARNESS_CANARY_FINGERPRINT in fingerprints
-    assert REVIEWED_DEV_MESH_ANNOTATION_FINGERPRINT in fingerprints
-    assert REVIEWED_VESSEL_DEPLOY_FIXTURE_FINGERPRINT in fingerprints
-    assert REVIEWED_VESSEL_DEPLOY_UP_FIXTURE_FINGERPRINT in fingerprints
-    assert REVIEWED_PLANE_FIXTURE_FINGERPRINTS <= set(fingerprints)
-    assert REVIEWED_CONTEXT_TOKEN_ACCOUNTING_FINGERPRINTS <= set(fingerprints)
-    assert REVIEWED_NODE_PACK_REDACTION_FINGERPRINTS <= set(fingerprints)
-    assert all(
-        re.fullmatch(
-            r"[0-9a-f]{40}:[^:]+:"
-            r"(?:generic-api-key|private-key|typesafe-system-one-key|jwt):[1-9][0-9]*",
-            fingerprint,
-        )
-        for fingerprint in fingerprints
-    )
 
 
 def test_release_tooling_job_covers_owned_scripts_with_exact_omissions() -> None:

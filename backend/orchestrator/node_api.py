@@ -29,7 +29,7 @@ NO_STORE = {"Cache-Control": "no-store"}
 
 
 def _require_node() -> node_identity.NodeIdentity:
-    if not (node_identity.is_personal() or node_identity.is_institution()):
+    if not node_identity.is_personal():
         raise HTTPException(404, "node_profile_inactive")
     try:
         return node_identity.load_node_identity()

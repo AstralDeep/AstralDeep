@@ -25,15 +25,6 @@ OWNER = ""
 AUTH_HEADER: dict = {}
 
 
-@pytest.fixture(autouse=True)
-def _identity(server_identity, monkeypatch):
-    monkeypatch.setitem(globals(), "OWNER", server_identity.owner(SUBJECT))
-    monkeypatch.setitem(
-        globals(), "AUTH_HEADER",
-        server_identity.headers(SUBJECT, roles=("admin", "user")))
-    return server_identity
-
-
 @pytest.fixture
 def app_and_orch(plane_runtime):
     from fastapi import FastAPI

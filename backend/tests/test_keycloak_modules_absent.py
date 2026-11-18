@@ -14,8 +14,12 @@ SCAN_ROOTS = ("backend", "scripts", "sdk")
 SKIP_PARTS = {".venv", "venv", "node_modules", "__pycache__", "data", "tmp", "build"}
 
 REMOVED_MODULES = (
+    "orchestrator.delegation",
     "orchestrator.device_login",
     "orchestrator.institution_api",
+    "orchestrator.institution_meshes",
+    "orchestrator.institution_policy",
+    "orchestrator.institution_runtime",
     "orchestrator.mesh_admission",
     "orchestrator.mesh_api",
     "orchestrator.mesh_web",
@@ -28,7 +32,11 @@ REMOVED_MODULES = (
     "orchestrator.work_continuation_authority",
     "orchestrator.work_resume",
     "orchestrator.work_wake",
+    "shared.auth_clients",
+    "shared.institution_profile",
+    "shared.jwks_cache",
     "shared.qr",
+    "shared.token_verify",
 )
 
 

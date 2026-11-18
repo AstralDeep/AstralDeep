@@ -71,10 +71,6 @@ def assert_production_posture() -> None:
     from shared import node_identity
 
     refuse_snapshot_links_on_personal_node()
-    if node_identity.is_institution():
-        from shared import institution_profile
-
-        institution_profile.enforce()
     mock_requested = os.getenv("USE_MOCK_AUTH", "").strip().lower() in ("1", "true", "yes")
     if is_dev_mode():
         if mock_requested:

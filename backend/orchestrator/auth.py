@@ -14,7 +14,6 @@ from fastapi.responses import JSONResponse, FileResponse
 from jose import jwt as jose_jwt  # noqa: F401  (read as auth.jose_jwt by human_request_authority)
 
 import shared  # noqa: F401
-from shared import node_identity
 
 logger = logging.getLogger("AuthProxy")
 
@@ -29,75 +28,18 @@ auth_router = APIRouter()
 
 
 def refuse_node_bearer() -> None:
-    if node_identity.is_personal():
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=NODE_BEARER_REFUSED)
-
-
-def _get_keycloak_config():
-    authority = os.getenv("KEYCLOAK_AUTHORITY", "")
-    client_id = os.getenv("KEYCLOAK_CLIENT_ID", "")
-    client_secret = os.getenv("KEYCLOAK_CLIENT_SECRET", "")
-    return authority, client_id, client_secret
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=NODE_BEARER_REFUSED)
 
 
 security = HTTPBearer(auto_error=False)
 
 
-def _reject_non_first_party(payload: dict) -> None:
-    from shared.auth_clients import is_first_party_user_claims
-    ok, reason = is_first_party_user_claims(payload)
-    if not ok:
-        logger.warning(f"Rejecting non-first-party token at REST auth: {reason}")
-        raise HTTPException(status_code=401, detail="Invalid token")
-
-
 async def get_current_user_payload(request: Request, credentials: HTTPAuthorizationCredentials = Depends(security)):
     refuse_node_bearer()
-    if request.method == "OPTIONS":
-        return {}
-        
-    token = None
-    if credentials:
-        token = credentials.credentials
-    else:
-        token_param = request.query_params.get("token")
-        if token_param:
-            token = token_param
-    
-    if not token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Not authenticated",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    try:
-        request.state.delegation_subject_token = token
-    except Exception:
-        pass
-    payload = await verify_production_token(token)
-    try:
-        request.state.audit_claims = payload
-    except Exception:
-        pass
-    return payload
 
 
 async def verify_production_token(token: str) -> dict:
     refuse_node_bearer()
-    authority, client_id, _ = _get_keycloak_config()
-    if not authority or not client_id:
-        raise HTTPException(status_code=500, detail="Auth not configured")
-    try:
-        from shared.token_verify import verify_idp_token
-        payload = await verify_idp_token(token, extra_issuers=[authority])
-        _reject_non_first_party(payload)
-        return payload
-    except HTTPException:
-        raise
-    except Exception:
-        logger.error("Token validation failed in auth wrapper")
-        raise HTTPException(status_code=401, detail="Invalid token")
 
 
 async def get_current_user_id(payload: dict = Depends(get_current_user_payload)) -> Optional[str]:

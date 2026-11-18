@@ -188,42 +188,6 @@ def _authority():
 
 
 @pytest.mark.asyncio
-async def test_bound_machine_turn_dispatches_delegated(real_orch, monkeypatch):
-    monkeypatch.setenv("DELEGATION_REQUIRED", "true")
-    from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
-
-    vws = VirtualWebSocket(BackgroundTask(task_id="t", chat_id="c1", user_id="u1"))
-    real_orch._bind_machine_turn(vws, _authority())
-
-    seen = {}
-
-    async def _exchange(raw, agent, tools, uid, scopes):
-        seen.update(raw=raw, agent=agent, user=uid)
-        return {"access_token": "delegated-from-consent"}
-
-    real_orch.delegation.exchange_token_for_agent = _exchange
-    real_orch.agent_cards["a1"] = SimpleNamespace(skills=[SimpleNamespace(id="t1")])
-    real_orch.tool_permissions.get_enabled_scope_names = MagicMock(
-        return_value=["tools:read"])
-
-    dispatched = {}
-
-    async def _cap(ws, agent_id, tool_name, args, **_dispatch_context):
-        dispatched.update(args=dict(args))
-        return MCPResponse(result="ok")
-
-    real_orch._execute_with_retry = _cap
-    import json as _json
-    tc = SimpleNamespace(function=SimpleNamespace(name="t1", arguments=_json.dumps({})))
-    resp = await real_orch.execute_single_tool(
-        vws, tc, {"t1": "a1"}, "c1", user_id="u1")
-
-    assert resp.result == "ok", "machine turn must dispatch, not be refused"
-    assert seen["raw"] == "consent-token"
-    assert dispatched["args"]["_delegation_token"] == "delegated-from-consent"
-
-
-@pytest.mark.asyncio
 async def test_unbound_machine_turn_still_refused_in_production(real_orch, monkeypatch):
     monkeypatch.setenv("DELEGATION_REQUIRED", "true")
     from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket

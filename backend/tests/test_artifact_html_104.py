@@ -9,7 +9,7 @@ import sys
 import types
 from contextlib import contextmanager
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -17,11 +17,8 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
-from fastapi import FastAPI  # noqa: E402
-from fastapi.testclient import TestClient  # noqa: E402
 
 from orchestrator import artifact_html, artifact_versions  # noqa: E402
-from orchestrator.api import export_router  # noqa: E402
 from orchestrator.artifact_html import CSP_META, VIEWPORT_META, sanitize_html, validate_html  # noqa: E402
 from orchestrator.plane_repository_context import ApplicationPlaneSource  # noqa: E402
 from shared.feature_flags import flags  # noqa: E402
@@ -496,109 +493,12 @@ AUTH: dict = {}
 CHAT_ID = "chat-artifact-1"
 
 
-@pytest.fixture()
-def export_client(monkeypatch, server_identity):
-    monkeypatch.setitem(globals(), "USER_ID", server_identity.owner(SUBJECT))
-    monkeypatch.setitem(globals(), "AUTH", server_identity.headers(SUBJECT))
-    monkeypatch.setitem(flags._flags, "artifact_export", True)
-    orch = MagicMock()
-    orch.workspace.aget_by_component_id = AsyncMock(return_value=None)
-    orch._canvas_components = MagicMock(return_value=[])
-    app = FastAPI()
-    app.include_router(export_router)
-    app.state.orchestrator = orch
-    return TestClient(app), orch
-
-
-def test_export_html_artifact_download(export_client, monkeypatch):
-    import audit.hooks as hooks
-    client, orch = export_client
-    record = AsyncMock()
-    monkeypatch.setattr(hooks, "record_workspace_event", record)
-    component = artifact_html.publish({"title": "Tip Calculator", "html": "<p>x</p>"}).ui_components[0]
-    orch.workspace.aget_by_component_id.return_value = {"component_data": component}
-    response = client.get(f"/api/export/component/{component['id']}.html", params={"chat_id": CHAT_ID},
-                          headers=AUTH)
-    assert response.status_code == 200
-    assert response.headers["content-disposition"] == 'attachment; filename="Tip_Calculator.html"'
-    assert response.headers["content-security-policy"] == "sandbox; default-src 'none'"
-    assert response.headers["x-content-type-options"] == "nosniff"
-    assert response.text.count(CSP_META) == 1
-    orch.workspace.aget_by_component_id.assert_awaited_once_with(CHAT_ID, USER_ID, component["id"])
-    assert record.await_args.kwargs["detail"] == {"format": "html", "version": 1}
-
-
-def test_export_html_artifact_refusals(export_client, monkeypatch):
-    client, orch = export_client
-    url = "/api/export/component/art_0123456789abcdef.html"
-    assert client.get(url, params={"chat_id": CHAT_ID}, headers=AUTH).status_code == 404
-    orch.workspace.aget_by_component_id.return_value = {"component_data": {"type": "table"}}
-    response = client.get(url, params={"chat_id": CHAT_ID}, headers=AUTH)
-    assert response.status_code == 422 and response.json()["error"] == "not_an_html_artifact"
-    orch.workspace.aget_by_component_id.return_value = {"component_data": {
-        "type": "html_artifact", "title": "T", "kind": "page", "html": '<img src="https://bad.example/x">'}}
-    response = client.get(url, params={"chat_id": CHAT_ID}, headers=AUTH)
-    assert response.status_code == 422 and response.json()["error"] == "artifact_invalid"
-    monkeypatch.setitem(flags._flags, "artifact_export", False)
-    assert client.get(url, params={"chat_id": CHAT_ID}, headers=AUTH).status_code == 404
-
-
-def test_canvas_export_flattens_artifacts(export_client):
-    client, orch = export_client
-    page = artifact_html.publish({"title": "Page", "html": "<p>secret-page</p>"}).ui_components[0]
-    frame = {"type": "artifact", "id": "art_aaaaaaaaaaaaaaaa", "title": "F", "kind": "report", "version": 1,
-             "sections": [{"id": "s1", "heading": "Numbers", "layout": "stack",
-                           "children": [{"type": "text", "content": "inside-frame", "component_id": "wc_t"}]}]}
-    orch._canvas_components.return_value = [frame, page]
-    response = client.get(f"/api/export/canvas/{CHAT_ID}.html", headers=AUTH)
-    assert response.status_code == 200
-    assert "inside-frame" in response.text and "Numbers" in response.text
-    assert "secret-page" not in response.text and "unsupported component" not in response.text
-
-
 def test_declarations_and_processing_instructions_survive_or_are_skipped():
     document, _ = _ok('<?xml-stylesheet x?><![CDATA[raw]]><object><!DOCTYPE x><?pi y?><![CDATA[gone]]></object><p>k</p>')
     assert "<?xml-stylesheet x?>" in document and "<![CDATA[raw]]>" in document
     assert "gone" not in document and "pi y" not in document and "DOCTYPE x" not in document
     conditional, _ = _ok("<![if !IE]><p>modern</p><![endif]>")
     assert "<![if !IE]><p>modern</p><![endif]>" in conditional
-
-
-def test_export_html_audit_failure_still_downloads(export_client, monkeypatch):
-    import audit.hooks as hooks
-    client, orch = export_client
-    monkeypatch.setattr(hooks, "record_workspace_event", AsyncMock(side_effect=RuntimeError("audit down")))
-    component = artifact_html.publish({"title": "Page", "html": "<p>x</p>"}).ui_components[0]
-    orch.workspace.aget_by_component_id.return_value = {"component_data": component}
-    response = client.get(f"/api/export/component/{component['id']}.html", params={"chat_id": CHAT_ID},
-                          headers=AUTH)
-    assert response.status_code == 200 and "<p>x</p>" in response.text
-
-
-def test_share_snapshot_flattens_artifacts(monkeypatch, server_identity):
-    auth = server_identity.headers(SUBJECT)
-    from orchestrator import artifact_share
-    from orchestrator.api import share_router
-    monkeypatch.setitem(flags._flags, "artifact_sharing", True)
-    minted = {}
-
-    class _Store:
-        async def mint(self, **kwargs):
-            minted.update(kwargs)
-            return {"id": 1, "share_url": "https://x/s/1", "created_at": "t", "expires_at": "t"}
-
-    monkeypatch.setattr(artifact_share, "get_share_store", lambda: _Store())
-    orch = MagicMock()
-    page = artifact_html.publish({"title": "Page", "html": "<p>secret-page</p>"}).ui_components[0]
-    orch.workspace.aget_by_component_id = AsyncMock(return_value={"component_data": page})
-    app = FastAPI()
-    app.include_router(share_router)
-    app.state.orchestrator = orch
-    response = TestClient(app).post("/api/share", json={"chat_id": CHAT_ID, "scope": "component",
-                                                         "component_id": page["id"]}, headers=auth)
-    assert response.status_code == 201
-    assert minted["snapshot_json"][0]["type"] == "text"
-    assert "secret-page" not in minted["snapshot_html"]
 
 
 def test_policy_precedes_markup_that_appears_before_head():

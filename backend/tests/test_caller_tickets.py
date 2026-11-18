@@ -695,16 +695,3 @@ async def test_a_chained_hop_from_a_ticketed_call_is_refused_and_the_uncovered_t
     assert dg.decode_token_payload(token)["scope"].split() == ["tools:read", "tool:read_value"]
 
 
-async def test_the_real_dispatch_of_a_ticketed_call_sends_the_agent_a_token_for_that_tool_only(orchestrator_factory, monkeypatch):
-    monkeypatch.setenv("DELEGATION_REQUIRED", "true")
-    orch = ticketed_orchestrator(orchestrator_factory)
-    orch.delegation.agent_service_client_id = "agent-service"
-    orch._map_file_paths = lambda _chat, arguments, **_: arguments
-    orch.credential_manager.get_agent_credentials_encrypted = lambda *_: None
-    orch._execute_with_retry = AsyncMock(return_value=MCPResponse(result={"ok": True}))
-    ran = await orch.execute_mcp_tool(
-        claims=ticket_claims(), user_id=OWNER_ID, agent_id=AGENT, tool_name="read_value", arguments={})
-    assert ran.error is None and orch._execute_with_retry.await_count == 1
-    sent = orch._execute_with_retry.await_args.args[3]["_delegation_token"]
-    from orchestrator import agent_authority as dg
-    assert dg.decode_token_payload(sent)["scope"].split() == ["tools:read", "tool:read_value"]

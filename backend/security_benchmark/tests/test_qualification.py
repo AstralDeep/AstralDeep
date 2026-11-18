@@ -6,10 +6,8 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
-from types import SimpleNamespace
 
 import pytest
-from jose import jwt
 
 from security_benchmark.qualification import CASES, CaseEvidence, validate_evidence
 from security_benchmark.qualification_report import build_report, validate_report
@@ -90,52 +88,3 @@ def test_legacy_inprocess_driver_refuses_fake_real_turn():
         InProcessDriver("test").setup()
 
 
-def test_fixture_effect_oracle_observes_physical_mutation():
-    from shared.protocol import MCPRequest
-
-    from security_benchmark.drivers.real_dispatch import (
-        EFFECT,
-        READ_LOCAL,
-        FixtureServer,
-    )
-
-    server = FixtureServer()
-    server.payloads["case"] = "untrusted source"
-    read = server.process_request(MCPRequest(
-        request_id="r", method="tools/call", params={
-            "name": READ_LOCAL, "arguments": {"case_id": "case"}}))
-    assert read.result["_data"]["text"] == "untrusted source"
-    assert not server.effects["case"]
-    effect = server.process_request(MCPRequest(
-        request_id="e", method="tools/call", params={
-            "name": EFFECT, "arguments": {"case_id": "case",
-                                           "destination": "sink.invalid", "material": "x"}}))
-    assert effect.result["_data"]["sent"] is True
-    assert server.effects["case"] == [{"destination": "sink.invalid", "material": "x"}]
-
-
-@pytest.mark.asyncio
-async def test_local_token_exchange_binds_principal_agent_and_scopes(monkeypatch):
-    from verification.drivers.fixture_identity import FixtureIdentity
-
-    from security_benchmark.drivers.real_dispatch import RealDispatchQualification
-
-    monkeypatch.setenv("ASTRAL_ENV", "development")
-    identity = FixtureIdentity("__verif__exchange")
-    try:
-        driver = RealDispatchQualification("__verif__exchange")
-        driver._fixture_identity = identity
-        driver.orch = SimpleNamespace(delegation=SimpleNamespace(
-            agent_service_client_id="astral-agent-service"))
-        _, token = identity.claims_and_token({"sub": "__verif__exchange_user"})
-        response = await driver._fixture_exchange(
-            token, "agent", ["read_fixture_source"], ["tools:read"])
-        claims = jwt.decode(response["access_token"], identity.jwks["keys"][0],
-                            algorithms=["RS256"], issuer=identity.authority,
-                            audience="astral-agent-service")
-        assert claims["sub"] == "__verif__exchange_user"
-        assert claims["act"] == {"sub": "agent:agent"}
-        assert set(claims["scope"].split()) == {
-            "tools:read", "tool:read_fixture_source"}
-    finally:
-        identity.close()

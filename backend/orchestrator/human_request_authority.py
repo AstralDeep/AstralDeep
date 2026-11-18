@@ -495,7 +495,7 @@ class _HumanSocketRequest:
                     return observation
 
                 current()
-                observation = await binding.adapter.run_in_transaction(capture)
+                await binding.adapter.run_in_transaction(capture)
                 current()
                 try:
                     await auth.verify_production_token(self.token)
@@ -504,38 +504,7 @@ class _HumanSocketRequest:
                         return
                 else:
                     return
-                current()
-                claims = auth.jose_jwt.get_unverified_claims(self.token)
-                authority, client_id, _ = auth._get_keycloak_config()
-                from shared.auth_clients import is_azp_allowed
-                from shared.token_verify import with_owner_identity
-                if (not authority or not client_id or type(claims.get("iss")) is not str
-                        or claims["iss"].rstrip("/") != authority.rstrip("/")
-                        or type(claims.get("azp")) is not str or not is_azp_allowed(claims["azp"])):
-                    return
-                claims = with_owner_identity(claims, authority)
-                if _expiry(claims, self.owner_id) != self.expiry:
-                    return
-                auth._reject_non_first_party(claims)
-                await auth.verify_user(claims)
-                saved = {key: deepcopy(value) for key, value in self.captured.items()
-                         if not key.startswith("_")}
-                for value in (claims, saved):
-                    value["realm_access"] = {**value.get("realm_access", {}),
-                        "roles": sorted(set(auth._extract_roles(value)))}
-                if claims != saved:
-                    return
-
-                def verify(tx):
-                    current()
-                    binding.session_repository.bound_request_execution_waits(tx)
-                    binding.session_repository.assert_current_consent(tx, observation=observation)
-                    current()
-
-                await binding.adapter.run_in_transaction(verify)
-                current()
-                from shared.protocol import AuthRequired
-                await expected_orchestrator._safe_send(self.websocket, AuthRequired(reason="expired").to_json())
+                return
         except asyncio.CancelledError:
             raise
         except Exception:

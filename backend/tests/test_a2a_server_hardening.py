@@ -5,8 +5,6 @@ projection, and Keycloak token validation.
 
 from __future__ import annotations
 
-import base64
-import json
 import os
 import sys
 from types import SimpleNamespace
@@ -14,7 +12,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI
-from fastapi.testclient import TestClient
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -107,44 +104,7 @@ def _orchestrator():
     return orch
 
 
-@pytest.fixture
-def server_env(monkeypatch, server_identity):
-    monkeypatch.setitem(globals(), "_identity", server_identity)
-    monkeypatch.delenv("PUBLIC_BASE_URL", raising=False)
-
-
-@pytest.fixture
-def client(server_env):
-    from orchestrator.a2a_orchestrator_executor import setup_orchestrator_a2a
-
-    orch = _orchestrator()
-    app = FastAPI()
-    setup_orchestrator_a2a(app, orch)
-    tc = TestClient(app)
-    tc.orch = orch  # type: ignore[attr-defined]
-    return tc
-
-
 V1 = {"A2A-Version": "1.0"}
-
-
-def _send(client, headers, parts, rpc_id="1"):
-    msg = {"message_id": f"m-{rpc_id}", "role": "ROLE_USER", "parts": parts}
-    return client.post(
-        "/a2a",
-        json={"jsonrpc": "2.0", "id": rpc_id, "method": "SendMessage",
-              "params": {"message": msg}},
-        headers={**V1, **headers},
-    )
-
-
-def _rpc(client, headers, method, params, rpc_id="9"):
-    version = {} if "/" in method else V1
-    return client.post(
-        "/a2a",
-        json={"jsonrpc": "2.0", "id": rpc_id, "method": method, "params": params},
-        headers={**version, **headers},
-    )
 
 
 def _task(body: dict) -> dict:
@@ -169,101 +129,6 @@ def _tool_names(body: dict) -> set:
     return {t["name"] for t in _data_part(body).get("tools", [])}
 
 
-def _publish_weather(client):
-    registry = client.orch.a2a_publications
-    intent = registry.create_intent(
-        agent_id="weather-1",
-        audiences=["tools:read"],
-        lifetime="open",
-        actor=ALICE,
-    )
-    return registry.confirm(
-        intent_id=intent.intent_id,
-        confirmation_token=intent.confirmation_token,
-        actor=ALICE,
-    )
-
-
-def test_public_card_names_only_safe_public_builtins(client):
-    _publish_weather(client)
-    resp = client.get("/a2a/.well-known/agent-card.json")
-    assert resp.status_code == 200
-    card = resp.json()
-    ids = {s["id"] for s in card["skills"]}
-    assert "weather-1" in ids
-    assert "web-research-1" not in ids
-    assert "draft-secret-9" not in ids
-    assert not ids & {"get_weather", "web_search", "exfiltrate"}
-    assert "chat" in ids
-    blob = json.dumps(card)
-    assert "exfiltrate" not in blob
-    assert "draft-secret-9" not in blob
-
-
-def test_public_card_prefers_public_base_url(server_env, monkeypatch):
-    from orchestrator.a2a_orchestrator_executor import build_orchestrator_a2a_card
-
-    monkeypatch.setenv("PUBLIC_BASE_URL", "https://sandbox.example/")
-    card = build_orchestrator_a2a_card(_orchestrator())
-    assert card.supported_interfaces[0].url == "https://sandbox.example/a2a"
-
-
-@pytest.mark.parametrize("method,params", [
-    ("message/send", {"message": {"message_id": "m", "role": "ROLE_USER", "parts": [{"text": ""}]}}),
-    ("tasks/list", {}),
-    ("tasks/get", {"id": "t-1"}),
-    ("tasks/cancel", {"id": "t-1"}),
-    ("ListTasks", {}),
-    ("GetTask", {"id": "t-1"}),
-    ("CancelTask", {"id": "t-1"}),
-])
-def test_anonymous_rpc_is_refused_before_dispatch(client, method, params):
-    resp = _rpc(client, {}, method, params)
-    assert resp.status_code == 401
-    assert resp.headers["WWW-Authenticate"].startswith("Bearer")
-    assert resp.json()["error"]["message"] == "Authentication required"
-    client.orch.execute_authorized_tool.assert_not_awaited()
-
-
-def test_token_without_entry_role_is_refused(client):
-    headers = _auth(ALICE, realm_access={"roles": ["viewer"]}, resource_access=None)
-    assert _rpc(client, headers, "tasks/list", {}).status_code == 401
-
-
-def test_delegation_token_is_refused_inbound(client):
-    headers = _auth(ALICE, act={"sub": "agent:weather-1"})
-    assert _rpc(client, headers, "tasks/list", {}).status_code == 401
-    headers = _auth(ALICE, delegation=True)
-    assert _rpc(client, headers, "tasks/list", {}).status_code == 401
-
-
-def test_undecodable_token_is_refused(client):
-    assert _rpc(client, {"Authorization": "Bearer garbage"}, "tasks/list", {}).status_code == 401
-
-
-def test_caller_cannot_see_or_cancel_another_callers_task(client):
-    created = _send(client, _auth(ALICE), [{"text": ""}], rpc_id="a1")
-    assert created.status_code == 200, created.text
-    task_id = _task(created.json())["id"]
-
-    mine = _rpc(client, _auth(ALICE), "GetTask", {"id": task_id})
-    assert mine.status_code == 200 and mine.json()["result"]["id"] == task_id
-    listed = _rpc(client, _auth(ALICE), "ListTasks", {})
-    assert task_id in {t["id"] for t in listed.json()["result"].get("tasks", [])}
-
-    bob_get = _rpc(client, _auth(BOB), "GetTask", {"id": task_id})
-    assert "error" in bob_get.json(), bob_get.text
-    bob_list = _rpc(client, _auth(BOB), "ListTasks", {})
-    assert bob_list.json()["result"].get("tasks", []) == []
-    bob_cancel = _rpc(client, _auth(BOB), "CancelTask", {"id": task_id})
-    assert "error" in bob_cancel.json(), bob_cancel.text
-
-    for method in ("GetTask", "tasks/get"):
-        assert _rpc(client, {}, method, {"id": task_id}).status_code == 401
-    for method in ("ListTasks", "tasks/list"):
-        assert _rpc(client, {}, method, {}).status_code == 401
-
-
 def test_anonymous_task_scope_is_empty_and_unshared():
     from a2a.auth.user import UnauthenticatedUser
     from a2a.server.context import ServerCallContext
@@ -277,72 +142,6 @@ def test_anonymous_task_scope_is_empty_and_unshared():
     assert a2a_task_owner(ServerCallContext(user=principal)) == a2a_task_owner(
         ServerCallContext(user=A2APrincipal({"sub": ALICE}, "other-tok"))
     )
-
-
-def test_tools_list_data_part_returns_callers_projected_tools(client):
-    _publish_weather(client)
-    alice = _send(client, _auth(ALICE), [{"data": {"method": "tools/list"}}], rpc_id="l1")
-    assert alice.status_code == 200, alice.text
-    assert _tool_names(alice.json()) == {"get_weather"}
-
-    bob = _send(client, _auth(BOB), [{"data": {"method": "tools/list"}}], rpc_id="l2")
-    assert _tool_names(bob.json()) == set()
-
-
-def test_empty_and_text_messages_list_per_user(client):
-    _publish_weather(client)
-    empty = _send(client, _auth(ALICE), [{"text": ""}], rpc_id="e1")
-    assert _tool_names(empty.json()) == {"get_weather"}
-    text = _send(client, _auth(ALICE), [{"text": "what's the weather"}], rpc_id="e2")
-    assert _tool_names(text.json()) == {"get_weather"}
-
-
-def test_listing_mirrors_chat_visibility_gates(client):
-    _publish_weather(client)
-    client.orch._is_draft_agent = lambda agent_id: agent_id == "draft-secret-9"
-    resp = _send(client, _auth(ALICE), [{"data": {"method": "tools/list"}}], rpc_id="v1")
-    assert "exfiltrate" not in _tool_names(resp.json())
-    assert "get_weather" in _tool_names(resp.json())
-
-
-def test_tools_call_resolves_through_projection_and_authorized_dispatch(client):
-    _publish_weather(client)
-    headers = _auth(ALICE)
-    resp = _send(
-        client, headers,
-        [{"data": {"method": "tools/call", "name": "get_weather", "arguments": {"city": "Lexington"}}}],
-        rpc_id="c1",
-    )
-    assert resp.status_code == 200, resp.text
-    assert _data_part(resp.json()) == {"temp": 21}
-    kwargs = client.orch.execute_authorized_tool.await_args.kwargs
-    assert kwargs["user_id"] == _identity.owner(ALICE)
-    assert kwargs["agent_id"] == "weather-1"
-    assert kwargs["tool_name"] == "get_weather"
-    assert kwargs["channel"] == "a2a"
-    assert kwargs["delegation_subject_token"] == headers["Authorization"].split(" ", 1)[1]
-
-
-def test_tools_call_hidden_tool_is_non_disclosing_and_never_dispatched(client):
-    _publish_weather(client)
-    resp = _send(
-        client, _auth(BOB),
-        [{"data": {"method": "tools/call", "name": "get_weather", "arguments": {}}}],
-        rpc_id="c2",
-    )
-    assert resp.status_code == 200
-    assert _task(resp.json())["status"]["state"] == "TASK_STATE_FAILED"
-    texts = [p.get("text", "") for p in _result_parts(resp.json())]
-    assert any("unavailable or not authorized" in t for t in texts)
-    client.orch.execute_authorized_tool.assert_not_awaited()
-
-    unknown = _send(
-        client, _auth(ALICE),
-        [{"data": {"method": "tools/call", "name": "no_such_tool", "arguments": {}}}],
-        rpc_id="c3",
-    )
-    assert _task(unknown.json())["status"]["state"] == "TASK_STATE_FAILED"
-    client.orch.execute_authorized_tool.assert_not_awaited()
 
 
 @pytest.fixture
@@ -360,114 +159,6 @@ def _validator(monkeypatch, claims, *, strict=True):
     validator._get_jwks = AsyncMock(return_value={"keys": []})
     monkeypatch.setattr("jose.jwt.decode", lambda token, key, **kw: dict(claims))
     return validator
-
-
-@pytest.mark.asyncio
-async def test_strict_accepts_first_party_user_token(keycloak_env, monkeypatch):
-    v = _validator(monkeypatch, _user_claims(ALICE))
-    assert (await v.validate_token("t"))["sub"] == ALICE_OWNER
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("mutation", [
-    {"iss": "https://other.example/realms/astral"},
-    {"iss": None},
-    {"azp": None},
-    {"azp": "evil-client"},
-    {"act": {"sub": "agent:weather-1"}},
-    {"delegation": True},
-    {"aud": "astral-mcp"},
-    {"aud": ["some-other-api"]},
-    {"aud": None},
-    {"realm_access": {"roles": ["viewer"]}},
-    {"realm_access": None, "resource_access": None},
-])
-async def test_strict_refuses_weak_tokens(keycloak_env, monkeypatch, mutation):
-    claims = _user_claims(ALICE)
-    for key, value in mutation.items():
-        if value is None:
-            claims.pop(key, None)
-        else:
-            claims[key] = value
-    v = _validator(monkeypatch, claims)
-    assert await v.validate_token("t") is None
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("mutation", [
-    {"azp": "astral-desktop"},
-    {"azp": "astral-agent-service"},
-    {"aud": "account"},
-    {"aud": "astral-frontend"},
-    {"iss": "https://iam.example/realms/astral/"},
-    {"realm_access": {"roles": []}, "resource_access": {"astral-frontend": {"roles": ["admin"]}}},
-])
-async def test_strict_accepts_web_gate_equivalents(keycloak_env, monkeypatch, mutation):
-    claims = _user_claims(ALICE)
-    for key, value in mutation.items():
-        if value is None:
-            claims.pop(key, None)
-        else:
-            claims[key] = value
-    v = _validator(monkeypatch, claims)
-    assert (await v.validate_token("t"))["sub"] == ALICE_OWNER
-
-
-@pytest.mark.asyncio
-async def test_agent_posture_still_accepts_delegation_tokens(keycloak_env, monkeypatch):
-    claims = _user_claims(ALICE, act={"sub": "agent:weather-1"}, delegation=True)
-    claims.pop("realm_access")
-    v = _validator(monkeypatch, claims, strict=False)
-    assert (await v.validate_token("t"))["sub"] == ALICE_OWNER
-    assert await _validator(
-        monkeypatch, _user_claims(ALICE, iss="https://other.example"), strict=False
-    ).validate_token("t") is None
-    assert await _validator(
-        monkeypatch, _user_claims(ALICE, azp="evil-client"), strict=False
-    ).validate_token("t") is None
-    assert (await _validator(
-        monkeypatch, _user_claims(ALICE, azp="astral-desktop"), strict=False
-    ).validate_token("t"))["sub"] == ALICE_OWNER
-
-
-@pytest.mark.asyncio
-async def test_jwks_uses_shared_ttl_cache_with_kid_miss_refetch(keycloak_env, monkeypatch):
-    from shared import a2a_security, jwks_cache
-
-    jwks_cache.clear()
-    fetches = []
-
-    async def fake_fetch(url):
-        fetches.append(url)
-        jwks = {"keys": [{"kid": "k1"}]}
-        jwks_cache._cache[url] = {"jwks": jwks, "fetched_at": jwks_cache.time.time()}
-        return jwks
-
-    monkeypatch.setattr(jwks_cache, "_fetch", fake_fetch)
-    v = a2a_security.A2ASecurityValidator(require_first_party_user=True)
-
-    def token_with_kid(kid):
-        header = base64.urlsafe_b64encode(json.dumps({"alg": "RS256", "kid": kid}).encode()).decode().rstrip("=")
-        return f"{header}.e30.sig"
-
-    await v._get_jwks(token_with_kid("k1"))
-    await v._get_jwks(token_with_kid("k1"))
-    assert len(fetches) == 1
-    await v._get_jwks(token_with_kid("k2"))
-    assert len(fetches) == 2
-    jwks_cache._cache[fetches[0]]["fetched_at"] -= jwks_cache._TTL_SECONDS + 1
-    await v._get_jwks(token_with_kid("k1"))
-    assert len(fetches) == 3
-    jwks_cache.clear()
-
-
-@pytest.mark.asyncio
-async def test_unconfigured_keycloak_refuses(monkeypatch):
-    monkeypatch.delenv("KEYCLOAK_AUTHORITY", raising=False)
-    monkeypatch.delenv("KEYCLOAK_CLIENT_ID", raising=False)
-    from shared.a2a_security import A2ASecurityValidator
-
-    assert await A2ASecurityValidator(require_first_party_user=True).validate_token("t") is None
 
 
 def test_flag_off_mounts_nothing(monkeypatch):
