@@ -1225,10 +1225,7 @@ jobs:
       - name: Start the executor, the sandboxes and no node
         working-directory: vessel/deploy
         run: |
-          python - > .env <<'PY'
-          import secrets
-          print(f"VESSEL_SANDBOX_TOKEN={secrets.token_urlsafe(32)}")
-          PY
+          echo "VESSEL_SANDBOX_TOKEN=$(openssl rand -hex 32)" > .env
           astralvessel deploy deployment.ci.toml
           docker compose -f compose.generated.yml --env-file .env up -d --build executor
           for ((attempt = 0; attempt < 60; attempt++)); do
