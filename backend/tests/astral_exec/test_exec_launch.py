@@ -13,6 +13,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from dataclasses import dataclass, field
 
@@ -1223,6 +1224,57 @@ def test_a_stop_signal_during_teardown_still_finishes_the_sweep():
     try:
         with pytest.raises(launch._Stopped):
             supervise(proc, fake, wall_ms=200)
+        assert proc.wait(timeout=30) == -signal.SIGKILL
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait()
+
+
+def test_a_stop_signal_taken_by_another_thread_during_teardown_still_kills_the_child():
+    previous = {sig: signal.signal(sig, launch._stop) for sig in launch.STOP_SIGNALS}
+    proc = spawn("import time; time.sleep(600)")
+    fake = FakeWatch()
+    group_end = fake.end
+
+    def take_the_signal():
+        signal.pthread_sigmask(signal.SIG_UNBLOCK, launch.STOP_SIGNALS)
+        signal.pthread_kill(threading.get_ident(), signal.SIGTERM)
+
+    def end_with_a_signal_on_another_thread():
+        helper = threading.Thread(target=take_the_signal)
+        helper.start()
+        helper.join()
+        return group_end()
+
+    fake.end = end_with_a_signal_on_another_thread
+    try:
+        with pytest.raises(launch._Stopped) as stopped:
+            supervise(proc, fake, wall_ms=200)
+        assert stopped.value.signum == signal.SIGTERM
+        assert proc.wait(timeout=30) == -signal.SIGKILL
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait()
+
+
+def test_a_stop_signal_before_the_sweep_defers_stops_still_kills_the_child(monkeypatch):
+    previous = {sig: signal.signal(sig, launch._stop) for sig in launch.STOP_SIGNALS}
+    proc = spawn("import time; time.sleep(600)")
+
+    def stopped_on_entry():
+        launch._stop(signal.SIGTERM, None)
+
+    monkeypatch.setattr(launch, "_deferred_stop", stopped_on_entry)
+    try:
+        with pytest.raises(launch._Stopped) as stopped:
+            supervise(proc, FakeWatch(), wall_ms=200)
+        assert stopped.value.signum == signal.SIGTERM
         assert proc.wait(timeout=30) == -signal.SIGKILL
     finally:
         for sig, handler in previous.items():

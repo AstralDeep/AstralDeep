@@ -216,6 +216,21 @@ def _run_step(name: str, script: str, *, start=False, close=False) -> str:
     )
 
 
+RUN_EXEC_STEP_NAME = "Let the reviewed firewall start from /run on runners that mount it noexec"
+RUN_EXEC_SCRIPT = """before=$(/usr/bin/findmnt -no OPTIONS /run)
+printf '/run options before: %s\\n' "$before"
+if [[ ",$before," == *,noexec,* ]]; then
+  /usr/bin/sudo --non-interactive /usr/bin/mount -o remount,exec /run
+fi
+after=$(/usr/bin/findmnt -no OPTIONS /run)
+printf '/run options after: %s\\n' "$after"
+if [[ ",$after," == *,noexec,* ]]; then
+  printf '/run is still mounted noexec\\n' >&2
+  exit 1
+fi
+"""
+
+
 def _expected_steps(helpers: ReviewedHelpers) -> tuple[str, ...]:
     fence = (
         "      - name: Install the reviewed Fence egress firewall in block mode\n"
@@ -225,6 +240,7 @@ def _expected_steps(helpers: ReviewedHelpers) -> tuple[str, ...]:
     )
     return (
         _run_step("Start and baseline the immutable reviewed CI peer", expected_start(helpers), start=True),
+        _run_step(RUN_EXEC_STEP_NAME, RUN_EXEC_SCRIPT),
         fence,
         _run_step("Verify actual Fence evidence and controlled peer denials", expected_verify(helpers)),
         _run_step("Close the owned peer and attest supervisor exit", expected_close(helpers), close=True),
@@ -293,7 +309,7 @@ def evaluate_workflow(workflow: str, helpers: ReviewedHelpers | None = None) -> 
     expected = prelude + "".join(_expected_steps(helpers))
     if job != expected:
         return PilotEvaluation(STATE_NONCONFORMING, (
-            "lint must exactly preserve trusted start/Fence/verify/always-close before unchanged checkout/setup/locked install/Ruff",
+            "lint must exactly preserve trusted start/run-exec/Fence/verify/always-close before unchanged checkout/setup/locked install/Ruff",
         ))
     return PilotEvaluation(STATE_CONFORMING)
 
