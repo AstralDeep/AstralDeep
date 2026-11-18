@@ -16,6 +16,17 @@ def _no_shared_folder(root):
     return [path for path in root.rglob("*") if path.name == "shared"] == []
 
 
+def _stores_held(root):
+    return sorted(path.name.split(".")[0] for path in root.rglob("shared/*"))
+
+
+def _node_holds(kernel, chat, text):
+    try:
+        return any(message.text == text for message in kernel.chat(chat).view.messages)
+    except ak.KernelError:
+        return False
+
+
 async def _shared_with_phone(a, b):
     await verified_contacts(a.owner, b.owner)
     chat = a.owner.kernel.create_chat("Plan")
@@ -23,6 +34,7 @@ async def _shared_with_phone(a, b):
     grant = a.owner.grant_view(chat, b.owner.mesh_id)
     await until(lambda: [x for x in b.phone.kernel.contacts()], "the contact to reach the second phone")
     await until(lambda: a.node.kernel.shares(), "the share to reach the node")
+    await until(lambda: _node_holds(a.node.kernel, chat, "first note"), "the shared chat's message to reach the node")
     return chat, grant
 
 
@@ -43,8 +55,11 @@ async def test_the_node_refuses_to_invite_verify_grant_or_revoke(tmp_path, monke
     async with dev_node(tmp_path, monkeypatch) as a, contact_mesh(tmp_path, monkeypatch) as b:
         chat, grant = await _shared_with_phone(a, b)
         kernel = a.node.kernel
-        await until(lambda: any(item.chat_id == chat for item in kernel.list_chats()), "the chat to reach the node")
         contact = b.owner.mesh_id
+        await b.phone.stop()
+        await b.owner.stop()
+        held = _stores_held(tmp_path / "node")
+        assert set(held) <= {contact.split(":")[-1]}
         for code, call in (
             ("contact.device_kind", lambda: kernel.create_contact_invitation("node", 60)),
             ("contact.device_kind", lambda: kernel.accept_contact_invitation("not-an-invitation", "node")),
@@ -60,7 +75,7 @@ async def test_the_node_refuses_to_invite_verify_grant_or_revoke(tmp_path, monke
             assert refused.value.code == code
         assert [item.id for item in a.owner.kernel.shares()] == [grant.id]
         assert [item.state for item in a.owner.kernel.shares()] == ["in_effect"]
-        assert _no_shared_folder(tmp_path / "node")
+        assert _stores_held(tmp_path / "node") == held
 
 
 @pytest.mark.parametrize("value", [None, "production", "Development"])
