@@ -51,12 +51,7 @@ MOVED_PACKAGES = (
         folder="vessel",
         distribution="astralvessel",
         command="astralvessel",
-        github_files=frozenset(
-            {
-                "dependabot.yml",
-                "workflows/ci.yml",
-            }
-        ),
+        github_files=frozenset(),
     ),
     MovedPackage(
         folder="plane",

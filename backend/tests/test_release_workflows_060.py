@@ -1787,6 +1787,11 @@ def test_ci_has_no_stale_composed_or_client_release_claims() -> None:
         "composition-declarations",
         "voice-worker-test",
         "secret-scan",
+        "vessel-kernel-binding",
+        "vessel-lint",
+        "vessel-test",
+        "vessel-isolation",
+        "vessel-docs",
         "gates",
     }
     assert not job_ids & {
