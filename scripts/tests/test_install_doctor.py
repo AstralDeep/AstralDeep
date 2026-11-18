@@ -72,14 +72,11 @@ DEV_ENV = {
 
 PRODUCTION_ENV = {
     "ASTRAL_ENV": "production",
+    "ASTRAL_NODE_PROFILE": "personal",
     "DB_PASSWORD": "",
-    "WEB_SESSION_ENC_KEY": "",
     "CREDENTIAL_ENCRYPTION_KEY": "",
     "AUDIT_HMAC_SECRET": "",
     "AGENT_API_KEY": "",
-    "KEYCLOAK_AUTHORITY": "http://127.0.0.1:8080/realms/Astral",
-    "KEYCLOAK_CLIENT_ID": "astral-frontend",
-    "KEYCLOAK_CLIENT_SECRET": "",
     "LIVEKIT_API_KEY": "",
     "LIVEKIT_API_SECRET": "",
     "LIVEKIT_NODE_IP": "192.168.1.50",
@@ -126,7 +123,7 @@ def make_checkout(tmp_path: Path, *, env: dict[str, str] | None = None) -> Path:
     root.mkdir(parents=True)
     _write(root / "pyproject.toml", '[project]\nname = "astraldeep"\n')
     _write(root / "docker-compose.yml", COMPOSE_TEXT)
-    _write(root / ".env.example", "ASTRAL_ENV=development\n")
+    _write(root / ".env.example", "ASTRAL_ENV=development\nASTRAL_NODE_PROFILE=personal\n")
     if env is not None:
         _write(
             root / ".env",
@@ -399,7 +396,7 @@ def test_missing_env_file_is_repair_with_example_remediation(tmp_path):
 
 def test_malformed_env_line_is_repair(tmp_path):
     root = make_checkout(tmp_path)
-    _write(root / ".env", "ASTRAL_ENV=development\nthis line has no equals\n")
+    _write(root / ".env", "ASTRAL_ENV=development\nASTRAL_NODE_PROFILE=personal\nthis line has no equals\n")
     report = collect(root)
     assert report.outcome == "repair"
     assert "configuration.env-file-invalid" in problem_codes(report)
@@ -489,142 +486,6 @@ def test_empty_db_password_is_advisory_only(tmp_path):
     )
     assert advisory.severity == "advisory"
     assert report.outcome == "ready"
-
-
-def test_production_with_missing_secrets_is_repair_and_redacted(tmp_path):
-    env = dict(PRODUCTION_ENV)
-    env.update(
-        {
-            "ASTRAL_ENV": "production",
-            "WEB_SESSION_ENC_KEY": "",
-            "AUDIT_HMAC_SECRET": "change-me",
-            "KEYCLOAK_AUTHORITY": "",
-            "KEYCLOAK_CLIENT_ID": "",
-            "KEYCLOAK_CLIENT_SECRET": "",
-        }
-    )
-    root = make_checkout(tmp_path, env=env)
-    report = collect(root, env=env)
-    assert report.outcome == "repair"
-    for name in (
-        "WEB_SESSION_ENC_KEY",
-        "AUDIT_HMAC_SECRET",
-        "KEYCLOAK_AUTHORITY",
-        "KEYCLOAK_CLIENT_ID",
-        "KEYCLOAK_CLIENT_SECRET",
-    ):
-        assert any(name in finding.message for finding in report.findings)
-    assert not any(
-        finding.code == "configuration.compose-variable-missing" for finding in report.findings
-    )
-    assert_no_secrets(report, env)
-
-
-def test_production_ready_with_services_and_keycloak(tmp_path):
-    root = make_checkout(tmp_path, env=PRODUCTION_ENV)
-    runner, _ = running_services()
-    report = collect(root, env=PRODUCTION_ENV, runner=runner)
-    assert report.outcome == "ready"
-    assert problem_codes(report) == []
-    assert_no_secrets(report, PRODUCTION_ENV)
-
-
-def test_keycloak_discovery_failures_are_repair(tmp_path):
-    env = dict(PRODUCTION_ENV)
-    root = make_checkout(tmp_path, env=env)
-    runner, _ = running_services()
-    http = FakeHttp(
-        {
-            "http://127.0.0.1:8001/healthz": (200, b"ok"),
-            "http://127.0.0.1:8001/readyz": (200, b"ok"),
-            "http://127.0.0.1:8080/realms/Astral/.well-known/openid-configuration": (
-                404,
-                b"realm not found",
-            ),
-        }
-    )
-    report = collect(root, env=env, runner=runner, http=http)
-    assert "services.keycloak-discovery-failed" in problem_codes(report)
-
-    http = FakeHttp(
-        {
-            "http://127.0.0.1:8001/healthz": (200, b"ok"),
-            "http://127.0.0.1:8001/readyz": (200, b"ok"),
-        }
-    )
-    report = collect(root, env=env, runner=runner, http=http)
-    assert "services.keycloak-unreachable" in problem_codes(report)
-
-    http = FakeHttp(
-        {
-            "http://127.0.0.1:8001/healthz": (200, b"ok"),
-            "http://127.0.0.1:8001/readyz": (200, b"ok"),
-            "http://127.0.0.1:8080/realms/Astral/.well-known/openid-configuration": (
-                200,
-                json.dumps({"issuer": "http://127.0.0.1:8080/realms/Other"}).encode(),
-            ),
-        }
-    )
-    report = collect(root, env=env, runner=runner, http=http)
-    assert "services.keycloak-issuer-mismatch" in problem_codes(report)
-
-    http = FakeHttp(
-        {
-            "http://127.0.0.1:8001/healthz": (200, b"ok"),
-            "http://127.0.0.1:8001/readyz": (200, b"ok"),
-            "http://127.0.0.1:8080/realms/Astral/.well-known/openid-configuration": (
-                200,
-                b"not json",
-            ),
-        }
-    )
-    report = collect(root, env=env, runner=runner, http=http)
-    assert "services.keycloak-discovery-invalid" in problem_codes(report)
-
-
-def test_institution_profile_without_authority_is_problem_in_development(tmp_path):
-    env = dict(DEV_ENV)
-    env["ASTRAL_NODE_PROFILE"] = "institution"
-    env.pop("KEYCLOAK_AUTHORITY", None)
-    root = make_checkout(tmp_path, env=env)
-    report = collect(root, env=env, runner=running_services()[0])
-    assert "services.keycloak-unconfigured" in problem_codes(report)
-    assert report.outcome == "repair"
-
-
-def test_development_without_profile_or_authority_needs_no_keycloak(tmp_path):
-    env = dict(DEV_ENV)
-    env.pop("ASTRAL_NODE_PROFILE")
-    env.pop("KEYCLOAK_AUTHORITY", None)
-    root = make_checkout(tmp_path, env=env)
-    report = collect(root, env=env, runner=running_services()[0])
-    assert "services.keycloak-unconfigured" not in problem_codes(report)
-
-
-def test_shipped_env_example_reports_no_keycloak_problem(tmp_path):
-    values = {}
-    for line in (Path(__file__).resolve().parents[2] / ".env.example").read_text(encoding="utf-8").splitlines():
-        key, separator, value = line.partition("=")
-        if separator and not line.lstrip().startswith("#"):
-            values[key.strip()] = value.split(" #")[0].strip()
-    assert values.get("ASTRAL_ENV") == "development"
-    assert not values.get("KEYCLOAK_AUTHORITY")
-    root = make_checkout(tmp_path, env=values)
-    report = collect(root, env=values, runner=running_services()[0])
-    assert "services.keycloak-unconfigured" not in problem_codes(report)
-
-
-def test_personal_profile_skips_keycloak_probe(tmp_path):
-    root = make_checkout(tmp_path, env=DEV_ENV)
-    http = FakeHttp(
-        {
-            "http://127.0.0.1:8001/healthz": (200, b"ok"),
-            "http://127.0.0.1:8001/readyz": (200, b"ok"),
-        }
-    )
-    report = collect(root, env=DEV_ENV, runner=running_services()[0], http=http)
-    assert report.outcome == "ready"
-    assert all(":8080" not in url for url in http.urls)
 
 
 def test_typesafe_environment_is_advisory_in_dev_and_problem_in_production(tmp_path):
@@ -1299,16 +1160,6 @@ def test_duplicate_unhealthy_service_cannot_be_hidden_by_healthy_record(tmp_path
     assert "services.service-duplicate" in problem_codes(report)
 
 
-@pytest.mark.parametrize("document", [b'[]', b'null', b'7'])
-def test_non_object_oidc_document_requires_repair(tmp_path, document):
-    root = make_checkout(tmp_path, env=PRODUCTION_ENV)
-    http = ok_http()
-    http.responses[PRODUCTION_ENV["KEYCLOAK_AUTHORITY"] + doctor.DISCOVERY_SUFFIX] = (200, document)
-    report = collect(root, env=PRODUCTION_ENV, http=http)
-    assert report.outcome == "repair"
-    assert "services.keycloak-discovery-invalid" in problem_codes(report)
-
-
 @pytest.mark.parametrize("document", ['[]', 'null', '7'])
 def test_non_object_image_labels_require_repair(tmp_path, document):
     root = make_checkout(tmp_path, env=DEV_ENV)
@@ -1358,18 +1209,6 @@ def test_unknown_host_platform_is_unsupported(tmp_path, monkeypatch):
 def test_credential_encryption_key_is_redacted_before_output():
     sensitive = "synthetic-encryption-diagnostic"
     assert doctor._redact(sensitive, {"CREDENTIAL_ENCRYPTION_KEY": sensitive}) == "[redacted]"
-
-
-def test_keycloak_userinfo_is_refused_without_probe_or_value_emission(tmp_path):
-    env = dict(PRODUCTION_ENV)
-    env["KEYCLOAK_AUTHORITY"] = "http://synthetic-user:synthetic-password@127.0.0.1:8080/realms/Astral"
-    root = make_checkout(tmp_path, env=env)
-    http = ok_http()
-    report = collect(root, env=env, http=http)
-    assert "services.keycloak-authority-invalid" in problem_codes(report)
-    assert not any("synthetic-password" in url for url in http.urls)
-    assert "synthetic-password" not in doctor.render_text(report)
-
 
 
 def test_http_probe_does_not_follow_redirect_into_sign_in():

@@ -54,9 +54,16 @@ docker run --name "$namespace-negative" --network none --cpus=1 --memory=1g \
   --label "org.astraldeep.qualification.namespace=$namespace" \
   --env PYTHON_DOTENV_DISABLED=1 "$image" > "$output/boot-negative.log" 2>&1
 negative=$?
-set -e
 test "$negative" -eq 78
 printf '%s\n' "$negative" > "$output/boot-negative.exit"
+docker run --name "$namespace-unset-profile" --network none --cpus=1 --memory=1g \
+  --label "org.astraldeep.qualification.namespace=$namespace" \
+  --env ASTRAL_ENV=development --env PYTHON_DOTENV_DISABLED=1 "$image" > "$output/boot-profile-unset.log" 2>&1
+profile_unset=$?
+set -e
+test "$profile_unset" -eq 78
+grep -q node.profile_removed "$output/boot-profile-unset.log"
+printf '%s\n' "$profile_unset" > "$output/boot-profile-unset.exit"
 
 python - "$namespace" "$environment" <<'PY'
 import base64
@@ -68,12 +75,10 @@ name, path = sys.argv[1:]
 values = {
     "ASTRAL_ENV": "production",
     "PYTHON_DOTENV_DISABLED": "1", "LETS_MODE": "off",
-    "WEB_SESSION_ENC_KEY": base64.urlsafe_b64encode(os.urandom(32)).decode(),
+    "ASTRAL_NODE_PROFILE": "personal", "ASTRAL_NODE_DATA_DIR": "/tmp/boot-node",
     "CREDENTIAL_ENCRYPTION_KEY": base64.urlsafe_b64encode(os.urandom(32)).decode(),
     "AUDIT_HMAC_SECRET": secrets.token_urlsafe(48),
     "AGENT_API_KEY": secrets.token_urlsafe(48),
-    "KEYCLOAK_AUTHORITY": "https://idp.invalid/realms/isolated-boot",
-    "KEYCLOAK_CLIENT_ID": "isolated-boot", "KEYCLOAK_CLIENT_SECRET": secrets.token_urlsafe(48),
     "DATABASE_URL": f"postgresql://astral:isolated_ci_only@{name}-pg:5432/ad_gate_smoke",
     "ATTACHMENT_UPLOAD_ROOT": "/tmp/boot-blobs",
     "PERSONAL_AGENT_ARTIFACT_ROOT": "/tmp/boot-agents",
@@ -118,6 +123,7 @@ docker stop "$namespace-app" >/dev/null
 docker run -d --init --name "$namespace-dev" --network "$namespace" --cpus=2 --memory=2g \
   --label "org.astraldeep.qualification.namespace=$namespace" \
   --env ASTRAL_ENV=development --env PYTHON_DOTENV_DISABLED=1 \
+  --env ASTRAL_NODE_PROFILE=personal --env ASTRAL_NODE_DATA_DIR=/tmp/development-node \
   --env DATABASE_URL="postgresql://astral:isolated_ci_only@$namespace-pg:5432/ad_gate_development" \
   --env ATTACHMENT_UPLOAD_ROOT=/tmp/development-blobs \
   --env PERSONAL_AGENT_ARTIFACT_ROOT=/tmp/development-agents "$image" >/dev/null

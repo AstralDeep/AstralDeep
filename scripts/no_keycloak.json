@@ -14,10 +14,6 @@
   ],
   "pending": [
     {
-      "path": ".env.example",
-      "until": "T8"
-    },
-    {
       "path": ".github/workflows/release-readiness.yml",
       "until": "T8.6",
       "bound_by": ".github/workflows/release-readiness-protected.yml"
@@ -190,10 +186,6 @@
     {
       "path": "plane/src/astralplane/repositories/identity.py",
       "until": "T18"
-    },
-    {
-      "path": "scripts/backend_web_image_gate.sh",
-      "until": "T8"
     },
     {
       "path": "scripts/backend_web_service_materials.py",
