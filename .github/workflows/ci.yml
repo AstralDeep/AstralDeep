@@ -21,6 +21,7 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  ASTRAL_NODE_PROFILE: personal
 
 jobs:
   kernel-binding:
