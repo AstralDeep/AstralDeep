@@ -1,7 +1,45 @@
 # Tasks for spec 106
 
-**Date:** 2026-11-13. **Status (2026-11-15):** phase 0 is in progress. Spec 105 is complete, and part of
-phase 1 landed early with its closure. See [Progress](#progress-2026-11-15).
+**Date:** 2026-11-13. **Status:** complete 2026-11-18. See [Completion](#completion-2026-11-18).
+
+## Completion, 2026-11-18
+
+All phases are merged. Deep PRs 673 to 677, Projection PRs 214 and 215, and Kernel PR 16 closed the
+spec. The owner marked it complete on 2026-11-18.
+
+Released as AstralDeep 2.1.0:
+
+- Mac 2.1.0 (106) is published at `macos-v2.1.0-106` with the notarized DMG, the Sparkle appcast and
+  update policy, and the macOS and Linux x86_64 node packs.
+- iPhone and watch 2.1.0 (107) are uploaded to App Store Connect. Nothing is submitted for review.
+- Both were built on the owner's Mac from Deep `4d541de5`, Projection `d3a296b3` and Kernel `eb9821f4`.
+  GitHub's hosted macOS runners were out of capacity, so neither `release-macos.yml` nor
+  `apple-release.yml` produced them. `RELEASE_MACOS_HOLD` stays set.
+
+Unfinished work:
+
+- The Linux arm64 node pack is left out of 2.1.0 (Deep PR 675, owner decision). Deep's ARM runner
+  builds a Kernel wheel that differs from the pinned digest, which the Kernel repository's own runs
+  reproduce. Find the difference and restore the pack.
+- The Linux node pack archive carries `node-pack-build.json`, and `release_macos.py` refuses a pack
+  folder that holds more than the descriptor, manifest and archive. The CI release job fails on this
+  until one side changes.
+- Kernel PR 14 (per-seal key scan and stale-write checks) is held for a PHI selection regression.
+- The Kernel macOS build script should set the dylib install name. Deep passes it in CI flags today.
+- Not live-verified: the Mac paste fields taking focus, and `act` waiting for the turn cleanup. Both
+  have CI coverage only.
+- CI follow-ups: a `MacStdioTests` crash on macOS runners, the node opening a contact's shared store
+  under some sync timing (`test_node_share_serving`), the priority-inversion warnings now allowed in
+  the Mac coverage lanes, the order-dependent `test_a_turn_offers_only_catalog_tools`, and the
+  security benchmark positive control.
+- Code cleanup: the `refreshToken` and `__ASTRAL_TOKEN__` leftovers in Projection's `client.js`,
+  unreachable server-mode code in Deep (OD3), and the unhashed build and twine installs in
+  `release-vessel.yml`.
+- Docs: the downloads page on the site and the `AGENTS.md` diff for owner review.
+- The Android and Windows clients stay paused (O9).
+
+Earlier status (2026-11-15): phase 0 was in progress. Spec 105 was complete, and part of phase 1
+landed early with its closure. See [Progress](#progress-2026-11-15).
 Read [spec.md](spec.md) for intent and [plan.md](plan.md) for order and exit criteria. Evidence for
 the paths is in [research.md](research.md). A path "decided in this task" means the spec and research
 name no location, and the task records the choice.

@@ -1,7 +1,7 @@
 # Spec 106: Astral without a sign-in or Docker
 
-**Date:** 2026-11-13. **Status:** design only, not implemented (O7). It starts after spec 105 merges.
-Nothing here is built, tested or deployed. The owner answered this spec's open questions on 2026-11-13
+**Date:** 2026-11-13. **Status:** complete 2026-11-18, released as AstralDeep 2.1.0. The unfinished work is
+listed in [tasks.md](tasks.md#completion-2026-11-18). The design text below is unchanged. The owner answered this spec's open questions on 2026-11-13
 (O8 to O29), reviewed the design calls, and deferred one question until phase 0 reports. **Companions:** [plan.md](plan.md) (phases and exit criteria),
 [tasks.md](tasks.md), [research.md](research.md) (evidence, with file and source references). **Builds on:**
 [spec 105](../105-decentralized-personal-mesh/spec.md) and its
