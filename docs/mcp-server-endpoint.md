@@ -8,11 +8,10 @@ advertisement while disabled.
 
 1. Configure `PUBLIC_BASE_URL` as the deployment's canonical external HTTPS
    origin. Do not derive this value from untrusted forwarding headers.
-2. Configure the dedicated `astral-mcp` Keycloak audience and the
-   `mcp:discover`, `mcp:tools:read`, and `mcp:tools:invoke` scopes as described
-   in [keycloak-realm-settings.md](keycloak-realm-settings.md).
-3. Forward `/mcp` and `/.well-known/oauth-protected-resource/mcp` through the
-   TLS reverse proxy. Preserve `Authorization`, `MCP-Protocol-Version`,
+2. Mint a caller ticket for each client with the owner's device, as described
+   in [personal-node.md](personal-node.md). The endpoint refuses a request
+   without one and answers with a challenge.
+3. Forward `/mcp` through the TLS reverse proxy. Preserve `Authorization`, `MCP-Protocol-Version`,
    `Mcp-Method`, and `Mcp-Name` request headers.
 4. Set `FF_MCP_SERVER=true` and recreate the orchestrator container. Feature
    flags are read once at import; a restart of an unchanged container is not a
@@ -23,20 +22,19 @@ The optional external-host Work panel resources additionally require
 does not exist: listing returns only status and retained-result resources and
 a panel read returns `resource_unavailable`.
 
-The endpoint accepts header bearer credentials only, validates issuer and the
-`astral-mcp` audience, caps bodies at 1 MiB, and uses the durable `mcp`
+The endpoint accepts a caller ticket in the `Authorization` header only, verifies it against the node's own roster, caps bodies at 1 MiB, and uses the durable `mcp`
 admission class (8 active, 32 queued, 5-second maximum wait). Its CORS policy
 allows only the canonical deployment origin and never allows credentials.
 
 ## Authorization model
 
-OAuth scopes are admission, never sufficient authorization. `tools/list`
+A valid caller ticket is admission, never sufficient authorization. `tools/list`
 projects the caller's current live, non-draft, non-disabled, non-security-
 blocked, per-tool-authorized catalog. `tools/call` recomputes that projection
 and then runs `_authorize_and_prepare`, including policy, PHI/taint,
-credential, delegation, hook, and concurrency gates. The inbound MCP bearer
+credential, delegation, hook, and concurrency gates. The inbound caller ticket
 is discarded after validation and is never forwarded; downstream delegation
-authority is separately minted from verified claims and current permissions.
+authority is separately minted from the verified ticket and current permissions.
 
 Every destructive remote-compute verb is refused before agent transport on
 the unattended MCP channel. Run such work in Astral's interactive UI so the

@@ -12,7 +12,7 @@ This is the single repository instruction file for all coding agents, including 
 
 ## Mental model
 
-AstralDeep is a clinical-AI, multi-agent platform whose FastAPI orchestrator is a node in an owner's personal mesh. Peers embed the shared Rust AstralKernel for signed event logs, sync, authorization, turns and adaptation; AstralPlane supplies SQLite for personal nodes and PostgreSQL for institution nodes. The orchestrator serves REST, WebSocket/A2A transport, the web shell and static assets on port 8001, and bundled first-party agents retain their runtime authorization and audit gates regardless of transport placement.
+AstralDeep is a clinical-AI, multi-agent platform whose FastAPI orchestrator is a node in an owner's personal mesh. Peers embed the shared Rust AstralKernel for signed event logs, sync, authorization, turns and adaptation; AstralPlane supplies SQLite for personal nodes and PostgreSQL where a node is configured for it, as in development and CI. The orchestrator serves REST, WebSocket/A2A transport, the web shell and static assets on port 8001. The browser shell has no sign-in until a browser mesh client exists. Bundled first-party agents retain their runtime authorization and audit gates regardless of transport placement.
 
 The UI contract is:
 
@@ -24,7 +24,7 @@ The evidence control adapter depends on the orchestrator's private ephemeral arc
 
 - There is no React/Vite SPA. Do not reintroduce a parallel frontend source of truth.
 - Web UI is backend-served HTML plus vanilla JS/CSS owned under `components/AstralProjection/backend/webrender/` and exposed to Deep through the installed Projection resource accessors.
-- Apple clients (Swift/SwiftUI) embed the kernel and render structured UI from their local signed log. Android (Kotlin/Compose) and Windows (PySide6) remain thin node clients until their kernel ports qualify; a protocol change must preserve those clients during the transition.
+- Apple clients (Swift/SwiftUI) embed the kernel and render structured UI from their local signed log. Android and Windows are paused until their kernel ports qualify and open to a "not available yet" screen.
 - Voice runs on-device through the same turn and consent gates as typed input; no hosted-voice or system-speech fallback may silently substitute for an unavailable local model.
 - "LLM proposes, code decides" is the default design rule: models may draft layouts or artifacts, but deterministic code validates, authorizes, bounds, and renders them.
 
@@ -83,7 +83,7 @@ The pinned `components/AstralPrimitives` repository owns primitive definitions a
 
 ## Security, identity, and data
 
-- Personal-mesh identity is the mesh keys. A personal node authenticates a caller only by a roster-listed device key with a mesh ticket, or by an owner-minted caller ticket, and refuses every bearer JWT. Preserve ticket-based attenuated delegation with exact action, actor-chain, roster, stop, expiry, receipt and consent bindings, owner isolation keyed on the mesh id, tool permission and policy gates, PHI gates, egress validation, confirmation gates and hash-chained audit provenance, and never bypass the normal dispatch path. Outside services authenticate through their own adapters. Separate server and institution services keep their own Keycloak user IAM and RFC 8693 exchange until both are removed.
+- Personal-mesh identity is the mesh keys. A personal node authenticates a caller only by a roster-listed device key with a mesh ticket, or by an owner-minted caller ticket, and refuses every bearer JWT. Preserve ticket-based attenuated delegation with exact action, actor-chain, roster, stop, expiry, receipt and consent bindings, owner isolation keyed on the mesh id, tool permission and policy gates, PHI gates, egress validation, confirmation gates and hash-chained audit provenance, and never bypass the normal dispatch path. Outside services authenticate through their own adapters. An institution is an outside service with its own authorization server.
 - Treat in-process first-party agents as trusted only for transport placement; runtime authorization and auditing still apply. Treat external and user-authored agents as untrusted at the server boundary.
 - Backend access to user-controlled URLs must use `backend/shared/external_http.py` and its allow/deny/size/TLS controls.
 - `.env` may be inspected when relevant to diagnosis, setup, or live verification; the user has explicitly authorized this. Never echo secret values or commit the file. Treat credentials, tokens, encryption keys, agent keys, user uploads, generated user code, `backend/data`, `backend/tmp`, and synthesized `backend/knowledge` as sensitive: access them only when the task requires it, redact sensitive output, and never stage them.
@@ -148,7 +148,7 @@ vessel/.venv/bin/pip install -e vessel pytest==9.2.0 pytest-asyncio==1.4.1.post1
 cd vessel && .venv/bin/python -m pytest -q -rs && .venv/bin/ruff check .
 ```
 
-When driving a running iOS Simulator app, prefer available simulator MCP tools, inspect screenshots or accessibility trees, and use semantic labels for interaction. Keep `xcodebuild` for builds/tests; drive the macOS app directly because it is not a simulator. Apple sign-in uses real PKCE and must be completed by the user, without a development-token bypass.
+When driving a running iOS Simulator app, prefer available simulator MCP tools, inspect screenshots or accessibility trees, and use semantic labels for interaction. Keep `xcodebuild` for builds/tests; drive the macOS app directly because it is not a simulator. Astral has no sign-in. Sign-in to an outside service uses the system browser and is completed by the owner. Test builds use the seeded test mesh and fixture servers.
 
 When replacing an Apple localtest app that holds existing mesh keys, retain its bundle identifier and stable developer signing identity, use Xcode-generated entitlements, and take a stopped data backup first. Use Projection's localtest build script and verify the installed app's actual path and signature. Ad-hoc re-signing or post-build rebranding can invalidate Keychain access across rebuilds; the user must handle any password or presence prompt themselves.
 

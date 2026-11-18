@@ -147,5 +147,5 @@ through guarded startup migrations only.
 - repeated `failed`/watchdog outcomes: inspect structured orchestrator and client
   logs for reason codes, never credential or bundle source contents.
 
-The broader service posture, Keycloak setup, TLS, readiness, and rollback entry
+The broader service posture, TLS, readiness, and rollback entry
 points remain in the [production deployment guide](production-deployment.md).
