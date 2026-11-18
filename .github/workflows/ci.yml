@@ -1428,21 +1428,11 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  no-docker:
-    name: Install and run the node with no Docker on ${{ matrix.name }}
-    needs: [node-pack-linux, node-pack-macos]
-    runs-on: ${{ matrix.runner }}
+  no-docker-macos:
+    name: Install and run the node with no Docker on macos-26
+    needs: [node-pack-macos]
+    runs-on: macos-26
     timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: macos-26
-            runner: macos-26
-            pack: node-pack-macos
-          - name: ubuntu-24.04
-            runner: ubuntu-24.04
-            pack: node-pack-linux
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
@@ -1453,10 +1443,29 @@ jobs:
           python-version: "3.11"
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: ${{ matrix.pack }}
+          name: node-pack-macos
+          path: ${{ runner.temp }}/pack
+      - name: Run the pack with no Docker on PATH
+        run: python scripts/no_docker_check.py --pack "$RUNNER_TEMP/pack"
+
+  no-docker-linux:
+    name: Install and run the node with no Docker on ubuntu-24.04
+    needs: [node-pack-linux]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: node-pack-linux
           path: ${{ runner.temp }}/pack
       - name: Print the runner Landlock ABI
-        if: ${{ runner.os == 'Linux' }}
         run: |
           uname -srm
           python - <<'PY'
@@ -1490,7 +1499,8 @@ jobs:
       - no-keycloak
       - plane-quality
       - plane-package-compatibility
-      - no-docker
+      - no-docker-macos
+      - no-docker-linux
       - vessel-lint
       - vessel-test
       - vessel-isolation
@@ -1518,7 +1528,8 @@ jobs:
           [[ '${{ needs.no-keycloak.result }}' == 'success' ]]
           [[ '${{ needs.plane-quality.result }}' == 'success' ]]
           [[ '${{ needs.plane-package-compatibility.result }}' == 'success' ]]
-          [[ '${{ needs.no-docker.result }}' == 'success' ]]
+          [[ '${{ needs.no-docker-macos.result }}' == 'success' ]]
+          [[ '${{ needs.no-docker-linux.result }}' == 'success' ]]
           [[ '${{ needs.vessel-lint.result }}' == 'success' ]]
           [[ '${{ needs.vessel-test.result }}' == 'success' ]]
           [[ '${{ needs.vessel-isolation.result }}' == 'success' ]]
