@@ -193,6 +193,10 @@ cryptography==50.0.2 \
     --hash=sha256:fa8f5efb344d6908a1ce62f4a24e2e5780f825d6f53f5f50ec5ffacac72936cb \
     --hash=sha256:fdd28f912fccfec1846a94e2e1e8f9b0012f557f0c46fe4f3eb0d7a87afcf90b
     # via -r requirements.in
+editables==0.6 \
+    --hash=sha256:1163834902381c4613787951c5914800fdf155ae08848a373b8ea5006780977c \
+    --hash=sha256:d70e4698078a1d033e7786d9c64e5be070d058a67c21417024d38a58ac20aa43
+    # via -r requirements.in
 fastapi==0.163.2 \
     --hash=sha256:825a8fdd18d7bfcb1b86735e9805c59b7400d55c4060d3df5331b62ae452f004 \
     --hash=sha256:e605c4c9b94be78b43aa8239a62ccf7b6684346cdc9e053633feab0ab21b87c7
