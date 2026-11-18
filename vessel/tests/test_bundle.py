@@ -20,8 +20,9 @@ def sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def make_pack(out: Path, *, version="1.0.0", platform="macos-arm64", extra=None, tamper=False, link=None,
+def make_pack(out: Path, *, version="1.0.0", platform=None, extra=None, tamper=False, link=None,
               glibc=None, files=None) -> tuple[Path, str]:
+    platform = platform or bundle.platform_name()
     out.mkdir(parents=True, exist_ok=True)
     files = files or {"python/bin/python3.11": (b"#!/bin/sh\n", True), "app/backend/x.py": (b"print(1)\n", False)}
     entries = [{"path": p, "sha256": sha(d), "size": len(d), "executable": x} for p, (d, x) in files.items()]
@@ -62,39 +63,40 @@ def make_pack(out: Path, *, version="1.0.0", platform="macos-arm64", extra=None,
 def test_a_good_pack_installs_and_reinstalls(tmp_path):
     descriptor, digest = make_pack(tmp_path / "src")
     root = tmp_path / "bundles"
-    first = install(str(descriptor), digest, root, platform="macos-arm64")
+    first = install(str(descriptor), digest, root, platform=bundle.platform_name())
     assert first.version == "1.0.0" and first.python.name == "python3.11" and first.python.stat().st_mode & 0o100
     assert first.distributions == {"httpx": "0.28.1"}
-    again = install(str(descriptor), digest, root, platform="macos-arm64")
+    again = install(str(descriptor), digest, root, platform=bundle.platform_name())
     assert again == first
 
 
 def test_a_folder_may_stand_for_its_descriptor_and_a_local_pack_needs_no_pin(tmp_path):
     make_pack(tmp_path / "src")
-    assert install(str(tmp_path / "src"), None, tmp_path / "b", platform="macos-arm64").version == "1.0.0"
+    assert install(str(tmp_path / "src"), None, tmp_path / "b", platform=bundle.platform_name()).version == "1.0.0"
 
 
 def test_a_remote_descriptor_needs_a_pin(tmp_path):
     with pytest.raises(BundleError, match="bundle.digest"):
-        install("https://example.test/node-pack.json", None, tmp_path, platform="macos-arm64")
+        install("https://example.test/node-pack.json", None, tmp_path, platform=bundle.platform_name())
 
 
 def test_a_wrong_descriptor_digest_refuses(tmp_path):
     descriptor, _ = make_pack(tmp_path / "src")
     with pytest.raises(BundleError, match="pinned SHA-256"):
-        install(str(descriptor), "0" * 64, tmp_path / "b", platform="macos-arm64")
+        install(str(descriptor), "0" * 64, tmp_path / "b", platform=bundle.platform_name())
 
 
 def test_another_platform_refuses(tmp_path):
-    descriptor, digest = make_pack(tmp_path / "src", platform="linux-x86_64")
+    other = next(p for p in bundle.PLATFORMS if p != bundle.platform_name())
+    descriptor, digest = make_pack(tmp_path / "src", platform=other)
     with pytest.raises(BundleError, match="bundle.platform"):
-        install(str(descriptor), digest, tmp_path / "b", platform="macos-arm64")
+        install(str(descriptor), digest, tmp_path / "b", platform=bundle.platform_name())
 
 
 def previous_install(tmp_path):
     descriptor, digest = make_pack(tmp_path / "old", version="1.0.0")
     root = tmp_path / "bundles"
-    old = install(str(descriptor), digest, root, platform="macos-arm64")
+    old = install(str(descriptor), digest, root, platform=bundle.platform_name())
     snapshot = sorted(str(p.relative_to(root)) for p in root.rglob("*"))
     return root, old, snapshot
 
@@ -107,7 +109,7 @@ def test_a_bad_pack_refuses_and_keeps_the_previous_bundle(tmp_path, case):
               "link": {"link": ("app/escape", "../../../etc/passwd")}}[case]
     descriptor, digest = make_pack(tmp_path / "new", version="2.0.0", **kwargs)
     with pytest.raises(BundleError):
-        install(str(descriptor), digest, root, platform="macos-arm64")
+        install(str(descriptor), digest, root, platform=bundle.platform_name())
     assert sorted(str(p.relative_to(root)) for p in root.rglob("*")) == snapshot
     assert (old.root / "app/backend/x.py").read_bytes() == before
 
@@ -119,7 +121,7 @@ def test_a_tampered_archive_refuses(tmp_path):
     data[-12] ^= 1
     archive.write_bytes(bytes(data))
     with pytest.raises(BundleError, match="archive"):
-        install(str(descriptor), digest, tmp_path / "b", platform="macos-arm64")
+        install(str(descriptor), digest, tmp_path / "b", platform=bundle.platform_name())
     assert not any((tmp_path / "b").glob("1.0.0"))
 
 
@@ -166,6 +168,6 @@ def test_platform_name_and_unsupported(monkeypatch):
 
 def test_addresses_are_limited(tmp_path):
     with pytest.raises(BundleError, match="bundle.address"):
-        install("http://evil.test/node-pack.json", "a" * 64, tmp_path, platform="macos-arm64")
+        install("http://evil.test/node-pack.json", "a" * 64, tmp_path, platform=bundle.platform_name())
     with pytest.raises(BundleError, match="bundle.unreachable"):
-        install(str(tmp_path / "none.json"), None, tmp_path, platform="macos-arm64")
+        install(str(tmp_path / "none.json"), None, tmp_path, platform=bundle.platform_name())
