@@ -39,6 +39,26 @@ from tests.helpers.xdist_database import drop_worker_database, isolate_worker_da
 WORKER_DATABASE = isolate_worker_database(os.environ)
 
 
+ASYNC_TEST_DEADLINE_SECONDS = 240
+
+
+def pytest_collection_modifyitems(items):
+    import functools
+    import inspect
+
+    for item in items:
+        function = getattr(item, "obj", None)
+        if not inspect.iscoroutinefunction(function):
+            continue
+
+        @functools.wraps(function)
+        async def bounded(*args, __function=function, **kwargs):
+            async with asyncio.timeout(ASYNC_TEST_DEADLINE_SECONDS):
+                return await __function(*args, **kwargs)
+
+        item.obj = bounded
+
+
 def pytest_unconfigure(config):
     if WORKER_DATABASE is not None:
         drop_worker_database(*WORKER_DATABASE)
