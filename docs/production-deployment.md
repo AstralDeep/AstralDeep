@@ -441,8 +441,10 @@ identity must match them.
 notarizes and staples the app, builds `AstralDeep-<version>-<build>-arm64.dmg`
 (the app plus an Applications shortcut), signs, notarizes and staples the DMG,
 checks Gatekeeper, and re-inspects the app inside the mounted image. The DMG is
-also the Sparkle enclosure. The release is `stable`, never a prerelease and
-never marked Latest (the Windows updater reads `/releases/latest`). Its assets
+also the Sparkle enclosure. Publishing a stable release sets GitHub’s Latest badge
+and verifies the tag at `/releases/latest`. A preview leaves the badge on the
+previous stable release. Older Windows updaters that read this endpoint skip
+macOS tags. The macOS release assets
 are the DMG, `SHA256SUMS`, `release-provenance.json`, the notes `.md`,
 `downloads.json`, `appcast.xml`, `mac-update-policy.json` and
 `mac-update-policy.json.sig`. `scripts/macos_release_notes.py` writes the notes

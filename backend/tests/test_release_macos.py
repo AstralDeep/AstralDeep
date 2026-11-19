@@ -125,6 +125,7 @@ class FakeRunner(release.Runner):
         self.projection_changed = [release.NODE_PACK_METADATA_PATH]
         self.listing: str | None = None
         self.latest_tag: str | None = "v0.6.0"
+        self.apply_latest = True
         self.mounted: list[Path] = []
         self.profile = decoded_profile()
         self.embedded: bytes | None = PROFILE_BYTES
@@ -243,6 +244,9 @@ class FakeRunner(release.Runner):
             return release.Result(0 if self.release_exists else 1, "", "release not found")
         if command[1:3] == ["release", "create"]:
             self.uploads = [Path(part) for part in command[command.index("--latest=false") + 1:] if part != "--prerelease"]
+            return None
+        if command[1:3] == ["release", "edit"] and "--latest" in command and self.apply_latest:
+            self.latest_tag = command[3]
             return None
         if command[1] == "api" and command[2].endswith("/releases/latest"):
             if self.latest_tag is None:
@@ -1010,35 +1014,45 @@ def test_publish_uploads_site_files_as_release_assets(env):
     assert any(line.startswith("Published macos-v2.0.0-71") for line in env.lines)
 
 
-def test_stable_channel_is_not_prerelease_and_not_latest(env):
+def test_publishing_a_stable_draft_marks_it_latest(env):
     subject, runner = env.release("--publish")
     subject.execute()
     create = runner.last_create()
     assert "--latest=false" in create and "--prerelease" not in create
     edit = next(c for c in runner.history if c[:3] == ["gh", "release", "edit"])
-    assert "--prerelease" not in edit and "--latest=false" in edit
+    assert "--prerelease" not in edit and "--latest" in edit
     joined = [" ".join(c) for c in runner.history]
     check = next(i for i, c in enumerate(joined) if c.startswith("gh api repos/AstralDeep/AstralDeep/releases/latest"))
     assert joined.index(" ".join(edit)) < check
 
 
-@pytest.mark.parametrize(("latest", "message"), [("macos-v2.0.0-71", "became the repository's Latest release"),
-                                                  ("broken", "Could not confirm the Latest release")])
-def test_publish_refuses_a_release_that_became_latest(env, latest, message):
-    subject, runner = env.release("--publish")
+@pytest.mark.parametrize(("channel", "latest", "message"), [
+    ("stable", "v0.6.0", "did not mark stable release"),
+    ("stable", None, "did not mark stable release"),
+    ("preview", "macos-v2.0.0-71", "marked preview release"),
+])
+def test_publish_detects_incorrect_latest_status(env, channel, latest, message):
+    subject, runner = env.release("--publish", "--channel", channel)
+    runner.apply_latest = False
     runner.latest_tag = latest
-    if latest == "broken":
-        runner.fail.append(lambda c: c[:3] == ["gh", "api", "repos/AstralDeep/AstralDeep/releases/latest"])
     with pytest.raises(release.ReleaseError, match=message):
         subject.execute()
-    assert not any(c[0] == "curl" and "--range" in c for c in runner.history)
 
 
-def test_publish_accepts_a_repository_without_a_latest_release(env):
+def test_publish_reports_an_unavailable_latest_endpoint(env):
     subject, runner = env.release("--publish")
+    runner.fail.append(lambda c: c[:3] == ["gh", "api", "repos/AstralDeep/AstralDeep/releases/latest"])
+    with pytest.raises(release.ReleaseError, match="Could not confirm the Latest release"):
+        subject.execute()
+
+
+def test_preview_can_publish_before_the_first_stable_release(env):
+    subject, runner = env.release("--publish", "--channel", "preview")
     runner.latest_tag = None
     subject.execute()
-    assert any(line.startswith("Published macos-v2.0.0-71") for line in env.lines)
+    edit = next(c for c in runner.history if c[:3] == ["gh", "release", "edit"])
+    assert "--prerelease" in edit and "--latest=false" in edit
+    assert runner.latest_tag is None
 
 
 def test_provenance_names_the_workflow_run_that_published(env):
