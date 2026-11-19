@@ -59,34 +59,26 @@ class CapturedEvidence:
     scenario_id: str
     run_mode: str
     messages: List[Dict[str, Any]] = field(default_factory=list)
-    components: List[Dict[str, Any]] = field(default_factory=list)
-    workspace_state: List[Dict[str, Any]] = field(default_factory=list)
     audit_rows: List[Dict[str, Any]] = field(default_factory=list)
     audit_chain_ok: Any = True
     client_inspection: Dict[str, Any] = field(default_factory=dict)
-    device_diff: Dict[str, Any] = field(default_factory=dict)
     extra: Dict[str, Any] = field(default_factory=dict)
     near_exposure: bool = False
 
     def redacted(self, secret_values: List[str]) -> "CapturedEvidence":
         msgs, h1 = redact(self.messages, secret_values)
-        comps, h2 = redact(self.components, secret_values)
-        ws, h3 = redact(self.workspace_state, secret_values)
-        audit, h4 = redact(self.audit_rows, secret_values)
-        extra, h5 = redact(self.extra, secret_values)
+        audit, h2 = redact(self.audit_rows, secret_values)
+        extra, h3 = redact(self.extra, secret_values)
         return CapturedEvidence(
             evidence_id=self.evidence_id,
             scenario_id=self.scenario_id,
             run_mode=self.run_mode,
             messages=msgs,
-            components=comps,
-            workspace_state=ws,
             audit_rows=audit,
             audit_chain_ok=self.audit_chain_ok,
             client_inspection=self.client_inspection,
-            device_diff=self.device_diff,
             extra=extra,
-            near_exposure=any((h1, h2, h3, h4, h5)),
+            near_exposure=any((h1, h2, h3)),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -95,29 +87,10 @@ class CapturedEvidence:
             "scenario_id": self.scenario_id,
             "run_mode": self.run_mode,
             "messages": self.messages,
-            "components": self.components,
-            "workspace_state": self.workspace_state,
             "audit_rows": self.audit_rows,
             "audit_chain_ok": self.audit_chain_ok,
             "client_inspection": self.client_inspection,
-            "device_diff": self.device_diff,
             "extra": self.extra,
             "near_exposure": self.near_exposure,
         }
 
-
-def flatten_components(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    out: List[Dict[str, Any]] = []
-    for msg in messages:
-        if not isinstance(msg, dict):
-            continue
-        mtype = msg.get("type")
-        if mtype == "ui_render":
-            for c in msg.get("components", []) or []:
-                if isinstance(c, dict):
-                    out.append(c)
-        elif mtype == "ui_upsert":
-            for op in msg.get("ops", []) or []:
-                if isinstance(op, dict) and isinstance(op.get("component"), dict):
-                    out.append(op["component"])
-    return out

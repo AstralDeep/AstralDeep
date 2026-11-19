@@ -1,6 +1,5 @@
-"""Autonomous verification harness package: drives the
-upload-parse-SDUI-delegated-authority-audit pipeline and checks tangible UI,
-delegated authority, and backend-only UI across scripted personas.
+"""Autonomous verification harness package: drives the protected tool dispatch and
+the web client surface to check delegated authority and backend-only UI.
 """
 
 __all__ = ["__version__"]

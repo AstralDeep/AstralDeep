@@ -37,7 +37,6 @@ class RunConfig:
         )
     )
     base_url: Optional[str] = None
-    personas: List[str] = field(default_factory=list)
     max_steps: int = 8
     max_turns: int = 6
     timeout_s: float = 60.0

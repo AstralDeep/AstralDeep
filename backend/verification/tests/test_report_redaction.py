@@ -36,33 +36,30 @@ def test_evidence_redacted_sets_near_exposure():
     assert red.near_exposure is True
 
 
-def _verdict(outcome, check="us1.component_from_file"):
+def _verdict(outcome, check="us2.cross_user_refused"):
     return Verdict(verdict_id="v", scope="check", outcome=outcome,
                    run_mode="mock_inprocess",
-                   refs={"persona": "everyday", "scenario": "everyday:primary",
-                         "check": check, "property": "tangible_ui"},
+                   refs={"persona": "xuser", "scenario": "xuser:a",
+                         "check": check, "property": "delegated_authority"},
                    reason="r")
 
 
 def test_build_record_and_dual_report(tmp_path):
     cfg = RunConfig(mode="in_process", run_id="__verif__rep", out_dir=str(tmp_path))
     ev = CapturedEvidence(
-        evidence_id="everyday:primary:ev", scenario_id="everyday:primary",
-        run_mode="mock_inprocess", components=[{"type": "table"}],
-        extra={"file_category": "spreadsheet"},
+        evidence_id="xuser:a:ev", scenario_id="xuser:a", run_mode="mock_inprocess",
     )
     verdicts = [
-        _verdict(Outcome.PASS, "us1.component_from_file"),
-        _verdict(Outcome.PASS, "us1.persisted_with_identity"),
-        _verdict(Outcome.PASS, "us1.re_executable"),
+        _verdict(Outcome.PASS, "us2.cross_user_refused"),
+        _verdict(Outcome.PASS, "us2.delegation_attribution"),
+        _verdict(Outcome.PASS, "us2.audit_chain_unbroken"),
+        _verdict(Outcome.PASS, "us3.no_client_construction"),
         _verdict(Outcome.UNCERTAIN, "us2.denials_audited"),
     ]
-    record = build_record(cfg, verdicts, {"everyday:primary": ev},
-                          auth_mode="mock_inprocess", personas=["everyday"])
-    assert record["coverage"]["file_categories"] == ["spreadsheet"]
-    assert record["coverage"]["component_types"] == ["table"]
+    record = build_record(cfg, verdicts, {"xuser:a": ev}, auth_mode="mock_inprocess")
     assert 0.0 < record["uncertain_ratio"] < 1.0
-    assert any("real contents" in d for d in record["differentiation"])
+    assert len(record["differentiation"]) == 3
+    assert any("cross-user" in d for d in record["differentiation"])
 
     paths = write_report(record, cfg.run_dir)
     assert os.path.exists(paths["json"]) and os.path.exists(paths["markdown"])

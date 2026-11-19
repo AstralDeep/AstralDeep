@@ -14,52 +14,25 @@ from verification.evidence import CapturedEvidence
 from verification.verdict import Outcome, Verdict
 
 _PROPERTY_LABEL = {
-    "tangible_ui": "Tangible server-driven UI",
     "delegated_authority": "Delegated authority",
     "backend_only_ui": "Backend-only UI",
 }
 
 
-def _coverage(evidence: Dict[str, CapturedEvidence]) -> Dict[str, List[str]]:
-    cats: set = set()
-    types: set = set()
-    for ev in evidence.values():
-        for c in ev.components:
-            if isinstance(c, dict) and c.get("type"):
-                types.add(c["type"])
-        cat = (ev.extra or {}).get("file_category")
-        if cat:
-            cats.add(cat)
-    return {"file_categories": sorted(cats), "component_types": sorted(types)}
-
-
-def _differentiation(verdicts: List[Verdict], coverage: Dict[str, List[str]]) -> List[str]:
+def _differentiation(verdicts: List[Verdict]) -> List[str]:
     passed = {
         v.refs.get("check")
         for v in verdicts
         if v.outcome == Outcome.PASS and v.scope == "check"
     }
     claims: List[str] = []
-    if "us1.component_from_file" in passed and coverage["component_types"]:
-        claims.append(
-            "Interactive components built from the uploaded file's real contents "
-            f"({', '.join(coverage['component_types'])})."
-        )
-    if "us1.persisted_with_identity" in passed and "us1.re_executable" in passed:
-        claims.append(
-            "Components persisted under a stable identity and re-executable via the "
-            "permission-gated action path."
-        )
     if "us2.delegation_attribution" in passed and "us2.audit_chain_unbroken" in passed:
         claims.append(
             "Every action recorded on-behalf-of the user by a scoped delegate agent "
             "in an unbroken, tamper-evident audit chain."
         )
     if "us2.cross_user_refused" in passed:
-        claims.append("Strict cross-user isolation of attachments and components.")
-    if "us1.autoparse_safe" in passed:
-        claims.append("Safe on-demand parser drafting (held for admin approval) for an "
-                      "unknown file type.")
+        claims.append("Strict cross-user isolation of attachments.")
     if "us3.no_client_construction" in passed:
         claims.append("UI authored entirely server-side; the client only injects output "
                       "and forwards actions.")
@@ -74,9 +47,7 @@ def build_record(
     started_at: Optional[str] = None,
     finished_at: Optional[str] = None,
     auth_mode: str = "mock_inprocess",
-    personas: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
-    coverage = _coverage(evidence)
     near = any(ev.near_exposure for ev in evidence.values())
     flags: List[str] = []
     if near:
@@ -88,11 +59,9 @@ def build_record(
         "finished_at": finished_at,
         "mode": config.mode,
         "auth_mode": auth_mode,
-        "personas": personas or [],
-        "coverage": coverage,
         "verdicts": [v.to_dict() for v in verdicts],
         "uncertain_ratio": round(n_uncertain / len(verdicts), 4) if verdicts else 0.0,
-        "differentiation": _differentiation(verdicts, coverage),
+        "differentiation": _differentiation(verdicts),
         "flags": flags,
         "evidence": {eid: ev.to_dict() for eid, ev in evidence.items()},
     }
@@ -109,7 +78,6 @@ def _render_markdown(record: Dict[str, Any]) -> str:
         lines.append("  - NOTE: this is a development mock run — NOT a real-realm "
                      "delegated-authority guarantee.")
     lines.append(f"- Window: {record.get('started_at')} -> {record.get('finished_at')}")
-    lines.append(f"- Personas: {', '.join(record['personas']) or '(none)'}")
     lines.append(f"- Uncertain ratio: {record['uncertain_ratio']}")
     if record["flags"]:
         lines.append(f"- Flags: {', '.join(record['flags'])}")
@@ -126,13 +94,6 @@ def _render_markdown(record: Dict[str, Any]) -> str:
             f"| {refs.get('persona', '-')} | {prop} | {refs.get('check', v.get('scope'))} "
             f"| {v['outcome'].upper()} | {v.get('reason', '')[:80]} |"
         )
-    lines.append("")
-
-    cov = record["coverage"]
-    lines.append("## Coverage (observed only)")
-    lines.append("")
-    lines.append(f"- File categories: {', '.join(cov['file_categories']) or '(none)'}")
-    lines.append(f"- Component types: {', '.join(cov['component_types']) or '(none)'}")
     lines.append("")
 
     lines.append("## Differentiation (what a text-only assistant cannot do)")
