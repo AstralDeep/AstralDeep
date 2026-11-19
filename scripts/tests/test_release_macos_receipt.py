@@ -1,4 +1,4 @@
-"""Checks the release publisher accepts a Linux node pack folder with or without its build receipt and refuses every malformed or mismatching receipt.
+"""Checks the release publisher accepts a Linux node pack folder with or without its build receipt, refuses every malformed or mismatching receipt, and refuses a bundle folder that does not hold exactly the three packs.
 Folders are plain files sealed by the shared fixtures, so these run on any host, unlike the macOS-gated bundle tests.
 """
 
@@ -118,3 +118,18 @@ def test_a_receipt_beside_a_macos_pack_is_refused(subject, tmp_path):
     put(folder, receipt("macos-arm64"))
     with pytest.raises(release.ReleaseError, match="exactly its descriptor"):
         subject.read_pack(folder, "macos-arm64")
+
+
+@pytest.mark.parametrize("present", [
+    (),
+    ("macos-arm64", "linux-x86_64"),
+    ("macos-arm64", "linux-aarch64", "linux-x86_64", "linux-riscv64"),
+])
+def test_a_bundle_folder_without_exactly_the_three_packs_is_refused(subject, tmp_path, present):
+    root = tmp_path / "bundle"
+    root.mkdir()
+    for name in present:
+        (root / name).mkdir()
+    subject.args.node_bundle_dir = str(root)
+    with pytest.raises(release.ReleaseError, match="exactly the macos-arm64, linux-aarch64 and linux-x86_64 packs"):
+        subject.verify_node_bundle()
