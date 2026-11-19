@@ -64,32 +64,31 @@ def filter_text(text: str, *, max_tokens: int = 2048) -> Tuple[str, List[Dict[st
     ``{"start": int, "end": int, "category": str, "replacement": str}``
 
     The function is **fail‑closed** – any exception results in the original text
-    being returned together with an empty detection list and a warning logged.
+    being returned together with an empty list of detections.
     """
     try:
-        pf = _get_filter()
-        result: Any = pf.redact(text, max_tokens=max_tokens)
-        # ``result.redacted_text`` already contains the replacements.
-        # ``result.spans`` is a list of tuples (start, end, category, replacement)
+        filter_instance = _get_filter()
+        result = filter_instance.redact(text, max_tokens=max_tokens)
+        
+        # Convert spans to the expected dictionary format
         detections: List[Dict[str, Any]] = []
-        if hasattr(result, 'spans') and result.spans:
-            for span in result.spans:
-                if isinstance(span, (list, tuple)) and len(span) >= 4:
-                    detections.append({
-                        "start": int(span[0]),
-                        "end": int(span[1]),
-                        "category": str(span[2]),
-                        "replacement": str(span[3]),
-                    })
+        for span in result.spans:
+            detections.append({
+                "start": span[0],
+                "end": span[1],
+                "category": span[2],
+                "replacement": span[3],
+            })
+            
         return result.redacted_text, detections
-    except Exception as exc:
-        logger.warning("Privacy filter failed: %s", exc)
+    except Exception as e:
+        logger.warning("Privacy filter failed: %s", e)
         return text, []
 
 def redact_with_fallback(text: str) -> str:
     """Convenience wrapper that returns only the redacted text.
     
-    If the filter fails, returns the original text unchanged.
+    If the filter fails, it returns the original text.
     """
     redacted, _ = filter_text(text)
     return redacted

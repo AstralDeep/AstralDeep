@@ -1,5 +1,6 @@
 import builtins
 import logging
+import os
 from unittest import mock
 
 import pytest
@@ -58,7 +59,7 @@ def test_filter_text_failure(monkeypatch, caplog):
     assert any("Privacy filter failed" in rec.message for rec in caplog.records)
 
 # ---------------------------------------------------------------------------
-# Test the convenience helper ``redact_with_fallback``
+# Test the convenience helper ``redact_with_fallback`` success path
 # ---------------------------------------------------------------------------
 def test_redact_with_fallback_uses_filter(monkeypatch):
     # Mock filter_text to return a known redacted string
@@ -66,19 +67,69 @@ def test_redact_with_fallback_uses_filter(monkeypatch):
     assert pfa.redact_with_fallback("any text") == "[REDACTED]"
 
 # ---------------------------------------------------------------------------
-# Test that missing model assets raise a clear error
+# Test the convenience helper ``redact_with_fallback`` failure path
 # ---------------------------------------------------------------------------
-def test_missing_model_assets(monkeypatch, caplog):
-    # Mock os.path.exists to return False for model files
-    monkeypatch.setattr(pfa.os.path, "exists", lambda x: False)
+def test_redact_with_fallback_failure(monkeypatch):
+    # Mock filter_text to return original text on failure
+    original = "Sensitive Data"
+    monkeypatch.setattr(pfa, "filter_text", lambda txt: (original, []))
+    assert pfa.redact_with_fallback(original) == original
+
+# ---------------------------------------------------------------------------
+# Test _load_filter when OPF is not available
+# ---------------------------------------------------------------------------
+def test_load_filter_no_opf(monkeypatch):
+    monkeypatch.setattr(pfa, "_HAS_OPF", False)
+    with pytest.raises(RuntimeError, match="OpenAI privacy‑filter package not installed"):
+        pfa._load_filter()
+
+# ---------------------------------------------------------------------------
+# Test _load_filter when assets are missing
+# ---------------------------------------------------------------------------
+def test_load_filter_missing_assets(monkeypatch):
+    monkeypatch.setattr(pfa, "_HAS_OPF", True)
+    # Mock os.path.exists to return False
+    monkeypatch.setattr(os.path, "exists", lambda path: False)
+    with pytest.raises(RuntimeError, match="Privacy filter model assets not found"):
+        pfa._load_filter()
+
+# ---------------------------------------------------------------------------
+# Test _load_filter success path
+# ---------------------------------------------------------------------------
+def test_load_filter_success(monkeypatch):
+    monkeypatch.setattr(pfa, "_HAS_OPF", True)
+    # Mock os.path.exists to return True
+    monkeypatch.setattr(os.path, "exists", lambda path: True)
     
-    # Reset the filter instance to force reload
+    # Mock the PrivacyFilter class
+    mock_privacy_filter = mock.Mock()
+    monkeypatch.setattr(pfa, "PrivacyFilter", mock_privacy_filter)
+    
+    pfa._load_filter()
+    
+    mock_privacy_filter.assert_called_once_with(
+        model_path=pfa.MODEL_CHECKPOINT,
+        tokenizer_path=pfa.TOKENIZER_PATH,
+        device="cpu",
+    )
+
+# ---------------------------------------------------------------------------
+# Test _get_filter caching behavior
+# ---------------------------------------------------------------------------
+def test_get_filter_caching(monkeypatch):
+    # Reset the global instance
     pfa._filter_instance = None
     
-    caplog.set_level(logging.WARNING)
-    original = "Test text"
-    out_text, detections = pfa.filter_text(original)
+    mock_filter = mock.Mock()
+    mock_load = mock.Mock(return_value=mock_filter)
+    monkeypatch.setattr(pfa, "_load_filter", mock_load)
     
-    assert out_text == original
-    assert detections == []
-    assert any("Privacy filter failed" in rec.message for rec in caplog.records)
+    # First call should load
+    result1 = pfa._get_filter()
+    assert result1 is mock_filter
+    assert mock_load.call_count == 1
+    
+    # Second call should use cache
+    result2 = pfa._get_filter()
+    assert result2 is mock_filter
+    assert mock_load.call_count == 1
