@@ -40,7 +40,7 @@ UNAVAILABLE = (
 CLASSES = (("unauthorized", 401, UNAUTHORIZED), ("forbidden", 403, FORBIDDEN), ("unavailable", 503, UNAVAILABLE))
 NOTIFICATION_TYPES: tuple[str, ...] = ()
 PRINCIPALS = ("owner-device", "caller-ticket", "outside-service")
-OWNER_SIGNALS = ("consent.requested", "consent.resolved")
+OWNER_SIGNALS = ("ConsentRequested", "ConsentResolved")
 CALLER_SIGNALS = ("consent.blocked", "consent.resumed")
 REDACTED_FIELDS = ("signal", "request")
 

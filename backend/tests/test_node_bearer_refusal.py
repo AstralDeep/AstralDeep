@@ -202,12 +202,13 @@ def test_removed_sign_in_session_and_enrollment_doors_answer_404(node, method, p
 
 
 @pytest.mark.parametrize("credentials", CREDENTIALS)
-def test_the_shell_reads_no_credential_and_never_redirects_to_sign_in(node, credentials):
+def test_the_node_hosts_no_shell_and_never_redirects_to_sign_in(node, credentials):
     headers = {name: value.format(token=node.token) for name, value in credentials.items()}
-    response = node.client.get("/", headers=headers, follow_redirects=False)
-    assert response.status_code in (200, 500), response.status_code
-    assert node.token not in response.text and "value.signature" not in response.text
-    assert "location" not in response.headers
+    for path in ("/", "/static/client.js"):
+        response = node.client.get(path, headers=headers, follow_redirects=False)
+        assert response.status_code == 404, (path, response.status_code)
+        assert node.token not in response.text and "value.signature" not in response.text
+        assert "location" not in response.headers
     _untouched(node)
 
 

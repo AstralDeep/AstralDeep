@@ -36,7 +36,7 @@ Rules for the node:
 
 - Adding a code is compatible. Removing or renaming one raises the format version.
 - A `gate.` code tells the caller only that a safety gate refused. The reason never names the gate's input.
-- A request that needs an approval the owner has not given is refused. Nothing is held open for the caller, and the refusal names no pending consent.
+- No refusal names a pending consent, an approver or another principal.
 
 Rules for a client:
 
@@ -46,11 +46,13 @@ Rules for a client:
 
 ## 4. Request lifecycle
 
-The `/mcp` and `/a2a` doors answer a caller with exactly one result or one error per request.
+The `/mcp` door answers a caller with exactly one result or one error per request.
 
 There is no progress, no partial result and no message the node starts. `subscriptions/listen` answers `"notificationTypes": []`. A client must not invent a notification, a plan event or a turn event.
 
 A notification type added later raises the format version and appears in `notificationTypes`. Until then the tool list is the only information a caller has before it calls.
+
+The `/a2a` door answers a caller's message with one A2A task that ends completed or failed. A caller ticket lists tools through it and cannot call one. The task's status updates are the A2A protocol's own, they concern only that task, and the node adds no notification type to them.
 
 ## 5. Consent visibility
 
@@ -60,7 +62,7 @@ This section fixes who sees it.
 
 | Class | Pending consents | Consent signals |
 |---|---|---|
-| `owner-device` | The full list, through the Kernel's `pending_consents()` | `consent.requested` and `consent.resolved` |
+| `owner-device` | The full list, through the Kernel's `pending_consents()` | The Kernel's turn progress events `ConsentRequested` and `ConsentResolved` |
 | `caller-ticket` on a door that starts no turn | None | None |
 | `caller-ticket` on a door that starts turns | None | `consent.blocked` and `consent.resumed`, for its own turn only |
 | `outside-service` | None | None |
@@ -77,7 +79,9 @@ No door starts a turn for a caller today. The pair is reserved, it has no produc
 
 None are committed. A caller door that starts turns needs its own contract revision, which adds the event names here and the notification types in section 4.
 
-The node runs turns on the Kernel engine only. The same turn therefore emits the same events for every client, which is the condition for committing names later.
+Every client door runs turns on the Kernel engine, so a turn emits the same events for every client. That is the condition for committing names later.
+
+The node's Python loop has no client door. With `FF_SCHEDULER_EXECUTION` on, which is off by default, a stored scheduled job still runs on it. It emits nothing to a caller.
 
 ## 7. Codes of this contract
 

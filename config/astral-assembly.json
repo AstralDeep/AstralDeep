@@ -20,7 +20,7 @@
         {
           "format": "astral.caller-events/v1",
           "path": "specs/106-sign-in-free-clients/contracts/caller-events.md",
-          "sha256": "821c59c14bcc757304c8dbf6172f06913d0b01e58875967933d8be9d557bdecc"
+          "sha256": "59de6643b8bff17964325b2c25f6f412bcc6f0259993cd81d610b122fbdf8bc3"
         }
       ]
     },

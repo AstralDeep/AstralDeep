@@ -55,7 +55,8 @@ Decided and not built:
 
 Still open:
 
-- The Python turn loop's code stays in `backend/orchestrator/`. No client door reaches it: `register_ui` is refused and every bearer is refused. The scheduler's `run_scheduled_turn` and the explicit conformance runner still call it. Deleting it with `hitl_confirmation`, `goal_steering` and message compaction is the OD3 cleanup above, and it is larger than this change.
+- The Python turn loop's code stays in `backend/orchestrator/`. No client door reaches it: `register_ui` is refused, every bearer is refused, and `/a2a` only lists tools for a caller. The explicit conformance runner still calls it. So does the scheduler's `run_scheduled_turn` for a stored job when `FF_SCHEDULER_EXECUTION` is on, which is off by default. Deleting it with `hitl_confirmation`, `goal_steering` and message compaction is the OD3 cleanup above, and it is larger than this change.
+- The `/ws` chat frames and the REST chat routes are still registered behind those refusals. They go with the same cleanup.
 - Projection still carries the web client and its browser suites. Removing them is a Projection change with a pin bump here.
 
 Earlier status (2026-11-15): phase 0 was in progress. Spec 105 was complete, and part of phase 1

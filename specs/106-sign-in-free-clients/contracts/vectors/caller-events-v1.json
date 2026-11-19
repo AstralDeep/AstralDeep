@@ -347,11 +347,11 @@
       },
       "input": {
         "principal": "owner-device",
-        "signal": "consent.requested",
+        "signal": "ConsentRequested",
         "turns": false
       },
       "kind": "visible",
-      "name": "visible_owner_device_no_turns_consent_requested"
+      "name": "visible_owner_device_no_turns_ConsentRequested"
     },
     {
       "expect": {
@@ -359,11 +359,11 @@
       },
       "input": {
         "principal": "owner-device",
-        "signal": "consent.resolved",
+        "signal": "ConsentResolved",
         "turns": false
       },
       "kind": "visible",
-      "name": "visible_owner_device_no_turns_consent_resolved"
+      "name": "visible_owner_device_no_turns_ConsentResolved"
     },
     {
       "expect": {
@@ -406,11 +406,11 @@
       },
       "input": {
         "principal": "owner-device",
-        "signal": "consent.requested",
+        "signal": "ConsentRequested",
         "turns": true
       },
       "kind": "visible",
-      "name": "visible_owner_device_turns_consent_requested"
+      "name": "visible_owner_device_turns_ConsentRequested"
     },
     {
       "expect": {
@@ -418,11 +418,11 @@
       },
       "input": {
         "principal": "owner-device",
-        "signal": "consent.resolved",
+        "signal": "ConsentResolved",
         "turns": true
       },
       "kind": "visible",
-      "name": "visible_owner_device_turns_consent_resolved"
+      "name": "visible_owner_device_turns_ConsentResolved"
     },
     {
       "expect": {
@@ -465,11 +465,11 @@
       },
       "input": {
         "principal": "caller-ticket",
-        "signal": "consent.requested",
+        "signal": "ConsentRequested",
         "turns": false
       },
       "kind": "visible",
-      "name": "visible_caller_ticket_no_turns_consent_requested"
+      "name": "visible_caller_ticket_no_turns_ConsentRequested"
     },
     {
       "expect": {
@@ -477,11 +477,11 @@
       },
       "input": {
         "principal": "caller-ticket",
-        "signal": "consent.resolved",
+        "signal": "ConsentResolved",
         "turns": false
       },
       "kind": "visible",
-      "name": "visible_caller_ticket_no_turns_consent_resolved"
+      "name": "visible_caller_ticket_no_turns_ConsentResolved"
     },
     {
       "expect": {
@@ -524,11 +524,11 @@
       },
       "input": {
         "principal": "caller-ticket",
-        "signal": "consent.requested",
+        "signal": "ConsentRequested",
         "turns": true
       },
       "kind": "visible",
-      "name": "visible_caller_ticket_turns_consent_requested"
+      "name": "visible_caller_ticket_turns_ConsentRequested"
     },
     {
       "expect": {
@@ -536,11 +536,11 @@
       },
       "input": {
         "principal": "caller-ticket",
-        "signal": "consent.resolved",
+        "signal": "ConsentResolved",
         "turns": true
       },
       "kind": "visible",
-      "name": "visible_caller_ticket_turns_consent_resolved"
+      "name": "visible_caller_ticket_turns_ConsentResolved"
     },
     {
       "expect": {
@@ -583,11 +583,11 @@
       },
       "input": {
         "principal": "outside-service",
-        "signal": "consent.requested",
+        "signal": "ConsentRequested",
         "turns": false
       },
       "kind": "visible",
-      "name": "visible_outside_service_no_turns_consent_requested"
+      "name": "visible_outside_service_no_turns_ConsentRequested"
     },
     {
       "expect": {
@@ -595,11 +595,11 @@
       },
       "input": {
         "principal": "outside-service",
-        "signal": "consent.resolved",
+        "signal": "ConsentResolved",
         "turns": false
       },
       "kind": "visible",
-      "name": "visible_outside_service_no_turns_consent_resolved"
+      "name": "visible_outside_service_no_turns_ConsentResolved"
     },
     {
       "expect": {
@@ -642,11 +642,11 @@
       },
       "input": {
         "principal": "outside-service",
-        "signal": "consent.requested",
+        "signal": "ConsentRequested",
         "turns": true
       },
       "kind": "visible",
-      "name": "visible_outside_service_turns_consent_requested"
+      "name": "visible_outside_service_turns_ConsentRequested"
     },
     {
       "expect": {
@@ -654,11 +654,11 @@
       },
       "input": {
         "principal": "outside-service",
-        "signal": "consent.resolved",
+        "signal": "ConsentResolved",
         "turns": true
       },
       "kind": "visible",
-      "name": "visible_outside_service_turns_consent_resolved"
+      "name": "visible_outside_service_turns_ConsentResolved"
     },
     {
       "expect": {
@@ -712,7 +712,7 @@
       },
       "input": {
         "principal": "owner-device",
-        "signal": "consent.approved",
+        "signal": "ConsentApproved",
         "turns": true
       },
       "kind": "visible",
@@ -765,7 +765,7 @@
       "input": {
         "event": {
           "request": "req-1",
-          "signal": "consent.requested"
+          "signal": "ConsentRequested"
         }
       },
       "kind": "redact",

@@ -52,10 +52,10 @@ def generate() -> dict[str, Any]:
                 )
     add("consent_class_unknown_principal", "consent_class", {"principal": "contact", "turns": False})
     add("consent_class_turns_not_boolean", "consent_class", {"principal": "caller-ticket", "turns": 1})
-    add("visible_unknown_signal", "visible", {"principal": "owner-device", "turns": True, "signal": "consent.approved"})
+    add("visible_unknown_signal", "visible", {"principal": "owner-device", "turns": True, "signal": "ConsentApproved"})
     add("redact_drops_everything_but_signal_and_request", "redact", {"event": SECRET_EVENT})
     add("redact_resumed", "redact", {"event": {"signal": "consent.resumed", "request": "req-1", "outcome": "denied"}})
-    add("redact_refuses_an_owner_signal", "redact", {"event": {"signal": "consent.requested", "request": "req-1"}})
+    add("redact_refuses_an_owner_signal", "redact", {"event": {"signal": "ConsentRequested", "request": "req-1"}})
     add("redact_refuses_a_missing_request", "redact", {"event": {"signal": "consent.blocked"}})
     return {
         "spec": SPEC,
