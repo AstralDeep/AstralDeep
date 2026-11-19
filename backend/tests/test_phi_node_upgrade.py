@@ -1,4 +1,4 @@
-"""Proves the node refuses a request turn it cannot protect with the code the client maps to the PHI adoption card, and keeps generated and draft agents off a PHI member node at request time, boot and membership change.
+"""Proves the node refuses a request turn it cannot protect with the code the client maps to the PHI adoption card, and keeps generated and draft agents off every node the owner did not exclude from the PHI group at request time, boot and membership change.
 It drives the real kernel binding through the dev mesh and the bridge, and checks start.py, node_api.py and the exec-policy contract against orchestrator/phi_node_policy.py."""
 
 from __future__ import annotations
@@ -15,7 +15,8 @@ import astral_kernel as ak
 import pytest
 
 import start
-from orchestrator import node_api, node_mesh, phi_node_policy
+from astral_exec.constants import MESSAGES
+from orchestrator import node_api, node_mesh, phi_node_policy, sandbox
 from orchestrator.agent_lifecycle import AgentLifecycleManager
 from orchestrator.local_agents import FIRST_PARTY_AGENT_DIRS
 from tests.helpers.dev_mesh import dev_node
@@ -76,30 +77,38 @@ def test_a_sink_failure_that_names_a_phi_code_surfaces_that_code():
 class Lifecycle:
     def __init__(self):
         self.stopped = 0
+        self.relaunched = 0
 
     async def stop_running_drafts(self):
         self.stopped += 1
         return ["draft"]
 
+    async def relaunch_live_agents(self):
+        self.relaunched += 1
+        return ["live"]
 
-async def test_the_guard_stops_running_drafts_when_the_node_joins_or_rejoins_the_group(tmp_path, monkeypatch):
+
+async def test_the_guard_relaunches_live_agents_only_once_the_owner_excludes_the_node_and_stops_them_when_it_rejoins(tmp_path, monkeypatch):
     async with dev_node(tmp_path, monkeypatch, adopt=False) as mesh:
         node_mesh.install(mesh.node)
         lifecycle = Lifecycle()
         guard = phi_node_policy.DraftGuard(mesh.node, lifecycle)
         try:
             guard.start()
-            await asyncio.sleep(0.5)
-            assert lifecycle.stopped == 0
+            await settled(lambda: lifecycle.stopped >= 1, "the guard to refuse a node that was never excluded")
+            assert lifecycle.relaunched == 0
             await settled(mesh.owner.phi_markers_synced, "the PHI markers to sync")
             mesh.owner.adopt_phi_group()
-            await settled(lambda: lifecycle.stopped >= 1, "the draft agents to stop when the node joins")
+            await settled(mesh.node.phi_member, "the node to join the PHI group")
+            assert lifecycle.relaunched == 0
             mesh.owner.exclude_phi_device(mesh.node_device)
-            await settled(lambda: mesh.node.kernel.phi_group().local_code, "the exclusion to reach the node")
+            await settled(lambda: lifecycle.relaunched == 1, "the live agents to relaunch once the node is excluded")
             await asyncio.sleep(0.5)
+            assert lifecycle.relaunched == 1
             before = lifecycle.stopped
             mesh.owner.include_phi_device(mesh.node_device)
             await settled(lambda: lifecycle.stopped > before, "the draft agents to stop when the node rejoins")
+            assert lifecycle.relaunched == 1
         finally:
             await guard.stop()
             node_mesh.install(None)
@@ -142,13 +151,18 @@ async def test_the_lifecycle_stops_every_running_draft():
 async def test_the_agent_server_route_reports_the_policy_to_a_loopback_caller(tmp_path, monkeypatch):
     local = SimpleNamespace(client=SimpleNamespace(host="127.0.0.1"), headers={})
     response = SimpleNamespace(headers={})
-    assert await node_api.get_agent_server_policy(local, response) == {"allowed": True}
+    assert await node_api.get_agent_server_policy(local, response) == {
+        "allowed": False, "code": "exec.agent_server_unsupported", "reason": "not_excluded", "message": MESSAGES["not_excluded"],
+    }
     async with dev_node(tmp_path, monkeypatch) as mesh:
         node_mesh.install(mesh.node)
         try:
             assert await node_api.get_agent_server_policy(local, response) == {
-                "allowed": False, "code": "exec.agent_server_unsupported", "reason": "phi_node", "message": phi_node_policy.MESSAGE,
+                "allowed": False, "code": "exec.agent_server_unsupported", "reason": "phi_node", "message": MESSAGES["phi_node"],
             }
+            mesh.owner.exclude_phi_device(mesh.node_device)
+            await settled(lambda: mesh.node.kernel.phi_group().local_code, "the exclusion to reach the node")
+            assert await node_api.get_agent_server_policy(local, response) == {"allowed": True}
             with pytest.raises(Exception) as remote:
                 await node_api.get_agent_server_policy(SimpleNamespace(client=SimpleNamespace(host="10.0.0.9"), headers={}), response)
             assert getattr(remote.value, "status_code", None) == 403
@@ -160,27 +174,29 @@ def fake_reply(payload):
     return lambda url, timeout: io.BytesIO(json.dumps(payload).encode())
 
 
-def test_start_py_launches_generated_agents_only_where_the_node_allows_them(monkeypatch):
-    monkeypatch.setattr(start.urllib.request, "urlopen", fake_reply({"allowed": False}))
-    assert start._agent_servers_refused(8001) is True
+def test_start_py_launches_generated_agents_only_after_the_node_answers_allowed(monkeypatch):
     monkeypatch.setattr(start.urllib.request, "urlopen", fake_reply({"allowed": True}))
     assert start._agent_servers_refused(8001) is False
+    for answer in ({"allowed": False}, {"allowed": "true"}, {}, ["allowed"]):
+        monkeypatch.setattr(start.urllib.request, "urlopen", fake_reply(answer))
+        assert start._agent_servers_refused(8001) is True
 
     def http(code):
         def raise_it(url, timeout):
             raise urllib.error.HTTPError(url, code, "x", {}, None)
         return raise_it
 
-    monkeypatch.setattr(start.urllib.request, "urlopen", http(404))
-    assert start._agent_servers_refused(8001) is False
-    monkeypatch.setattr(start.urllib.request, "urlopen", http(403))
-    assert start._agent_servers_refused(8001) is True
+    for code in (404, 403, 500):
+        monkeypatch.setattr(start.urllib.request, "urlopen", http(code))
+        assert start._agent_servers_refused(8001) is True
 
     def down(url, timeout):
         raise OSError("down")
 
     monkeypatch.setattr(start.urllib.request, "urlopen", down)
-    assert start._agent_servers_refused(8001) is False
+    assert start._agent_servers_refused(8001) is True
+    monkeypatch.setattr(start.urllib.request, "urlopen", lambda url, timeout: io.BytesIO(b"not json"))
+    assert start._agent_servers_refused(8001) is True
 
 
 def test_the_first_party_agent_set_is_exactly_the_tracked_agent_directories():
@@ -192,8 +208,11 @@ def test_the_first_party_agent_set_is_exactly_the_tracked_agent_directories():
 
 def test_the_policy_message_is_the_contract_message_and_the_reason_is_pinned():
     constants = json.loads(CONTRACT.read_text(encoding="utf-8"))["constants"]
-    assert constants["agent_server_reasons"] == [phi_node_policy.REASON]
-    assert constants["messages"][phi_node_policy.REASON] == phi_node_policy.MESSAGE
+    assert constants["agent_server_reasons"] == [phi_node_policy.PHI_NODE, phi_node_policy.NOT_EXCLUDED] == ["phi_node", "not_excluded"]
+    for reason in constants["agent_server_reasons"]:
+        assert phi_node_policy.AgentServerUnsupported(reason).detail() == {
+            "code": phi_node_policy.CODE, "reason": reason, "message": constants["messages"][reason],
+        }
     assert phi_node_policy.CODE in constants["messages"]
 
 
@@ -211,14 +230,23 @@ class Proc:
 class Supervisor:
     def __init__(self):
         self.spawned = []
+        self.calls = []
 
     def spawn(self, **kwargs):
         proc = Proc()
         self.spawned.append((kwargs["owner"].owner_id, kwargs["argv"][-1], proc))
+        self.calls.append(kwargs)
         return proc
 
 
-def test_generated_agents_started_before_the_node_joined_the_group_are_stopped_and_return_when_it_leaves():
+@pytest.fixture
+def agent_dirs(tmp_path, monkeypatch):
+    monkeypatch.setattr(start, "agent_launch", lambda path: sandbox.agent_launch(str(tmp_path / path.strip("/"))))
+    for name in ("made", "held"):
+        (tmp_path / "agents" / name).mkdir(parents=True)
+
+
+def test_generated_agents_started_before_the_node_joined_the_group_are_stopped_and_return_when_it_leaves(agent_dirs):
     supervisor = Supervisor()
     agents = start.GeneratedAgents(supervisor, "python")
     agents.register("made", "/agents/made/made_agent.py", "/agents/made", 8010)
@@ -238,7 +266,7 @@ def test_generated_agents_started_before_the_node_joined_the_group_are_stopped_a
     assert len(supervisor.spawned) == 4
 
 
-def test_a_generated_agent_that_crashed_is_not_restarted_by_the_policy_check():
+def test_a_generated_agent_that_crashed_is_not_restarted_by_the_policy_check(agent_dirs):
     supervisor = Supervisor()
     agents = start.GeneratedAgents(supervisor, "python")
     agents.register("made", "/agents/made/made_agent.py", "/agents/made", 8010)
@@ -246,3 +274,67 @@ def test_a_generated_agent_that_crashed_is_not_restarted_by_the_policy_check():
     supervisor.spawned[0][2].stopped = True
     agents.reconcile(False)
     assert len(supervisor.spawned) == 1
+
+
+def test_a_generated_agent_gets_the_draft_launch_with_limits_a_scrubbed_environment_and_loopback(agent_dirs, monkeypatch, capsys):
+    monkeypatch.delenv("ASTRAL_ENV", raising=False)
+    monkeypatch.setenv("FF_SANDBOX_CODEGEN", "false")
+    monkeypatch.setenv("HOST", "0.0.0.0")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-node")
+    monkeypatch.setenv("DB_PASSWORD", "plane-password")
+    supervisor = Supervisor()
+    agents = start.GeneratedAgents(supervisor, "python")
+    agents.register("made", "/agents/made/made_agent.py", "/agents/made", 8010)
+    agents.launch("made")
+    call = supervisor.calls[0]
+    assert call["env"]["HOST"] == "127.0.0.1" and callable(call["preexec_fn"])
+    assert "OPENAI_API_KEY" not in call["env"] and "DB_PASSWORD" not in call["env"]
+    assert call["cwd"] == "/agents/made"
+    assert "runs unconfined with process resource limits only" in capsys.readouterr().out
+
+
+def test_a_generated_agent_whose_limits_cannot_be_set_up_is_refused_and_never_retried(monkeypatch, capsys):
+    def broken(path):
+        raise OSError("limits unavailable")
+
+    monkeypatch.setattr(start, "agent_launch", broken)
+    supervisor = Supervisor()
+    agents = start.GeneratedAgents(supervisor, "python")
+    agents.register("made", "/agents/made/made_agent.py", "/agents/made", 8010)
+    agents.launch("made")
+    agents.reconcile(False)
+    agents.reconcile(False)
+    assert supervisor.spawned == []
+    assert "Refusing made: its resource limits could not be set up (OSError)" in capsys.readouterr().out
+
+
+class LiveStore:
+    def __init__(self, rows, broken=False):
+        self.rows = rows
+        self.broken = broken
+
+    def list_relaunchable_drafts(self):
+        if self.broken:
+            raise RuntimeError("store down")
+        return self.rows
+
+
+async def test_the_lifecycle_relaunches_live_agents_that_are_not_running_and_reports_each_failure(caplog):
+    manager = object.__new__(AgentLifecycleManager)
+    rows = [{"id": "running", "agent_name": "A"}, {"id": "fresh", "agent_name": "B"}, {"id": "refused", "agent_name": "C"}]
+    manager.draft_store = LiveStore(rows)
+    manager._draft_processes = {"running": Proc()}
+    started = []
+
+    async def start_draft_agent(draft_id, align_scopes=True):
+        assert align_scopes is False
+        if draft_id == "refused":
+            raise phi_node_policy.AgentServerUnsupported("not_excluded")
+        started.append(draft_id)
+
+    manager.start_draft_agent = start_draft_agent
+    assert await manager.relaunch_live_agents() == ["fresh"] and started == ["fresh"]
+    assert "relaunch: C (refused) failed" in caplog.text
+    manager.draft_store = LiveStore(rows, broken=True)
+    assert await manager.relaunch_live_agents() == []
+    assert "could not list live generated agents" in caplog.text

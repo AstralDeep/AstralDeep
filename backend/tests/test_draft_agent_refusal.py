@@ -1,5 +1,5 @@
-"""Checks that a draft agent start on the personal and server profiles never reports confinement, states the unconfined launch in its log, status and creation card, and refuses to start at all when resource limit setup fails.
-Runs orchestrator/agent_lifecycle.py and orchestrator/agentic_creation.py against the fake store and supervisor from test_lets_agent_lifecycle_wiring.py."""
+"""Checks that a draft agent start on the personal and server profiles never reports confinement, states the unconfined launch in its log, status and creation card, binds the agent to loopback, keeps its limits in production whatever FF_SANDBOX_CODEGEN says, and refuses to start at all when resource limit setup fails.
+Runs orchestrator/agent_lifecycle.py and orchestrator/agentic_creation.py against the fake store and supervisor from test_lets_agent_lifecycle_wiring.py on a node the owner excluded from the PHI group."""
 
 from __future__ import annotations
 
@@ -13,6 +13,9 @@ from orchestrator.agent_lifecycle import DraftLaunchRefused, draft_confinement
 from tests.test_lets_agent_lifecycle_wiring import _manager
 
 PROFILES = ["personal", "server"]
+
+
+pytestmark = pytest.mark.usefixtures("excluded_node")
 
 
 @pytest.fixture(autouse=True)
@@ -46,12 +49,30 @@ async def test_a_started_draft_agent_is_reported_unconfined_with_its_limits(tmp_
     assert any("runs unconfined" in record.getMessage() for record in caplog.records)
 
 
-async def test_a_draft_agent_started_with_the_sandbox_flag_off_says_it_has_no_limits(tmp_path, monkeypatch):
+async def test_a_development_draft_agent_started_with_the_sandbox_flag_off_says_it_has_no_limits(tmp_path, monkeypatch):
+    monkeypatch.setenv("ASTRAL_ENV", "development")
     monkeypatch.setenv("FF_SANDBOX_CODEGEN", "false")
+    monkeypatch.setenv("SECRET_SAUCE_TOKEN", "kept-in-development")
     manager = prepared(tmp_path, [])
     result = await manager.start_draft_agent("draft-a")
     assert result["confinement"] == draft_confinement(False)
     assert "no resource limits" in result["confinement"]["notice"]
+    env = manager.process_supervisor.calls[0]["env"]
+    assert env["HOST"] == sandbox.LOOPBACK_HOST and env["SECRET_SAUCE_TOKEN"] == "kept-in-development"
+
+
+async def test_a_production_draft_agent_keeps_its_limits_and_scrub_with_the_sandbox_flag_off(tmp_path, monkeypatch):
+    monkeypatch.delenv("ASTRAL_ENV", raising=False)
+    monkeypatch.setenv("FF_SANDBOX_CODEGEN", "false")
+    monkeypatch.setenv("DB_PASSWORD", "plane-password")
+    monkeypatch.setenv("AGENT_API_KEY", "registration-key")
+    manager = prepared(tmp_path, [])
+    result = await manager.start_draft_agent("draft-a")
+    assert result["confinement"] == draft_confinement(True)
+    call = manager.process_supervisor.calls[0]
+    assert callable(call["preexec_fn"])
+    assert call["env"]["HOST"] == sandbox.LOOPBACK_HOST
+    assert "DB_PASSWORD" not in call["env"] and call["env"]["AGENT_API_KEY"] == "registration-key"
 
 
 @pytest.mark.parametrize("profile", PROFILES)

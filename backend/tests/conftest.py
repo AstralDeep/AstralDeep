@@ -1,7 +1,8 @@
 """Shared pytest fixtures for backend/tests: strips ambient feature-flag env vars for
 hermeticity, moves each pytest-xdist worker onto its own database (helpers/xdist_database.py),
-builds/tears down real Orchestrator and credential/typesafe/data-sharing store fixtures, and
-exposes the session-migrated Plane template that the engine `plane` fixture clones.
+builds/tears down real Orchestrator and credential/typesafe/data-sharing store fixtures,
+installs the excluded-node stand-in mesh for draft launch tests, and exposes the
+session-migrated Plane template that the engine `plane` fixture clones.
 """
 
 from __future__ import annotations
@@ -139,6 +140,19 @@ def node_data_dir(monkeypatch, tmp_path):
     node_identity.reset_cache()
     yield tmp_path / "node"
     node_identity.reset_cache()
+
+
+@pytest.fixture
+def excluded_node():
+    from orchestrator import node_mesh
+    from tests.helpers.excluded_node import stand_in_mesh
+
+    previous = node_mesh.current()
+    node_mesh.install(stand_in_mesh())
+    try:
+        yield
+    finally:
+        node_mesh.install(previous)
 
 
 @pytest.fixture

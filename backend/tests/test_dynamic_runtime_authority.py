@@ -640,9 +640,10 @@ def _active_binding_for(runtime_id: str) -> SimpleNamespace:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["shadow", "enforce"])
-async def test_start_draft_agent_hands_binding_and_per_runtime_audience_to_child(
+async def test_start_draft_agent_hands_binding_and_per_runtime_audience_to_child(excluded_node,
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
 ) -> None:
+    monkeypatch.setenv("ASTRAL_ENV", "development")
     monkeypatch.setenv("FF_SANDBOX_CODEGEN", "false")
     monkeypatch.setenv("LETS_MODE", mode)
     config = _config(tmp_path)
@@ -683,12 +684,13 @@ async def test_start_draft_agent_hands_binding_and_per_runtime_audience_to_child
         "ASTRAL_AUTHORITY_LEASE_ID", "ASTRAL_AUTHORITY_LINEAGE_ID",
         "ASTRAL_RUNTIME_COHORT", "ASTRAL_RUNTIME_ID", "ASTRAL_RUNTIME_GENERATION",
         "LETS_EXECUTOR_INSTANCE_ID", "LETS_EXECUTOR_DB_ROOT",
-        "LETS_EXECUTOR_AUTHORITY_ROOT", "LETS_WARDEN_ID",
+        "LETS_EXECUTOR_AUTHORITY_ROOT", "LETS_WARDEN_ID", "HOST",
     }
+    assert env["HOST"] == "127.0.0.1"
 
 
 @pytest.mark.asyncio
-async def test_hand_off_layers_over_the_sandbox_env(
+async def test_hand_off_layers_over_the_sandbox_env(excluded_node,
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("FF_SANDBOX_CODEGEN", "true")
@@ -707,9 +709,10 @@ async def test_hand_off_layers_over_the_sandbox_env(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("sandbox", ["false", "true"])
-async def test_no_active_binding_leaves_spawn_kwargs_byte_identical(
+async def test_no_active_binding_leaves_spawn_kwargs_byte_identical(excluded_node,
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sandbox: str
 ) -> None:
+    monkeypatch.setenv("ASTRAL_ENV", "development")
     monkeypatch.setenv("FF_SANDBOX_CODEGEN", sandbox)
     monkeypatch.delenv("LETS_MODE", raising=False)
     for key in ("ASTRAL_RUNTIME_ID", "ASTRAL_RUNTIME_COHORT", "LETS_EXECUTOR_INSTANCE_ID"):
@@ -725,14 +728,15 @@ async def test_no_active_binding_leaves_spawn_kwargs_byte_identical(
     assert orchestrator.registered == []
     assert not any(config.executor_db_root.iterdir())
     if sandbox == "false":
-        assert "env" not in spawn and "preexec_fn" not in spawn
+        assert "preexec_fn" not in spawn
+        assert spawn["env"] == {**os.environ, "HOST": "127.0.0.1"}
     else:
         from orchestrator import sandbox as _sandbox
 
         expected = _sandbox.sandbox_env(
             None, str(tmp_path / "agents" / "agent_a" / "_sandbox_tmp")
         )
-        assert spawn["env"] == expected
+        assert spawn["env"] == {**expected, "HOST": "127.0.0.1"}
     assert not any(k.startswith("ASTRAL_AUTHORITY_") for k in spawn.get("env", {}))
 
 
@@ -747,9 +751,10 @@ class _Socket:
 
 
 @pytest.mark.asyncio
-async def test_enforce_refuses_to_spawn_when_hand_off_cannot_be_built(
+async def test_enforce_refuses_to_spawn_when_hand_off_cannot_be_built(excluded_node,
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setenv("ASTRAL_ENV", "development")
     monkeypatch.setenv("FF_SANDBOX_CODEGEN", "false")
     monkeypatch.setenv("LETS_MODE", "enforce")
     config = _config(tmp_path)
@@ -776,9 +781,10 @@ async def test_enforce_refuses_to_spawn_when_hand_off_cannot_be_built(
 
 
 @pytest.mark.asyncio
-async def test_enforce_refusal_after_roots_were_prepared_removes_them(
+async def test_enforce_refusal_after_roots_were_prepared_removes_them(excluded_node,
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setenv("ASTRAL_ENV", "development")
     monkeypatch.setenv("FF_SANDBOX_CODEGEN", "false")
     monkeypatch.setenv("LETS_MODE", "enforce")
     config = _config(tmp_path)
@@ -795,9 +801,10 @@ async def test_enforce_refusal_after_roots_were_prepared_removes_them(
 
 
 @pytest.mark.asyncio
-async def test_shadow_keeps_coverage_when_hand_off_cannot_be_built(
+async def test_shadow_keeps_coverage_when_hand_off_cannot_be_built(excluded_node,
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
+    monkeypatch.setenv("ASTRAL_ENV", "development")
     monkeypatch.setenv("FF_SANDBOX_CODEGEN", "false")
     monkeypatch.setenv("LETS_MODE", "shadow")
     config = _config(tmp_path)
@@ -823,7 +830,7 @@ async def test_shadow_keeps_coverage_when_hand_off_cannot_be_built(
 
     spawn = supervisor.calls[0]
     runtime_id = str(spawn["process_id"])
-    assert "env" not in spawn
+    assert spawn["env"] == {**os.environ, "HOST": "127.0.0.1"}
     assert len(orchestrator.registered) == 1
     registered = orchestrator.registered[0]
     assert registered.executor_audience == INSTANCE_ID
@@ -847,9 +854,10 @@ async def test_shadow_keeps_coverage_when_hand_off_cannot_be_built(
 
 
 @pytest.mark.asyncio
-async def test_shadow_without_shared_audience_registers_nothing(
+async def test_shadow_without_shared_audience_registers_nothing(excluded_node,
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setenv("ASTRAL_ENV", "development")
     monkeypatch.setenv("FF_SANDBOX_CODEGEN", "false")
     monkeypatch.setenv("LETS_MODE", "shadow")
     config = _config(tmp_path)
@@ -860,7 +868,7 @@ async def test_shadow_without_shared_audience_registers_nothing(
 
     await manager.start_draft_agent("draft-a")
 
-    assert "env" not in supervisor.calls[0]
+    assert supervisor.calls[0]["env"] == {**os.environ, "HOST": "127.0.0.1"}
     assert orchestrator.registered == []
 
 

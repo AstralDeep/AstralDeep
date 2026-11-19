@@ -49,15 +49,15 @@ async def _live_draft(lifecycle, origin):
 def test_boot_relaunch_uses_typed_plane_draft_inventory():
     start_source = inspect.getsource(Orchestrator.start)
     server_source = inspect.getsource(Orchestrator._run_started_server)
+    relaunch_source = inspect.getsource(AgentLifecycleManager.relaunch_live_agents)
 
     assert "await self._run_started_server()" in start_source
-    assert "self.lifecycle_manager.draft_store.list_relaunchable_drafts" in (
-        server_source
-    )
-    assert "history.db.afetch_all" not in server_source
+    assert "phi_node_policy.DraftGuard(mesh, self.lifecycle_manager)" in server_source
+    assert "self.draft_store.list_relaunchable_drafts" in relaunch_source
+    assert "history.db.afetch_all" not in server_source + relaunch_source
 
 
-async def test_start_draft_agent_refuses_a_byo_draft(
+async def test_start_draft_agent_refuses_a_byo_draft(excluded_node,
     plane_runtime, monkeypatch, tmp_path
 ):
     import subprocess

@@ -855,6 +855,10 @@ class NodeMesh:
         roster = await asyncio.to_thread(self.kernel.roster)
         return any(device.is_local and device.phi for device in roster.members)
 
+    async def phi_excluded(self) -> bool:
+        group = await asyncio.to_thread(self.kernel.phi_group)
+        return any(member.is_local and member.state == "excluded" for member in group.members)
+
     async def peer_standing(self, device_id: str) -> Optional[PeerStanding]:
         roster = await asyncio.to_thread(self.kernel.roster)
         for device in roster.members:

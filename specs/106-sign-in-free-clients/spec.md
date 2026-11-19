@@ -822,7 +822,7 @@ spec 105 merges. Phase R runs beside phases 1 to 7 and lands before phase 8.
 | No abuse identity for shared services | A mesh is free to create | Quotas, rate limits and an optional platform check. A determined abuser can still make many meshes |
 | An institution can revoke only its own tokens | Astral holds no account to disable | The institution's server enforces its own terms (section 11) |
 | The PHI gate protects the owner and nobody else | The owner approves destinations | Section 8.4, said plainly. The owner accepted it (O8) |
-| An OS sandbox shares the host kernel | It is no VM | Phase 0 tests a VM fallback. Untrusted code never runs without an enforcing backend |
+| An OS sandbox shares the host kernel | It is no VM | Phase 0 tests a VM fallback. Untrusted code never runs without an enforcing backend. The one exception is a draft or generated agent server, which runs with limits and no backend only on a node the owner excluded from the PHI group, until `astral.exec-policy/v2` ships (`contracts/exec-policy.md`, spec 108 security review) |
 | `sandbox-exec` is deprecated | Apple may remove it | Seatbelt stays behind one interface. Question 1 |
 | Sign-in friction grows with devices times services | Each device signs in to each service (O5) | Accepted as the cost of O5. One tap and one login page per device |
 | Dynamic registration is deprecated | The MCP revision prefers metadata documents | Both stay, and the website hosts the document (C16) |

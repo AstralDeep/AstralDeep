@@ -114,7 +114,7 @@ BACKEND_REASONS = (
     "app_sandboxed",
     "platform_unsupported",
 )
-AGENT_SERVER_REASONS = ("phi_node",)
+AGENT_SERVER_REASONS = ("phi_node", "not_excluded")
 PROC_CHILDREN_MISSING = "proc_children_missing"
 HOST_MESSAGES = {
     PROC_CHILDREN_MISSING: "This Linux kernel has no /proc children files (CONFIG_PROC_CHILDREN), and the process limit cannot be enforced without them.",
@@ -148,4 +148,5 @@ MESSAGES = {
     "app_sandboxed": "The App Sandboxed build cannot confine child processes, so it cannot host untrusted tools. Use the direct-download build.",
     "platform_unsupported": "No confinement backend exists for {platform}.",
     "phi_node": "This node is in your PHI group, so agents you create cannot run on it. Exclude the node from the PHI group to run them here.",
+    "not_excluded": "Agents you create run unconfined, so they start only on a node you excluded from your PHI group. To run them here, add this node to the group and then exclude it.",
 }

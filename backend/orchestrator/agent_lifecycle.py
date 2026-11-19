@@ -55,6 +55,7 @@ from orchestrator.lets_lifecycle import (
     LetsLifecycleError,
 )
 from orchestrator.phi_node_policy import refuse_on_phi_node
+from orchestrator.sandbox import draft_confinement
 from orchestrator.user_agents import (
     PersonalAgentRuntimeRepository,
     StaleRuntimeGenerationError,
@@ -242,15 +243,6 @@ async def publish_agent_lifecycle(
 
 class DraftLaunchRefused(RuntimeError):
     pass
-
-
-def draft_confinement(limits_applied: bool) -> Dict[str, Any]:
-    limits = "with process resource limits only" if limits_applied else "with no resource limits"
-    return {
-        "confined": False,
-        "resource_limits": limits_applied,
-        "notice": f"This agent runs unconfined {limits}. It can read and write files and reach the network as you can.",
-    }
 
 
 class RevisionActivationError(RuntimeError):
@@ -5191,20 +5183,9 @@ class AgentLifecycleManager:
                                    f"Starting agent on port {port}...", TESTING)
         await asyncio.to_thread(self._append_log, draft_id, f"Starting agent on port {port}...")
 
-        sandbox_kwargs: Dict[str, Any] = {}
-        limits_applied = False
         try:
             from orchestrator import sandbox as _sandbox
-            if _sandbox.sandbox_enabled():
-                tmpdir = os.path.join(agent_dir, "_sandbox_tmp")
-                os.makedirs(tmpdir, exist_ok=True)
-                limits = _sandbox.build_limits()
-                preexec = _sandbox.make_preexec(limits)
-                if preexec is not None:
-                    sandbox_kwargs["preexec_fn"] = preexec
-                    limits_applied = True
-                sandbox_kwargs["env"] = _sandbox.sandbox_env(None, tmpdir)
-                logger.info("C-S6 sandbox: launching draft %s with %s", draft_id, limits)
+            launch = _sandbox.agent_launch(agent_dir)
         except Exception:
             logger.exception("Resource limit setup failed for draft %s; refusing to start it", draft_id)
             error_msg = "Agent start refused: its resource limits could not be set up"
@@ -5214,7 +5195,8 @@ class AgentLifecycleManager:
             await self._send_progress(websocket, draft_id, "error", error_msg, ERROR)
             await asyncio.to_thread(self._append_log, draft_id, f"ERROR: {error_msg}")
             raise DraftLaunchRefused(error_msg) from None
-        confinement = draft_confinement(limits_applied)
+        sandbox_kwargs: Dict[str, Any] = dict(launch.popen)
+        confinement = draft_confinement(launch.limits_applied)
         logger.warning("Draft agent %s: %s", draft_id, confinement["notice"])
         await asyncio.to_thread(self._append_log, draft_id, confinement["notice"])
 
@@ -5224,7 +5206,7 @@ class AgentLifecycleManager:
                 draft,
                 runtime_id=str(process_id),
                 tools_file=os.path.join(agent_dir, "mcp_tools.py"),
-                base_env=sandbox_kwargs.get("env"),
+                base_env=sandbox_kwargs["env"],
             )
         except LetsLifecycleError as exc:
             error_msg = f"Agent runtime refused by LETS before start: {exc.code}"
@@ -5353,6 +5335,26 @@ class AgentLifecycleManager:
         for draft_id in running:
             await self.stop_draft_agent(draft_id)
         return running
+
+    async def relaunch_live_agents(self) -> List[str]:
+        try:
+            rows = await asyncio.to_thread(self.draft_store.list_relaunchable_drafts)
+        except Exception:
+            logger.exception("relaunch: could not list live generated agents")
+            return []
+        started = []
+        for row in rows:
+            proc = self._draft_processes.get(row["id"])
+            if proc is not None and proc.poll() is None:
+                continue
+            try:
+                await self.start_draft_agent(row["id"], align_scopes=False)
+            except Exception as exc:
+                logger.warning("relaunch: %s (%s) failed: %s", row["agent_name"], row["id"], exc)
+                continue
+            started.append(row["id"])
+            logger.info("relaunch: %s (%s) restarted", row["agent_name"], row["id"])
+        return started
 
     async def refine_agent(self, draft_id: str, user_message: str,
                             websocket=None) -> Dict[str, Any]:

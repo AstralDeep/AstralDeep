@@ -21,7 +21,7 @@ Before a call runs, the server builds a policy from the agent's profile and asks
 | Strays | Linux ends them with the call's namespace. macOS ends the process group. |
 | Aggregate caps | Linux units set `MemoryMax`, `TasksMax` and `CPUQuota`. macOS has none. |
 
-With no backend on the host, `read`, `glob` and `list` still answer, `grep` uses a built-in search, and `bash` and declared tools return `exec.backend_unavailable` with the reason. Nothing untrusted runs unconfined.
+With no backend on the host, `read`, `glob` and `list` still answer, `grep` uses a built-in search, and `bash` and declared tools return `exec.backend_unavailable` with the reason. Nothing untrusted runs unconfined, with one exception outside Vessel. A model-written agent server on a Deep node runs with resource limits and no confinement, and only on a node the owner excluded from the PHI group. It ends when `astral.exec-policy/v2` can grant a listening port.
 
 ### What a container probe becomes
 

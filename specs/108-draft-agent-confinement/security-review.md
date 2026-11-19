@@ -1,6 +1,8 @@
 # Security review: draft agents that run unconfined
 
-**Date:** 2026-11-18. **Status:** open. The disposition in section 6 waits for the owner.
+**Date:** 2026-11-18. **Status:** open. On 2026-11-18 the owner ruled for the disposition in
+section 6. Steps 1, 2 and 4 are done, and section 8 says what each finding is now. Step 3, the v2
+policy, is later work.
 **Tracking:** issue 682.
 
 **Scope.** Model-written agent servers on a personal node. That is a draft the owner is testing, and
@@ -186,3 +188,60 @@ decision. Until then this review stays open.
   their own. A Windows port that runs tools without confinement would be a second exception and
   needs its own review.
 - Issue 647: Landlock under Docker Desktop on macOS and Windows.
+
+## 8. Status after steps 1, 2 and 4
+
+The owner chose C now, B as the default for every node the owner has not opted in, and A as the
+target. The change for issue 682 did steps 1, 2 and 4. Each claim below was checked in the live code
+before the change, and the named tests ran against it.
+
+| Finding | Status | Change | Test |
+|---|---|---|---|
+| F1 | Fixed | `start.py` launches a generated agent through `sandbox.agent_launch`, the helper the draft launch uses. The agent gets the limits, the scrub, a private temp directory and `HOST=127.0.0.1`. An agent whose limits cannot be set up is refused and not retried | `test_a_generated_agent_gets_the_draft_launch_with_limits_a_scrubbed_environment_and_loopback`, `test_a_generated_agent_whose_limits_cannot_be_set_up_is_refused_and_never_retried` |
+| F2 | Fixed | `start.py` counts only an explicit `"allowed": true` as allowed. A 404, an error, a bad body or no answer holds the agent and stops a running one. The policy refuses a node whose mesh has not started. The orchestrator no longer relaunches live agents on a five second timer. `DraftGuard` relaunches them when the node first answers allowed | `test_start_py_launches_generated_agents_only_after_the_node_answers_allowed`, `test_the_guard_relaunches_live_agents_only_once_the_owner_excludes_the_node_and_stops_them_when_it_rejoins` |
+| F3 | Fixed | The launch sets `HOST` to `127.0.0.1`, also when a development node turns the limits off | `test_a_real_agent_server_launched_this_way_listens_on_loopback_only` starts a real `BaseA2AAgent` and finds its port closed on the host's outward address |
+| F4 | Partly | `DB_PASSWORD` is scrubbed. `AGENT_API_KEY` stays, for the reason below. The rest of F4 is the exception itself | `test_sandbox_env_scrubs_secret_shaped_names_including_the_database_password` |
+| F5 | Fixed | A test posts to the real start route on a real dev mesh member. The route calls the real `start_draft_agent` and the real policy | `test_the_start_route_refuses_a_draft_on_a_real_phi_member_before_any_process_or_directory_exists` sees 409, no spawn, no LETS admission and no temp directory |
+| F6 | Fixed | An agent starts only when the node's own row in the PHI group reads `excluded`. Only an owner device can sign that state, and the node cannot exclude itself. No mesh, a stopped mesh, no enrollment and a node never excluded are refused with the new reason `not_excluded` | `test_the_start_route_refuses_a_draft_on_a_real_node_the_owner_never_excluded`, `test_a_node_with_no_mesh_a_stopped_mesh_or_no_enrollment_is_refused_as_not_excluded`, `test_a_draft_agent_starts_on_loopback_only_after_the_owner_excludes_the_real_node_and_is_refused_again_when_it_rejoins` |
+| F7 | Fixed | `FF_SANDBOX_CODEGEN` is read only when `ASTRAL_ENV` is a development value | `test_the_kill_switch_is_ignored_outside_development`, `test_a_production_draft_agent_keeps_its_limits_and_scrub_with_the_sandbox_flag_off` |
+| F8 | Partly | `exec-policy.md`, the spec 106 `spec.md` and the Vessel isolation page now state the exception and its end. The spec 106 plan and the sandbox qualification manifest are unchanged | None |
+
+### Where the owner's choice is recorded
+
+The owner's choice is the PHI group state the Kernel folds from the signed roster. The node's row
+reads `excluded` only after an owner device revoked its PHI grant. So the opt-in reuses a record
+that exists today and needs no schema change. The cost is that a node never included in the group
+cannot opt in directly. The owner adds it to the group and then excludes it. The `not_excluded`
+message says so.
+
+### Why `AGENT_API_KEY` stays
+
+- The agent presents it in its `RegisterAgent` message (`backend/shared/base_agent.py` line 208).
+  A production node refuses a registration without it (`backend/orchestrator/orchestrator.py`
+  lines 5631 to 5641). Without the key a draft cannot register, so it cannot be tested or used.
+  `test_missing_key_refused_when_key_configured` and
+  `test_base_agent_sends_env_api_key_in_register_agent` prove both sides.
+- It is the node's one shared agent key. A holder can register an agent card with the orchestrator,
+  subject to the checks after the key. A holder can also answer the `AstralAgentKey` challenge of
+  any agent server that demands it from the orchestrator, and that server would take the holder for
+  the orchestrator.
+- The key opens no mesh identity, no keystore and no database. The agent can still read those files
+  as the node's user. That is F4.
+- A per-launch key that the orchestrator accepts for one agent id would remove it.
+
+### Corrections to this review
+
+- F2 says the health wait continues on timeout (`start.py` line 104). It does not.
+  `_wait_for_orchestrator` prints "continuing anyway" and returns false, and `main` exits at
+  `start.py` lines 205 to 209. F2 still held, because the endpoint answered "allowed" before the
+  mesh started and `start.py` treated an error or a 404 as allowed.
+
+### What remains open
+
+- F4 in full. Model-written tool code runs as the node's user. It can open its own listener, read
+  that user's files and reach the network. Only A or B closes it.
+- At boot a live generated agent can start twice, once from `start.py` and once from the
+  orchestrator's relaunch. That was so before this change.
+- The `start.py` launch has no LETS admission. The orchestrator's relaunch has one.
+- A per-launch registration key, so that no draft holds the node's shared key.
+
