@@ -27,10 +27,9 @@ from astralvessel.executor import (
 from astralvessel.manifest import load_package
 from astralvessel.mesh import Refused, Verified
 
-# The process exec backend confines with Landlock and /proc, which are Linux; on other hosts these checks
-# cannot run, and the harness runs this file on its own, so the skip is local rather than in conftest.
-_linux_confinement = unittest.skipUnless(sys.platform.startswith("linux"),
-                                         "the process exec backend confines with Landlock and /proc, which are Linux")
+# The harness runs this file on its own, so the skip is local rather than in conftest.
+_host_backend = unittest.skipIf(sys.platform.startswith("win32"),
+                                "the process exec backend confines with Landlock or Seatbelt; Windows has neither")
 
 MASTER, SANDBOX_TOKEN, OPERATOR = "m" * 20, "s" * 16, "e" * 40
 AUTH = {"Authorization": f"Bearer {SANDBOX_TOKEN}"}
@@ -103,7 +102,7 @@ def sandbox_call(app, name: str, args: dict, workspace: str | None = "c" * 32, o
     return response.status_code, response.json()
 
 
-@_linux_confinement
+@_host_backend
 def test_builtins_and_confined_tools_run_under_the_host_backend():
     with tempfile.TemporaryDirectory() as tmp:
         world = build_world(Path(tmp))
@@ -119,7 +118,7 @@ def test_builtins_and_confined_tools_run_under_the_host_backend():
         assert json.loads(echoed["output"]) == {"word": "x"}, echoed
 
 
-@_linux_confinement
+@_host_backend
 def test_a_confined_call_cannot_read_node_data_or_write_outside_its_workspace():
     with tempfile.TemporaryDirectory() as tmp:
         world = build_world(Path(tmp))
@@ -130,7 +129,7 @@ def test_a_confined_call_cannot_read_node_data_or_write_outside_its_workspace():
         assert "canary" not in out["output"] and not outside.exists() and "done" in out["output"]
 
 
-@_linux_confinement
+@_host_backend
 def test_health_reports_the_backend_or_why_there_is_none():
     with tempfile.TemporaryDirectory() as tmp:
         world = build_world(Path(tmp))
@@ -147,7 +146,7 @@ async def _get(app, path):
         return (await http.get(path)).json()
 
 
-@_linux_confinement
+@_host_backend
 def test_with_landlock_abi_5_builtins_answer_grep_searches_in_python_and_bash_is_refused():
     with tempfile.TemporaryDirectory() as tmp:
         world = build_world(Path(tmp))
@@ -176,7 +175,7 @@ def test_with_landlock_abi_5_builtins_answer_grep_searches_in_python_and_bash_is
         assert spawned == []
 
 
-@_linux_confinement
+@_host_backend
 def test_a_bad_python_pattern_is_an_error_not_a_crash():
     with tempfile.TemporaryDirectory() as tmp:
         world = build_world(Path(tmp))
@@ -254,7 +253,7 @@ def counting_spawns():
     return spawned, lambda: setattr(tools, "_spawn", original)
 
 
-@_linux_confinement
+@_host_backend
 def test_no_child_spawns_before_the_ticket_verifies_and_refusals_run_nothing():
     with tempfile.TemporaryDirectory() as tmp:
         world = build_world(Path(tmp))
@@ -281,7 +280,7 @@ def test_no_child_spawns_before_the_ticket_verifies_and_refusals_run_nothing():
             restore()
 
 
-@_linux_confinement
+@_host_backend
 def test_a_replayed_ticket_is_refused_in_process_mode():
     with tempfile.TemporaryDirectory() as tmp:
         world = build_world(Path(tmp))
@@ -301,7 +300,7 @@ def test_a_replayed_ticket_is_refused_in_process_mode():
         with_executor(app, scenario)
 
 
-@_linux_confinement
+@_host_backend
 def test_the_catalog_is_byte_identical_in_both_modes():
     with tempfile.TemporaryDirectory() as tmp:
         world = build_world(Path(tmp))
@@ -321,7 +320,7 @@ def disk_world(tmp, turn, user):
     return world
 
 
-@_linux_confinement
+@_host_backend
 def test_the_turn_disk_limit_empties_the_workspace_and_the_end_sweep_removes_it():
     with tempfile.TemporaryDirectory() as tmp:
         world = disk_world(tmp, 300_000, 400_000)
@@ -342,7 +341,7 @@ def test_the_turn_disk_limit_empties_the_workspace_and_the_end_sweep_removes_it(
             os.environ.pop("VESSEL_TURN_DISK"), os.environ.pop("VESSEL_USER_DISK")
 
 
-@_linux_confinement
+@_host_backend
 def test_a_turn_belongs_to_the_user_whose_call_began_it():
     with tempfile.TemporaryDirectory() as tmp:
         world = build_world(Path(tmp))
@@ -354,7 +353,7 @@ def test_a_turn_belongs_to_the_user_whose_call_began_it():
         assert sandbox_call(app, "bash", {"command": "true"}, key, ALICE)[0] == 200
 
 
-@_linux_confinement
+@_host_backend
 def test_a_read_root_that_holds_the_node_data_is_refused_before_anything_starts():
     with tempfile.TemporaryDirectory() as tmp:
         world = build_world(Path(tmp))
@@ -373,7 +372,7 @@ def test_the_launcher_reports_refusals_as_one_json_line():
     assert refusal_text(0, line) is None and refusal_text(125, "no json") is None
 
 
-@_linux_confinement
+@_host_backend
 def test_a_call_past_its_time_limit_reports_a_timeout():
     with tempfile.TemporaryDirectory() as tmp:
         world = build_world(Path(tmp))
@@ -384,7 +383,7 @@ def test_a_call_past_its_time_limit_reports_a_timeout():
         assert "timed out" in out["output"] and out["error"] is True
 
 
-@_linux_confinement
+@_host_backend
 def test_environment_and_paths_come_from_the_variables_the_runtime_writes():
     with tempfile.TemporaryDirectory() as tmp:
         world = build_world(Path(tmp))
@@ -409,7 +408,7 @@ def grep_world(tmp):
     return world, notes
 
 
-@_linux_confinement
+@_host_backend
 def test_python_search_does_not_read_through_links_that_leave_the_root():
     with tempfile.TemporaryDirectory() as tmp:
         world, notes = grep_world(tmp)
@@ -421,7 +420,7 @@ def test_python_search_does_not_read_through_links_that_leave_the_root():
                 "output"] == "no matches"
 
 
-@_linux_confinement
+@_host_backend
 def test_a_file_swapped_for_a_link_after_the_walk_is_refused_at_open():
     with tempfile.TemporaryDirectory() as tmp:
         world, notes = grep_world(tmp)
@@ -445,7 +444,7 @@ def test_a_file_swapped_for_a_link_after_the_walk_is_refused_at_open():
         assert "outside canary" not in out and "swap.txt" not in out
 
 
-@_linux_confinement
+@_host_backend
 def test_the_agent_probe_reports_the_backend_the_node_data_rule_and_the_limits():
     from astralvessel import execmode
     with tempfile.TemporaryDirectory() as tmp:
@@ -461,7 +460,7 @@ def test_the_agent_probe_reports_the_backend_the_node_data_rule_and_the_limits()
         assert {"name": "no read root holds the node data", "ok": False} in lines
 
 
-@_linux_confinement
+@_host_backend
 def test_the_executor_checks_run_over_loopback_against_a_real_executor_app():
     from astralvessel import conformance
     with tempfile.TemporaryDirectory() as tmp:

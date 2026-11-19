@@ -6,7 +6,7 @@ import asyncio
 
 import httpx
 import pytest
-from conftest import needs_bash, needs_procfs
+from conftest import needs_bash, needs_posix_signals
 
 from astralvessel import sandbox
 from astralvessel.manifest import load_package
@@ -102,7 +102,7 @@ async def test_glob_stops_at_its_time_budget(package_dir):
     assert not err and "stopped after 0 s" in out
 
 
-@needs_procfs
+@needs_posix_signals
 async def test_reaper_kills_strays_but_spares_running_calls(monkeypatch):
     from astralvessel.tools import ACTIVE_SESSIONS
     stray = await asyncio.create_subprocess_exec("sleep", "30", start_new_session=True)

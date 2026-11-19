@@ -21,7 +21,6 @@ def _symlinks_available() -> bool:
 
 
 needs_bash = pytest.mark.skipif(not shutil.which("bash"), reason="the bash tool needs a POSIX shell on PATH")
-needs_procfs = pytest.mark.skipif(not os.path.isdir("/proc"), reason="the reaper scans procfs")
 needs_symlink = pytest.mark.skipif(not _symlinks_available(), reason="creating symlinks needs an unavailable privilege")
 needs_posix_modes = pytest.mark.skipif(
     sys.platform.startswith("win32"),

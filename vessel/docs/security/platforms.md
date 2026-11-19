@@ -1,4 +1,4 @@
-﻿# Platform support
+# Platform support
 
 A user install runs the node and its tools as processes on your machine. It needs no container engine. Each tool call is confined by what the host operating system offers.
 
@@ -40,9 +40,9 @@ It runs the backend conformance suite from the node pack and prints one line per
 
 Windows is not a deployment host, but the package imports there and the test suite runs, so the
 harness and its clients can be developed on one. Every test that needs a POSIX property carries a
-skip with its reason (`needs_bash`, `needs_procfs`, `needs_posix_modes`, `needs_host_backend` and
-the rest in `tests/conftest.py`). The process-exec backend and the sandbox conformance cases stay
-Linux-only. A test that fails only some of the time is never skipped for that alone. It is
+skip with its reason (`needs_bash`, `needs_posix_signals`, `needs_posix_modes`, `needs_host_backend` and
+the rest in `tests/conftest.py`). The process-exec backend and the sandbox conformance cases run on
+Linux and macOS only. A test that fails only some of the time is never skipped for that alone. It is
 investigated first, because a real ordering fault can hide behind a platform difference.
 
 ## Python and the node pack
