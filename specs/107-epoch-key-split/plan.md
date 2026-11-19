@@ -4,12 +4,13 @@
 **Tracking:** issue 681.
 
 This is the plan for "Design A", which the owner ruled on 2026-11-16. It covers the design, the
-owner's rulings on the open questions, the phases, and how to tell each phase is finished. A
-`spec.md` and `tasks.md` are the next step.
+owner's rulings on the open questions, the phases, and how to tell each phase is finished. The
+[spec](spec.md) and [tasks](tasks.md) follow from it.
 
 Paths under "105" are `specs/105-decentralized-personal-mesh/contracts/`. Paths under "106" are
 `specs/106-sign-in-free-clients/contracts/`. Kernel paths are in the AstralKernel repository at
-`eb9821f4`. A line marked **today** was read from the code or a contract on 2026-11-18.
+`eb9821f4`. A line marked **today** was read from the code or a contract on 2026-11-18. The
+[spec](spec.md) checked these lines again at Kernel `dbab48b9` and corrected one, in section 3.6.
 
 ## 1. The ruling
 
@@ -44,7 +45,8 @@ Three more facts shape the design. All are **today**.
 - **Personal chat keys do not rotate when the epoch changes.** `rotate_personal_chat_key` runs only
   when a share is revoked (`crates/astral-kernel/src/shares.rs`). A chat keeps its key across epochs.
   So a new epoch alone does not hide later messages of an old chat from a device that held the old
-  key, and it would not show them to a device that holds only the new epoch.
+  key, and it would not show them to a device that holds only the new epoch. The contract already
+  requires the rotation (section 3.6). The Kernel does not follow it.
 - **No member re-wraps a personal epoch on request.** `grant_epochs` for the personal group runs at
   pairing and at recovery only. An older app version left in the mesh therefore cannot hand an old
   epoch key to a limited joiner by itself.
@@ -118,8 +120,10 @@ Limited history needs one rule the personal group lacks today. A chat's current 
 introduced under the current epoch. The first write to a chat after a new epoch begins introduces a
 new key.
 
-PHI chats already follow this rule (106 `phi-destinations.md`, "The current key"). The personal group
-adopts the same text.
+106 `phi-destinations.md` section 8 already states this rule for both groups, and its section 10
+says the first personal write after an epoch change introduces a new key. Its vectors carry the
+personal cases. The Kernel applies the rule only to PHI writes, through `chat_write_key`, so this is
+Kernel conformance work and needs no contract change. Corrected 2026-11-18 against Kernel `dbab48b9`.
 
 Two things follow.
 
@@ -133,8 +137,9 @@ Two things follow.
 A 2.1.0 kernel cannot open a split-format header and does not follow the current-key rule. So the
 change lands in two steps.
 
-1. **Read both.** A kernel reads both forms, serves header-only holders, and announces the
-   capability with a signed statement. It keeps writing the old form.
+1. **Read both.** A kernel reads both forms, serves header-only holders, and reads other devices'
+   capability statements. It keeps writing the old form. It writes its own capability statement only
+   once it also carries the activation code of Phase 3, so no released kernel announces early.
 2. **Activate.** When every member of the personal group has announced, the mesh activates the split
    format. From then on every member writes it, and limited history is allowed. Activation never
    reverts. A device that cannot announce the capability is refused at pairing.
@@ -176,7 +181,7 @@ never receives their bodies.
 | 105 `event.md` sections 2, 6, 7, 11 | Header sealed under the epoch key | The split envelope form, the new key reference, the error codes |
 | 105 `roster.md` section 8, 106 `roster-v2.md` | "The owner may grant only the current one" | The three history choices, the header-only grant, `pairing.history_unavailable` and its reasons |
 | 105 `sync.md` sections 4 and 5 | Hold aside on an unknown epoch, withhold PHI | Serving header-only holders, the `history` reason, the capability and activation statements |
-| 106 `phi-destinations.md` | The current-key rule for PHI, and line 140 | The same rule for personal chats. Line 140 is revised |
+| 106 `phi-destinations.md` | The current-key rule for both groups, and line 140. The Kernel follows it for PHI only | Line 140 is revised. The Kernel follows the rule for personal chats |
 | Vectors and reference | 105 `event`, `keys`, `roster`, `sync`, `mailbox`. 106 `share`, `phi-destination`, `contacts`, `roster-v2` | New vectors for both forms. The Kernel's pinned copies are vendored again |
 | Kernel `astral-core` | `KeyRing`, `SealRequest`, `seal_event_with`, `open_header`, `wrap_epoch_key` | Derived keys, both forms, the header-only wrap |
 | Kernel `astral-mesh` | `EpochKeys`, `HistoryGrant`, `approve_request`, `grant_epochs`, `join_from_bundle` | Header-only holdings, the grant, activation |
@@ -216,8 +221,8 @@ Finished when the reference tests pass on the new vectors.
 
 ### Phase 2: Kernel reads both
 
-Derivation, both envelope forms, header-only holdings, serving and withholding, and the capability
-statement. Writers keep the old form.
+Derivation, both envelope forms, header-only holdings, serving and withholding, and reading the
+capability statement. Writers keep the old form, and no kernel writes the statement yet.
 
 Finished when a mixed mesh of old-form and new-form writers converges in the Kernel's sync tests, and
 a header-only holder verifies every chain and opens no old content key.
