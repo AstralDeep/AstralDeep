@@ -12,7 +12,7 @@ This is the single repository instruction file for all coding agents, including 
 
 ## Mental model
 
-AstralDeep is a clinical-AI, multi-agent platform whose FastAPI orchestrator is a node in an owner's personal mesh. Peers embed the shared Rust AstralKernel for signed event logs, sync, authorization, turns and adaptation; AstralPlane supplies SQLite for personal nodes and PostgreSQL where a node is configured for it, as in development and CI. The orchestrator serves REST, WebSocket/A2A transport, the web shell and static assets on port 8001. The browser shell has no sign-in until a browser mesh client exists. Bundled first-party agents retain their runtime authorization and audit gates regardless of transport placement.
+AstralDeep is a clinical-AI, multi-agent platform whose FastAPI orchestrator is a node in an owner's personal mesh. Peers embed the shared Rust AstralKernel for signed event logs, sync, authorization, turns and adaptation; AstralPlane supplies SQLite for personal nodes and PostgreSQL where a node is configured for it, as in development and CI. The orchestrator serves REST and the WebSocket/A2A transport on port 8001. It hosts no web shell, static assets or web chat. Clients run turns on the embedded Kernel engine. Bundled first-party agents retain their runtime authorization and audit gates regardless of transport placement.
 
 The UI contract is:
 
@@ -23,7 +23,7 @@ The base is AstralKernel, AstralDeep, AstralPlane, LETS and ROTE, distributed as
 The evidence control adapter depends on the orchestrator's private ephemeral archive and stays host-bound. It has no standalone transport process; disabling in-process registration preserves complete source responses and makes its inspection commands unavailable.
 
 - There is no React/Vite SPA. Do not reintroduce a parallel frontend source of truth.
-- Web UI is backend-served HTML plus vanilla JS/CSS owned under `components/AstralProjection/backend/webrender/` and exposed to Deep through the installed Projection resource accessors.
+- Deep hosts no web UI. Projection still owns the web rendering code under `components/AstralProjection/backend/webrender/`, and Deep reads it only through the installed Projection resource accessors.
 - Apple clients (Swift/SwiftUI) embed the kernel and render structured UI from their local signed log. Android and Windows are paused until their kernel ports qualify and open to a "not available yet" screen.
 - Voice runs on-device through the same turn and consent gates as typed input; no hosted-voice or system-speech fallback may silently substitute for an unavailable local model.
 - "LLM proposes, code decides" is the default design rule: models may draft layouts or artifacts, but deterministic code validates, authorizes, bounds, and renders them.
@@ -42,6 +42,7 @@ The evidence control adapter depends on the orchestrator's private ephemeral arc
   borrow connections or reintroduce `backend/shared/database.py`. It keeps its own manifest, tests and lint,
   and stays outside Deep's root lint, test discovery, coverage gate and Docker build context except for the
   files the `Dockerfile` copies to build its wheel, as `scripts/tests/test_moved_packages.py` checks. An imported file keeps its own text until someone edits it for a reason.
+- `config/astral-assembly.json`: the node's activation manifest (`astral.assembly/v0`). `backend/orchestrator/assembly_manifest.py` validates it at boot and stops the node with exit 78 on any problem. The 106 contract tests check its pinned contract digests, so an edit to a pinned contract document changes its digest here in the same commit.
 - `backend/shared/external_http.py`: approved outbound HTTP/egress path.
 - `components/AstralProjection/backend/webrender/`: authoritative primitive rendering, sanitization, accessibility, web shell, reusable chrome, and static resources.
 - `components/AstralKernel/python/rote/`: ROTE (`astral-rote`, import `rote`), the base's authoritative device capabilities and semantic adaptation. Deep and Projection both depend on it, and it imports neither.

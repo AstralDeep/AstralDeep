@@ -19,6 +19,7 @@ from typing import Any, AsyncIterator, Awaitable
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
+from orchestrator.assembly_manifest import CALLER_NOTIFICATION_TYPES
 from orchestrator.framework_work_reads import FrameworkWorkReader, read_scope
 from orchestrator import caller_tickets
 from orchestrator.mcp_authz import (
@@ -813,7 +814,7 @@ def create_mcp_router(orchestrator: Any, *, public_base_url: str) -> APIRouter:
                     elif method == "subscriptions/listen":
                         result = {
                             "resultType": "complete",
-                            "notificationTypes": [],
+                            "notificationTypes": list(CALLER_NOTIFICATION_TYPES),
                             "_meta": {"io.modelcontextprotocol/serverInfo": _server_info()},
                         }
                         cache_control = "no-store"

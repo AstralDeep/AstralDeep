@@ -936,7 +936,7 @@ jobs:
         run: |
           set -euo pipefail
           reference=specs/106-sign-in-free-clients/contracts/reference
-          for generator in generate_caller_vectors generate_local_vectors generate_exec_vectors generate_connection_vectors generate_a2a_vectors generate_credential_vectors generate_phi_vectors generate_phi_destination_vectors generate_contact_vectors generate_share_vectors; do
+          for generator in generate_caller_vectors generate_local_vectors generate_exec_vectors generate_connection_vectors generate_a2a_vectors generate_credential_vectors generate_phi_vectors generate_phi_destination_vectors generate_contact_vectors generate_share_vectors generate_caller_event_vectors generate_assembly_vectors; do
             python "$reference/$generator.py" --check
           done
           python -m pytest "$reference/tests" -q
