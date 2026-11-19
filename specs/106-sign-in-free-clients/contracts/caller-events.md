@@ -81,7 +81,7 @@ None are committed. A caller door that starts turns needs its own contract revis
 
 Every client door runs turns on the Kernel engine, so a turn emits the same events for every client. That is the condition for committing names later.
 
-The node's Python loop has no client door. With `FF_SCHEDULER_EXECUTION` on, which is off by default, a stored scheduled job still runs on it. It emits nothing to a caller.
+The node has no other turn engine. A scheduled chat turn is refused with `turn_engine_retired` until a contract gives jobs a door on the Kernel engine.
 
 ## 7. Codes of this contract
 
