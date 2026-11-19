@@ -6,6 +6,7 @@ import base64
 import os
 
 import httpx
+from conftest import needs_posix_specials, needs_symlink
 from test_deploy import landlock
 
 from astralvessel import files as outputs
@@ -21,6 +22,7 @@ def allow_files(package_dir, kinds='["png", "csv"]'):
     manifest.write_text(manifest.read_text() + f"\n[output]\nfiles = {kinds}\n")
 
 
+@needs_posix_specials
 def test_the_outbox_keeps_only_allowed_valid_files_and_is_emptied(tmp_path):
     box = tmp_path / "outbox"
     box.mkdir()
@@ -59,6 +61,7 @@ def test_a_flooded_outbox_gives_the_model_a_short_summary(tmp_path):
     assert os.listdir(tmp_path) == []
 
 
+@needs_symlink
 def test_an_outbox_swapped_for_a_link_reads_and_deletes_nothing_outside(tmp_path):
     victim = tmp_path / "victim"
     (victim / "sub").mkdir(parents=True)
@@ -127,9 +130,9 @@ async def test_the_sandbox_server_sends_collected_files(package_dir, monkeypatch
     remote = sandbox.RemoteRunner("http://sb", "t" * 16, 5, ["png"])
     remote._client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://sb",
                                        headers={"Authorization": "Bearer " + "t" * 16})
-    out, failed = await remote.run("bash", {"command": "echo hi"}, KEY)
+    out, failed = await remote.run("echo", {"word": "hi"}, KEY)
     assert not failed and [f.data for f in remote.take_files(KEY)] == [PNG]
-    await remote.run("bash", {"command": "echo hi"}, KEY)
+    await remote.run("echo", {"word": "hi"}, KEY)
     await remote.end_turn(KEY)
     assert remote.take_files(KEY) == []
     await remote.close()

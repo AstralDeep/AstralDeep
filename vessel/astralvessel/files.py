@@ -10,6 +10,7 @@ import re
 import shutil
 import stat
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 OUTBOX = "outbox"
@@ -66,30 +67,80 @@ def check(name: str, data: bytes, allowed: list[str]) -> tuple[str | None, str]:
 
 def collect(outbox: str, allowed: list[str]) -> tuple[list[ToolFile], list[str]]:
     # Take every entry out of the outbox, keeping the regular files that pass the checks; the rest are refused.
-    # The call controls the outbox, so everything goes through a descriptor opened without following links.
+    # The call controls the outbox, so everything goes through a descriptor opened without following links where
+    # the platform has one; Windows collects by path with the same per-entry checks.
     files: list[ToolFile] = []
     notes: list[str] = []
+    if os.open in os.supports_dir_fd:
+        _collect_by_descriptor(outbox, allowed, files, notes)
+    else:
+        _collect_by_path(outbox, allowed, files, notes)
+    if len(notes) > MAX_NOTES:
+        notes[MAX_NOTES - 1:] = [f"[{len(notes) - MAX_NOTES + 1} more entries not attached]"]
+    return files, notes
+
+
+def _collect_by_descriptor(outbox: str, allowed: list[str], files: list[ToolFile], notes: list[str]) -> None:
     try:
         parent = os.open(os.path.dirname(outbox), os.O_RDONLY | os.O_DIRECTORY)
     except OSError:
-        return files, notes
+        return
     try:
         try:
             box = os.open(os.path.basename(outbox), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
         except FileNotFoundError:
-            return files, notes
+            return
         except OSError:
             _remove(os.path.basename(outbox), parent)
-            return files, ["[not attached: the outbox was replaced by something that is not a folder]"]
+            notes.append("[not attached: the outbox was replaced by something that is not a folder]")
+            return
         try:
             _drain(box, allowed, files, notes)
         finally:
             os.close(box)
     finally:
         os.close(parent)
-    if len(notes) > MAX_NOTES:
-        notes[MAX_NOTES - 1:] = [f"[{len(notes) - MAX_NOTES + 1} more entries not attached]"]
-    return files, notes
+
+
+def _collect_by_path(outbox: str, allowed: list[str], files: list[ToolFile], notes: list[str]) -> None:
+    box = Path(outbox)
+    if not box.is_dir():
+        if box.exists():
+            notes.append("[not attached: the outbox was replaced by something that is not a folder]")
+            with contextlib.suppress(OSError):
+                box.unlink()
+        return
+    for name in sorted(entry.name for entry in os.scandir(box)):
+        data, reason = None, ""
+        path = box / name
+        try:
+            info = path.lstat()
+            if path.is_symlink() or not stat.S_ISREG(info.st_mode):
+                reason = "not a regular file"
+            elif info.st_size > MAX_FILE_BYTES:
+                reason = f"larger than {MAX_FILE_BYTES // (1024 * 1024)} MB"
+            elif len(files) >= MAX_FILES_PER_CALL:
+                reason = f"at most {MAX_FILES_PER_CALL} files per call"
+            else:
+                with open(path, "rb") as handle:
+                    data = handle.read(MAX_FILE_BYTES + 1)
+                if len(data) > MAX_FILE_BYTES:
+                    reason = f"larger than {MAX_FILE_BYTES // (1024 * 1024)} MB"
+                    data = None
+        except OSError:
+            reason = "could not be read"
+        finally:
+            with contextlib.suppress(OSError):
+                if path.is_dir() and not path.is_symlink():
+                    shutil.rmtree(path, ignore_errors=True)
+                else:
+                    path.unlink(missing_ok=True)
+        if data is not None:
+            media_type, reason = check(name, data, allowed)
+            if media_type:
+                files.append(ToolFile(name, media_type, data))
+                continue
+        notes.append(f"[not attached {name[:100]}: {reason}]")
 
 
 def _drain(box: int, allowed: list[str], files: list[ToolFile], notes: list[str]) -> None:

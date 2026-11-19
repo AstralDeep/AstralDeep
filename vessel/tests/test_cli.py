@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from conftest import needs_posix_modes
 
 from astralvessel import caller as callers
 from astralvessel import cli, node, operate
@@ -76,6 +77,7 @@ def test_the_sandbox_needs_a_package(monkeypatch):
         run(monkeypatch, "sandbox")
 
 
+@needs_posix_modes
 def test_ask_prints_the_answer_and_chat_keeps_its_context(monkeypatch, tmp_path, capsys):
     (tmp_path / "deployment.toml").write_text("")
     (tmp_path / "compose.generated.yml").write_text("services: {}\n")
@@ -112,6 +114,7 @@ def test_ask_prints_the_answer_and_chat_keeps_its_context(monkeypatch, tmp_path,
         run(monkeypatch, "ask", "boom", *base)
 
 
+@needs_posix_modes
 def test_conformance_passes_the_caller_and_an_offer_reader_to_the_suite(monkeypatch, tmp_path, capsys):
     (tmp_path / "deployment.toml").write_text("")
     (tmp_path / "compose.generated.yml").write_text("services: {}\n")
@@ -145,6 +148,7 @@ def test_pair_prints_the_offer_and_explains_a_refusal(monkeypatch, tmp_path, cap
         run(monkeypatch, "pair", "--deployment", str(tmp_path / "deployment.toml"))
 
 
+@needs_posix_modes
 def test_ask_without_a_key_or_ticket_says_what_to_run(monkeypatch, tmp_path):
     (tmp_path / "deployment.toml").write_text("")
     (tmp_path / "compose.generated.yml").write_text("services: {}\n")

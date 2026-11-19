@@ -7,6 +7,7 @@ import os
 
 import httpx
 import pytest
+from conftest import needs_posix_modes
 from test_deploy import deployment_text, landlock
 
 from astralvessel import sandbox
@@ -111,6 +112,7 @@ async def test_a_turn_stays_with_the_user_who_started_it(package_dir):
         assert (await client.post("/run", json=call, headers=AUTH)).status_code == 403
 
 
+@needs_posix_modes
 def test_folders_shut_with_chmod_are_counted_and_removed(tmp_path):
     from astralvessel.tools import disk_usage, remove_tree
     shut = tmp_path / "turn" / "d"
@@ -123,6 +125,7 @@ def test_folders_shut_with_chmod_are_counted_and_removed(tmp_path):
     assert not (tmp_path / "turn").exists()
 
 
+@needs_posix_modes
 def test_empty_entries_are_charged_and_deep_trees_count_as_over(tmp_path):
     from astralvessel.tools import ENTRY_BYTES, MAX_DEPTH, disk_usage, remove_tree
     flat = tmp_path / "flat"
@@ -154,6 +157,7 @@ async def test_a_deleted_file_held_open_still_counts(package_dir, tmp_path, monk
         assert out["error"] and "disk limit" in out["output"]
 
 
+@needs_posix_modes
 def test_a_name_too_long_to_reach_counts_as_over_instead_of_failing(tmp_path):
     from astralvessel.tools import disk_usage
     fd = os.open(tmp_path, os.O_RDONLY)

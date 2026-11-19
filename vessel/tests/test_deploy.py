@@ -10,6 +10,7 @@ import stat
 from importlib.metadata import version
 
 import pytest
+from conftest import needs_posix_modes, needs_symlink
 
 from astralvessel import confine
 from astralvessel.compose import generate, inputs_hash, write
@@ -30,7 +31,7 @@ def deployment_text(package, mounts='mounts = [{ target = "/data", source = "env
 {gateway}
 [[agents]]
 id = "guide"
-package = "{package}"
+package = "{package.as_posix()}"
 [agents.sandbox]
 {mounts}
 """
@@ -90,7 +91,7 @@ def test_an_edited_manifest_tool_or_deployment_recreates_what_loads_it(data_pack
     assert edited[0] != first[0] and edited[1] != first[1]
     (data_package / "tools" / "rank.toml").write_text(tool.read_text().replace('name = "echo"', 'name = "rank"'))
     manifest = data_package / "vessel.toml"
-    manifest.write_text(manifest.read_text().replace('"tools/echo.toml"]', '"tools/echo.toml", "tools/rank.toml"]'))
+    manifest.write_text(manifest.read_text().replace('"tools/echo.toml"', '"tools/echo.toml", "tools/rank.toml"'))
     added = services()
     assert added[0] != edited[0] and added[1] != edited[1]
     path.write_text(path.read_text() + "\n# comment\n")
@@ -191,6 +192,7 @@ def test_the_node_section_validates_what_it_publishes_and_what_it_may_set(data_p
             load_deployment(path)
 
 
+@needs_posix_modes
 def test_secrets_stay_out_of_the_compose_file_and_in_private_files(data_package, tmp_path):
     path = tmp_path / "deployment.toml"
     path.write_text(deployment_text(data_package))
@@ -313,6 +315,7 @@ def test_stale_workspaces_are_swept(tmp_path):
 
 
 @pytest.mark.parametrize("tool", ["read", "list", "glob"])
+@needs_symlink
 def test_in_server_tools_check_where_the_opened_path_really_points(tmp_path, tool):
     # A call can swap a link after the path check; the tools check the opened descriptor too.
     from astralvessel.tools import Confinement, _glob, _list, _read

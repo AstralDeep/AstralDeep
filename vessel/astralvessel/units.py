@@ -175,7 +175,10 @@ class Supervisor:
     @staticmethod
     def _signal(child: subprocess.Popen, number: int) -> None:
         try:
-            os.killpg(child.pid, number)
+            if hasattr(os, "killpg"):
+                os.killpg(child.pid, number)
+            else:
+                child.terminate()  # Windows: the child is the whole group the supervisor started
         except (ProcessLookupError, PermissionError):
             pass
 
