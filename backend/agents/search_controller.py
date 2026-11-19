@@ -1,5 +1,6 @@
 from typing import List, Dict, Any
 from enum import Enum
+from datetime import datetime, timezone
 
 class SourceState(Enum):
     AVAILABLE = "available"
@@ -17,7 +18,11 @@ class SearchOrchestrator:
         Executes search while enforcing RFC 8693 boundaries.
         """
         if "restricted" in query:
-            return {"status": "denied", "data": [], "metadata": {"timestamp": "2026-11-15T00:00:00Z"}}
+            return {
+                "status": "denied", 
+                "data": [], 
+                "metadata": {"timestamp": datetime.now(timezone.utc).isoformat()}
+            }
         results = self._fetch_from_mesh(query)
         return self._format_response(results)
 
@@ -28,5 +33,5 @@ class SearchOrchestrator:
         return {
             "status": "success",
             "data": results,
-            "metadata": {"timestamp": "2026-11-15T00:00:00Z"}
+            "metadata": {"timestamp": datetime.now(timezone.utc).isoformat()}
         }
