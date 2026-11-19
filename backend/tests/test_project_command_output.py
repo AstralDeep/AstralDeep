@@ -1,26 +1,24 @@
-"""Exercises command output through governed dispatch, the worker bridge and native response serialization.
+"""Exercises command output through a project-scoped worker bridge and native response serialization.
 Only complete current root-cwd output may avoid the unchanged real PHI redactor.
 """
 # ruff: noqa: F811
 
 import asyncio
 import json
-from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
 
 from agents.computer_use import mcp_tools
-from orchestrator import hitl_confirmation, project_authority, remote_confirmation, terminal_host_review
+from orchestrator import project_authority, terminal_host_review
+from orchestrator.computer_hosts import ComputerHostError
 from personalization import phi_gate
 from shared.project_workspaces import ProjectManifest
 from shared.protocol import MCPResponse
-from tests.test_computer_grant_flow_102 import _call, _fresh_pending_cards  # noqa: F401
 from tests.test_hitl_public_research import runtime  # noqa: F401
 from tests.test_hitl_task_continuation import task_runtime  # noqa: F401
 from tests.test_lets_gate_ordering import gate_orchestrator  # noqa: F401
 from tests.test_project_standing_dispatch import PROJECT, project_runtime
-from tests.helpers.approval_task import begin_task
 
 PRIMARY = "/tmp/project-20261027"
 SECONDARY = "/tmp/研究-20261027"
@@ -85,7 +83,10 @@ async def command_world(task_runtime, monkeypatch):
 
     orch._safe_send = send
 
-    async def execute(websocket, agent, tool, args, **kwargs):
+    async def call(tool="run_command", **args):
+        if tool == "run_command" and "command" not in args and "argv" not in args:
+            args["argv"] = ["pwd"]
+
         def worker():
             try:
                 result = getattr(mcp_tools, tool)(user_id="owner-a", session_id="chat-a", **args)
@@ -93,18 +94,12 @@ async def command_world(task_runtime, monkeypatch):
                 return result
             finally:
                 loop.call_soon_threadsafe(world.finished.set)
-        async def invoke(_):
-            return MCPResponse(result=await asyncio.to_thread(worker))
-        return await orch._execute_governed_attempt(websocket, agent, tool, args, user_id="owner-a", channel="web",
-            audit_correlation_id="output-test", actor_user_id="owner-a", auth_principal="owner-a",
-            conversation_id="chat-a", invoke=invoke)
 
-    orch._execute_with_retry = execute
-
-    async def call(**args):
-        if "command" not in args and "argv" not in args:
-            args["argv"] = ["pwd"]
-        return await _call(task_runtime, "run_command", **args)
+        try:
+            async with project_authority.project_dispatch_scope(orch, ws, "owner-a", "chat-a", "computer-use-1", tool, args):
+                return MCPResponse(result=await asyncio.to_thread(worker))
+        except ComputerHostError as exc:
+            return MCPResponse(error={"code": exc.code, "message": str(exc)})
     world.call = call
     yield world
     try:
@@ -126,11 +121,10 @@ async def test_complete_exact_current_root_output_survives_real_privacy_gate(com
     assert response.error is None, response
     data = response.result["_data"]
     assert data["stdout"] == actual and data["stdout_bytes"] == len(actual.encode())
-    assert data["untrusted_output"] is True and data["approval_source"] == "project_grant"
+    assert data["untrusted_output"] is True
     assert "privacy" not in data
     assert len(world.delivered) == 1 and world.delivered[0]["args"]["cwd"] == (cwd or PRIMARY)
     assert world.delivered[0]["project_context"] == world.session.project_origin.context.to_dict()
-    assert not getattr(world.orch, "_hitl_pending_calls", {}) and not remote_confirmation._PENDING_CARDS
 
 
 def _reply(stdout=PRIMARY + "\n", **changes):
@@ -226,13 +220,6 @@ def _invalidate(world, change, scope=None):
         world.orch._connection_contexts[id(world.ws)].closing = True
     elif change == "owner":
         world.orch.ui_sessions[world.ws]["sub"] = "foreign"
-    elif change == "task":
-        begin_task(world.orch, world.ws, "owner-a", "chat-a")
-    elif change == "stop":
-        world.orch.cancelled_sessions[id(world.ws)] = True
-    elif change == "expiry":
-        approval = hitl_confirmation._APPROVAL.get()
-        approval.call = replace(approval.call, expires=0)
     elif change == "cancel":
         scope[2].cancel()
 
@@ -248,7 +235,7 @@ async def test_authority_loss_during_rpc_never_claims_pre_effect_refusal(command
     assert failure.get("stdout", "") == "" and failure.get("code") in {"outcome_uncertain", "stale_project_grant"}
 
 
-@pytest.mark.parametrize("change", ["grant", "session", "controller", "connection", "owner", "cancel", "task", "stop", "expiry"])
+@pytest.mark.parametrize("change", ["grant", "session", "controller", "connection", "owner", "cancel"])
 async def test_authority_is_rechecked_after_stderr_privacy_work(command_world, change):
     world = command_world
     world.reply = _reply(stderr="ordinary stderr", stderr_bytes=15)
@@ -305,7 +292,7 @@ async def test_background_chunks_do_not_inherit_foreground_root_exception(comman
     world.reply = {"state": "completed", "exit_code": 0, "truncated": False,
         "chunks": [{"stream": "stdout", "offset": 0, "data": PRIMARY + "\n"},
                    {"stream": "stderr", "offset": 0, "data": "123456789"}], "next_offset": 99}
-    response = await _call(world.runtime, "read_output", job_id=job)
+    response = await world.call("read_output", job_id=job)
     assert response.error is None, response
     assert [chunk["data"] for chunk in response.result["_data"]["chunks"]] == ["", ""]
     assert response.result["_data"]["privacy"] == "withheld"

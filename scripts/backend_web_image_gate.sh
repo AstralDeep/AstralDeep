@@ -101,12 +101,17 @@ while True:
             with urllib.request.urlopen("http://127.0.0.1:8001" + path, timeout=3) as response:
                 assert response.status == 200
                 observations[path] = json.load(response)
-        try:
-            urllib.request.urlopen("http://127.0.0.1:8001/lets/health", timeout=3)
-        except urllib.error.HTTPError as exc:
-            assert exc.code == 401
-        else:
-            raise AssertionError("unauthenticated protected route was admitted")
+        for path, status, reason in (
+            ("/api/node/connections", 401, "node.operator_secret_required"),
+            ("/lets/health", 404, "Not Found"),
+        ):
+            try:
+                urllib.request.urlopen("http://127.0.0.1:8001" + path, timeout=3)
+            except urllib.error.HTTPError as exc:
+                assert (exc.code, json.load(exc)["detail"]) == (status, reason)
+                observations[path] = {"status": status, "detail": reason}
+            else:
+                raise AssertionError(f"unauthenticated probe was admitted at {path}")
         print(json.dumps({"scope": "production-configuration-boot-only",
                           "real_authentication_tested": False,
                           "lets_enforce_tested": False, "observations": observations}))

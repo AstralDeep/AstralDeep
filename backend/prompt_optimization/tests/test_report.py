@@ -31,7 +31,7 @@ def result():
         "list.\n"
     )
     adapter = model_io.ProviderDouble(variants=variants)
-    prompt = task_module.load_task_prompt(REPO_ROOT)
+    prompt = task_module.load_task_prompt(REPO_ROOT, task_module.SYNTHETIC_TASK_ID)
     run = optimizer_module.OptimizationRun(
         holdout_seals=holdout_seals,
         fixture=build_fixture(),
@@ -103,7 +103,7 @@ def test_candidate_validation_rejects_wrong_field_and_status(result):
 def test_report_contains_candidate_bound_evidence(result):
     report = report_module.build_report(result)
     assert report["schema_version"] == report_module.REPORT_SCHEMA_VERSION
-    assert report["task"]["source_path"] == "backend/orchestrator/coordinator.py"
+    assert report["task"]["source_path"] == "backend/prompt_optimization/synthetic_planning_prompt.txt"
     assert report["task"]["allowlisted_fields"] == ["rules"]
     assert report["fixture"]["digest"]
     assert set(report["fixture"]["partition_digests"]) == {
@@ -119,6 +119,15 @@ def test_report_contains_candidate_bound_evidence(result):
     assert report["selected_holdout"]["mean"] is not None
     assert report["proposal_errors"] == []
     assert report_module.validate_report(report) == []
+
+
+def test_completed_reports_and_proposals_for_the_retired_task_remain_readable(result):
+    report = report_module.build_report(result)
+    report["task"].update(task_id="coordinator_planning", source_path="backend/orchestrator/coordinator.py")
+    candidate = report_module.candidate_artifact(result)
+    candidate["task_id"] = "coordinator_planning"
+    assert report_module.validate_report(report) == []
+    assert report_module.validate_candidate(candidate) == []
 
 
 def test_report_adopt_requires_qualified_completed_run(result):

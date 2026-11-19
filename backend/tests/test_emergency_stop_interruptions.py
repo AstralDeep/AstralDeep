@@ -13,7 +13,6 @@ from orchestrator.emergency_stop_binding import interrupt_owner
 from orchestrator.orchestrator import Orchestrator
 from orchestrator.stream_manager import StreamManager, StreamState, StreamSubscription
 from orchestrator.async_tasks import BackgroundTaskManager
-from persistent_agents.runner import AssignmentRunner
 from scheduler.runner import JobRunner
 
 
@@ -180,7 +179,7 @@ async def test_background_owner_cancel_uses_existing_durable_cancellation_path()
     manager.cancel.assert_awaited_once_with("1")
 
 
-async def test_scheduled_and_persistent_entries_refuse_effects_when_owner_stopped():
+async def test_scheduled_entries_refuse_effects_when_owner_stopped():
     stop = EmergencyStopCoordinator()
     await stop.engage("owner", sweep=False)
     orch = SimpleNamespace(emergency_stop=stop)
@@ -195,16 +194,9 @@ async def test_scheduled_and_persistent_entries_refuse_effects_when_owner_stoppe
         await scheduled.run_job(attempt.job)
     scheduled._run_occurrence.assert_not_awaited()
     scheduled._run_job.assert_not_awaited()
-    persistent = object.__new__(AssignmentRunner)
-    persistent.orch = orch
-    persistent._run_claim = AsyncMock()
-    with pytest.raises(EmergencyStopRefused):
-        await persistent.run_claim(SimpleNamespace(assignment=SimpleNamespace(owner_id="owner")))
-    persistent._run_claim.assert_not_awaited()
 
 
-async def test_final_governed_attempt_rechecks_stop_after_authorization(monkeypatch):
-    from orchestrator import hitl_confirmation
+async def test_final_governed_attempt_rechecks_stop_after_authorization():
 
     stop = EmergencyStopCoordinator()
     invoke = AsyncMock()
@@ -219,7 +211,6 @@ async def test_final_governed_attempt_rechecks_stop_after_authorization(monkeypa
                            ui_sessions={websocket: {"sub": "owner"}},
                            tool_permissions=SimpleNamespace(get_tool_scope=lambda *args: "tools:read",
                                get_tool_scope_map=lambda agent: {"tool": "tools:read"} if agent == "agent" else {}))
-    monkeypatch.setattr(hitl_confirmation, "effect_refusal", lambda *args, **kwargs: None)
     result = await Orchestrator._execute_governed_attempt(orch, websocket, "agent", "tool", {},
         user_id="owner", channel="ui", audit_correlation_id=None, actor_user_id="owner",
         auth_principal="owner", conversation_id=None, invoke=invoke)

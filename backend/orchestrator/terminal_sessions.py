@@ -363,7 +363,7 @@ class TerminalSessionManager:
             session = TerminalSession(uuid.uuid4().hex, owner_id, -1, None, "", now=self._clock,
                                       remote=remote, binding=binding, authority=replace(
                                           authority, _execution_fence=None, _admission=None,
-                                          _runtime=None, _request_check=None),
+                                          _runtime=None),
                                       target=binding.machine_id, directory=directory)
             session.cols, session.rows = cols, rows
             with self._lock:

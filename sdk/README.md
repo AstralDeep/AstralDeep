@@ -1,8 +1,11 @@
 # astral-sdk
 
-Python SDK for driving Astral's **Work** operations from your own external
-tooling — a script, an agent framework, an MCP-aware host — using an
-owner-issued **framework credential** rather than a live interactive session.
+This Python SDK supports older servers that accept owner-issued **framework credentials**
+for Work operations over MCP. The quickstart and CLI examples below apply to those servers.
+
+Personal mesh nodes authenticate external tools with an owner-minted caller ticket
+and a signed proof for each request. This SDK version sends a bearer credential,
+which a personal node refuses. [Personal-node caller protocol](../specs/106-sign-in-free-clients/contracts/caller-ticket.md)
 
 A framework credential is minted from the product's **Connections** surface
 (while you are signed in) and carries its own independent expiry, scope set
@@ -29,26 +32,23 @@ from astral_sdk import AstralClient
 
 client = AstralClient("https://your-astral-instance.example", token)
 
-op = client.submit_operation(
-    idempotency_key="my-script-run-1",
-    name="Draft a note",
-    instructions="Write one short paragraph about the weather today.",
-)
-op = client.wait_for_terminal(op.id)
+op = client.get_operation(existing_operation_id)
 if op.disposition == "completed":
     artifact = client.get_artifact(op.id)
     print(artifact.result)
 ```
 
-An `AsyncAstralClient` with the identical method set is available for
-`asyncio` code.
+On a server with the retired assignment engine, an exact replay of an accepted
+`submit_operation` returns the original operation. A new submission returns
+`turn_engine_retired`. Read existing work with `get_operation` or `list_operations`.
+An `AsyncAstralClient` with the same methods is available for `asyncio` code.
 
 ## What this talks to
 
-A framework credential's only ingress into Deep is the MCP endpoint
-(`POST {base_url}/mcp`, JSON-RPC 2.0) — there is no separate REST route for
-this credential class. `AstralClient` speaks that wire format directly; you
-never need to construct JSON-RPC envelopes yourself.
+On servers with framework credential support, the SDK sends JSON-RPC 2.0 to
+`POST {base_url}/mcp`. A current personal mesh node accepts signed caller tickets
+on `/mcp` and `/a2a`. Those tickets do not grant the framework Work API, and the
+node has no bearer REST route for submitting or resuming assignments.
 
 The tool catalog (`astral_sdk.tools.ASTRAL_TOOLS`) and the `Operation` model's
 fields are generated from the live server's own source
@@ -73,10 +73,8 @@ own UI, can perform them.
 | `operations.control` | `astral_cancel_operation`, `astral_pause_operation` |
 | `artifacts.read` | `astral_get_artifact` |
 
-`resume`/`wait`/`wake` are intentionally absent — the server does not yet
-implement them for a framework caller (they refuse honestly with
-`framework_control_unavailable` rather than silently no-op), so this SDK
-never advertises them.
+Framework callers can poll an existing operation. The server does not expose commands
+for resuming an assignment or waking a waiter through this SDK.
 
 ## Framework integrations
 
@@ -104,10 +102,7 @@ protocol compliance with MCP hosts that expect it.
 ## CLI
 
 ```bash
-python -m astral_sdk submit --base-url https://your-astral-instance.example \
-    --token "$ASTRAL_TOKEN" --idempotency-key run-1 --name "Draft a note" \
-    --instructions "Write one short paragraph."
-python -m astral_sdk get <operation_id>
+python -m astral_sdk list --base-url https://your-astral-instance.example
 python -m astral_sdk poll <operation_id> --after-revision 1
 python -m astral_sdk cancel <operation_id> --expected-revision 2
 ```
@@ -116,11 +111,17 @@ python -m astral_sdk cancel <operation_id> --expected-revision 2
 Every command prints one JSON document to stdout on success, or a JSON error
 object to stderr with a non-zero exit code.
 
-## Terminal sessions
+## Terminal sessions on older servers
 
-The operator CLI can drive governed terminal sessions through `/api/terminals`.
+The terminal CLI and Python methods target servers that expose the owner-authenticated
+`/api/terminals` routes. A personal mesh node returns HTTP 404 for these routes.
+Its `/mcp` and `/a2a` endpoints accept owner-minted caller tickets. Neither endpoint
+provides the SDK terminal-session API.
 
-Start and input require an exact approval in a fresh signed-in web review tab with no selected conversation or open Settings/modal surface. Use a separate private browser window or profile, sign in, close settings, and keep it free of restored conversations before requesting a terminal operation. New chat still selects a conversation and cannot provide this review context. An active conversation or native console alone cannot display this out-of-band approval; the API returns `terminal_review_context_required` (409) before creating a proposal. After changing review context, issue a new request rather than replaying an uncertain write.
+On an older server with the terminal routes enabled, start and input require an
+exact approval in a fresh signed-in web review tab. The tab must have no selected
+conversation or open settings. If the server returns `terminal_review_context_required`
+(409), open the review tab before issuing a new request.
 The operator must configure an isolated SSH runtime with `TERMINAL_SSH_PROFILE_FILE`
 and enroll its exact machine and host key through the normal encrypted owner settings.
 Execution is unavailable without that profile; the orchestrator never opens a host shell.
@@ -164,6 +165,8 @@ The client methods (`create_terminal_session`, `write_terminal`,
 `read_terminal`, `stream_terminal`, `resize_terminal`, `interrupt_terminal`,
 `close_terminal`, `list_terminal_sessions`) exist on both `AstralClient` and
 `AsyncAstralClient` and speak the same REST surface.
+
+## Emergency control on older servers
 
 `emergency-status` and `emergency-stop` accept a framework credential with the
 corresponding read or control scope. `emergency-resume --expected-revision N`

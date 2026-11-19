@@ -1,11 +1,10 @@
 """Builds short, deterministic tool-failure notices for chat, deduplicated per turn, so
 provider bodies/exception strings/URLs never reach the UI though the fuller
-diagnostic stays available to audit. Used by coordinator.py and orchestrator.py.
+diagnostic stays available to audit. Orchestrator dispatch uses these notices.
 """
 
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import Mapping
 from contextvars import ContextVar
@@ -60,18 +59,6 @@ def tool_failure_message(tool_name: object, error: object) -> str:
             label = tool_name.replace("_", " ").capitalize()
         message = f"{label} could not complete. Try again."
     return message
-
-
-def tool_failure_content(tool_name: object, error: object) -> str:
-    error = error if isinstance(error, Mapping) else {}
-    code = error.get("code")
-    code = code if isinstance(code, str) and code in PUBLIC_ERRORS else "TOOL_FAILED"
-    return json.dumps({
-        "status": "error",
-        "code": code,
-        "message": tool_failure_message(tool_name, error),
-        "retryable": error.get("retryable") is True,
-    })
 
 
 _CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")

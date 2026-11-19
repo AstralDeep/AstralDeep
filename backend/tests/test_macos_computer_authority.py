@@ -9,7 +9,6 @@ import pytest
 
 from agents.computer_use import mcp_tools
 from orchestrator import computer_use_policy as policy
-from orchestrator import remote_confirmation as rc
 from orchestrator.computer_hosts import ComputerHostError
 from tests.test_computer_use_076 import _descriptor, _FakeOrch, _online_host, _session, _WS, OWNER
 
@@ -88,10 +87,10 @@ async def test_manual_pause_after_local_takeover_cannot_retain_resume_eligibilit
     ws = orch.add(_WS(chat="chat-1"))
     host, _ = orch.computer_hosts.register(OWNER, ws, _descriptor(platform="macos"))
     session = await _session(orch, host, ws)
-    authority = rc.capture_computer_approval(orch, ws, OWNER, "chat-1", {})
+    generation = session.authority_generation
     await orch.computer_sessions.pause(session, "local_input")
     await orch.computer_sessions.pause(session, "manual_pause")
-    assert not rc.computer_approval_current(orch, ws, authority, allow_local_pause=True)
+    assert session.authority_generation > generation
     assert session.state == "paused" and session.pause_reason == "manual_pause"
     await orch.computer_sessions.end(session, "user_stop")
 
@@ -134,9 +133,8 @@ async def test_window_review_uses_bounded_current_session_labels_and_table(monke
     assert table["type"] == "table" and table["headers"] == ["Window", "App", "ID"]
     assert table["rows"][0][1:] == ["com.apple.Notes", "42"]
     if current:
-        authority = rc.capture_computer_approval(orch, ws, OWNER, "chat-1", {})
-        label = rc.computer_resume_target(ws, authority, "type_text", {"hwnd": 42})
-        assert "com.apple.Notes" in label and "Synthetic notes" in label and len(label) <= 450
+        assert 42 in session.window_labels
+        assert "Synthetic notes" in table["rows"][0][0]
     else:
         assert not session.window_labels
     await orch.computer_sessions.end(session, "user_stop")
@@ -162,55 +160,6 @@ async def test_superseded_host_cannot_receive_or_complete_old_requests():
     assert not orch.computer_hosts.handle_response(old_ws, OWNER, {"request_id": request_id, "ok": True})
     assert orch.computer_hosts.handle_response(replacement_ws, OWNER, {"request_id": request_id, "ok": True, "result": {}})
     assert await request == {}
-
-
-@pytest.mark.parametrize("tool,args,want", [
-    ("write_file", {"path": "/test/file", "content": "safe"}, False),
-    ("confirm_action", {"summary": "Buy an item"}, False),
-    ("confirm_action", {"summary": "Run the reviewed command", "terminal_app": "notepad"}, False),
-    ("confirm_action", {"summary": "Run the reviewed command", "terminal_app": "com.apple.Terminal"}, True),
-    ("open_app", {"app": "com.apple.Terminal"}, True),
-    ("open_app", {"app": "Google Chrome"}, False),
-])
-async def test_terminal_grant_requires_exact_current_terminal_action(tool, args, want):
-    orch = _FakeOrch()
-    _host_ws, host = await _online_host(orch)
-    controller = orch.add(_WS(chat="chat-1"))
-    session = await _session(orch, host, controller)
-    authority = rc.capture_computer_approval(orch, controller, OWNER, "chat-1", {})
-    row = SimpleNamespace(proposal_id="p", owner_id=OWNER, machine_id=host.host_id,
-                          conversation_id="chat-1", tool_name=tool, arguments=args)
-    rc._computer_use_on_approved(orch, row, controller, authority)
-    assert session.terminal_ok is want
-    await orch.computer_sessions.end(session, "user_stop")
-
-
-@pytest.mark.parametrize("change", ["pause", "chat", "owner", "controller", "host", "session"])
-async def test_stale_terminal_approval_cannot_grant_new_authority(change):
-    orch = _FakeOrch()
-    _host_ws, host = await _online_host(orch)
-    controller = orch.add(_WS(chat="chat-1"))
-    session = await _session(orch, host, controller)
-    authority = rc.capture_computer_approval(orch, controller, OWNER, "chat-1", {})
-    row = SimpleNamespace(proposal_id="p", owner_id=OWNER, machine_id=host.host_id,
-                          conversation_id="chat-1", tool_name="open_app", arguments={"app": "powershell"})
-    if change == "pause":
-        await orch.computer_sessions.pause(session, "local_input")
-        await orch.computer_sessions.resume(session, local=True)
-    elif change == "chat":
-        orch._ws_active_chat[id(controller)] = "other-chat"
-    elif change == "owner":
-        orch.ui_sessions[controller]["sub"] = "other-owner"
-    elif change == "controller":
-        session.controller_ws_id = id(object())
-    elif change == "host":
-        orch.computer_hosts.register(OWNER, orch.add(_WS()), _descriptor(host_id=host.host_id))
-    else:
-        await orch.computer_sessions.end(session, "user_stop")
-        session = await _session(orch, host, controller)
-    rc._computer_use_on_approved(orch, row, controller, authority)
-    assert not session.terminal_ok
-    await orch.computer_sessions.end(session, "user_stop")
 
 
 @pytest.mark.parametrize("verb,want", [("click", "outcome_uncertain"), ("list_windows", "host_offline")])
@@ -378,74 +327,15 @@ def test_terminal_specific_input_cannot_claim_consent_from_arguments(monkeypatch
     assert result["_data"].get("code") in {"out_of_range", "confirmation_required"} and not effects
 
 
-@pytest.mark.parametrize("app,want", [("Terminal", "approved"), ("Google Chrome", "out_of_range")])
-def test_explicit_confirmation_validates_terminal_identity(monkeypatch, app, want):
-    monkeypatch.setattr(mcp_tools, "_ctx", lambda _kwargs: (OWNER, "chat", SimpleNamespace(platform="macos"),
-        SimpleNamespace(session_id="s")))
-    result = mcp_tools.confirm_action(summary="Run the reviewed command", terminal_app=app)
-    assert result["_data"].get(want) is True if want == "approved" else result["_data"]["code"] == want
+def test_a_legacy_confirm_action_request_cannot_authorize_terminal_input():
+    from agents.computer_use.mcp_server import MCPServer
+    from shared.protocol import MCPRequest
 
-
-@pytest.mark.parametrize("tool,args,want", [
-    ("confirm_action", {"terminal_app": "Terminal", "summary": "Run a command"}, "com.apple.Terminal"),
-    ("write_file", {"path": "/selected/output.txt"}, "/selected/output.txt"),
-    ("delete_path", {"path": "relative.txt"}, None),
-    ("open_app", {"app": "/Applications/../Terminal.app"}, None),
-    ("set_clipboard", {"text": "safe"}, None),
-])
-async def test_combined_resume_requires_a_valid_declared_target(tool, args, want):
-    orch = _FakeOrch()
-    ws = orch.add(_WS(chat="chat-1"))
-    host, _ = orch.computer_hosts.register(OWNER, ws, _descriptor(platform="macos"))
-    session = await _session(orch, host, ws)
-    authority = rc.capture_computer_approval(orch, ws, OWNER, "chat-1", {})
-    assert rc.computer_resume_target(ws, authority, tool, args) == want
-    if want is None:
-        await orch.computer_sessions.pause(session, "local_input")
-        assert await rc.resume_computer_approval(orch, ws, authority, tool, args) is None
-        assert session.state == "paused"
-    await orch.computer_sessions.end(session, "user_stop")
-
-
-@pytest.mark.parametrize("change", ["owner", "chat", "machine", "summary", "args"])
-async def test_terminal_grant_rejects_changed_approval_record(change):
-    orch = _FakeOrch()
-    ws = orch.add(_WS(chat="chat-1"))
-    host, _ = orch.computer_hosts.register(OWNER, ws, _descriptor(platform="macos"))
-    session = await _session(orch, host, ws)
-    authority = rc.capture_computer_approval(orch, ws, OWNER, "chat-1", {})
-    row = SimpleNamespace(owner_id=OWNER, conversation_id="chat-1", machine_id=host.host_id,
-        tool_name="open_app", arguments={"app": "Terminal"})
-    if change == "owner":
-        row.owner_id = "other"
-    elif change == "chat":
-        row.conversation_id = "other"
-    elif change == "machine":
-        row.machine_id = "other"
-    elif change == "summary":
-        row.tool_name = "confirm_action"
-        row.arguments = {"terminal_app": "Terminal", "summary": ""}
-    else:
-        row.arguments["args"] = ["-c", "id"]
-    assert not rc._computer_use_on_approved(orch, row, ws, authority)
-    assert not session.terminal_ok
-    await orch.computer_sessions.end(session, "user_stop")
-
-
-@pytest.mark.parametrize("app", ["cmd", "python", "psql", "powershell", "bash", "/Applications/Terminal.app"])
-async def test_mac_terminal_confirmation_has_closed_native_identities(monkeypatch, app):
-    orch = _FakeOrch()
-    ws = orch.add(_WS(chat="chat-1"))
-    host, _ = orch.computer_hosts.register(OWNER, ws, _descriptor(platform="macos"))
-    session = await _session(orch, host, ws)
-    monkeypatch.setattr(mcp_tools, "_ctx", lambda _kwargs: (OWNER, "chat-1", host, session))
-    result = mcp_tools.confirm_action(summary="A reviewed command", terminal_app=app)
-    assert result["_data"]["code"] == "out_of_range"
-    authority = rc.capture_computer_approval(orch, ws, OWNER, "chat-1", {})
-    row = SimpleNamespace(owner_id=OWNER, conversation_id="chat-1", machine_id=host.host_id,
-        tool_name="confirm_action", arguments={"terminal_app": app, "summary": "A reviewed command"})
-    assert not rc._computer_use_on_approved(orch, row, ws, authority) and not session.terminal_ok
-    await orch.computer_sessions.end(session, "user_stop")
+    assert "confirm_action" not in mcp_tools.TOOL_REGISTRY
+    response = MCPServer().process_request(MCPRequest(method="tools/call", params={
+        "name": "confirm_action", "arguments": {"terminal_app": "Terminal"},
+    }))
+    assert response.error and response.error["retryable"] is False
 
 
 async def test_host_socket_owner_replacement_refuses_before_frame_delivery():
@@ -481,31 +371,3 @@ async def test_owner_rebinding_ends_the_previous_owners_session_and_terminal_gra
     orch.ui_sessions[ws]["sub"] = "other-owner"
     await Orchestrator._register_computer_host(orch, ws, "other-owner", _descriptor(host_id=host.host_id))
     assert session.state == "ended" and not session.terminal_ok
-
-
-async def test_bypass_mode_change_permanently_retires_captured_manual_review(monkeypatch):
-    from orchestrator import approval_receipts
-    orch = _FakeOrch()
-    ws = orch.add(_WS(chat="chat-1"))
-    host, _ = orch.computer_hosts.register(OWNER, ws, _descriptor(platform="macos"))
-    session = await _session(orch, host, ws)
-    authority = rc.capture_computer_approval(orch, ws, OWNER, "chat-1", {})
-    assert rc.computer_approval_current(orch, ws, authority)
-    accepted = rc.accept_computer_approval(orch, ws, authority)
-    entered, release = asyncio.Event(), asyncio.Event()
-    async def blocked(*args):
-        entered.set()
-        await release.wait()
-    monkeypatch.setattr(approval_receipts, "withdraw_computer_reviews", blocked)
-    enabling = asyncio.create_task(orch.computer_sessions.set_bypass(host, True))
-    await entered.wait()
-    assert not rc.computer_approval_current(orch, ws, authority)
-    assert rc.computer_approval_current(orch, ws, accepted)
-    release.set()
-    await enabling
-    await orch.computer_sessions.set_bypass(host, False)
-    assert not rc.computer_approval_current(orch, ws, authority)
-    fresh = rc.capture_computer_approval(orch, ws, OWNER, "chat-1", {})
-    assert rc.computer_approval_current(orch, ws, fresh)
-    assert fresh.review_generation > authority.review_generation
-    await orch.computer_sessions.end(session, "user_stop")

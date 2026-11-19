@@ -51,7 +51,7 @@ def _limits(**overrides) -> budget_module.BudgetLimits:
 
 
 def _task_prompt() -> task_module.TaskPrompt:
-    return task_module.load_task_prompt(REPO_ROOT)
+    return task_module.load_task_prompt(REPO_ROOT, task_module.SYNTHETIC_TASK_ID)
 
 
 def test_partition_mean_is_none_when_every_case_failed():

@@ -9,7 +9,6 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from orchestrator.orchestrator import Orchestrator
 from persistent_agents.dispatch_context import bind_dispatch
-from persistent_agents.research_episode import run_research_episode
 from persistent_agents.tests.test_dispatch_integration import context
 from shared.feature_flags import flags
 from shared.protocol import MCPResponse
@@ -30,14 +29,12 @@ async def test_actual_startup_only_starts_explicitly_enabled_assignment_runner(m
     from persistent_agents import runtime
     monkeypatch.setattr(boot_posture, "assert_production_posture", Mock())
     monkeypatch.setattr(flags, "is_enabled", lambda name: name == "persistent_agents" and enabled)
-    created_service = SimpleNamespace(approval_executor=None)
-    created_runner = SimpleNamespace(start=Mock(), fixed_research_ready=Mock(return_value=True))
+    created_service = SimpleNamespace()
+    created_runner = SimpleNamespace(start=Mock())
     factory = Mock(return_value=created_service)
     runner_factory = Mock(return_value=created_runner)
-    bridge = Mock(return_value=object())
     monkeypatch.setattr(runtime, "AssignmentService", factory)
     monkeypatch.setattr(runtime, "AssignmentRunner", runner_factory)
-    monkeypatch.setattr(runtime, "AssignmentApprovalBridge", bridge)
 
     def background(coroutine, *, name):
         coroutine.close()
@@ -59,12 +56,7 @@ async def test_actual_startup_only_starts_explicitly_enabled_assignment_runner(m
     if enabled:
         factory.assert_called_once_with(hub)
         assert runner_factory.call_args.args == (hub, created_service)
-        one_shot = runner_factory.call_args.kwargs["one_shot"]
-        assert one_shot.sessions is hub.web_sessions and one_shot.episode is run_research_episode
-        created_runner.fixed_research_ready.assert_called_once_with(
-            service=created_service, sessions=hub.web_sessions)
-        bridge.assert_called_once_with(created_runner)
-        assert created_service.approval_executor is bridge.return_value
+        assert runner_factory.call_args.kwargs == {}
         created_runner.start.assert_called_once()
     else:
         factory.assert_not_called()

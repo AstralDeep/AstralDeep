@@ -1,7 +1,4 @@
-"""One-time-use dispatch capability binding a physical attempt to runner-supplied
-admission/reservation callbacks; unconstructable from model output or sockets. Used
-throughout execution.py, chat_episode.py, and orchestrator dispatch.
-"""
+"""Binds a single tool attempt to its reservation and authorization checks in the orchestrator."""
 
 from __future__ import annotations
 
@@ -59,7 +56,6 @@ class PersistentDispatchContext:
     remote_marker: str | None = None
     strict_final_arguments: bool = False
     conversation_id: str | None = None
-    research_input: Any = field(default=None, repr=False)
     operation_owner: Any = field(default=None, repr=False)
     operation_fence: Any = field(default=None, repr=False)
     harness_capture: Any = field(default=None, repr=False)
@@ -73,15 +69,6 @@ class PersistentDispatchContext:
                 or not 1 <= self.max_output_tokens <= 8192):
             raise ValueError("invalid persistent dispatch bounds")
         self._arguments_json = canonical(self.arguments)
-        if self.research_input is not None:
-            from persistent_agents.research_input import ResearchInput
-            if (type(self.research_input) is not ResearchInput or self.kind != "model"
-                    or self.owner_id != self.research_input.owner_id
-                    or self.arguments != self.research_input.request_route
-                    or self.timeout_seconds != self.research_input.timeout_seconds
-                    or self.max_output_tokens != self.research_input.profile.output_tokens
-                    or not self.strict_final_arguments):
-                raise DispatchDenied("assignment_research_binding_changed")
 
     @property
     def consumed(self) -> bool:
@@ -135,73 +122,27 @@ class PersistentDispatchContext:
             raise DispatchDenied("assignment_unreserved_tool_call")
         return await self._invoke(invoke, final_arguments=final_arguments)
 
-    async def invoke_model(self, invoke: Callable[[], Awaitable[Any]],
-                           kwargs: dict[str, Any]) -> Any:
-        if self.kind != "model":
-            raise DispatchDenied("assignment_unreserved_model_call")
-        if self.research_input is not None:
-            self.research_input.assert_body(self.owner_id, kwargs)
-            return await self._invoke(invoke, final_arguments=kwargs)
-        messages = kwargs.get("messages", [])
-        if (len(canonical(messages).encode("utf-8")) > self.max_input_bytes
-                or any(not isinstance(m, dict) or not isinstance(m.get("content"), str)
-                       for m in messages)):
-            raise DispatchDenied("assignment_model_input_limit")
-        kwargs["max_completion_tokens"] = self.max_output_tokens
-        return await self._invoke(invoke)
-
-    def _validate_final(self, arguments):
-        if self.research_input is not None:
-            self.research_input.assert_body(self.owner_id, arguments)
-        else:
-            self.validate_final_tool_arguments(arguments)
-
-    async def _observe_research_once(self, permit, outcome, result):
-        observer = asyncio.create_task(self.observe(permit, outcome, result))
-        cancelled = False
-        while not observer.done():
-            try:
-                await asyncio.shield(observer)
-            except asyncio.CancelledError:
-                cancelled = True
-            except BaseException:
-                break
-        try:
-            return observer.result()
-        finally:
-            if cancelled:
-                raise asyncio.CancelledError
-
     async def _invoke(self, invoke: Callable[[], Awaitable[Any]], *,
                       final_arguments: dict[str, Any] | None = None) -> Any:
         if self._consumed:
             raise DispatchDenied("assignment_attempt_already_started")
         # Set before await: blocks nested dispatch from reusing this
         self._consumed = True
-        self._validate_final(final_arguments)
+        self.validate_final_tool_arguments(final_arguments)
         await self.authorize()
-        self._validate_final(final_arguments)
+        self.validate_final_tool_arguments(final_arguments)
         permit = await self.start()
         try:
-            self._validate_final(final_arguments)
-            if self.research_input is not None:
+            self.validate_final_tool_arguments(final_arguments)
+            async with asyncio.timeout(self.timeout_seconds):
                 result = await invoke()
-            else:
-                async with asyncio.timeout(self.timeout_seconds):
-                    result = await invoke()
         except BaseException as error:
             try:
-                if self.research_input is not None:
-                    await self._observe_research_once(permit, "uncertain", None)
-                else:
-                    await asyncio.shield(self.observe(permit, "uncertain", None))
+                await asyncio.shield(self.observe(permit, "uncertain", None))
             except Exception:
                 if isinstance(error, asyncio.CancelledError):
                     raise error
                 raise
             raise
-        if self.research_input is not None:
-            await self._observe_research_once(permit, "succeeded", result)
-        else:
-            await asyncio.shield(self.observe(permit, "succeeded", result))
+        await asyncio.shield(self.observe(permit, "succeeded", result))
         return result

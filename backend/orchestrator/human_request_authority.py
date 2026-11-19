@@ -51,7 +51,6 @@ _SOCKET_WRITES = frozenset({"register_external_agent", "chrome_user_skill_save",
                            "chrome_safety_stop", "chrome_safety_resume",
                            "chrome_mesh_create", "chrome_mesh_confirm", "chrome_mesh_reject",
                            "chrome_mesh_rename", "chrome_mesh_revoke", "chrome_mesh_remove_invitation"})
-_GUIDANCE_READS = frozenset({"chat_message", "authorize_action", "remote_op_decision"})
 MAX_SOCKET_MESSAGE_BYTES = 128 * 1024
 
 
@@ -384,6 +383,8 @@ class _HumanSocketRequest:
     def __init__(self, boundary, *, websocket, context, message, method, purpose):
         if type(boundary) is not HumanRequestBoundary:
             _unavailable()
+        if purpose not in ("metadata", "skill_lookup", "voice_guidance"):
+            _unauthenticated()
         self.boundary, self.websocket, self.connection = boundary, websocket, context
         self.message = message
         self.purpose = purpose
@@ -423,8 +424,6 @@ class _HumanSocketRequest:
             if SESSION_COOKIE in [part.strip().split("=", 1)[0] for header in
                     transport.headers.getlist("cookie") for part in header.split(";")]:
                 raise ValueError
-            if purpose == "remote_effect":
-                raise ValueError
         except AssignmentError:
             raise
         except (AttributeError, KeyError, TypeError, ValueError, UnicodeError):
@@ -457,7 +456,7 @@ class _HumanSocketRequest:
                 or _socket_policy() != self.policy
                 or _socket_message(self.message) != self.message_json
                 or (self.purpose == "metadata" and _socket_method(self.message) != self.method)
-                or (self.purpose == "skill_lookup" and self.message.get("action") not in _GUIDANCE_READS)
+                or (self.purpose == "skill_lookup" and self.message.get("action") != "chat_message")
                 or (self.purpose == "voice_guidance" and not _voice_guidance_message(self.message))):
             _unauthenticated()
 
@@ -614,16 +613,11 @@ async def recheck_queued_skill_read(request):
 def capture_human_socket_request(boundary, *, websocket, context, message, purpose="metadata"):
     if purpose == "skill_lookup":
         method = ("WS_READ" if type(message) is dict and message.get("type") == "ui_event"
-                  and message.get("action") in _GUIDANCE_READS else None)
+                  and message.get("action") == "chat_message" else None)
     elif purpose == "metadata":
         method = _socket_method(message)
     elif purpose == "voice_guidance":
         method = "WS_READ" if _voice_guidance_message(message) else None
-    elif purpose == "remote_effect":
-        if type(boundary) is not HumanRequestBoundary:
-            _unavailable()
-        from orchestrator.remote_effect_ingress import pending_call
-        method = "WS_WRITE" if pending_call(boundary.orchestrator, websocket, message) is not None else None
     else:
         _unauthenticated()
     return None if method is None else _HumanSocketRequest(boundary, websocket=websocket,

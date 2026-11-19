@@ -1,14 +1,9 @@
-"""Adversarial tests for orchestrator/remote_confirmation.py's destructive-operation
-gate: a verb never executes on first reach, an unattended turn is refused with no
-transport contact, and approval is single-use and owner-bound.
-"""
+"""Checks remote-compute classification, refusal auditing and ordinary tool dispatch. Attended and unattended requests exercise the gate against an isolated transport."""
 
 from __future__ import annotations
 
-from uuid import UUID
 
 import json
-import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -20,15 +15,6 @@ from orchestrator.remote_transport import FakeTransport, MachineTarget, Verdict,
 from tests.helpers.remote_plane_runtime import make_remote_confirmation_plane_source
 
 USER = "user-1"
-OTHER = "user-2"
-def FUTURE():
-    return int(time.time()) + 900
-
-
-def PAST():
-    return int(time.time()) - 10
-
-
 class _FakeDB:
     def __init__(self):
         self.rows: dict = {}
@@ -48,6 +34,12 @@ class _WS:
             setattr(self, k, v)
 
 
+def _owner_socket(orch):
+    socket = _WS()
+    orch.ui_sessions[socket] = {"sub": USER}
+    return socket
+
+
 def _orch(db):
     source = make_remote_confirmation_plane_source(db)
     return SimpleNamespace(
@@ -65,32 +57,10 @@ def _orch(db):
     )
 
 
-def _seed(db, pid, *, owner, verb, args, status="approved", expires_at=None,
-          chat_id="chat-1", agent_id="remote-compute-1"):
-    db.rows[pid] = {
-        "proposal_id": pid, "owner_user_id": owner, "chat_id": chat_id,
-        "machine_id": args.get("machine_id"), "agent_id": agent_id, "verb": verb,
-        "args_json": json.dumps(args), "args_fingerprint": rc._fingerprint(args),
-        "summary": "seeded", "status": status, "created_at": int(time.time()),
-        "expires_at": expires_at or FUTURE(), "consumed_at": None, "decided_at": None,
-    }
-
-
 @pytest.fixture(autouse=True)
 def _reset_transport():
     yield
     set_transport(None)
-
-
-def test_canonical_args_excludes_underscore_keys_and_is_order_independent():
-    a = {"machine_id": "m", "path": "/x", "_remote_op_proposal_id": "p"}
-    b = {"path": "/x", "machine_id": "m"}
-    assert rc._canonical_args(a) == rc._canonical_args(b)
-    assert rc._fingerprint(a) == rc._fingerprint(b)
-
-
-def test_fingerprint_changes_when_a_real_arg_changes():
-    assert rc._fingerprint({"path": "/a"}) != rc._fingerprint({"path": "/b"})
 
 
 def test_classification_for_known_and_unknown():
@@ -126,30 +96,16 @@ def test_is_destructive_if_exists_fails_closed_when_stat_errors(monkeypatch):
     assert rc._is_destructive(o, USER, "upload_file", {"machine_id": "m1", "remote_path": "/x"}, "if_exists") is True
 
 
-def test_no_live_human_none_socket_is_unattended():
-    assert rc._no_live_human(_orch(_FakeDB()), None) is True
-
-
-def test_no_live_human_machine_class_is_unattended():
-    o = _orch(_FakeDB())
-    ws = _WS(machine_claims={"machine_class": "scheduler"})
-    assert rc._no_live_human(o, ws) is True
-
-
-def test_no_live_human_plain_socket_is_attended():
-    assert rc._no_live_human(_orch(_FakeDB()), object()) is False
-
-
 def test_evaluate_read_verb_on_merged_agent_never_gates():
     o = _orch(_FakeDB())
     for verb in ("list_queue", "job_status", "host_facts", "list_processes"):
-        assert rc.evaluate(o, object(), "remote-compute-1", verb,
+        assert rc.evaluate(o, _owner_socket(o), "remote-compute-1", verb,
                            {"machine_id": "m"}, "chat", USER) is None
 
 
 def test_evaluate_non_destructive_verb_proceeds():
     o = _orch(_FakeDB())
-    assert rc.evaluate(o, object(), "remote-compute-1", "make_directory",
+    assert rc.evaluate(o, _owner_socket(o), "remote-compute-1", "make_directory",
                        {"machine_id": "m", "path": "/tmp/x"}, "chat", USER) is None
 
 
@@ -157,20 +113,6 @@ def test_evaluate_other_agent_is_ignored():
     o = _orch(_FakeDB())
     assert rc.evaluate(o, object(), "general-1", "remove_path",
                        {"machine_id": "m", "path": "/x"}, "chat", USER) is None
-
-
-def test_evaluate_destructive_first_reach_creates_proposal_and_refuses():
-    db = _FakeDB()
-    o = _orch(db)
-    out = rc.evaluate(o, object(), "remote-compute-1", "remove_path",
-                      {"machine_id": "m", "path": "/data", "recursive": True}, "chat", USER)
-    assert out is not None
-    msg, comps = out
-    assert "confirmation_required" in msg
-    assert comps and isinstance(comps, list)
-    assert len(db.rows) == 1
-    (row,) = db.rows.values()
-    assert row["status"] == "pending" and row["owner_user_id"] == USER and row["verb"] == "remove_path"
 
 
 def test_evaluate_unattended_refuses_and_creates_no_proposal():
@@ -182,114 +124,6 @@ def test_evaluate_unattended_refuses_and_creates_no_proposal():
     msg, _ = out
     assert "unattended_refused" in msg
     assert db.rows == {}
-
-
-def test_evaluate_valid_marker_consumes_single_use_and_proceeds():
-    db = _FakeDB()
-    o = _orch(db)
-    args = {"machine_id": "m", "job_id": "123"}
-    _seed(db, "P1", owner=USER, verb="cancel_job", args=args, status="approved")
-    passed = dict(args, **{rc._MARKER: "P1"})
-    assert rc.evaluate(o, object(), "remote-compute-1", "cancel_job", passed, "chat", USER) is None
-    assert rc._MARKER not in passed
-    assert db.rows["P1"]["status"] == "consumed"
-
-
-def test_evaluate_consumed_marker_cannot_be_replayed():
-    db = _FakeDB()
-    o = _orch(db)
-    args = {"machine_id": "m", "job_id": "123"}
-    _seed(db, "P1", owner=USER, verb="cancel_job", args=args, status="approved")
-    assert rc.evaluate(o, object(), "remote-compute-1", "cancel_job",
-                       dict(args, **{rc._MARKER: "P1"}), "chat", USER) is None
-    out = rc.evaluate(o, object(), "remote-compute-1", "cancel_job",
-                      dict(args, **{rc._MARKER: "P1"}), "chat", USER)
-    assert out is not None and "no longer valid" in out[0]
-
-
-def test_evaluate_marker_owned_by_another_user_is_refused():
-    db = _FakeDB()
-    o = _orch(db)
-    args = {"machine_id": "m", "job_id": "123"}
-    _seed(db, "P1", owner=OTHER, verb="cancel_job", args=args, status="approved")
-    out = rc.evaluate(o, object(), "remote-compute-1", "cancel_job",
-                      dict(args, **{rc._MARKER: "P1"}), "chat", USER)
-    assert out is not None and db.rows["P1"]["status"] == "approved"
-
-
-def test_evaluate_expired_marker_is_refused():
-    db = _FakeDB()
-    o = _orch(db)
-    args = {"machine_id": "m", "job_id": "123"}
-    _seed(db, "P1", owner=USER, verb="cancel_job", args=args, status="approved", expires_at=PAST())
-    out = rc.evaluate(o, object(), "remote-compute-1", "cancel_job",
-                      dict(args, **{rc._MARKER: "P1"}), "chat", USER)
-    assert out is not None
-
-
-def test_evaluate_marker_with_mutated_args_is_refused():
-    db = _FakeDB()
-    o = _orch(db)
-    _seed(db, "P1", owner=USER, verb="remove_path",
-          args={"machine_id": "m", "path": "/safe"}, status="approved")
-    out = rc.evaluate(o, object(), "remote-compute-1", "remove_path",
-                      {"machine_id": "m", "path": "/etc", rc._MARKER: "P1"}, "chat", USER)
-    assert out is not None and "no longer valid" in out[0]
-
-
-async def test_handle_decision_approve_redispatches_with_stored_args_and_marker():
-    db = _FakeDB()
-    o = _orch(db)
-    _seed(db, "P1", owner=USER, verb="remove_path",
-          args={"machine_id": "m", "path": "/data"}, status="pending")
-    await rc.handle_decision(o, object(), USER, {"proposal_id": "P1", "decision": "approve"})
-    assert db.rows["P1"]["status"] == "approved"
-    assert len(o.execute_single_tool.calls) == 1
-    (args, kwargs) = o.execute_single_tool.calls[0]
-    tc = args[1]
-    assert tc.function.name == "remove_path"
-    redis = json.loads(tc.function.arguments)
-    assert redis["path"] == "/data" and redis[rc._MARKER] == "P1"
-
-
-async def test_handle_decision_decline_does_not_dispatch():
-    db = _FakeDB()
-    o = _orch(db)
-    _seed(db, "P1", owner=USER, verb="cancel_job",
-          args={"machine_id": "m", "job_id": "9"}, status="pending")
-    await rc.handle_decision(o, object(), USER, {"proposal_id": "P1", "decision": "decline"})
-    assert db.rows["P1"]["status"] == "declined"
-    assert o.execute_single_tool.calls == []
-
-
-async def test_handle_decision_by_non_owner_is_refused():
-    db = _FakeDB()
-    o = _orch(db)
-    _seed(db, "P1", owner=USER, verb="cancel_job",
-          args={"machine_id": "m", "job_id": "9"}, status="pending")
-    await rc.handle_decision(o, object(), OTHER, {"proposal_id": "P1", "decision": "approve"})
-    assert db.rows["P1"]["status"] == "pending"
-    assert o.execute_single_tool.calls == []
-
-
-async def test_handle_decision_expired_is_not_dispatched():
-    db = _FakeDB()
-    o = _orch(db)
-    _seed(db, "P1", owner=USER, verb="cancel_job",
-          args={"machine_id": "m", "job_id": "9"}, status="pending", expires_at=PAST())
-    await rc.handle_decision(o, object(), USER, {"proposal_id": "P1", "decision": "approve"})
-    assert db.rows["P1"]["status"] == "expired"
-    assert o.execute_single_tool.calls == []
-
-
-async def test_handle_decision_double_approve_dispatches_once():
-    db = _FakeDB()
-    o = _orch(db)
-    _seed(db, "P1", owner=USER, verb="remove_path",
-          args={"machine_id": "m", "path": "/data"}, status="pending")
-    await rc.handle_decision(o, object(), USER, {"proposal_id": "P1", "decision": "approve"})
-    await rc.handle_decision(o, object(), USER, {"proposal_id": "P1", "decision": "approve"})
-    assert len(o.execute_single_tool.calls) == 1
 
 
 class _FakeRecorder:
@@ -316,18 +150,6 @@ def _types(rec):
     return [e.action_type for e in rec.events]
 
 
-def test_audit_proposed_event_is_valid_and_correlated(audit_rec):
-    db = _FakeDB()
-    o = _orch(db)
-    rc.evaluate(o, object(), "remote-compute-1", "remove_path",
-                {"machine_id": "m9", "path": "/data"}, "chat", USER)
-    assert _types(audit_rec) == ["remote_op.proposed"]
-    ev = audit_rec.events[0]
-    (pid,) = db.rows.keys()
-    assert ev.outcome == "in_progress" and ev.correlation_id == str(UUID(pid))
-    assert ev.inputs_meta.get("machine_id") == "m9" and ev.inputs_meta.get("verb") == "remove_path"
-
-
 def test_audit_unattended_refusal_is_recorded_as_failure(audit_rec):
     rc.evaluate(_orch(_FakeDB()), None, "remote-compute-1", "remove_path",
                 {"machine_id": "m", "path": "/data"}, "chat", USER)
@@ -341,30 +163,6 @@ def test_audit_unattended_refusal_recorded_for_non_destructive_verb(audit_rec):
     assert _types(audit_rec) == ["remote_op.refused_unattended"]
     assert audit_rec.events[0].outcome == "failure"
     assert audit_rec.events[0].inputs_meta.get("verb") == "submit_job"
-
-
-def test_audit_consume_event_is_recorded(audit_rec):
-    db = _FakeDB()
-    o = _orch(db)
-    args = {"machine_id": "m", "job_id": "5"}
-    _seed(db, "P1", owner=USER, verb="cancel_job", args=args, status="approved")
-    rc.evaluate(o, object(), "remote-compute-1", "cancel_job",
-                dict(args, **{rc._MARKER: "P1"}), "chat", USER)
-    assert _types(audit_rec) == ["remote_op.consumed"]
-    assert audit_rec.events[0].outcome == "success" and audit_rec.events[0].correlation_id == "P1"
-
-
-async def test_audit_approve_and_decline_events(audit_rec):
-    db = _FakeDB()
-    o = _orch(db)
-    _seed(db, "PA", owner=USER, verb="remove_path", args={"machine_id": "m", "path": "/a"}, status="pending")
-    _seed(db, "PD", owner=USER, verb="cancel_job", args={"machine_id": "m", "job_id": "1"}, status="pending")
-    await rc.handle_decision(o, object(), USER, {"proposal_id": "PA", "decision": "approve"})
-    await rc.handle_decision(o, object(), USER, {"proposal_id": "PD", "decision": "decline"})
-    by_type = {e.action_type: e for e in audit_rec.events}
-    assert by_type["remote_op.approved"].outcome == "success"
-    assert by_type["remote_op.declined"].outcome == "failure"
-    assert by_type["remote_op.approved"].correlation_id == "PA"
 
 
 _TGT = MachineTarget(machine_id="m1", label="dgx", address="10.0.0.5", port=22,
@@ -417,97 +215,18 @@ def test_mutating_sweep_covers_every_registry_verb():
 
 
 @pytest.mark.parametrize("verb", sorted(_FIRST_CALL_CASES))
-def test_each_destructive_verb_first_call_proposes_no_effect(verb, monkeypatch):
+def test_each_destructive_verb_requires_consent_without_storing_a_proposal(verb, monkeypatch):
     monkeypatch.setattr("orchestrator.remote_machines.build_target", lambda *a, **k: _TGT)
     t = _fake(files={"/exists.txt": b"x"})
     db = _FakeDB()
     o = _orch(db)
-    out = rc.evaluate(o, object(), "remote-compute-1", verb,
+    out = rc.evaluate(o, _owner_socket(o), "remote-compute-1", verb,
                       dict(_FIRST_CALL_CASES[verb]), "chat", USER)
-    assert out is not None and "confirmation_required" in out[0]
-    (row,) = db.rows.values()
-    assert row["status"] == "pending" and row["verb"] == verb
+    assert out is not None and "attended authorization" in out[0]
+    assert db.rows == {}
+    assert all(component["type"] == "alert" for component in out[1])
     assert _destructive_ops(t) == []
     assert o.execute_single_tool.calls == []
-
-
-def test_approval_for_one_verb_cannot_be_consumed_by_another():
-    t = _fake()
-    db = _FakeDB()
-    o = _orch(db)
-    args = {"machine_id": "m", "job_id": "9"}
-    _seed(db, "P1", owner=USER, verb="cancel_job", args=args, status="approved")
-    out = rc.evaluate(o, object(), "remote-compute-1", "signal_process",
-                      dict(args, **{rc._MARKER: "P1"}), "chat", USER)
-    assert out is not None and "no longer valid" in out[0]
-    assert db.rows["P1"]["status"] == "approved"
-    assert set(db.rows) == {"P1"}
-    assert _destructive_ops(t) == []
-
-
-def test_repeating_the_call_never_auto_approves():
-    t = _fake()
-    db = _FakeDB()
-    o = _orch(db)
-    args = {"machine_id": "m", "path": "/data"}
-    for _ in range(3):
-        out = rc.evaluate(o, object(), "remote-compute-1", "remove_path",
-                          dict(args), "chat", USER)
-        assert out is not None and "confirmation_required" in out[0]
-    assert len(db.rows) == 3
-    assert all(r["status"] == "pending" for r in db.rows.values())
-    assert _destructive_ops(t) == []
-    assert o.execute_single_tool.calls == []
-
-
-@pytest.mark.parametrize("case", ["expired", "already_used", "other_user", "redirected_args"])
-def test_invalid_approval_shapes_refused_store_intact(case):
-    t = _fake()
-    db = _FakeDB()
-    o = _orch(db)
-    approved_args = {"machine_id": "m", "path": "/safe"}
-    call_args = dict(approved_args)
-    owner, expires = USER, None
-    if case == "expired":
-        expires = PAST()
-    elif case == "other_user":
-        owner = OTHER
-    elif case == "redirected_args":
-        call_args = {"machine_id": "m", "path": "/etc"}
-    _seed(db, "P1", owner=owner, verb="remove_path", args=approved_args,
-          status="approved", expires_at=expires)
-    if case == "already_used":
-        assert rc.evaluate(o, object(), "remote-compute-1", "remove_path",
-                           dict(approved_args, **{rc._MARKER: "P1"}), "chat", USER) is None
-    out = rc.evaluate(o, object(), "remote-compute-1", "remove_path",
-                      dict(call_args, **{rc._MARKER: "P1"}), "chat", USER)
-    assert out is not None
-    expected = "consumed" if case == "already_used" else "approved"
-    assert db.rows["P1"]["status"] == expected
-    assert _destructive_ops(t) == []
-    assert o.execute_single_tool.calls == []
-
-
-class _ReviewableScopes(dict):
-    def __init__(self):
-        super().__init__({
-            "gaiakeep_core_whoami": "tools:read",
-            "gaiakeep_core_auditack": "tools:system",
-            "gaiakeep_core_repair": "tools:system",
-            "gaiakeep_upload_file": "tools:write",
-            "gaiakeep_upload_dataset": "tools:write",
-            "gaiakeep_download_dataset": "tools:write",
-            "remove_path": "tools:write",
-            "submit_job": "tools:write",
-            "cancel_job": "tools:write",
-            "list_queue": "tools:read",
-            "job_status": "tools:read",
-            "host_facts": "tools:read",
-            "list_processes": "tools:read",
-        })
-
-    def get(self, key, default=None):
-        return super().get(key, "tools:read")
 
 
 @pytest.fixture
@@ -546,19 +265,14 @@ async def test_each_destructive_verb_in_turn_still_gates(real_orch):
     for tool, args in (("remove_path", {"machine_id": "m", "path": "/data"}),
                        ("cancel_job", {"machine_id": "m", "job_id": "7"})):
         results.append(await real_orch.execute_single_tool(
-            _WS(), _tc(tool, args), {tool: "remote-compute-1"}, "chat-1", user_id=USER))
+            _owner_socket(real_orch), _tc(tool, args), {tool: "remote-compute-1"}, "chat-1", user_id=USER))
     assert len(results) == 2
     for r in results:
-        assert r.error and "confirmation_required" in r.error["message"]
+        assert r.error and "attended authorization" in r.error["message"]
         assert r.ui_components is None
     rendered = [call.args[1] for call in real_orch.send_ui_render.await_args_list]
-    assert sum(
-        any(component.get("type") == "card" for component in components)
-        for components in rendered
-    ) == 2
-    db = real_orch.proposal_storage
-    assert len(db.rows) == 2
-    assert all(row["status"] == "pending" for row in db.rows.values())
+    assert all(component["type"] == "alert" for group in rendered for component in group)
+    assert real_orch.proposal_storage.rows == {}
     assert _destructive_ops(t) == []
 
 
@@ -567,15 +281,14 @@ async def test_chained_hop_reaching_destructive_verb_still_gates(real_orch):
     parent = {"sub": USER, "scopes": ["tools:write"], "depth": 0,
               "act": {"sub": "agent:summarizer-1"}}
     resp = await real_orch.execute_single_tool(
-        _WS(), _tc("remove_path", {"machine_id": "m", "path": "/data"}),
+        _owner_socket(real_orch), _tc("remove_path", {"machine_id": "m", "path": "/data"}),
         {"remove_path": "remote-compute-1"}, "chat-1", user_id=USER,
         parent_token=parent, initiating_agent_id="summarizer-1")
-    assert resp.error and "confirmation_required" in resp.error["message"]
+    assert resp.error and "attended authorization" in resp.error["message"]
     real_orch._record_hop_audit.assert_awaited_once()
     kw = real_orch._record_hop_audit.await_args.kwargs
     assert kw["operation"] == "mint" and kw["outcome"] == "failure"
-    (row,) = real_orch.proposal_storage.rows.values()
-    assert row["status"] == "pending" and row["verb"] == "remove_path"
+    assert real_orch.proposal_storage.rows == {}
     assert _destructive_ops(t) == []
 
 
@@ -609,28 +322,13 @@ def test_machine_turn_upload_refused_before_the_if_exists_probe(monkeypatch):
     assert t.files["/exists.txt"] == b"x"
 
 
-def test_machine_turn_cannot_consume_an_approved_marker():
-    t = _fake()
-    db = _FakeDB()
-    o = _orch(db)
-    args = {"machine_id": "m", "job_id": "9"}
-    _seed(db, "P1", owner=USER, verb="cancel_job", args=args, status="approved")
-    ws = _WS(machine_claims={"machine_class": MACHINE_TURN_CLASSES[0]})
-    out = rc.evaluate(o, ws, "remote-compute-1", "cancel_job",
-                      dict(args, **{rc._MARKER: "P1"}), "chat", USER)
-    assert out is not None and "unattended_refused" in out[0]
-    assert db.rows["P1"]["status"] == "approved"
-    assert _destructive_ops(t) == []
-    assert o.execute_single_tool.calls == []
-
-
 def test_attended_non_destructive_mutating_verbs_still_proceed(monkeypatch):
     monkeypatch.setattr("orchestrator.remote_machines.build_target", lambda *a, **k: _TGT)
     t = _fake()
     db = _FakeDB()
     o = _orch(db)
     for verb, args in _NON_DESTRUCTIVE_CALL_CASES.items():
-        assert rc.evaluate(o, object(), "remote-compute-1", verb,
+        assert rc.evaluate(o, _owner_socket(o), "remote-compute-1", verb,
                            dict(args), "chat", USER) is None, verb
     assert db.rows == {}
     assert [c["op"] for c in t.calls] == ["stat"]
@@ -702,115 +400,12 @@ async def test_machine_turn_submit_refused_even_with_full_scope_grant(real_orch,
     assert t.calls == []
 
 
-async def test_pending_proposal_survives_restart_and_never_auto_approves():
-    t = _fake()
-    db = _FakeDB()
-    o1 = _orch(db)
-    args = {"machine_id": "m", "path": "/data"}
-    out = rc.evaluate(o1, object(), "remote-compute-1", "remove_path",
-                      dict(args), "chat", USER)
-    assert out is not None
-    (pid,) = db.rows.keys()
-
-    o2 = _orch(db)
-    assert db.rows[pid]["status"] == "pending"
-
-    out = rc.evaluate(o2, object(), "remote-compute-1", "remove_path",
-                      dict(args, **{rc._MARKER: pid}), "chat", USER)
-    assert out is not None and "no longer valid" in out[0]
-    assert db.rows[pid]["status"] == "pending"
-
-    out = rc.evaluate(o2, object(), "remote-compute-1", "remove_path",
-                      dict(args), "chat", USER)
-    assert out is not None and "confirmation_required" in out[0]
-    assert len(db.rows) == 2
-
-    await rc.handle_decision(o2, object(), USER, {"proposal_id": pid, "decision": "approve"})
-    assert db.rows[pid]["status"] == "approved"
-    assert len(o2.execute_single_tool.calls) == 1
-    assert o1.execute_single_tool.calls == []
-    assert _destructive_ops(t) == []
-
-
 class _BoomRecorder:
     def record_blocking(self, ev):
         raise RuntimeError("audit sink down")
 
     async def record(self, ev):
         raise RuntimeError("audit sink down")
-
-
-class TestAuditIsBestEffort:
-    def test_sync_audit_swallows_a_recorder_failure(self, monkeypatch):
-        monkeypatch.setattr("audit.recorder.get_recorder", lambda: _BoomRecorder())
-        rc._audit_sync(USER, "remote_op.proposed", "x", verb="remove_path",
-                       machine_id="m1", proposal_id="P1")
-
-    def test_sync_audit_is_a_noop_without_a_recorder(self, monkeypatch):
-        monkeypatch.setattr("audit.recorder.get_recorder", lambda: None)
-        rc._audit_sync(USER, "remote_op.proposed", "x")
-
-    async def test_async_audit_swallows_a_recorder_failure(self, monkeypatch):
-        monkeypatch.setattr("audit.recorder.get_recorder", lambda: _BoomRecorder())
-        await rc._audit_async(USER, "remote_op.approved", "x", proposal_id="P1")
-
-    async def test_async_audit_is_a_noop_without_a_recorder(self, monkeypatch):
-        monkeypatch.setattr("audit.recorder.get_recorder", lambda: None)
-        await rc._audit_async(USER, "remote_op.approved", "x")
-
-    def test_gate_still_refuses_when_the_audit_sink_is_down(self, monkeypatch):
-        monkeypatch.setattr("audit.recorder.get_recorder", lambda: _BoomRecorder())
-        out = rc.evaluate(_orch(_FakeDB()), None, "remote-compute-1", "remove_path",
-                          {"machine_id": "m", "path": "/data"}, "chat", USER)
-        assert out is not None and "unattended_refused" in out[0]
-
-    async def test_decision_still_dispatches_when_the_audit_sink_is_down(self, monkeypatch):
-        monkeypatch.setattr("audit.recorder.get_recorder", lambda: _BoomRecorder())
-        db = _FakeDB()
-        o = _orch(db)
-        _seed(db, "P1", owner=USER, verb="remove_path",
-              args={"machine_id": "m", "path": "/data"}, status="pending")
-        await rc.handle_decision(o, object(), USER, {"proposal_id": "P1", "decision": "approve"})
-        assert db.rows["P1"]["status"] == "approved"
-        assert len(o.execute_single_tool.calls) == 1
-
-
-class TestMachineLabelResolution:
-    def test_missing_machine_id_renders_a_placeholder(self):
-        assert rc._machine_label(_orch(_FakeDB()), USER, None) == "?"
-
-    def test_friendly_label_is_used_when_the_machine_resolves(self, monkeypatch):
-        monkeypatch.setattr("orchestrator.remote_machines.get_machine",
-                            lambda db, uid, mid: {"machine_id": mid, "label": "dgx"})
-        assert rc._machine_label(_orch(_FakeDB()), USER, "m1") == "dgx"
-
-    def test_unlabelled_row_falls_back_to_the_raw_id(self, monkeypatch):
-        monkeypatch.setattr("orchestrator.remote_machines.get_machine",
-                            lambda db, uid, mid: {"machine_id": mid, "label": None})
-        assert rc._machine_label(_orch(_FakeDB()), USER, "m1") == "m1"
-
-    def test_lookup_failure_falls_back_to_the_raw_id(self, monkeypatch):
-        def _boom(*a, **k):
-            raise RuntimeError("db down")
-        monkeypatch.setattr("orchestrator.remote_machines.get_machine", _boom)
-        assert rc._machine_label(_orch(_FakeDB()), USER, "m1") == "m1"
-
-    def test_summary_falls_back_to_the_verb_for_an_unmapped_tool(self, monkeypatch):
-        monkeypatch.setattr("orchestrator.remote_machines.get_machine",
-                            lambda db, uid, mid: {"label": "dgx"})
-        assert rc._summary(_orch(_FakeDB()), USER, "make_directory",
-                           {"machine_id": "m1"}) == "make_directory on dgx"
-
-    def test_proposal_card_survives_an_unresolvable_machine(self, monkeypatch):
-        def _boom(*a, **k):
-            raise RuntimeError("db down")
-        monkeypatch.setattr("orchestrator.remote_machines.get_machine", _boom)
-        db = _FakeDB()
-        out = rc.evaluate(_orch(db), object(), "remote-compute-1", "remove_path",
-                          {"machine_id": "m1", "path": "/data"}, "chat", USER)
-        assert out is not None and "confirmation_required" in out[0]
-        (row,) = db.rows.values()
-        assert row["summary"] == "Delete /data on m1"
 
 
 class TestDestructiveClassificationEdges:
@@ -826,58 +421,45 @@ class TestDestructiveClassificationEdges:
         assert rc._is_destructive(_orch(_FakeDB()), USER, "weird_verb", {}, "sometimes") is True
 
 
-class TestNoLiveHumanGuard:
-    def test_virtual_websocket_is_unattended(self):
-        from orchestrator.async_tasks import VirtualWebSocket
-        assert rc._no_live_human(_orch(_FakeDB()), VirtualWebSocket(None)) is True
-
-    def test_background_turn_is_refused_through_evaluate(self):
-        from orchestrator.async_tasks import VirtualWebSocket
-        db = _FakeDB()
-        out = rc.evaluate(_orch(db), VirtualWebSocket(None), "remote-compute-1", "remove_path",
-                          {"machine_id": "m", "path": "/data"}, "chat", USER)
-        assert out is not None and "unattended_refused" in out[0]
-        assert db.rows == {}
-
-    def test_guard_survives_an_unusable_async_tasks_module(self, monkeypatch):
-        import sys
-        from types import ModuleType
-        stub = ModuleType("orchestrator.async_tasks")
-        stub.VirtualWebSocket = "not-a-class"
-        monkeypatch.setitem(sys.modules, "orchestrator.async_tasks", stub)
-        assert rc._no_live_human(_orch(_FakeDB()), object()) is False
+@pytest.mark.parametrize("state", ["pending", "approved", "consumed"])
+async def test_historical_proposal_does_not_authorize_or_replay_an_effect(real_orch, state):
+    row = {"owner_user_id": USER, "verb": "cancel_job", "status": state}
+    real_orch.proposal_storage.rows["previous"] = dict(row)
+    real_orch._execute_with_retry_audited = AsyncMock()
+    result = await real_orch.execute_single_tool(
+        _WS(), _tc("cancel_job", {"machine_id": "machine", "job_id": "7", "_remote_op_proposal_id": "previous"}),
+        {"cancel_job": "remote-compute-1"}, "chat-1", user_id=USER,
+    )
+    assert result.error and result.error["retryable"] is False
+    assert real_orch.proposal_storage.rows == {"previous": row}
+    real_orch._execute_with_retry_audited.assert_not_awaited()
 
 
-class TestProposalStoreEdges:
-    def test_marker_for_an_unknown_proposal_is_refused(self):
-        db = _FakeDB()
-        o = _orch(db)
-        out = rc.evaluate(o, object(), "remote-compute-1", "cancel_job",
-                          {"machine_id": "m", "job_id": "9", rc._MARKER: "nope"}, "chat", USER)
-        assert out is not None and "no longer valid" in out[0]
-        assert db.rows == {}
-        assert o.execute_single_tool.calls == []
+def test_unattended_refusal_survives_audit_sink_failure(monkeypatch):
+    monkeypatch.setattr("audit.recorder.get_recorder", lambda: _BoomRecorder())
+    result = rc.evaluate(_orch(_FakeDB()), None, "remote-compute-1", "remove_path",
+                         {"machine_id": "machine", "path": "/data"}, "chat", USER)
+    assert result and "unattended_refused" in result[0]
 
-    async def test_decision_without_a_proposal_id_is_refused(self):
-        db = _FakeDB()
-        o = _orch(db)
-        await rc.handle_decision(o, object(), USER, {"decision": "approve"})
-        assert o.execute_single_tool.calls == []
-        assert len(o.send_ui_render.calls) == 1
 
-    async def test_decision_for_an_unknown_proposal_is_refused(self):
-        db = _FakeDB()
-        o = _orch(db)
-        await rc.handle_decision(o, object(), USER, {"proposal_id": "ghost", "decision": "approve"})
-        assert o.execute_single_tool.calls == []
-        assert len(o.send_ui_render.calls) == 1
+@pytest.mark.parametrize("registration", [None, {"sub": "foreign"}, {"sub": USER, "machine_class": "scheduler"},
+                                            {"sub": USER, "_invocation_channel": "a2a"}])
+def test_unregistered_foreign_and_machine_sockets_cannot_satisfy_attendance(registration):
+    orch = _orch(_FakeDB())
+    socket = _WS()
+    if registration is not None:
+        orch.ui_sessions[socket] = registration
+    result = rc.evaluate(orch, socket, "remote-compute-1", "submit_job",
+                         {"machine_id": "machine", "script": "echo test"}, "chat", USER)
+    assert result[0].startswith("unattended_refused")
+    assert orch.execute_single_tool.calls == []
 
-    async def test_approve_losing_the_single_use_race_never_dispatches(self):
-        db = _FakeDB()
-        db.lose_next_decision = True
-        o = _orch(db)
-        _seed(db, "P1", owner=USER, verb="remove_path",
-              args={"machine_id": "m", "path": "/data"}, status="pending")
-        await rc.handle_decision(o, object(), USER, {"proposal_id": "P1", "decision": "approve"})
-        assert o.execute_single_tool.calls == []
-        assert len(o.send_ui_render.calls) == 1
+
+def test_only_a_registered_owner_socket_reaches_the_attended_refusal(audit_rec):
+    orch = _orch(_FakeDB())
+    result = rc.evaluate(orch, _owner_socket(orch), "remote-compute-1", "cancel_job",
+                         {"machine_id": "machine", "job_id": "7"}, "chat", USER)
+    assert result[1][0]["type"] == "alert"
+    assert _types(audit_rec) == ["remote_op.refused"]
+    event, = audit_rec.events
+    assert event.outcome == "failure" and event.inputs_meta["verb"] == "cancel_job"

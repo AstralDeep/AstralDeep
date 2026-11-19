@@ -387,89 +387,15 @@ def component_types(value):
     return set()
 
 
-async def test_fixed_research_http_attempt_is_accounted_inside_existing_reservation(monkeypatch):
-    from persistent_agents import dispatch_context, research_input
+@pytest.mark.parametrize("entry", ["_call_llm", "_call_llm_guarded"])
+async def test_legacy_assignment_cannot_open_a_model_transport(monkeypatch, entry):
+    from persistent_agents import dispatch_context
     from shared import isolated_http
 
     state = model_host(Completions([]))
-    selected = object.__new__(research_input.ResearchInput)
-    object.__setattr__(selected, "owner_id", "alice")
-    object.__setattr__(selected, "_record_json", json.dumps({
-        "operation": {"authority": {
-            "origin": "interactive",
-            "reference_kind": "session_incarnation",
-        }},
-    }))
-    object.__setattr__(selected, "_config", SimpleNamespace(_api_key="synthetic-test-key",
-                                                         profile=research_input.profile.OPENAI_PROFILE))
-    monkeypatch.setattr(research_input.ResearchInput, "body", lambda _self: {"model": research_input.profile.MODEL})
-    monkeypatch.setattr(research_input.ResearchInput, "assert_body", lambda _self, owner, _body: owner == "alice")
-    parsed = SimpleNamespace(accepted=True, usage=usage())
-    monkeypatch.setattr(research_input.ResearchInput, "parse", lambda _self, _body, **_kwargs: parsed)
-    reservations = []
-
-    async def invoke(physical, body):
-        reservations.append(body)
-        return await physical()
-
-    context = SimpleNamespace(research_input=selected, owner_id="alice", conversation_id="conversation", invoke_model=invoke)
-    monkeypatch.setattr(dispatch_context, "current_dispatch", lambda: context)
-    wire = json.dumps({"choices": [], "usage": {"prompt_tokens": 8, "completion_tokens": 2,
-                                                "cached_tokens": 0, "total_tokens": 10}}).encode()
-    transport = AsyncMock(return_value=SimpleNamespace(body=wire, status_code=200))
+    monkeypatch.setattr(dispatch_context, "current_dispatch", lambda: object())
+    transport = AsyncMock()
     monkeypatch.setattr(isolated_http, "request", transport)
-    result, _ = await state.host._call_llm(state.socket, [{"role": "user", "content": "Synthetic research"}],
-                                         feature="persistent_assignment", response_format={"type": "json_object"})
-    assert result is parsed and len(reservations) == transport.await_count == 1
-    totals = await total(state)
-    assert totals["model_calls"] == 1 and totals["usage"]["total_tokens"] == {"known": 10, "unknown": 0}
-    assert "synthetic-test-key" not in "".join(event.model_dump_json() for event in state.events)
-
-
-@pytest.mark.parametrize("failure,known,unknown", [("malformed_body", 0, 1), ("rejected_body", 10, 0), ("transport", 6, 0)])
-async def test_fixed_research_failures_preserve_physical_charge_before_parsing(monkeypatch, failure, known, unknown):
-    from persistent_agents import dispatch_context, research_input
-    from shared import isolated_http
-
-    state = model_host(Completions([]))
-    selected = object.__new__(research_input.ResearchInput)
-    object.__setattr__(selected, "owner_id", "alice")
-    object.__setattr__(selected, "_record_json", json.dumps({
-        "operation": {"authority": {
-            "origin": "interactive",
-            "reference_kind": "session_incarnation",
-        }},
-    }))
-    object.__setattr__(selected, "_config", SimpleNamespace(_api_key="synthetic-test-key",
-                                                         profile=research_input.profile.OPENAI_PROFILE))
-    monkeypatch.setattr(research_input.ResearchInput, "body", lambda _self: {"model": research_input.profile.MODEL})
-    monkeypatch.setattr(research_input.ResearchInput, "assert_body", lambda _self, owner, _body: owner == "alice")
-
-    def rejected(*_args, **_kwargs):
-        raise ValueError("private invalid provider response")
-
-    monkeypatch.setattr(research_input.ResearchInput, "parse", rejected)
-    reservations = []
-
-    async def invoke(physical, body):
-        reservations.append(body)
-        return await physical()
-
-    monkeypatch.setattr(dispatch_context, "current_dispatch", lambda: SimpleNamespace(
-        research_input=selected, owner_id="alice", conversation_id="conversation", invoke_model=invoke,
-    ))
-    wire = b"invalid json" if failure == "malformed_body" else json.dumps({
-        "usage": {"prompt_tokens": 8, "completion_tokens": 2, "cached_tokens": 0, "total_tokens": 10},
-    }).encode()
-    transport = AsyncMock(return_value=SimpleNamespace(body=wire, status_code=200))
-    if failure == "transport":
-        transport.side_effect = ChargedFailure(prompt=4)
-    monkeypatch.setattr(isolated_http, "request", transport)
-    with pytest.raises(ChargedFailure if failure == "transport" else ValueError):
-        await state.host._call_llm(state.socket, [{"role": "user", "content": "Synthetic research"}],
-                                   feature="persistent_assignment", response_format={"type": "json_object"})
-    assert len(reservations) == transport.await_count == 1
-    totals = await total(state)
-    assert totals["model_calls"] == 1 and totals["usage"]["total_tokens"] == {"known": known, "unknown": unknown}
-    assert "private invalid provider response" not in "".join(event.model_dump_json() for event in state.events)
-
+    with pytest.raises(dispatch_context.DispatchDenied, match="turn_engine_retired"):
+        await getattr(state.host, entry)(state.socket, [{"role": "user", "content": "Synthetic research"}])
+    transport.assert_not_awaited()

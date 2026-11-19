@@ -1,4 +1,4 @@
-"""Tests for the bridge between the node and the owner's mesh log: Kernel-answered text requests, ticketed tool calls with tickets and refusals, PHI fail-closed behavior, label computation, crash recovery and mirrored thin-client turns."""
+"""Tests for the bridge between the node and the owner's mesh log: Kernel-answered text requests, ticketed tool calls with tickets and refusals, PHI fail-closed behavior, label computation and crash recovery."""
 
 from __future__ import annotations
 
@@ -166,10 +166,6 @@ def canonical(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
-def test_recorded_arguments_keep_non_ascii_paths_in_canonical_utf8():
-    assert nmc._arguments({"path": "notes/café.md"}) == '{"path":"notes/café.md"}'
-
-
 def call_for(*, tool="lookup", arguments=None, device=PHONE, digest=None, action_tool=None, turn="turn-9", tool_def=None):
     text = canonical(arguments if arguments is not None else {"q": "weather"})
     action = {
@@ -190,81 +186,6 @@ async def serve(bridge, kernel, request_id):
     await settle(lambda: request_id not in bridge._running)
 
 
-async def test_a_thin_client_turn_is_recorded_into_the_owners_chat(tmp_path):
-    mesh, kernel, history, bridge = await build(tmp_path)
-    nmc.install(bridge)
-    nmc.observe_message(OWNER, "local-a", "user", "What is the weather?\nplease")
-    nmc.observe_step(OWNER, "local-a", {"name": "weather", "args": '{"q":1}', "status": "completed", "result": "sunny", "error": None})
-    nmc.observe_step(OWNER, "local-a", {"name": "lookup", "args": None, "status": "errored", "result": None, "error": "denied"})
-    nmc.observe_step(OWNER, "local-a", {"name": "raw", "args": "not json", "status": "completed", "result": {"k": 1}, "error": None})
-    nmc.observe_message(OWNER, "local-a", "assistant", [{"type": "text", "content": "It is sunny."}])
-    await settle(lambda: kernel.recorded)
-    chat, title = kernel.created[0]
-    assert title == "What is the weather?"
-    assert kernel.sent[0][:3] == (chat, "What is the weather?\nplease", None)
-    recorded_chat, turn = only_turn(kernel)
-    assert recorded_chat == chat and turn.message == kernel.sent[0][3] and turn.answers is None and turn.continues is None
-    assert (turn.provider, turn.reason, turn.text) == ("node", "completed", "It is sunny.")
-    assert turn.labels == fake.peer_labels("PRIVATE", "TOOL_TRUSTED")
-    first, second, third = turn.steps
-    assert (first.tool, first.arguments_json, first.status, first.content, first.code) == ("weather", '{"q":1}', "ok", "sunny", None)
-    assert first.tool_def.startswith("sha256:") and first.call_id == "node-step-1"
-    assert (second.arguments_json, second.status, second.content, second.code) == ("{}", "error", "denied", "node.tool_failed")
-    assert (third.arguments_json, third.content) == ('{"text":"not json"}', '{"k": 1}')
-    assert bridge.state.local_for(chat) == "local-a"
-    await bridge.stop()
-
-
-async def test_the_second_turn_reuses_the_chat_and_continues_the_first(tmp_path):
-    mesh, kernel, history, bridge = await build(tmp_path)
-    nmc.install(bridge)
-    for text in ("one", "two"):
-        nmc.observe_message(OWNER, "local-a", "user", text)
-        nmc.observe_message(OWNER, "local-a", "assistant", f"re {text}")
-        await settle(lambda: len(kernel.recorded) == (1 if text == "one" else 2))
-    assert len(kernel.created) == 1
-    first = kernel.recorded[0][1]
-    assert kernel.recorded[1][1].continues == kernel.chats[kernel.created[0][0]].turns[0].id
-    assert first.continues is None
-    await bridge.stop()
-
-
-async def test_other_owners_and_stray_events_are_ignored(tmp_path):
-    mesh, kernel, history, bridge = await build(tmp_path)
-    nmc.install(bridge)
-    nmc.observe_message("someone.else", "local-x", "user", "hi")
-    nmc.observe_message("someone.else", "local-x", "assistant", "yo")
-    nmc.observe_message(OWNER, "local-y", "assistant", "orphan answer")
-    nmc.observe_message(OWNER, "local-z", "user", "blank")
-    nmc.observe_message(OWNER, "local-z", "assistant", "   ")
-    nmc.observe_step(OWNER, "local-unknown", {"name": "x"})
-    await asyncio.sleep(0.2)
-    assert not kernel.recorded and not kernel.created
-    await bridge.stop()
-
-
-async def test_phi_protection_blocks_mirroring(tmp_path):
-    mesh, kernel, history, bridge = await build(tmp_path, phi=True)
-    nmc.install(bridge)
-    nmc.observe_message(OWNER, "local-a", "user", "secret thing")
-    nmc.observe_message(OWNER, "local-a", "assistant", "reply")
-    await asyncio.sleep(0.2)
-    assert not kernel.recorded and not kernel.created
-    await bridge.stop()
-
-
-async def test_step_overflow_is_bounded(tmp_path):
-    mesh, kernel, history, bridge = await build(tmp_path)
-    nmc.install(bridge)
-    nmc.observe_message(OWNER, "local-a", "user", "many")
-    for index in range(nmc.MAX_STEPS + 40):
-        nmc.observe_step(OWNER, "local-a", {"name": f"t{index}", "args": "{}", "status": "completed", "result": "r", "error": None})
-    nmc.observe_message(OWNER, "local-a", "assistant", "done")
-    await settle(lambda: kernel.recorded)
-    assert len(only_turn(kernel)[1].steps) == nmc.MAX_STEPS
-    await bridge.stop()
-
-
 async def test_a_text_request_is_answered_by_the_kernel_engine_and_the_bridge_writes_nothing(tmp_path):
     mesh, kernel, history, bridge = await build(tmp_path)
     kernel.add_chat("c", [fake.message("m1", "earlier question")])
@@ -279,11 +200,10 @@ async def test_a_text_request_is_answered_by_the_kernel_engine_and_the_bridge_wr
 
 
 async def test_a_pending_text_request_is_started_once_while_the_kernel_answers_it(tmp_path):
-    mesh, kernel, history, bridge = await build(tmp_path)
+    mesh, kernel, history, bridge = await build(tmp_path, start=False)
     kernel.answers.hold = True
     kernel.add_chat("c", [])
-    view = kernel.add_request("r1", "c")
-    kernel.pending_requests_for_me = lambda: [view]
+    kernel.add_request("r1", "c")
     assert await bridge.scan() == 1
     await settle(lambda: kernel.answers.answered)
     assert await bridge.scan() == 0
@@ -566,11 +486,71 @@ async def test_a_tool_call_is_verified_run_through_the_nodes_gates_and_recorded(
     assert calls.tickets == [vessel_executor.CallTicket("{}", call.action_json, call.arguments_json)]
     chat, turn = only_turn(kernel)
     assert (turn.answers, turn.continues, turn.text, turn.reason) == ("r1", "turn-0", "", "completed")
+    assert (turn.provider, turn.model) == ("node", "tool-runner")
     step = turn.steps[0]
     assert (step.call_id, step.tool, step.arguments_json, step.tool_def, step.status, step.content, step.code) == (
         "call-1", "lookup", call.arguments_json, "sha256:" + "d" * 64, "ok", "sunny", None,
     )
     assert kernel.request("r1").state == fake.RequestState.ANSWERED
+    await bridge.stop()
+
+
+async def test_peer_calls_import_completed_signed_history_once_without_creating_another_mesh_chat(tmp_path):
+    mesh, kernel, history, bridge = await build(tmp_path, calls=FakeCalls())
+    kernel.add_chat("c", [
+        fake.message("m1", "résumé"),
+        fake.message("m2", "answer", role="ASSISTANT"),
+        fake.message("m3", "unfinished", role="ASSISTANT", status="PENDING"),
+    ])
+    for request_id in ("r1", "r2"):
+        kernel.add_request(request_id, "c", call=call_for())
+    await bridge.scan()
+    await settle(lambda: not bridge._running)
+    assert sorted(record[1].answers for record in kernel.recorded) == ["r1", "r2"]
+    assert history.created == [OWNER]
+    assert history.added == [("local-1", "user", "résumé", OWNER), ("local-1", "assistant", "answer", OWNER)]
+    assert bridge.state.imported("c") >= {"m1", "m2"}
+    assert not kernel.created and not kernel.sent
+    await bridge.stop()
+
+
+async def test_a_failed_history_import_reuses_already_stored_messages(tmp_path, monkeypatch):
+    _, kernel, history, bridge = await build(tmp_path, calls=FakeCalls())
+    kernel.add_chat("c", [fake.message("m1", "first"), fake.message("m2", "second")])
+    append = history.add_message
+
+    def fail_second(chat_id, role, text, owner):
+        if text == "second":
+            raise OSError("history unavailable")
+        append(chat_id, role, text, owner)
+
+    monkeypatch.setattr(history, "add_message", fail_second)
+    kernel.add_request("r1", "c", call=call_for())
+    await serve(bridge, kernel, "r1")
+    assert kernel.request("r1").state == fake.RequestState.CLAIMED and not bridge._calls.ran
+    assert bridge.state.imported("c") == {"m1"}
+
+    monkeypatch.setattr(history, "add_message", append)
+    kernel.add_request("r2", "c", call=call_for())
+    await serve(bridge, kernel, "r2")
+    assert kernel.request("r2").state == fake.RequestState.ANSWERED
+    assert [m[2] for m in history.added] == ["first", "second"]
+    await bridge.stop()
+
+
+async def test_a_local_history_checkpoint_failure_after_the_peer_reply_never_repeats_the_tool(tmp_path, monkeypatch):
+    _, kernel, _, bridge = await build(tmp_path, calls=FakeCalls())
+    kernel.add_chat("c", [])
+    kernel.add_request("r1", "c", call=call_for())
+
+    def fail_mark(_chat, _messages):
+        raise OSError("checkpoint unavailable")
+
+    monkeypatch.setattr(bridge.state, "mark_imported", fail_mark)
+    await serve(bridge, kernel, "r1")
+    assert kernel.request("r1").state == fake.RequestState.ANSWERED
+    assert await bridge.scan() == 0
+    assert len(bridge._calls.ran) == len(kernel.recorded) == 1
     await bridge.stop()
 
 
@@ -630,7 +610,7 @@ async def test_an_owner_change_after_the_claim_refuses_the_call_before_it_runs(t
     current = [OWNER]
     calls = FakeCalls()
     mesh, kernel, history, bridge = await build(tmp_path, calls=calls, owner=lambda: current[0])
-    kernel.add_chat("c", [])
+    kernel.add_chat("c", [fake.message("m1", "owner history")])
     kernel.add_request("r1", "c", call=call_for())
     original = kernel.claim_request
 
@@ -641,6 +621,7 @@ async def test_an_owner_change_after_the_claim_refuses_the_call_before_it_runs(t
     kernel.claim_request = claim
     await serve(bridge, kernel, "r1")
     assert kernel.refused == [("r1", "node.owner_mismatch")] and not calls.ran and not kernel.recorded
+    assert not history.created and not history.added
     await bridge.stop()
 
 
@@ -700,6 +681,30 @@ async def test_a_forged_or_refused_ticket_is_refused_with_the_kernel_code_and_no
     kernel.add_request("r1", "c", call=call_for())
     await serve(bridge, kernel, "r1")
     assert kernel.refused == [("r1", error)] and not calls.ran and not kernel.claimed and not kernel.recorded
+    await bridge.stop()
+
+
+@pytest.mark.parametrize(("after_sync", "expected_runs"), [
+    (None, 1), ("ticket.stopped", 0), ("ticket.consent_sync_pending", 0),
+])
+async def test_consent_evidence_can_sync_before_claiming_a_call(tmp_path, monkeypatch, after_sync, expected_runs):
+    calls = FakeCalls()
+    mesh, kernel, _history, bridge = await build(tmp_path, calls=calls, start=False)
+    monkeypatch.setattr(nmc, "CONSENT_SYNC_DELAYS", (0,))
+    kernel.add_chat("c", [])
+    request = kernel.add_request("r1", "c", call=call_for())
+    verify = kernel.verify_ticket
+    results = iter(("ticket.consent_sync_pending", after_sync))
+
+    def verify_after_sync(*args):
+        assert not kernel.claimed and not calls.ran
+        kernel.ticket_error = next(results)
+        return verify(*args)
+
+    monkeypatch.setattr(kernel, "verify_ticket", verify_after_sync)
+    await bridge._answer(request)
+    assert len(calls.ran) == len(kernel.claimed) == expected_runs
+    assert kernel.refused == ([] if after_sync is None else [("r1", after_sync)])
     await bridge.stop()
 
 
@@ -839,8 +844,8 @@ def test_chat_state_persists_links_and_imports(tmp_path):
     state.link("mesh-1", "local-1")
     state.mark_imported("mesh-1", ["a", "b", "a"])
     reloaded = nmc.ChatState(path)
-    assert reloaded.local_for("mesh-1") == "local-1" and reloaded.mesh_for("local-1") == "mesh-1"
-    assert reloaded.mesh_for("nope") is None and reloaded.local_for("nope") is None
+    assert reloaded.local_for("mesh-1") == "local-1"
+    assert reloaded.local_for("nope") is None
     assert reloaded.imported("mesh-1") == {"a", "b"}
     assert oct(path.stat().st_mode & 0o777) == "0o600"
 
@@ -853,18 +858,6 @@ def test_chat_state_ignores_a_corrupt_file(tmp_path):
     assert nmc.ChatState(path).imported("x") == set()
 
 
-def test_message_text_extraction():
-    assert nmc.message_text("plain") == "plain"
-    assert nmc.message_text([{"type": "card", "children": [{"type": "text", "content": "inner"}]}, {"type": "markdown", "content": "md"}]) == "inner\n\nmd"
-    assert nmc.message_text({"type": "image"}) == ""
-    deep = {"a": {}}
-    node = deep
-    for _ in range(20):
-        node["a"] = {"a": {}}
-        node = node["a"]
-    assert nmc.message_text(deep) == ""
-
-
 def test_policy_from_environment():
     assert nmc.NodePolicy.from_env({}) == nmc.NodePolicy(serve_requests=True)
     assert nmc.NodePolicy.from_env({nmc.REQUESTS_ENV: "OFF"}) == nmc.NodePolicy(serve_requests=False)
@@ -875,13 +868,6 @@ def test_labels_join_to_the_most_restrictive_and_unknown_values_fail_closed():
     source = type("L", (), {"confidentiality": "Strange", "integrity": "odd"})()
     assert nmc.labels_of(source) == ("secret", "untrusted")
     assert nmc.labels_of(fake.peer_labels("PHI", "OWNER")) == ("phi", "owner")
-
-
-def test_module_observers_do_nothing_without_a_bridge():
-    nmc.install(None)
-    nmc.observe_message(OWNER, "c", "user", "x")
-    nmc.observe_step(OWNER, "c", {})
-    assert nmc.active() is None
 
 
 async def test_protection_check_uses_the_phi_policy(monkeypatch):

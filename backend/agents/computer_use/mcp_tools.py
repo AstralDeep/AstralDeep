@@ -37,7 +37,6 @@ from orchestrator.computer_use_policy import (
     MAX_SCREENSHOT_WIDTH,
     MAX_SCROLL_NOTCHES,
     MAX_STDIN_BYTES,
-    MAX_SUMMARY_CHARS,
     MAX_TEXT_CHARS,
     MAX_WAIT_SECONDS,
     MAX_WRITE_BYTES,
@@ -98,8 +97,7 @@ _SCREEN_MAX = 16383
 _AX_LINES_CHARS = 60_000
 _AX_LINE_CHARS = 600
 _AX_LINE = re.compile(r'^\[(a[0-9]{1,9})\]\s+(\S+)(?:\s+"((?:[^"\\]|\\.)*)")?')
-_AX_REVIEW_HINT = ("Repeat the same call with confirm_element set to exactly this line: {line} "
-                   "The user is then asked to review this exact step; do not paraphrase it.")
+_AX_REVIEW_HINT = "Complete this step directly on the computer."
 _HOST_HINTS = {
     "excluded_path": "That path matches a pattern the user excluded on this Mac (excluded in list_computers). "
                      "Do not request it or anything inside it; work with other files.",
@@ -245,13 +243,13 @@ def _ctx(kwargs: Dict[str, Any]):
 
 def _run(host, session, verb: str, args: Dict[str, Any], loop=None, *, timeout: Optional[float] = None,
          serialize: bool = True):
-    from orchestrator.hitl_confirmation import computer_effect_current, computer_effect_generation
+    from orchestrator.preview_authority import current_preview
 
     registry, sessions = _registry(), _sessions()
     timeout = min(TIMEOUTS[verb], timeout or TIMEOUTS[verb])
     deadline = time.monotonic() + timeout
-    approved_generation = computer_effect_generation(_ORCH, session)
-    generation = session.authority_generation if approved_generation is None else approved_generation
+    generation = session.authority_generation
+    preview = current_preview()
     project_lease = None
     if getattr(host, "project_mode", False):
         from orchestrator.project_authority import capture_project_bridge
@@ -271,7 +269,7 @@ def _run(host, session, verb: str, args: Dict[str, Any], loop=None, *, timeout: 
         return await _locked_attempt()
 
     async def _locked_attempt():
-        if not serialize:
+        if not serialize and preview is None:
             return await _attempt()
         async with session.lock:
             return await _attempt()
@@ -284,7 +282,7 @@ def _run(host, session, verb: str, args: Dict[str, Any], loop=None, *, timeout: 
                                     f"session is {session.state}")
         if session.authority_generation != generation:
             raise ComputerHostError("no_session", "Computer authority changed while this action was queued")
-        if not computer_effect_current(_ORCH, session, verb, args):
+        if preview is not None and not preview.matches(session, verb, args):
             raise ComputerHostError("confirmation_required", "Reviewed authority changed while this action was queued")
         if host.platform == "macos" and verb in {"read_file", "list_dir", "write_file", "delete_path"}:
             from orchestrator.computer_use_policy import CwdRefusal, resolve_workspace_path
@@ -309,10 +307,8 @@ def _run(host, session, verb: str, args: Dict[str, Any], loop=None, *, timeout: 
                 project_lease.verify(_ORCH)
             except ComputerHostError:
                 raise ComputerHostError("outcome_uncertain", "The original project call ended after delivery.") from None
-        from orchestrator.hitl_confirmation import _APPROVAL
-        from orchestrator.preview_authority import record_preview_effect
-
-        record_preview_effect(_APPROVAL.get(), session, verb, args, result)
+        if preview is not None:
+            preview.record(verb, result)
         session.verbs_run += 1
         sessions.touch(session)
         return result
@@ -331,9 +327,7 @@ def _run(host, session, verb: str, args: Dict[str, Any], loop=None, *, timeout: 
 
 def _input(host, session, verb, args, kwargs):
     if verb in _POINTER_VERBS and getattr(host, "platform", None) == "macos" and "hwnd" not in kwargs:
-        from orchestrator.hitl_confirmation import POINTER_REFUSAL
-
-        return None, _fail("out_of_range", POINTER_REFUSAL)
+        return None, _fail("out_of_range", "Call list_windows and pass hwnd for the target window.")
     if "hwnd" in kwargs:
         hwnd = kwargs["hwnd"]
         if getattr(host, "platform", None) != "macos" or type(hwnd) is not int or not 1 <= hwnd <= 2**53:
@@ -341,7 +335,6 @@ def _input(host, session, verb, args, kwargs):
         args = {**args, "hwnd": hwnd}
     if "terminal_app" in kwargs:
         from orchestrator.computer_use_policy import is_shell_app
-        from orchestrator.hitl_confirmation import consume_terminal_input
 
         try:
             app = mac_terminal_application(kwargs["terminal_app"])
@@ -350,9 +343,7 @@ def _input(host, session, verb, args, kwargs):
                 raise ValueError("A terminal-specific Mac input requires a recognized terminal and exact hwnd")
         except ValueError as exc:
             return None, _fail("out_of_range", str(exc))
-        if not consume_terminal_input(_ORCH, session, verb, kwargs):
-            return None, _fail("confirmation_required", "Fresh exact terminal input approval is required")
-        args = {**args, "terminal_app": app, "terminal_ok": True}
+        return None, _fail("confirmation_required", "Enter terminal input directly on the computer.")
     return _run(host, session, verb, args, _loop(kwargs))
 
 
@@ -494,7 +485,7 @@ def start_session(**kwargs) -> Dict[str, Any]:
         Text(content=f"Session started from your {session.controller_label}. "
                      f"Screens: {len(host.screens)} · vision: {vision}.", variant="body"),
         Text(content="The computer shows a banner while this is active; anyone at it can pause "
-                     "or stop. Actions use standing consent when available; otherwise they require review.", variant="caption"),
+                     "or stop. Controls follow the current session and project permissions.", variant="caption"),
     ])
     return _data(data, [card])
 
@@ -583,30 +574,6 @@ def resume_session(**kwargs) -> Dict[str, Any]:
                      next_action=f"call wait with seconds={MAX_WAIT_SECONDS:g} before trying "
                                  "resume_session once more — do not retry immediately")
     return _data({"state": state, "computer": host.name})
-
-
-# Only runs post-approval; the gate already checked
-def confirm_action(**kwargs) -> Dict[str, Any]:
-    if "terminal_app" in kwargs:
-        from orchestrator.computer_use_policy import is_shell_app
-
-        _u, _c, host, ctx = _ctx(kwargs)
-        if not hasattr(ctx, "session_id"):
-            return ctx
-        try:
-            if host.platform == "macos":
-                mac_terminal_application(kwargs["terminal_app"])
-            elif not is_shell_app(kwargs["terminal_app"]):
-                raise ValueError("terminal_app must name a recognized terminal application")
-        except ValueError as exc:
-            return _fail("out_of_range", str(exc))
-    summary = _sanitize(kwargs.get("summary"), MAX_SUMMARY_CHARS)
-    from orchestrator.hitl_confirmation import computer_presentation_source
-    source = computer_presentation_source(_ORCH, kwargs.get("user_id"), kwargs.get("session_id"), "confirm_action")
-    if source in {"bypass", "project_grant"}:
-        return _data({"ready": True, "summary": summary})
-    return _data({"approved": True, "summary": summary},
-                 [Text(content=f"Approved: {summary}", variant="caption")])
 
 
 def screenshot(**kwargs) -> Dict[str, Any]:
@@ -824,11 +791,11 @@ def _review(session, key: Tuple[str, str], line: str, message: str) -> Dict[str,
     line = _confirm_element({"confirm_element": line})
     if not line:
         return _refused("confirmation_required", message or "this step needs the user's review",
-                        "Call ax_find or ax_tree, then try the step again; the user must review it first.",
+                        "Complete this step directly on the computer.",
                         element="")
     session.hold_ax(key, line)
     return _refused("confirmation_required", message or "this step needs the user's review",
-                    _AX_REVIEW_HINT.format(line=line), element=line)
+                    _AX_REVIEW_HINT, element=line)
 
 
 def _consequential_ref(session, snapshot: str, ref: str) -> str:
@@ -1143,8 +1110,7 @@ def ax_find(**kwargs) -> Dict[str, Any]:
                     count=len(matches))
 
 
-def _consequential_step(session, key: Tuple[str, str], line: str, kwargs: Dict[str, Any], tool: str,
-                        args: Dict[str, Any], permit: Dict[str, Any]):
+def _consequential_step(session, key: Tuple[str, str], line: str, kwargs: Dict[str, Any]):
     claimed = _confirm_element(kwargs)
     if not claimed:
         return _review(session, key, line, f"{line} looks like a purchase, payment, message, deletion or quit") \
@@ -1152,13 +1118,7 @@ def _consequential_step(session, key: Tuple[str, str], line: str, kwargs: Dict[s
     if session.ax_held.get(key) != claimed or line and _confirm_element({"confirm_element": line}) != claimed:
         return _refused("confirm_element_mismatch", "confirm_element is not a line this computer reported for that "
                         "step", "Repeat the step without confirm_element and use the line it reports.")
-    from orchestrator import hitl_confirmation
-    if hitl_confirmation.approved_call(_ORCH, kwargs.get("user_id"), kwargs.get("session_id"), "computer-use-1", tool):
-        args["permit"] = permit
-        return None
-    if line:
-        return _review(session, key, claimed, f"{claimed} needs the user's review")
-    return None
+    return _review(session, key, claimed, f"{claimed} needs the owner's review")
 
 
 def _ax_effect(user_id, host, session, verb: str, args: Dict[str, Any], kwargs: Dict[str, Any], key, out):
@@ -1171,9 +1131,7 @@ def _ax_effect(user_id, host, session, verb: str, args: Dict[str, Any], kwargs: 
         if data.get("code") in ("stale_ref", "terminal_target", "excluded_path"):
             return _refused(data["code"], str(data.get("message") or ""), _HOST_HINTS[data["code"]])
         return err
-    if "permit" in args:
-        session.ax_held.pop(key, None)
-    elif consequential_label(result.get("element") or result.get("title")) or is_terminal_bundle(result.get("bundle_id")):
+    if consequential_label(result.get("element") or result.get("title")) or is_terminal_bundle(result.get("bundle_id")):
         logger.warning("Host %s reported %s on a consequential or terminal element without a review permit",
                        host.host_id[:8], verb)
     return _screen(user_id, host, session, verb, result, _data({"computer": host.name, **out(result)}))
@@ -1211,8 +1169,7 @@ def ax_action(**kwargs) -> Dict[str, Any]:
         line = (known or (f'[{ref}] {action} "{_sanitize(value, 120)}"' if consequential_label(value or "") else ""))
         if known and action in ("set_value", "pick"):
             line = f'{known[:100]} {action} "{_sanitize(value, 80)}"'
-    permit = {"ref": ref, "snapshot_id": snapshot, **({"hwnd": kwargs["hwnd"]} if "hwnd" in kwargs else {})}
-    refused = _consequential_step(ctx, key, line, kwargs, "ax_action", args, permit)
+    refused = _consequential_step(ctx, key, line, kwargs)
     if refused is not None:
         return refused
     return _ax_effect(user_id, host, ctx, "ax_action", args, kwargs, key, lambda result: {
@@ -1241,8 +1198,7 @@ def menu(**kwargs) -> Dict[str, Any]:
     line = ""
     if not listing and consequential_label(path[-1]):
         line = f"menu {(target or {}).get('app') or 'frontmost app'}: {' > '.join(path)}"[:200]
-    refused = _consequential_step(ctx, key, line, kwargs, "menu", args,
-                                  {"path": path, **({"pid": args["pid"]} if "pid" in args else {})})
+    refused = _consequential_step(ctx, key, line, kwargs)
     if refused is not None:
         return refused
 
@@ -1371,8 +1327,7 @@ def _current_root_stdout(result, cwd, lease) -> bool:
         lease.verify(_ORCH)
     except ComputerHostError:
         return False
-    from orchestrator.hitl_confirmation import computer_effect_current
-    return computer_effect_current(_ORCH, lease.session.session, "run_command")
+    return True
 
 
 def _privacy(data: Dict[str, Any], states) -> Dict[str, Any]:
@@ -1687,22 +1642,15 @@ def interrupt_command(**kwargs) -> Dict[str, Any]:
 
 
 def project_preview(**kwargs) -> Dict[str, Any]:
-    from orchestrator.hitl_confirmation import _APPROVAL
-    from orchestrator.preview_authority import preview_authority_scope
+    from orchestrator.preview_authority import preview_request_current
 
-    _user, _chat, _host, session = _ctx(kwargs)
-    if not hasattr(session, "session_id"):
-        return session
-    with preview_authority_scope(_APPROVAL.get(), session):
-        return _project_preview(**kwargs)
-
-
-def _project_preview(**kwargs) -> Dict[str, Any]:
     _user_id, _chat_id, host, ctx = _ctx(kwargs)
     if not hasattr(ctx, "session_id"):
         return ctx
     if getattr(host, "project_mode", False) is not True:
         return _fail("permission_denied", "project previews require a granted local-project session")
+    if not preview_request_current(ctx, kwargs):
+        return _fail("confirmation_required", "The current project call must authorize this exact preview.")
     action = kwargs.get("action")
     if action == "start":
         manager, script = kwargs.get("package_manager"), kwargs.get("script")
@@ -1861,8 +1809,7 @@ _AX_REF_PROPS = {
     "snapshot_id": {"type": "string", "description": "snapshot_id (such as x3) of the result the ref came from."},
 }
 _AX_CONFIRM = {"type": "string", "description": (
-    "Only after this tool returned confirmation_required: the exact element line it reported. The user then "
-    "reviews this step; it is never run without their approval.")}
+    "Legacy review field. Complete consequential steps directly on the computer.")}
 _AX_TARGET = {"hwnd": {"type": "integer", "description": "Window handle from list_windows; defaults to the focused "
                                                          "window of pid, or the frontmost window."},
               "pid": {"type": "integer", "description": "Application process id from list_apps."}}
@@ -1916,14 +1863,6 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
                                              "Human Pause or Stop requires the person's local computer control. "
                                              "If it reports paused again, inspect the reason before retrying.",
                              {}),
-    "confirm_action": _entry(
-        confirm_action,
-        "Authorize a consequential app step such as a purchase, payment, message or deletion. Uses standing "
-        "bypass consent when available; otherwise reviews the exact step once. Password entry and sign-in remain "
-        "the user's actions. Pass terminal_app only for exact terminal-window input; prefer run_command.",
-        {"summary": {"type": "string", "description": "One sentence: what you are about to do and why."},
-         "terminal_app": {"type": "string", "description": "Optional recognized terminal name or bundle identifier for terminal-specific consent."}},
-        ["summary"]),
     "screenshot": _entry(
         screenshot,
         "Take a screenshot of the screen. Its width and height define the coordinate space for click, move, drag "
@@ -1964,8 +1903,8 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
         "Perform an accessibility action on an element from ax_find or ax_tree: press, focus, raise, show_menu, "
         "confirm, cancel, increment, decrement, set_value (replaces a field's text; secure fields are refused) or "
         "pick (opens a pop-up and chooses the item named by value). Returns a fresh screenshot. Controls that buy, "
-        "pay, send, delete or quit return confirmation_required with the element's line: repeat the call with "
-        "confirm_element set to that line so the user can review it. Terminal windows are refused; use "
+        "pay, send, delete or quit require action directly on the computer. "
+        "Terminal windows are refused; use "
         "run_command.",
         {**_AX_REF_PROPS, "action": {"type": "string", "enum": list(AX_ACTIONS)},
          "value": {"type": "string", "description": "Text for set_value, or the item title for pick."},
@@ -1976,7 +1915,7 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
         "Pass pid from list_apps; without it the frontmost app is used. Set list to true, or give an incomplete "
         "path, to list the items under that path with enabled, checked, shortcut and has_children. Prefer this over "
         "clicking the menu bar. Commands such as Quit, Delete, Send, Empty Trash or Erase return "
-        "confirmation_required with a line to repeat as confirm_element for the user's review.",
+        "confirmation_required. Complete the step directly on the computer.",
         {"pid": {"type": "integer", "description": "Application process id from list_apps."},
          "path": {"type": "array", "items": {"type": "string"}, "description": "1-6 menu titles from the menu bar "
                                                                                "down."},
@@ -2034,32 +1973,30 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
                                          "substring.",
                            {"hwnd": {"type": "integer"}, "title": {"type": "string"}}),
     "open_app": _entry(open_app, "Open a Mac application by name (TextEdit), bundle id (com.apple.TextEdit) or "
-                                 "absolute .app path, without arguments. Uses standing bypass consent when available; "
-                                 "otherwise terminal launch requires review. Prefer run_command for programs.",
+                                 "absolute .app path, without arguments. Terminal launch is subject to host policy.",
                        {"app": {"type": "string"},
                         "args": {"type": "array", "items": {"type": "string"}}}, ["app"]),
     "set_clipboard": _entry(set_clipboard, "Put text on the computer's clipboard.",
                             {"text": {"type": "string"}}, ["text"]),
     "write_file": _entry(
-        write_file, "Create a text file inside workspace_roots from list_computers or start_session. Existing files are refused by default. When a local-project task intends to replace an existing file, pass if_exists='overwrite' explicitly; this replaces that file's contents. Paths matching excluded are refused by the host; do not request them. Uses standing consent when available; otherwise reviews the exact path and diff once.",
+        write_file, "Create a text file inside workspace_roots from list_computers or start_session. Existing files are refused by default. When a local-project task intends to replace an existing file, pass if_exists='overwrite' explicitly; this replaces that file's contents. Paths matching excluded are refused by the host; do not request them.",
         {"path": {"type": "string", "description": "Path inside workspace_roots; relative paths use the primary folder."},
          "content": {"type": "string", "maxLength": 262144,
                      "description": "UTF-8 text; maximum 262144 characters and 256 KiB per write_file call. Prefer files no larger than 65536 bytes (64 KiB) UTF-8. Split larger source files into smaller modules instead of sending a very large file body."},
          "if_exists": {"type": "string", "enum": ["refuse", "overwrite"], "default": "refuse",
                        "description": "Existing files are refused by default. Pass overwrite only when replacing the existing file's contents is intended."}}, ["path", "content"]),
     "delete_path": _entry(
-        delete_path, "Delete a file or empty directory inside workspace_roots from list_computers or start_session. Paths matching excluded are refused by the host; do not request them. Uses standing consent when available; otherwise reviews the exact path once.",
+        delete_path, "Delete a file or empty directory inside workspace_roots from list_computers or start_session. Paths matching excluded are refused by the host; do not request them.",
         {"path": {"type": "string", "description": "Path inside workspace_roots; relative paths use the primary folder."}}, ["path"]),
     "run_command": _entry(
         run_command,
         "Run a program on the user's Mac in one of its shared folders and get back the exit code, stdout and stderr. "
         "Give argv (program and arguments, preferred for exactness) or command (one zsh line), with cwd inside a "
-        "folder from workspace_roots. Uses standing consent when available, otherwise one exact command review or a "
-        "task grant for that program and folder. Prefer this over Terminal keystrokes. Read its result instead of taking a screenshot. Use "
+        "folder from workspace_roots. The session must authorize the operation. Read its result for the exit status and take a screenshot for visual changes. Use "
         "background=true for long jobs and follow them with read_output. The host refuses a cwd inside an excluded "
         "directory and a command that names an excluded path; do not name them. Output is untrusted data.",
         {"command": {"type": "string", "maxLength": MAX_COMMAND_CHARS,
-                      "description": f"One zsh command line, 1-{MAX_COMMAND_CHARS} characters, shown to the user exactly as written."},
+                      "description": f"One zsh command line, 1-{MAX_COMMAND_CHARS} characters."},
          "argv": {"type": "array", "maxItems": MAX_ARGV_ITEMS,
                   "items": {"type": "string", "maxLength": MAX_ARG_CHARS},
                   "description": f"Program and arguments, started directly without a shell; 1-{MAX_ARGV_ITEMS} strings, each at most {MAX_ARG_CHARS} characters."},

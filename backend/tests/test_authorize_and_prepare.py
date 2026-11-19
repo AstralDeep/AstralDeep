@@ -21,6 +21,7 @@ from shared.protocol import AgentCard, AgentSkill  # noqa: E402
 
 @pytest.fixture
 def orch(monkeypatch):
+    monkeypatch.setenv("ASTRAL_ENV", "development")
     monkeypatch.setenv("DELEGATION_REQUIRED", "false")
     from orchestrator.concurrency_cap import ConcurrencyCap
     from orchestrator.hooks import HookManager
@@ -215,10 +216,8 @@ async def test_unrequested_destructive_action_stops_at_exact_source_review(orch,
     orch._execute_with_retry = AsyncMock()
     out = await _auth(orch, tool="delete_records", ws=ws)
     assert isinstance(out, GateRefusal)
-    assert out.response.result["_data"]["status"] == "confirmation_required"
-    call, = orch._hitl_pending_calls.values()
-    assert (call.tool, call.owner, call.chat) == ("delete_records", "u1", "c1")
-    assert {"source_bound", "mutation_or_disclosure", "tools:write"}.issubset(call.risks)
+    assert out.response.error["code"] == "source_bound_approval_required"
+    assert not out.response.ui_components
     orch._execute_with_retry.assert_not_awaited()
 
 
@@ -232,9 +231,8 @@ async def test_hitl_blocks_egress(orch, monkeypatch):
     orch._execute_with_retry = AsyncMock()
     out = await _auth(orch, tool="send_email", ws=ws)
     assert isinstance(out, GateRefusal)
-    assert out.response.result["_data"]["status"] == "confirmation_required"
-    call, = orch._hitl_pending_calls.values()
-    assert {"source_bound", "egress", "tools:write"}.issubset(call.risks)
+    assert out.response.error["code"] == "source_bound_approval_required"
+    assert not out.response.ui_components
     orch._execute_with_retry.assert_not_awaited()
 
 
@@ -334,21 +332,20 @@ async def test_single_path_surfaces_authorizer_refusal(orch):
 @pytest.mark.asyncio
 async def test_remote_control_confirmation_refusal_becomes_gate_refusal(orch, monkeypatch):
     from orchestrator import remote_confirmation
-    card = {"type": "card", "title": "Confirm"}
-    ev = MagicMock(return_value=("confirmation_required: approve", [card]))
+    ev = MagicMock(return_value=("confirmation_required", []))
     monkeypatch.setattr(remote_confirmation, "evaluate", ev)
     out = await _auth(orch, tool="cancel_job", agent="remote-compute-1", args={"job_id": "1"})
     assert isinstance(out, GateRefusal)
     assert "confirmation_required" in _msg(out)
     assert out.render_target == "chat"
     assert out.response.ui_components is None
-    assert out.render_components == [card]
+    assert not out.render_components
     ev.assert_called_once()
 
 
 @pytest.mark.asyncio
 async def test_remote_control_confirmation_none_proceeds(orch, monkeypatch):
-    from orchestrator import hitl_confirmation, remote_confirmation
+    from orchestrator import remote_confirmation
     from shared.protocol import MCPResponse
     ev = MagicMock(return_value=None)
     monkeypatch.setattr(remote_confirmation, "evaluate", ev)
@@ -360,14 +357,9 @@ async def test_remote_control_confirmation_none_proceeds(orch, monkeypatch):
     orch._execute_with_retry = AsyncMock(return_value=MCPResponse(result={"ok": True}))
     out = await _auth(orch, tool="make_directory", agent="remote-compute-1", args={"path": "/x"}, ws=ws)
     assert isinstance(out, GateRefusal)
-    assert out.response.result["_data"]["status"] == "confirmation_required"
+    assert out.response.error["code"] == "source_bound_approval_required"
+    assert not out.response.ui_components
     orch._execute_with_retry.assert_not_awaited()
-    call, = orch._hitl_pending_calls.values()
-    await hitl_confirmation.handle_decision(orch, ws, "u1", {"hitl_request_id": call.request_id, "decision": "approve"})
-    assert not orch._hitl_pending_calls
-    orch._execute_with_retry.assert_awaited_once()
-    assert orch._execute_with_retry.await_args.args[1:3] == ("remote-compute-1", "make_directory")
-    assert ev.call_count == 2
 
 
 @pytest.mark.asyncio

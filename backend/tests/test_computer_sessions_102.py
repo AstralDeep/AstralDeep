@@ -728,25 +728,19 @@ class _Recorded:
 async def test_orchestrator_stop_cancels_only_the_owning_controller_turn():
     import json
 
-    from orchestrator import hitl_confirmation as hc
     from orchestrator.orchestrator import Orchestrator
 
     orch, host, controller, session = await _started()
     recorder = _Recorded()
     orch.cancelled_sessions = {}
     orch._chat_recorders = {id(controller): recorder}
-    orch._hitl_task_origins = {(OWNER, "chat-1"): (controller, object())}
-    orch._hitl_pending_calls = {"r": SimpleNamespace(owner=OWNER, chat="chat-1", websocket=controller,
-                                                     expires=float("inf"))}
     orch._cancel_turn = Orchestrator._cancel_turn.__get__(orch)
     orch.cancel_computer_turn = Orchestrator.cancel_computer_turn.__get__(orch)
     before = len(controller.sent)
     await orch.computer_sessions.end(session, "user_stop")
     assert orch.cancelled_sessions[id(controller)] is True and recorder.cancelled == 1
-    assert not orch._hitl_task_origins and not orch._hitl_pending_calls
     frames = [json.loads(frame) for frame in controller.sent[before:]]
     assert {"type": "chat_status", "status": "done", "message": "Cancelled"} in frames
-    assert hc.cancellation_witness(orch, controller, OWNER, "chat-1") is None
 
     orch2, _host2, controller2, session2 = await _started()
     orch2.cancelled_sessions = {}

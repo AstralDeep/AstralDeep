@@ -27,7 +27,7 @@ except ImportError:
 
 EX_UNAVAILABLE = getattr(os, "EX_UNAVAILABLE", 69)
 
-_NON_AGENT_DIRS = frozenset({"tests", "__pycache__"})
+_NON_AGENT_DIRS = frozenset({"tests", "__pycache__", "sandbox_qualification"})
 _HOST_ONLY_AGENT_DIRS = frozenset({"evidence"})
 
 
@@ -278,7 +278,7 @@ def main(process_supervisor=None):
                     continue
                 if inprocess_enabled:
                     continue
-            if item in ("artifacts", "sandbox_qualification") and inprocess_enabled:
+            if item == "artifacts" and inprocess_enabled:
                 print(f"Running {item} in-process when its feature flag is on (no port)")
                 continue
             print(f"Starting {item} agent on port {next_port}...")
@@ -301,7 +301,7 @@ def main(process_supervisor=None):
         print()
         print("-" * 60)
         print(" System started!")
-        print(f"  Orchestrator WS: ws://localhost:{orch_port}")
+        print(f"  Node API: http://localhost:{orch_port}/api/docs")
         agent_start_port = int(os.environ.get("AGENT_PORT", 8003))
         print(f"  Agent APIs start at: http://localhost:{agent_start_port}")
         print("-" * 60)

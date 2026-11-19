@@ -1,6 +1,6 @@
 """Legacy synchronous Task/TaskManager DTOs projected from durable operation state owned
 by WorkAdmissionCoordinator, never performing Postgres work on the event loop itself.
-Task IDs are operation UUIDs. Used by coordinator.py and orchestrator.py.
+Task IDs are operation UUIDs. Orchestrator uses these records for task lifecycle updates.
 """
 
 from __future__ import annotations

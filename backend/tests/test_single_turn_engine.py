@@ -43,21 +43,17 @@ MODEL_CALLERS = {
     "llm_config/probe.py": "the provider capability probe",
     "orchestrator/agent_authoring.py": "one model call that drafts an agent, with no tool loop",
     "orchestrator/agent_generator.py": "one model call that generates agent code, with no tool loop",
-    "orchestrator/coordinator.py": "an unimported planning module kept only as the prompt optimizer's source seam",
     "orchestrator/evidence_context.py": "one model call that summarizes evidence, with no tool loop",
     "orchestrator/knowledge_synthesis.py": "background synthesis, with no tool loop",
     "orchestrator/memory_chat.py": "a memory meta tool's single model call",
     "orchestrator/orchestrator.py": "the single-call model helpers the modules above share",
-    "orchestrator/side_question.py": "a side answer with no tools",
-    "persistent_agents/execution.py": "bounded episodes behind FF_PERSISTENT_AGENTS, off by default",
 }
 DISPATCH_CALLERS = {
     "orchestrator/a2a_orchestrator_executor.py": "the A2A door",
-    "orchestrator/api.py": "bearer REST routes, refused on a personal node",
+    "orchestrator/api.py": "legacy standalone routes, absent from the personal node",
     "orchestrator/node_mesh_calls.py": "a Kernel-ticketed call from the mesh",
     "orchestrator/orchestrator.py": "the protected dispatch itself and the MCP door's helper",
     "orchestrator/projection_surfaces/agents.py": "an owner surface action",
-    "persistent_agents/execution.py": "bounded episodes behind FF_PERSISTENT_AGENTS, off by default",
     "verification/drivers/in_process.py": "the verification harness",
 }
 MODEL_CALL = re.compile(

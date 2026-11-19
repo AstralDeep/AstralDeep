@@ -90,18 +90,17 @@ async def test_supervisor_off_is_noop(orch):
 
 
 @pytest.mark.asyncio
-async def test_hitl_blocks_egress(orch):
-    resp = await _dispatch(orch, "send_email", request="email bob",
-                           flags={"FF_HITL_HIGHRISK": True})
-    msg = _err(resp)
-    assert "confirm" in msg.lower()
-
-
-@pytest.mark.asyncio
-async def test_hitl_blocks_irreversible(orch):
-    resp = await _dispatch(orch, "delete_account", request="delete it",
-                           flags={"FF_HITL_HIGHRISK": True})
-    assert "confirm" in _err(resp).lower()
+@pytest.mark.parametrize(("tool", "request_text"), [
+    ("send_email", "email bob"),
+    ("delete_account", "delete it"),
+])
+async def test_hitl_refuses_egress_and_irreversible_actions_before_dispatch(orch, tool, request_text):
+    orch._execute_with_retry = AsyncMock()
+    resp = await _dispatch(orch, tool, request=request_text, flags={"FF_HITL_HIGHRISK": True})
+    assert resp.error["code"] == "confirmation_required"
+    assert resp.error["effect_state"] == "not_started"
+    assert resp.error["retryable"] is False
+    orch._execute_with_retry.assert_not_awaited()
 
 
 @pytest.mark.asyncio

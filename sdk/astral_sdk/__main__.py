@@ -49,7 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
     tools = sub.add_parser("tools", help="List the credential's projected Work tools")
     _add_common(tools)
 
-    submit = sub.add_parser("submit", help="Submit one chat-kind Work operation")
+    submit = sub.add_parser("submit", help="Replay a previously accepted Work submission")
     _add_common(submit)
     submit.add_argument("--idempotency-key", required=True)
     submit.add_argument("--name", required=True)

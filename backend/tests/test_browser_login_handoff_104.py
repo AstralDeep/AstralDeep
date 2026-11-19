@@ -1,15 +1,10 @@
-"""Exercises the owner login handoff verbs: browser_request_login waits for the owner's hand-back
-and reports only the resulting origin and title, browser_fill_login takes only field references
-and an origin with per-action review even under bypass, denial happens before dispatch, and the
-audit rows carry origin and item-label hashes but never fill values.
-"""
+"""Exercises native login handoff, reference-only credential fill and origin-bound audit records through the browser tools."""
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
 import json
-import time
 import uuid
 from types import SimpleNamespace
 
@@ -17,14 +12,9 @@ import pytest
 
 from agents.computer_use import browser_tools, mcp_tools
 from orchestrator import computer_use_policy as policy
-from orchestrator import hitl_confirmation as hc
-from orchestrator import remote_confirmation as rc
 from shared.protocol import COMPUTER_HOST_VERBS, ComputerHostDescriptor
 from tests.test_browser_tools import CHAT, ORIGIN, PAGE, _error, _snapshot_reply
-from tests.test_computer_grant_flow_102 import (
-    CHAT as GATE_CHAT, OWNER as GATE_OWNER, SCOPES, _buttons, _call, _mac, _payload, _texts,
-)
-from tests.test_computer_bypass_102 import _host_world, _set
+from tests.test_computer_grant_flow_102 import SCOPES, _call, _mac
 from tests.test_computer_use_076 import (
     OWNER, _AgentOrch, _descriptor, _FakeHostSocket, _session, _WS,
 )
@@ -33,7 +23,6 @@ from tests.test_hitl_task_continuation import task_runtime as task_runtime  # no
 from tests.test_lets_gate_ordering import gate_orchestrator as gate_orchestrator  # noqa: F401
 
 FILL_ARGS = {"origin": ORIGIN, "refs": ["e2", "e3"], "snapshot_id": "s9"}
-FILL_RISKS = ("source_bound", "mutation_or_disclosure", "tools:write")
 LOGIN_TOOLS = ("browser_request_login", "browser_fill_login")
 
 
@@ -115,21 +104,6 @@ async def _snapshot_page(world, **over):
     out = await world.call("browser_snapshot")
     assert out["_data"]["url"] == PAGE
     return out
-
-
-def _approved(world, tool, arguments):
-    from orchestrator.remote_confirmation import capture_computer_approval
-
-    authority = capture_computer_approval(world.orch, world.controller, OWNER, CHAT,
-                                          {"computer": world.host.name})
-    assert authority is not None
-    witness = hc.cancellation_witness(world.orch, world.controller, OWNER, CHAT, create=True)
-    call = hc.PendingCall(str(uuid.uuid4()), OWNER, CHAT, "computer-use-1", tool,
-                          json.dumps(arguments), FILL_RISKS, time.monotonic() + 900,
-                          computer_authority=authority, websocket=world.controller,
-                          cancellation=witness)
-    token = hc._APPROVAL.set(hc.Approval(world.orch, call, consumed=True, effect_started=True))
-    return token
 
 
 def test_login_verbs_join_the_closed_protocol_policy_and_registry_sets():
@@ -262,21 +236,15 @@ async def test_fill_login_refuses_values_extra_arguments_and_mismatched_origins_
     assert all("hunter2" not in json.dumps(event.inputs_meta) for event in refused)
 
 
-async def test_fill_login_dispatches_only_references_origin_and_permit_after_approval(login_world, audits):
+async def test_fill_login_dispatches_only_references_and_origin(login_world, audits):
     world = login_world
     await _snapshot_page(world)
     world.replies["browser_fill_login"] = {"ok": True, "result": {
         "filled": [{"ref": "e2", "label": "Email"}, {"ref": "e3", "label": "Remember me"}],
         "url": PAGE, "title": "Sign in"}}
-    arguments = {**FILL_ARGS, "user_id": OWNER, "session_id": CHAT}
-    token = _approved(world, "browser_fill_login", arguments)
-    try:
-        out = await world.call("browser_fill_login", **FILL_ARGS)
-    finally:
-        hc._APPROVAL.reset(token)
+    out = await world.call("browser_fill_login", **FILL_ARGS)
     frame = world.requests("browser_fill_login")[-1]
-    assert frame["args"] == {"refs": ["e2", "e3"], "snapshot_id": "s9", "origin": ORIGIN,
-                             "permit": {"origin": ORIGIN, "snapshot_id": "s9"}}
+    assert frame["args"] == {"refs": ["e2", "e3"], "snapshot_id": "s9", "origin": ORIGIN}
     assert "value" not in json.dumps(frame["args"])
     data = out["_data"]
     assert data["status"] == "filled" and data["origin"] == ORIGIN
@@ -343,12 +311,8 @@ async def test_malformed_host_replies_fail_both_login_tools_without_dispatch_sid
     assert "origin" in out["_data"]["message"]
     ended = audits.by("browser.login_handoff.ended")
     assert len(ended) == 1 and ended[0].outcome == "failure" and "malformed_reply" in ended[0].description
-    token = _approved(world, "browser_fill_login", {**FILL_ARGS, "user_id": OWNER, "session_id": CHAT})
-    try:
-        world.replies["browser_fill_login"] = {"ok": True}
-        out = await world.call("browser_fill_login", **FILL_ARGS)
-    finally:
-        hc._APPROVAL.reset(token)
+    world.replies["browser_fill_login"] = {"ok": True}
+    out = await world.call("browser_fill_login", **FILL_ARGS)
     assert out["_data"]["status"] == "filled" and out["_data"]["filled_fields"] == []
     assert audits.by("credential_fill.refused") == []
     approved = audits.by("credential_fill.approved")
@@ -363,14 +327,6 @@ async def test_fill_login_cancel_and_timeout_surface_the_no_retry_status(login_w
     assert out["_data"]["code"] == "login_cancelled"
     assert "do not" in out["_data"]["next_action"].lower()
     assert audits.by("credential_fill.refused") == [] and audits.by("credential_fill.approved") == []
-
-
-def test_login_verb_review_summaries_name_the_owner_actions():
-    request = policy.summary_for("browser_request_login", {"reason": "Dashboard access"}, "Your Mac")
-    assert "sign in" in request.lower() and "Dashboard access" in request and "Your Mac" in request
-    assert "origin and title" in request
-    fill = policy.summary_for("browser_fill_login", {"origin": ORIGIN, "refs": ["e2", "e3"]}, "Your Mac")
-    assert "Fill 2 login field(s)" in fill and ORIGIN in fill and "never see or supply" in fill
 
 
 async def test_verbs_are_refused_for_hosts_that_do_not_advertise_them(login_world, audits):
@@ -403,66 +359,14 @@ async def test_verbs_are_refused_for_hosts_that_do_not_advertise_them(login_worl
     assert ended[0].outcome == "failure" and "unsupported" in ended[0].description
 
 
-async def _bypassed_world(monkeypatch):
-    from orchestrator.projection_surfaces import my_computers
-    monkeypatch.setattr(my_computers, "_enabled", lambda: True)
-    orch, host, host_ws, controller = _host_world()
-    notice = await _set(orch, host_ws, GATE_OWNER, {"host_id": host.host_id, "enabled": True,
-                                                    "surface": "my_computers"})
-    assert "Bypass on" in notice
-    assert orch.computer_sessions.bypass_on(GATE_OWNER, host.host_id) is True
-    return orch, controller
-
-
-async def test_bypass_never_covers_the_fill_but_covers_the_handoff_request(monkeypatch):
-    orch, controller = await _bypassed_world(monkeypatch)
-    risks = FILL_RISKS
-    fill = {"origin": ORIGIN, "refs": ["e2"], "snapshot_id": "s9", "computer": "Mac"}
-    assert hc.consent_decision(orch, controller, GATE_OWNER, GATE_CHAT, "computer-use-1",
-                               "browser_fill_login", fill, risks) == ("review", None)
-    assert hc.bypass_covers(orch, controller, GATE_OWNER, GATE_CHAT, "computer-use-1",
-                            "browser_fill_login", fill, risks) is False
-    request = {"reason": "Sign in to continue", "computer": "Mac"}
-    assert hc.consent_decision(orch, controller, GATE_OWNER, GATE_CHAT, "computer-use-1",
-                               "browser_request_login", request, risks) == ("standing", None)
-
-
-async def test_without_bypass_both_login_verbs_need_review():
-    orch, _host, _host_ws, controller = _host_world()
-    risks = FILL_RISKS
-    for tool, args in (("browser_fill_login", {"origin": ORIGIN, "refs": ["e2"], "snapshot_id": "s9",
-                                               "computer": "Mac"}),
-                       ("browser_request_login", {"reason": "Sign in", "computer": "Mac"})):
-        assert hc.consent_decision(orch, controller, GATE_OWNER, GATE_CHAT, "computer-use-1",
-                                   tool, args, risks) == ("review", None)
-
-
 async def test_the_gate_refuses_malformed_fill_arguments_before_any_card(task_runtime):
     orch, ws, effects, _turns, _proposals, _outcome = task_runtime
-    await _mac(task_runtime, remote=True)
+    await _mac(task_runtime)
     orch.tool_permissions.get_tool_scope_map.return_value = {
         **SCOPES, "browser_request_login": "tools:write", "browser_fill_login": "tools:write"}
     response = await _call(task_runtime, "browser_fill_login",
                            **{**FILL_ARGS, "password": "hunter2"})
-    assert response.error is None
-    assert "takes only origin, refs and snapshot_id" in response.result["_data"]["message"]
-    assert "hunter2" not in json.dumps(response.result)
+    assert response.error and "takes only origin, refs and snapshot_id" in response.error["message"]
+    assert "hunter2" not in json.dumps(response.error)
     assert not [c for c in (response.ui_components or []) if c.get("type") == "card"]
-    assert not getattr(orch, "_hitl_pending_calls", {})
-    assert rc._PENDING_CARDS == {}
-    assert effects == []
-
-
-async def test_the_gate_shows_a_review_card_for_a_well_formed_fill(task_runtime):
-    orch, ws, effects, _turns, _proposals, _outcome = task_runtime
-    await _mac(task_runtime, remote=True)
-    orch.tool_permissions.get_tool_scope_map.return_value = {
-        **SCOPES, "browser_request_login": "tools:write", "browser_fill_login": "tools:write"}
-    response = await _call(task_runtime, "browser_fill_login", **FILL_ARGS)
-    assert response.error is None and response.result["_data"]["status"] == "confirmation_required"
-    labels = [button["label"] for button in _buttons(response)]
-    assert labels == ["Approve", "Decline"]
-    assert "Fill 2 login field(s)" in _texts(response) and effects == []
-    await rc.handle_decision(orch, ws, GATE_OWNER, _payload(response, "decline"))
-    await asyncio.sleep(0)
     assert effects == []

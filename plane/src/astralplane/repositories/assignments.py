@@ -4785,11 +4785,82 @@ class AssignmentRepository:
             self._terminal_operation_failure(transaction, data)
         return self._save(transaction, data)
 
+    def retire_unleased_assignments(self, transaction, *, reason, limit=100):
+        _text(reason, 128)
+        _integer(limit, 1, 100)
+        eligible = (
+            "lifecycle='active' AND lease_expires_at IS NULL AND data->>'phase'<>'reconciliation' "
+            "AND (execution_profile='persistent' OR (execution_profile='one_shot' "
+            "AND data->'operation'->'version' IN ('1'::jsonb,'2'::jsonb) "
+            "AND data->'operation'->>'kind' IN ('chat','research') "
+            "AND COALESCE(data->'operation'->'control'->'version','1'::jsonb)='1'::jsonb "
+            "AND COALESCE(data->'checkpoint'->'schema_version','1'::jsonb)='1'::jsonb)) "
+        )
+        selection = "SELECT id,owner_user_id FROM persistent_assignment WHERE " + eligible
+        rows = self._lock_recovery_candidates(transaction, selection, (), limit)
+        records = []
+        for row in rows:
+            data = self._load(transaction, row["owner_user_id"], str(row["id"]), lock=True)
+            self._invalidate_actions(transaction, data, conservative=True)
+            held = self._purge_blockers(transaction, data)[2]
+            data.update(
+                phase="reconciliation" if held else "failed",
+                safe_error_code="assignment_action_uncertain" if held else reason,
+                wake_reason=reason,
+                next_wake_at=None,
+                next_retry_at=None,
+                control_epoch=data["control_epoch"] + 1,
+            )
+            if not held:
+                data["lifecycle"] = "stopped"
+                if data.get("execution_profile") == "one_shot":
+                    data["lifecycle"] = "completed"
+                    data["operation"]["terminal_outcome"] = "failed"
+                for task in data["tasks"]:
+                    if task["state"] in {"pending", "running"}:
+                        task["state"] = "cancelled"
+                        task["task_generation"] += 1
+            records.append(self._save(transaction, data))
+        return tuple(records)
+
     def recover_expired_for_administration(self, transaction, *, limit=100):
         return self._recover_expired(transaction, limit=limit, profile="persistent")
 
     def recover_expired_operations_for_administration(self, transaction, *, limit=100):
         return self._recover_expired(transaction, limit=limit, profile="one_shot")
+
+    def _lock_recovery_candidates(self, transaction, selection, parameters, limit):
+        candidate_ids, owners, blocked = [], set(), set()
+        while len(candidate_ids) < limit and len(owners) + len(blocked) < 100:
+            candidates = transaction.fetch_all(
+                selection + "AND NOT (owner_user_id=ANY(%s::text[])) "
+                "AND NOT (id=ANY(%s::uuid[])) "
+                "ORDER BY lease_expires_at NULLS FIRST,id LIMIT %s",
+                (*parameters, sorted(blocked), candidate_ids, limit - len(candidate_ids)),
+            )
+            if not candidates:
+                break
+            for owner_id in sorted({row["owner_user_id"] for row in candidates} - owners):
+                if len(owners) + len(blocked) >= 100:
+                    break
+                acquired = transaction.fetch_one(
+                    "SELECT pg_try_advisory_xact_lock(hashtextextended(%s,79)) AS acquired",
+                    (owner_id,),
+                )
+                if acquired["acquired"] and self._lock_operation_owner(transaction, owner_id):
+                    owners.add(owner_id)
+                else:
+                    blocked.add(owner_id)
+            candidate_ids.extend(
+                str(row["id"]) for row in candidates if row["owner_user_id"] in owners
+            )
+        if not owners:
+            return ()
+        return transaction.fetch_all(
+            selection + "AND id=ANY(%s::uuid[]) AND owner_user_id=ANY(%s::text[]) "
+            "ORDER BY lease_expires_at NULLS FIRST,id LIMIT %s FOR UPDATE SKIP LOCKED",
+            (*parameters, candidate_ids, sorted(owners), limit),
+        )
 
     def _recover_expired(self, transaction, *, limit, profile):
         _integer(limit, 1, 100)
@@ -4809,38 +4880,7 @@ class AssignmentRepository:
             "AND COALESCE(data->'operation'->'control'->'version','1'::jsonb)='1'::jsonb "
             "AND COALESCE(data->'checkpoint'->'schema_version','1'::jsonb)='1'::jsonb)) "
         )
-        candidate_ids, owners, blocked = [], set(), set()
-        while len(candidate_ids) < limit and len(owners) + len(blocked) < 100:
-            candidates = transaction.fetch_all(
-                selection + "AND NOT (owner_user_id=ANY(%s::text[])) "
-                "AND NOT (id=ANY(%s::uuid[])) "
-                "ORDER BY lease_expires_at NULLS FIRST,id LIMIT %s",
-                (profile, sorted(blocked), candidate_ids, limit - len(candidate_ids)),
-            )
-            if not candidates:
-                break
-            for owner_id in sorted({row["owner_user_id"] for row in candidates} - owners):
-                if len(owners) + len(blocked) >= 100:
-                    break
-                acquired = transaction.fetch_one(
-                    "SELECT pg_try_advisory_xact_lock(hashtextextended(%s,79)) AS acquired",
-                    (owner_id,),
-                )
-                if acquired["acquired"] and self._lock_operation_owner(transaction, owner_id):
-                    owners.add(owner_id)
-                else:
-                    blocked.add(owner_id)
-            candidate_ids.extend(
-                str(row["id"]) for row in candidates if row["owner_user_id"] in owners
-            )
-        if not owners:
-            return AssignmentRecoveryResult()
-        # Completion delivery takes owner locks before assignment rows.
-        rows = transaction.fetch_all(
-            selection + "AND id=ANY(%s::uuid[]) AND owner_user_id=ANY(%s::text[]) "
-            "ORDER BY lease_expires_at NULLS FIRST,id LIMIT %s FOR UPDATE SKIP LOCKED",
-            (profile, candidate_ids, sorted(owners), limit),
-        )
+        rows = self._lock_recovery_candidates(transaction, selection, (profile,), limit)
         reclaimed, bindings, uncertain, terminal = [], [], [], []
         for row in rows:
             data = self._load(transaction, row["owner_user_id"], str(row["id"]), lock=True)
