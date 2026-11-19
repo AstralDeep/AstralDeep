@@ -3,7 +3,6 @@ The ordinary gate must retire obsolete proposals without publishing cards or dis
 """
 
 import asyncio
-import json
 import threading
 from unittest.mock import AsyncMock
 
@@ -80,12 +79,12 @@ async def test_manual_publication_cannot_outlive_held_preparation(task_runtime, 
     assert response.error is not None
     assert not response.ui_components
     if change != "stop":
-        from orchestrator.tool_feedback import tool_failure_content
-        public = json.loads(tool_failure_content(tool, response.error))
-        assert public["code"] == "COMPUTER_REVIEW_CHANGED"
-        assert "fresh request" in public["message"] and "current" in public["message"]
-        assert "No action ran" in public["message"] and public["retryable"] is False
-        assert "wait for" not in public["message"]
+        from orchestrator.tool_feedback import tool_failure_message
+        message = tool_failure_message(tool, response.error)
+        assert response.error["code"] == "COMPUTER_REVIEW_CHANGED"
+        assert "fresh request" in message and "current" in message
+        assert "No action ran" in message and response.error.get("retryable") is not True
+        assert "wait for" not in message
     assert not effects
     assert not getattr(orch, "_hitl_pending_calls", {})
     assert not getattr(orch, "_computer_approval_authorities", {})

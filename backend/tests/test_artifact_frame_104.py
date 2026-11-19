@@ -1,6 +1,6 @@
 """Tests for the native artifact frame (orchestrator/artifact_frame.py, ui_designer.py,
 workspace.py, orchestrator.py): designer framing, validation and repair, the deterministic
-fallback, document frames, and per-client gating on every send path.
+fallback, and per-client gating on every send path.
 """
 
 from __future__ import annotations
@@ -253,37 +253,6 @@ def test_failed_design_without_frame_keeps_legacy_none():
     assert _drive(llm, frame=False) is None
 
 
-def test_designer_off_still_frames_when_requested(monkeypatch):
-    monkeypatch.setenv("FF_UI_DESIGNER", "false")
-    llm, calls = _scripted(["{}"])
-    assert ui_designer.should_design(_components(), frame=True) is True
-    assert ui_designer.should_design(_components()) is False
-    frame = _frame(_drive(llm))
-    assert calls == []
-    assert _section_refs(frame) == [["wc_0", "wc_1"]]
-
-
-def test_single_component_rounds_stay_bare():
-    assert ui_designer.should_design(_components(1), frame=True) is False
-    llm, _ = _scripted(['{"layout": [{"type": "ref", "component_id": "wc_0"}]}'])
-    layout = _drive(llm, components=_components(1))
-    assert layout == [{"type": "ref", "component_id": "wc_0"}]
-
-
-def test_artifact_components_are_never_designed_or_referenced():
-    page = {"type": "html_artifact", "component_id": "art_0123456789abcdef", "html": "<p>x</p>"}
-    assert ui_designer.should_design([page, _comp("wc_0")], frame=True) is False
-    rows = [{"component_id": "art_fedcba9876543210", "component_type": "html_artifact"}]
-    reply = json.dumps({"title": "Two", "sections": [{"heading": "x", "children": [
-        _ref("wc_0"), _ref("art_fedcba9876543210"), _ref("wc_1")]}]})
-    llm, calls = _scripted([reply])
-    frame = _frame(_drive(llm, components=_components() + [page], canvas_rows=rows))
-    assert _section_refs(frame) == [["wc_0", "wc_1"]]
-    assert "art_0123456789abcdef" not in calls[0][1]["content"]
-    assert artifact_frame.fallback_frame([page, _comp("wc_0")], chat_id="c", layout_key="k",
-                                         user_request="r") is None
-
-
 def test_validate_layout_never_accepts_artifact_garnish():
     clean, _ = ui_designer.validate_layout(
         [{"type": "artifact", "sections": []}, {"type": "html_artifact", "html": "x"}],
@@ -420,31 +389,6 @@ def test_repair_sections_respects_section_cap():
     assert repaired[-1]["children"][-1] == _ref("extra")
 
 
-def test_substantial_text_thresholds():
-    assert artifact_frame.substantial_text("x" * 600) is True
-    assert artifact_frame.substantial_text("short answer") is False
-    assert artifact_frame.substantial_text("# Title\n\nbody\n\n## Next\nmore") is True
-    assert artifact_frame.substantial_text("- a\n- b\n- c") is False
-    assert artifact_frame.substantial_text("- a\n- b\n\ntext\n\n1. one\n2. two") is True
-    assert artifact_frame.substantial_text("```py\n# not a heading\n```\n- item") is True
-    assert artifact_frame.substantial_text("```\n# inside\n## fence\n```") is False
-
-
-def test_document_frame_shape():
-    text = "Intro line\n\n## Plan\n- step one\n- step two"
-    doc = artifact_frame.document_frame("chat-9", text, user_request="make a plan")
-    assert doc["type"] == "artifact" and doc["kind"] == "document" and doc["version"] == 1
-    assert doc["id"] == doc["component_id"] and doc["id"].startswith("art_")
-    assert doc["title"] == "Plan"
-    assert doc["sections"] == [{"id": "s1", "heading": "", "layout": "stack",
-                                "children": [{"type": "text", "content": text, "variant": "markdown"}]}]
-    assert artifact_frame.document_frame("chat-9", "Short opener\nbody")["title"] == "Short opener"
-    assert artifact_frame.document_frame("c", "y" * 90, user_request="the ask")["title"] == "the ask"
-    assert artifact_frame.document_frame("c", "z" * 90)["title"] == "Document"
-    assert artifact_frame.document_frame("c", text)["id"] != doc["id"]
-    assert artifact_frame.document_frame("chat-9", text)["id"] == doc["id"]
-
-
 def test_accepted_types_prefers_supported_types():
     capable = types.SimpleNamespace(supported_types=frozenset({"text", "artifact", "html_artifact"}))
     partial = types.SimpleNamespace(supported_types=frozenset({"text", "artifact"}))
@@ -466,19 +410,6 @@ def _rote_socket(supported=None, device="macos"):
         info["supported_types"] = supported
     rote.register_device(ws, info)
     return rote, ws
-
-
-def test_socket_capability_reads_profile_and_session():
-    rote, ws = _rote_socket(NATIVE_TYPES)
-    orch = types.SimpleNamespace(rote=rote, ui_sessions={})
-    assert artifact_frame.artifact_capable(orch, ws) is True
-    rote2, ws2 = _rote_socket(None, device="browser")
-    orch2 = types.SimpleNamespace(rote=rote2, ui_sessions={ws2: {"_client_capabilities": ["artifact_v1"]}})
-    assert artifact_frame.artifact_capable(orch2, ws2) is True
-    orch2.ui_sessions = {}
-    assert artifact_frame.artifact_capable(orch2, ws2) is False
-    assert artifact_frame.socket_accepted_types(orch, None) == frozenset()
-    assert artifact_frame.socket_accepted_types(types.SimpleNamespace(), object()) == frozenset()
 
 
 def _sample_frame():
@@ -623,29 +554,6 @@ def test_gate_artifacts_history_mode_uses_fallback():
     assert out[0]["url"].endswith("chat_id=chat-2")
 
 
-def _wanted_orch(capable=True, frame_flag=True):
-    supported = NATIVE_TYPES if capable else ["text"]
-    orch = types.SimpleNamespace(rote=_FakeRote(supported), ui_sessions={})
-    orch._artifact_frame_wanted = types.MethodType(Orchestrator._artifact_frame_wanted, orch)
-    orch._narrative_canvas_doc = types.MethodType(Orchestrator._narrative_canvas_doc, orch)
-    orch._narrative_is_long = Orchestrator._narrative_is_long
-    orch._narrative_doc_card = Orchestrator._narrative_doc_card
-    return orch
-
-
-def test_narrative_document_frame_only_for_capable_clients(monkeypatch):
-    monkeypatch.setitem(flags._flags, "artifact_frame", True)
-    text = "Intro\n\n## Results\n- one\n- two"
-    doc = _wanted_orch()._narrative_canvas_doc(object(), "chat-1", text, "request")
-    assert doc["type"] == "artifact" and doc["kind"] == "document" and doc["title"] == "Results"
-    legacy = _wanted_orch(capable=False)._narrative_canvas_doc(object(), "chat-1", text, "request")
-    assert legacy["type"] == "card" and legacy["id"].startswith("doc_")
-    assert _wanted_orch()._narrative_canvas_doc(object(), None, text) is None
-    assert _wanted_orch()._narrative_canvas_doc(object(), "chat-1", "brief reply") is None
-    monkeypatch.setitem(flags._flags, "artifact_frame", False)
-    assert _wanted_orch()._narrative_canvas_doc(object(), "chat-1", text)["type"] == "card"
-
-
 class _Workspace:
     def __init__(self, layouts=(), rows=()):
         self.layouts, self.rows = list(layouts), list(rows)
@@ -655,51 +563,6 @@ class _Workspace:
 
     def live_rows(self, chat_id, user_id):
         return self.rows
-
-
-def test_run_designer_frames_for_capable_socket(monkeypatch):
-    monkeypatch.setitem(flags._flags, "artifact_frame", True)
-    orch = _wanted_orch()
-    orch.workspace = _Workspace(layouts=[{"layout_key": "other", "layout": []}])
-    orch.sent = []
-
-    async def _safe_send(ws, data):
-        orch.sent.append(json.loads(data))
-
-    async def _call_llm(ws, messages, **kwargs):
-        return types.SimpleNamespace(content="not json"), None
-
-    orch._safe_send = _safe_send
-    orch._call_llm = _call_llm
-    run = types.MethodType(Orchestrator._run_designer, orch)
-    layout = asyncio.run(run(object(), _components(), "chat-1", "owner", "Show sales", "ly_k"))
-    frame = _frame(layout)
-    assert frame["id"] == artifact_frame.frame_id("chat-1", "ly_k")
-    assert orch.sent and orch.sent[0]["message"].startswith("Designing your layout")
-    monkeypatch.setitem(flags._flags, "artifact_frame", False)
-    assert asyncio.run(run(object(), _components(), "chat-1", "owner", "Show sales", "ly_k")) is None
-
-
-def test_post_done_designer_runs_for_capable_native_socket(monkeypatch):
-    monkeypatch.setitem(flags._flags, "artifact_frame", True)
-    monkeypatch.setitem(flags._flags, "designer_all_devices", True)
-    monkeypatch.setenv("FF_UI_DESIGNER", "false")
-    orch = _wanted_orch()
-    orch._ws_timeline_mode = {}
-    orch.history = types.SimpleNamespace(get_latest_message_id=lambda chat, user_id=None: "m1")
-    saved = []
-    orch.workspace = types.SimpleNamespace(
-        upsert_layout=lambda chat, user, key, layout: saved.append((key, layout)))
-    orch._run_designer = AsyncMock(return_value=[{"type": "artifact", "sections": []}])
-    post = types.MethodType(Orchestrator._design_turn_post_done, orch)
-    marker = asyncio.run(post(object(), "chat-1", "owner", "req", _components(), turn_marker="m1"))
-    assert marker == "m1" and saved and saved[0][1][0]["type"] == "artifact"
-    legacy = _wanted_orch(capable=False)
-    legacy._ws_timeline_mode = {}
-    legacy._run_designer = AsyncMock()
-    post2 = types.MethodType(Orchestrator._design_turn_post_done, legacy)
-    assert asyncio.run(post2(object(), "chat-1", "owner", "req", _components())) is None
-    legacy._run_designer.assert_not_awaited()
 
 
 def test_refine_never_edits_artifacts():
@@ -721,17 +584,6 @@ def test_node_walkers_cover_tabs_sections_and_non_dicts():
     assert artifact_frame._heading_of({"type": "text", "content": "\n\n"}) == ""
     assert artifact_frame._short_text_of({"type": "metric", "content": "x"}) == ""
     assert artifact_frame._short_text_of({"type": "text", "content": "two\nlines"}) == ""
-
-
-def test_deliver_round_components_keeps_flat_path_for_single_component(monkeypatch):
-    monkeypatch.setitem(flags._flags, "artifact_frame", True)
-    rote, ws = _rote_socket(None, device="browser")
-    orch = types.SimpleNamespace(rote=types.SimpleNamespace(get_profile=lambda w: rote.get_profile(ws)),
-                                 ui_sessions={}, _ws_timeline_mode={})
-    orch._send_or_replace_components = AsyncMock(return_value=["op"])
-    deliver = types.MethodType(Orchestrator._deliver_round_components, orch)
-    assert asyncio.run(deliver(object(), _components(1), "chat-1", "owner")) == ["op"]
-    orch._send_or_replace_components.assert_awaited_once()
 
 
 async def _register_with_flags(monkeypatch, enabled):

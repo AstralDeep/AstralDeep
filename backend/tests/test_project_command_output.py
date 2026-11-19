@@ -20,6 +20,7 @@ from tests.test_hitl_public_research import runtime  # noqa: F401
 from tests.test_hitl_task_continuation import task_runtime  # noqa: F401
 from tests.test_lets_gate_ordering import gate_orchestrator  # noqa: F401
 from tests.test_project_standing_dispatch import PROJECT, project_runtime
+from tests.helpers.approval_task import begin_task
 
 PRIMARY = "/tmp/project-20261027"
 SECONDARY = "/tmp/研究-20261027"
@@ -226,7 +227,7 @@ def _invalidate(world, change, scope=None):
     elif change == "owner":
         world.orch.ui_sessions[world.ws]["sub"] = "foreign"
     elif change == "task":
-        hitl_confirmation.begin_task(world.orch, world.ws, "owner-a", "chat-a")
+        begin_task(world.orch, world.ws, "owner-a", "chat-a")
     elif change == "stop":
         world.orch.cancelled_sessions[id(world.ws)] = True
     elif change == "expiry":
@@ -366,15 +367,3 @@ async def test_real_sensitive_output_remains_redacted(command_world):
     data = response.result["_data"]
     assert "123-45-6789" not in data["stdout"] and data["privacy"] in {"redacted", "withheld"}
 
-
-async def test_foreground_serialized_chat_keeps_origin_through_command_output(command_world):
-    world = command_world
-    responses = []
-    async def chat(websocket, message, chat_id, display, **kwargs):
-        responses.append(await world.call())
-    world.orch.handle_chat_message = chat
-    await world.orch._serialized_chat(world.ws, "Inspect the current directory", "chat-a", "Inspect the current directory",
-                                      user_id="owner-a")
-    assert len(responses) == 1 and responses[0].error is None, responses
-    assert responses[0].result["_data"]["stdout"] == PRIMARY + "\n"
-    assert len(world.delivered) == 1 and world.delivered[0]["project_context"]["chat_id"] == "chat-a"

@@ -1227,17 +1227,12 @@ def evaluate(orch, websocket, agent_id: Optional[str], tool_name: str,
 
 
 async def handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]) -> None:
-    held: list = []
-    try:
-        from orchestrator.approval_receipts import run
-        await run(orch, websocket, user_id, payload, "proposal_id",
-                  lambda: _handle_decision(orch, websocket, user_id, payload, held))
-    finally:
-        for origin in held:
-            origin.close()
+    from orchestrator.approval_receipts import run
+    await run(orch, websocket, user_id, payload, "proposal_id",
+              lambda: _handle_decision(orch, websocket, user_id, payload))
 
 
-async def _handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any], held: list) -> None:
+async def _handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any]) -> None:
     from astralprims import Alert
     proposal_id = (payload or {}).get("proposal_id")
     decision = (payload or {}).get("decision")
@@ -1387,11 +1382,6 @@ async def _handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any
                 decided_at=now,
             )
 
-    from orchestrator.hitl_confirmation import continuation_guidance
-
-    origin, guided = await continuation_guidance(orch, websocket)
-    if origin is not None:
-        held.append(origin)
     approved = await asyncio.to_thread(_approve)
     if approved is None:
         await _say("This request was already handled.")
@@ -1497,14 +1487,14 @@ async def _handle_decision(orch, websocket, user_id: str, payload: Dict[str, Any
     continued = False
     try:
         continued = await _settle_decision(orch, websocket, user_id, row, result, stored_args, proposal_id,
-                                           computer_authority, resume_requested, guided, origin, held, _say)
+                                           computer_authority, resume_requested, _say)
     finally:
         if announced and not continued:
             await announce_turn(orch, websocket, "done")
 
 
 async def _settle_decision(orch, websocket, user_id, row, result, stored_args, proposal_id, computer_authority,
-                           resume_requested, guided, origin, held, _say) -> bool:
+                           resume_requested, _say) -> bool:
     from orchestrator.remote_effect_ingress import publish_review
     await publish_review(orch, websocket, row.agent_id, row.tool_name, row.conversation_id, user_id, result)
     if row.agent_id == "computer-use-1" and successful_result(result):
@@ -1540,25 +1530,7 @@ async def _settle_decision(orch, websocket, user_id, row, result, stored_args, p
             str(proposal_id), time.time() + policy.retry_grace_s)
         logger.info("remote_op approved but not attempted (%s): retry grace %.0fs id=%s",
                     not_attempted, policy.retry_grace_s, proposal_id)
-    from orchestrator.hitl_confirmation import CONTINUATION_TEXT, continue_after_approval
-
-    def computer_current():
-        return computer_approval_current(orch, websocket, computer_authority)
-
-    guard = None
-    if policy is not None and policy.auto_continue:
-        outcome = _continuation_text(row, result, retry_grace_s=policy.retry_grace_s if not_attempted else 0)
-    elif row.agent_id == "computer-use-1" and successful_result(result):
-        outcome, guard = CONTINUATION_TEXT, computer_current
-    else:
-        outcome = None
-    if outcome is None or not guided or not row.conversation_id or websocket is None:
-        return False
-    if origin is not None:
-        held.remove(origin)
-    continue_after_approval(orch, websocket, user_id, row.conversation_id, outcome, "✓ Approved — continuing",
-                            origin, guard=guard, name=f"remote-op-continue-{row.proposal_id}")
-    return True
+    return False
 
 
 def _result_data(result) -> Tuple[Any, Any]:
@@ -1596,23 +1568,3 @@ def _not_attempted_code(result) -> Optional[str]:
         code = "paused" if message.startswith("paused") else None
     return "paused" if code == "paused" else None
 
-
-def _continuation_text(row, result, retry_grace_s: float = 0) -> str:
-    data, error = _result_data(result)
-    try:
-        rendered = json.dumps(data, default=str)[:4000] if data is not None else "(no data)"
-    except Exception:  # noqa: BLE001
-        rendered = str(data)[:4000]
-    if error:
-        rendered = f"ERROR: {str((error or {}).get('message') if isinstance(error, dict) else error)[:1000]}"
-    if retry_grace_s > 0:
-        return (f"[The user tapped Approve.] `{row.tool_name}` was approved but could NOT run yet: "
-                f"the computer is paused because someone is using it. Result: {rendered}\n\n"
-                f"Call wait (seconds=10), then resume_session; once it is active, call `{row.tool_name}` "
-                f"again with EXACTLY the same arguments {json.dumps(dict(row.arguments), default=str)[:1500]} — "
-                f"the approval is kept for {int(retry_grace_s)} seconds, so that one retry needs no new "
-                "confirmation. Then continue the task and report the outcome in plain language.")
-    return (f"[The user tapped Approve.] `{row.tool_name}` has now been carried out on the computer "
-            f"(do not call it again for this step). Result: {rendered}\n\n"
-            "Continue the task from here — take any further actions on the computer that are "
-            "needed, then report the outcome to the user in plain language.")

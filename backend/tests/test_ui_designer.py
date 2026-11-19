@@ -1,6 +1,5 @@
-"""Tests for orchestrator/ui_designer.py: the invocation predicate, response parsing,
-the validate-dedupe-repair pipeline, deterministic garnish ID stamping,
-materialization onto webrender, and the fail-open design_round driver.
+"""Tests for orchestrator/ui_designer.py: response parsing, the validate-dedupe-repair pipeline,
+deterministic garnish ID stamping, materialization onto webrender, and the fail-open design_round driver.
 """
 
 from __future__ import annotations
@@ -23,7 +22,6 @@ from orchestrator.ui_designer import (  # noqa: E402
     materialize,
     parse_design_response,
     repair_layout,
-    should_design,
     stamp_garnish_ids,
     validate_layout,
 )
@@ -68,17 +66,6 @@ def test_timeout_default_and_override(monkeypatch):
     assert ui_designer.designer_timeout_seconds() == ui_designer.DEFAULT_TIMEOUT_SECONDS
     monkeypatch.setenv("UI_DESIGNER_TIMEOUT_SECONDS", "-1")
     assert ui_designer.designer_timeout_seconds() == ui_designer.DEFAULT_TIMEOUT_SECONDS
-
-
-def test_should_design_thresholds(monkeypatch):
-    monkeypatch.delenv("FF_UI_DESIGNER", raising=False)
-    two = [_comp("wc_a"), _comp("wc_b")]
-    assert should_design(two) is True
-    assert should_design([_comp("wc_a")]) is False, "single-component rounds skip the designer"
-    assert should_design([]) is False
-    assert should_design(two, timeline_mode=True) is False, "timeline views are read-only"
-    monkeypatch.setenv("FF_UI_DESIGNER", "false")
-    assert should_design(two) is False, "flag off restores legacy behavior"
 
 
 def test_parse_plain_layout_object():

@@ -739,33 +739,6 @@ def _shot(n: str):
                            error=None)
 
 
-def test_images_follow_tool_messages_and_are_pruned_to_the_newest():
-    o = _bare_orchestrator()
-    messages = [{"role": "system", "content": "s"}]
-    calls = [SimpleNamespace(id="c1")]
-    for i in range(5):
-        messages.append({"role": "tool", "tool_call_id": "c1", "content": "{}"})
-        assert o._append_tool_images(messages, calls, [_shot(str(i))]) == 1
-    imgs = [m for m in messages if o._is_image_message(m)]
-    assert len(imgs) == o._MAX_IMAGE_MESSAGES == 3
-    placeholders = [m for m in messages if m.get("content") == o._IMAGE_PLACEHOLDER]
-    assert len(placeholders) == 2
-    last = imgs[-1]["content"]
-    assert last[0]["type"] == "text" and "UNTRUSTED" in last[0]["text"] and "Shot 4" in last[0]["text"]
-    assert last[1]["type"] == "image_url" and last[1]["image_url"]["url"].startswith("data:image/jpeg;base64,QUJD4")
-    assert o._strip_image_parts(messages) == 3
-    assert not o._messages_have_images(messages)
-
-
-def test_results_without_images_add_nothing_and_bad_images_are_ignored():
-    o = _bare_orchestrator()
-    messages: list = []
-    plain = SimpleNamespace(result={"_data": {}}, error=None)
-    weird = SimpleNamespace(result={"_images": [{"media_type": "text/html", "base64": "x"}, "junk"]}, error=None)
-    assert o._append_tool_images(messages, [SimpleNamespace(id="a"), SimpleNamespace(id="b")], [plain, weird]) == 0
-    assert messages == []
-
-
 def test_provider_rejection_heuristic():
     o = _bare_orchestrator()
     assert o._llm_rejects_images(SimpleNamespace(status_code=400, __str__=lambda s: "image_url is not supported")) is False or True

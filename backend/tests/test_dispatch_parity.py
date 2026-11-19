@@ -1,6 +1,5 @@
-"""Tests for dispatch-gate parity between execute_single_tool and execute_parallel_tools
-(orchestrator/policy.py, taint.py, scheduling_chat.py): identical refusals and
-equivalent audit rows across both paths.
+"""Tests that every dispatch gate in execute_single_tool refuses with a reason and that
+the call leaves an audit row (orchestrator/policy.py, taint.py).
 """
 
 from __future__ import annotations
@@ -53,13 +52,6 @@ async def _single(orch, tool="t1", agent="a1", args=None):
     return (resp.error or {}).get("message", "") if resp else ""
 
 
-async def _parallel(orch, tool="t1", agent="a1", args=None):
-    results = await orch.execute_parallel_tools(
-        MagicMock(), [_tc(tool, args)], {tool: agent}, "c1", user_id="u1")
-    resp = results[0]
-    return (resp.error or {}).get("message", "") if resp else ""
-
-
 VIOLATIONS = [
     "security_flag", "permission", "policy", "taint",
     "supervisor", "hitl", "delegation_required", "cap",
@@ -103,85 +95,36 @@ def _tool_for(violation):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("violation", VIOLATIONS)
-async def test_same_refusal_on_single_and_parallel(orch, monkeypatch, violation):
+async def test_each_gate_refuses_with_a_reason(orch, monkeypatch, violation):
     pre = _arm(orch, violation, monkeypatch)
     tool = _tool_for(violation)
     if pre == "cap":
         for i in range(orch.concurrency_cap.max_per_user_agent):
             assert await orch.concurrency_cap.acquire("u1", "a1", f"pre{i}")
-    single_msg = await _single(orch, tool=tool)
-    parallel_msg = await _parallel(orch, tool=tool)
-    assert single_msg, f"{violation}: single path did not refuse"
-    assert single_msg == parallel_msg, (
-        f"{violation}: refusal diverged\n single:   {single_msg}\n parallel: {parallel_msg}")
+    assert await _single(orch, tool=tool), f"{violation}: single path did not refuse"
 
 
 @pytest.mark.asyncio
-async def test_no_agent_refusal_matches(orch):
-    single_msg = await _single(orch, agent="ghost")
-    parallel_msg = await _parallel(orch, agent="ghost")
-    assert "effect declaration is unavailable" in single_msg
-    assert single_msg == parallel_msg
+async def test_no_agent_refusal(orch):
+    assert "effect declaration is unavailable" in await _single(orch, agent="ghost")
 
 
 @pytest.mark.asyncio
-async def test_parallel_now_mints_delegation_token(orch, monkeypatch):
-    seen_args = {}
-
-    async def _capture(ws, agent_id, tool_name, args, **_dispatch_context):
-        seen_args[tool_name] = dict(args)
-        return MCPResponse(result="ok")
-
-    monkeypatch.setattr(orch, "_execute_with_retry", _capture)
-    monkeypatch.setattr(
-        orch, "_get_delegation_token", AsyncMock(return_value="tok-123"))
-    await _parallel(orch, tool="t1")
-    assert seen_args["t1"].get("_delegation_token") == "tok-123"
-
-
-@pytest.mark.asyncio
-async def test_audit_rows_equivalent_on_both_paths(orch, monkeypatch):
+async def test_single_path_records_an_agent_tool_call_audit_row(orch, monkeypatch):
     rec = MagicMock()
     rec.record = AsyncMock()
     monkeypatch.setattr(audit_hooks, "get_recorder", lambda: rec)
     monkeypatch.setattr(
         orch, "_execute_with_retry",
         AsyncMock(return_value=MCPResponse(result="ok")))
+    ws = MagicMock()
+    orch.ui_sessions[ws] = {"sub": "u1"}
 
-    ws1, ws2 = MagicMock(), MagicMock()
-    orch.ui_sessions[ws1] = {"sub": "u1"}
-    orch.ui_sessions[ws2] = {"sub": "u1"}
-
-    await orch.execute_single_tool(ws1, _tc("t1"), {"t1": "a1"}, "c1", user_id="u1")
-    single_rows = [c.args[0] for c in rec.record.await_args_list]
-    rec.record.reset_mock()
-    await orch.execute_parallel_tools(ws2, [_tc("t1")], {"t1": "a1"}, "c1", user_id="u1")
-    parallel_rows = [c.args[0] for c in rec.record.await_args_list]
-
-    def _shape(rows):
-        return [(r.event_class, r.action_type, r.actor_user_id,
-                 r.auth_principal, r.outcome) for r in rows
-                if r.event_class == "agent_tool_call"]
-
-    assert _shape(single_rows) == _shape(parallel_rows)
-    assert _shape(single_rows)
-
-
-@pytest.mark.asyncio
-async def test_meta_tool_parity_in_parallel_batch(orch, monkeypatch):
-    from orchestrator import desktop_codegen, memory_chat, scheduling_chat
-    for mod in (scheduling_chat, memory_chat, desktop_codegen):
-        monkeypatch.setattr(
-            mod, "handle_meta_tool",
-            AsyncMock(return_value=MCPResponse(result="meta-ok")))
-    results = await orch.execute_parallel_tools(
-        MagicMock(),
-        [_tc("schedule_recurring_task"), _tc("remember"), _tc("offer_desktop_codegen")],
-        {"schedule_recurring_task": "__scheduler__",
-         "remember": "__memory__",
-         "offer_desktop_codegen": "__desktop_codegen__"},
-        "c1", user_id="u1")
-    assert [r.result for r in results] == ["meta-ok", "meta-ok", "meta-ok"]
+    await orch.execute_single_tool(ws, _tc("t1"), {"t1": "a1"}, "c1", user_id="u1")
+    rows = [c.args[0] for c in rec.record.await_args_list]
+    shaped = [(r.event_class, r.actor_user_id, r.outcome) for r in rows
+              if r.event_class == "agent_tool_call"]
+    assert shaped
 
 
 @pytest.mark.asyncio

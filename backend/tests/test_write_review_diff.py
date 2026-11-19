@@ -276,9 +276,8 @@ async def test_bypass_transition_binds_missing_file_before_any_create_review(tas
         await rc.handle_decision(orch, ws, OWNER, payload)
     else:
         assert response.error is not None
-        from orchestrator.tool_feedback import tool_failure_content
-        failure = json.loads(tool_failure_content("write_file", response.error))
-        assert failure["code"] == "COMPUTER_REVIEW_CHANGED" and "fresh request" in failure["message"]
+        failure = response.error
+        assert failure["code"] == "COMPUTER_REVIEW_CHANGED" and "reissue the action" in failure["message"]
         assert failure["retryable"] is False
         assert not response.ui_components and not rc._PENDING_CARDS and not effects
         monkeypatch.setattr(wr, "prepare_write_review", prepare)

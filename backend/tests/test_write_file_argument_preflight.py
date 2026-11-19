@@ -2,11 +2,17 @@
 
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-pytest_plugins = ("tests.test_turn_seams_loop",)
+
+@pytest.fixture
+def orch(orchestrator_factory):
+    o = orchestrator_factory()
+    o.audit_recorder = MagicMock()
+    o.audit_recorder.record = AsyncMock()
+    return o
 
 
 @pytest.mark.asyncio
@@ -125,8 +131,8 @@ async def test_raw_newlines_in_write_content_are_accepted_and_bad_json_names_the
 
 
 @pytest.mark.asyncio
-async def test_a_computer_gate_refusal_without_a_code_reaches_the_model_with_its_reason(orch):
-    from orchestrator.orchestrator import GateRefusal, Orchestrator
+async def test_a_computer_gate_refusal_without_a_code_is_reported_with_its_reason(orch):
+    from orchestrator.orchestrator import GateRefusal
     from shared.protocol import MCPResponse
 
     orch._authorize_and_prepare = AsyncMock(return_value=GateRefusal(
@@ -138,5 +144,4 @@ async def test_a_computer_gate_refusal_without_a_code_reaches_the_model_with_its
         tool_to_unqualified={"computer__run": "run_command"},
     )
     assert response.error["code"] == "refused"
-    content = json.loads(Orchestrator._tool_result_to_llm_content(response, "computer__run", agent_id="computer-use-1"))
-    assert content["code"] == "refused" and "busy with another command" in content["message"]
+    assert "busy with another command" in response.error["message"]

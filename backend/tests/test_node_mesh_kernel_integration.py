@@ -27,6 +27,7 @@ from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat 
 from orchestrator import node_api, node_mesh, node_mesh_chat, node_mesh_keys  # noqa: E402
 from orchestrator.node_mailbox import MailboxSettings  # noqa: E402
 from shared import node_identity  # noqa: E402
+from tests.fixtures.connections import ModelServer  # noqa: E402
 
 ISS = "https://auth.example.test/realms/astral"
 CLIENT = "astral-desktop"
@@ -255,7 +256,7 @@ async def test_the_node_joins_a_mesh_syncs_chats_and_relays_through_its_mailbox(
         await node.stop()
 
 
-NODE_TEXT = "node says: "
+NODE_TEXT = "node says"
 
 
 class History:
@@ -269,14 +270,6 @@ class History:
         self.messages.append((chat_id, role, content))
 
 
-async def model_turn(owner_id, local_chat, prompt):
-    node_mesh_chat.observe_message(owner_id, local_chat, "user", prompt)
-    node_mesh_chat.observe_step(
-        owner_id, local_chat, {"name": "search", "args": '{"q":"x"}', "status": "completed", "result": "three hits", "error": None}
-    )
-    node_mesh_chat.observe_message(owner_id, local_chat, "assistant", NODE_TEXT + prompt)
-
-
 def canonical(value) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
@@ -288,7 +281,7 @@ async def adopt_phi_group(node, laptop):
 
 
 @asynccontextmanager
-async def paired(tmp_path, monkeypatch, *, phi_protected=False, calls=None, peer_tools=None, history=None, runner=None, kernel_answers=False, creator=None, adopt=True):
+async def paired(tmp_path, monkeypatch, *, phi_protected=False, calls=None, peer_tools=None, history=None, creator=None, adopt=True):
     monkeypatch.setenv("ASTRAL_NODE_PROFILE", "personal")
     monkeypatch.setenv("ASTRAL_NODE_DATA_DIR", str(tmp_path / "node"))
     monkeypatch.delenv("ASTRAL_NODE_OWNER", raising=False)
@@ -322,7 +315,7 @@ async def paired(tmp_path, monkeypatch, *, phi_protected=False, calls=None, peer
         if adopt:
             await adopt_phi_group(node, laptop)
         bridge = node_mesh_chat.MeshChatBridge(
-            node, owner_id=node.personal_owner_id, owner_setup=node.refresh_personal_owner, history=history or History(), runner=None if kernel_answers else runner or model_turn, calls=calls,
+            node, owner_id=node.personal_owner_id, owner_setup=node.refresh_personal_owner, history=history or History(), calls=calls,
             state_path=tmp_path / "chats.json",
             phi_active=lambda owner: phi_protected, poll_seconds=0.2,
         )
@@ -344,22 +337,30 @@ def request_state(laptop, request_id, state):
     return lambda: laptop.request(request_id).state == getattr(ak.RequestState, state)
 
 
-async def test_the_node_claims_runs_and_answers_a_request_from_another_member(tmp_path, monkeypatch):
-    async with paired(tmp_path, monkeypatch) as (node, laptop, node_device, bridge):
-        chat = laptop.create_chat("ask the node")
-        laptop.send_message(chat, "what is on my calendar?", None)
-        request = laptop.send_request(chat, "summarize my calendar", node_device, None, None)
-        await until(request_state(laptop, request, "ANSWERED"), "the node to answer")
-        answered = laptop.request(request)
-        assert answered.turn and answered.claim and answered.to_device == node_device
-        await until(
-            lambda: any((m.text or "") == NODE_TEXT + "summarize my calendar" for m in laptop.chat(chat).view.messages),
-            "the node's answer to reach the laptop",
-        )
-        assert laptop.pending_requests_for_me() == []
-        assert [r.from_device for r in laptop.chat_requests(chat)] == [(await laptop.mesh_status()).device_id]
-        labels = [m.labels for m in laptop.chat(chat).view.messages if (m.text or "").startswith(NODE_TEXT)]
-        assert labels and all(item.confidentiality.lower() == "private" for item in labels)
+async def test_the_node_answers_a_request_from_another_member_through_the_kernel_engine(tmp_path, monkeypatch):
+    with ModelServer(reply=NODE_TEXT) as model:
+        async with paired(tmp_path, monkeypatch) as (node, laptop, node_device, bridge):
+            laptop_device = (await laptop.mesh_status()).device_id
+            laptop.set_model_provider(ak.ModelProviderConfig(
+                name="local", base_url=model.url + "/v1", models=["model-1"], api_keys=["fixture-key"], fallback_order=0,
+                self_hosted=True, strict_tools=False, recipients=[laptop_device, node_device],
+            ))
+            await until(lambda: any(item.name == "local" for item in node.kernel.model_providers()), "the provider to reach the node")
+            chat = laptop.create_chat("ask the node")
+            laptop.send_message(chat, "what is on my calendar?", None)
+            request = laptop.send_request(chat, "summarize my calendar", node_device, None, None)
+            await until(request_state(laptop, request, "ANSWERED"), "the node to answer")
+            answered = laptop.request(request)
+            assert answered.turn and answered.to_device == node_device
+            await until(
+                lambda: any((m.text or "") == NODE_TEXT for m in laptop.chat(chat).view.messages),
+                "the node's answer to reach the laptop",
+            )
+            assert laptop.pending_requests_for_me() == []
+            assert [r.from_device for r in laptop.chat_requests(chat)] == [laptop_device]
+            labels = [m.labels for m in laptop.chat(chat).view.messages if (m.text or "") == NODE_TEXT]
+            assert labels and all(item.confidentiality.lower() == "private" for item in labels)
+            assert any("summarize my calendar" in str(sent["messages"]) for sent in model.requests)
 
 
 async def test_a_request_with_a_forged_ticket_is_refused_and_never_run(tmp_path, monkeypatch):

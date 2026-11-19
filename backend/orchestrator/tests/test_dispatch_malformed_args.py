@@ -1,5 +1,5 @@
 """Tests for orchestrator/orchestrator.py's hard-gate on malformed tool-call argument
-JSON in execute_single_tool and execute_parallel_tools: never silently dispatch with
+JSON in execute_single_tool: never silently dispatch with
 empty args, always return a retryable error.
 """
 
@@ -131,55 +131,3 @@ async def test_single_tool_valid_json_still_dispatches_normally() -> None:
     rendered_msgs = [c["message"] for c in orch._rendered_ui[0]["components"]]
     assert not any("not valid JSON" in m for m in rendered_msgs)
 
-
-@pytest.mark.asyncio
-async def test_parallel_tool_malformed_json_returns_error_not_empty_args() -> None:
-    orch = _build_orch()
-    websocket = MagicMock()
-    tool_to_agent = {"read_spreadsheet": "general-1"}
-    tool_calls = [_make_tool_call("read_spreadsheet", "{bad json,,}")]
-
-    results = await orch.execute_parallel_tools(
-        websocket=websocket,
-        tool_calls=tool_calls,
-        tool_to_agent=tool_to_agent,
-        chat_id="chat-1",
-        user_id="alice",
-    )
-
-    assert len(results) == 1
-    result = results[0]
-    assert result is not None
-    assert result.error is not None
-    assert result.error["retryable"] is True
-    assert "read_spreadsheet" in result.error["message"]
-    assert "JSON" in result.error["message"]
-    assert result.ui_components is None
-    assert orch._rendered_ui[0]["components"][0]["type"] == "alert"
-
-
-@pytest.mark.asyncio
-async def test_parallel_tool_mixed_valid_and_malformed() -> None:
-    orch = _build_orch()
-    websocket = MagicMock()
-    tool_to_agent = {"read_spreadsheet": "general-1", "ocr": "general-1"}
-    tool_calls = [
-        _make_tool_call("read_spreadsheet", json.dumps({"attachment_id": "abc"})),
-        _make_tool_call("ocr", "{broken json}"),
-    ]
-
-    results = await orch.execute_parallel_tools(
-        websocket=websocket,
-        tool_calls=tool_calls,
-        tool_to_agent=tool_to_agent,
-        chat_id="chat-1",
-        user_id="alice",
-    )
-
-    assert len(results) == 2
-    ocr_result = results[1]
-    assert ocr_result is not None
-    assert ocr_result.error is not None
-    assert ocr_result.error["retryable"] is True
-    assert "ocr" in ocr_result.error["message"]
-    assert "JSON" in ocr_result.error["message"]

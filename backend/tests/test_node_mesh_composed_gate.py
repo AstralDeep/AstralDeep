@@ -1,23 +1,11 @@
-"""Runs shared composed gate cases through the paired native Kernel request route and the node's protected tool dispatch.
-The scripted model and sandbox executor supply controlled responses while the mesh, grants, tickets, authorization, and journal are real."""
+"""Checks that the receiver's Kernel capability, host-call check, host-call claim and Kernel effect audit all fail closed when the native binding or its inputs are missing.
+The composed gate cases themselves run in the Kernel's own tests and in the security benchmark's Kernel-engine driver."""
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
-from orchestrator import vessel_executor as ve
-from orchestrator.node_mesh_calls import definition_hash, grant_name
-from shared.protocol import AgentSkill
-from tests.test_node_mesh_kernel_integration import ak, paired, until  # noqa: F401
-from tests.test_node_mesh_peer_tools import FakeModel, model_server, node_host  # noqa: F401
-from tests.test_node_mesh_turn_tools import SANDBOXED, grant, turn_host  # noqa: F401
-
-FIXTURE = Path(__file__).resolve().parents[2] / "specs/105-decentralized-personal-mesh/contracts/conformance/composed_gate.json"
-CASES = {case["name"]: case for case in json.loads(FIXTURE.read_text())["cases"]}
 
 
 async def test_receiver_capability_and_effect_audit_fail_closed_without_native_binding(monkeypatch):
@@ -42,19 +30,3 @@ async def test_receiver_capability_and_effect_audit_fail_closed_without_native_b
     assert claim.value.code == "host_call_claim_unsupported"
     with pytest.raises(ValueError, match="invalid Kernel effect audit transition"):
         await hitl_confirmation.audit_kernel_effect(None, None, "invalid")
-
-
-def install_effect(host, case):
-    call = case["call"]
-    name = call["tool"]
-    description = f"Controlled {name} effect"
-    schema = {"type": "object", "properties": {key: {"type": "string"} for key in call["arguments"]}}
-    definition = definition_hash(name, description, schema, {ve.AGENT_ANNOTATION: SANDBOXED})
-    card = host.orch.agent_cards[SANDBOXED]
-    card.skills.append(AgentSkill(name=name, id=name, description=description, input_schema=schema, scope="tools:write"))
-    host.orch.vessel_definitions[(SANDBOXED, name)] = definition
-    host.orch.tool_permissions.register_tool_scopes(SANDBOXED, {name: "tools:write"})
-    host.orch.tool_permissions.set_agent_scopes(host.owner, SANDBOXED, {"tools:read": True, "tools:write": True})
-    return grant_name(name, definition)
-
-

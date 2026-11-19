@@ -237,32 +237,6 @@ async def test_safety_controls_and_open_remain_available_without_llm_configurati
     assert not await _llm_gate_refusal(orch, socket, "chrome_open", "owner", payload={"surface": "safety"})
 
 
-async def test_admitted_chat_and_runner_tasks_are_registered_until_interrupted(monkeypatch):
-    from orchestrator import user_skills, evidence_context
-
-    stop = EmergencyStopCoordinator()
-    entered, release = asyncio.Event(), asyncio.Event()
-
-    async def physical(*args, **kwargs):
-        entered.set()
-        await release.wait()
-
-    monkeypatch.setattr(user_skills, "enabled", lambda: False)
-    monkeypatch.setattr(evidence_context, "needs_authority", lambda orch: False)
-    orch = SimpleNamespace(emergency_stop=stop, _handle_chat_message_with_guidance=physical)
-    task = asyncio.create_task(Orchestrator.handle_chat_message(orch, object(), "hello", "chat", user_id="owner"))
-    await entered.wait()
-    await stop.engage("owner", sweep=False)
-    with pytest.raises(asyncio.CancelledError):
-        await task
-    assert stop._effects == {}
-    await stop.resume("owner", expected_revision=1, actor_id="owner")
-    runner = object.__new__(AssignmentRunner)
-    runner.orch = orch
-    runner._run_claim = AsyncMock(return_value="new work")
-    assert await runner.run_claim(SimpleNamespace(assignment=SimpleNamespace(owner_id="owner"))) == "new work"
-
-
 @pytest.mark.parametrize("stop_after_authorization", [False, True])
 async def test_stream_physical_open_rechecks_owner_stop_after_authorization(monkeypatch, stop_after_authorization):
     from contextlib import asynccontextmanager

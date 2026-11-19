@@ -1,4 +1,4 @@
-"""Checks the lifetime, exact argument and current-target boundaries of incoming mesh admission.
+"""Checks the lifetime, exact argument and current-target boundaries of incoming mesh admission and the machine credential minted for a bound call.
 Real signed request and physical-dispatch regressions are in test_node_mesh_final_admission.py.
 """
 
@@ -14,7 +14,7 @@ import pytest
 
 from orchestrator import node_mesh_admission as admission, vessel_executor
 from orchestrator.hitl_confirmation import _arguments
-from orchestrator.node_mesh import NodeMeshError
+from orchestrator.node_mesh import NodeMeshError, RequestReference
 from orchestrator.node_mesh_calls import ResolvedTool, skill_definition
 
 
@@ -218,3 +218,142 @@ async def test_arguments_changed_during_final_verification_are_refused(runtime):
     with runtime.bound():
         result = await runtime.check(args=arguments)
     assert result is not None and result.error["code"] == "request.call_mismatch"
+
+
+@pytest.fixture
+def personal(runtime, monkeypatch):
+    from shared import node_identity
+
+    minted = []
+
+    class Identity:
+        def mint_token(self, claims, lifetime):
+            minted.append((claims, lifetime))
+            return "signed-token"
+
+    monkeypatch.setattr(node_identity, "is_personal", lambda: True)
+    monkeypatch.setattr(node_identity, "bound_mesh_owner", lambda: "owner")
+    monkeypatch.setattr(node_identity, "load_node_identity", lambda create=True: Identity())
+    ticket = runtime.ticket
+    reference = RequestReference(
+        "r1", "chat", "dev-phone", "dev-node", "do it", None,
+        ("call-1", "lookup", ticket.arguments_json, ticket.action_json, ticket.ticket_json),
+    )
+    runtime.mesh.personal_authority_context = AsyncMock(return_value=SimpleNamespace(mesh_id="mesh-1", member_id="dev-node"))
+
+    @contextmanager
+    def bound(request=reference, ticket=ticket):
+        with admission.binding(runtime.mesh, lambda: runtime.owners[0], "owner", "chat", runtime.resolved, ticket, request=request):
+            with vessel_executor.carrying(ticket):
+                yield
+
+    async def authority(owner="owner", agent="agent"):
+        return await admission.personal_authority(runtime.orch, owner, agent_id=agent)
+
+    return SimpleNamespace(minted=minted, bound=bound, reference=reference, authority=authority, node_identity=node_identity)
+
+
+async def test_personal_authority_mints_a_credential_for_exactly_the_called_tool(runtime, personal):
+    with personal.bound():
+        result = await personal.authority()
+    assert result.allowed_tools is None and result.allowed_scopes == ["tools:read"] and result.agent_id == "agent"
+    assert (result.access_token, result.principal, result.user_id, result.turn_class) == (
+        "signed-token", "machine:mesh_request", "owner", "mesh_request",
+    )
+    assert result.consent_ref == "mesh:mesh-1/request:r1"
+    claims, lifetime = personal.minted[0]
+    assert lifetime == personal.node_identity.MAX_TOKEN_SECONDS
+    assert (claims["sub"], claims["act"], claims["scope"], claims["consent_ref"]) == (
+        "owner", {"sub": "machine:mesh_request"}, "tools:read", "mesh:mesh-1/request:r1",
+    )
+    assert claims["mesh_authority"] == {
+        "mesh": "mesh-1", "member": "dev-node", "request": "r1", "chat": "chat", "local_chat": "chat",
+        "source": "dev-phone", "tools": [["agent", "lookup", runtime.resolved.definition]],
+    }
+    assert runtime.mesh.calls == 1
+
+
+async def test_personal_authority_needs_a_personal_node(runtime, personal, monkeypatch):
+    monkeypatch.setattr(personal.node_identity, "is_personal", lambda: False)
+    with personal.bound(), pytest.raises(NodeMeshError) as refused:
+        await personal.authority()
+    assert refused.value.code == "node.personal_mesh_required" and not personal.minted
+
+
+async def test_personal_authority_needs_a_live_binding(runtime, personal):
+    with pytest.raises(NodeMeshError) as refused:
+        await personal.authority()
+    assert refused.value.code == "node.mesh_admission_unavailable" and not personal.minted
+
+
+@pytest.mark.parametrize("failure", ["foreign_owner", "other_mesh_owner", "unbound_mesh_owner"])
+async def test_personal_authority_refuses_an_owner_the_mesh_does_not_bind(runtime, personal, monkeypatch, failure):
+    if failure == "other_mesh_owner":
+        monkeypatch.setattr(personal.node_identity, "bound_mesh_owner", lambda: "other")
+    if failure == "unbound_mesh_owner":
+        def unbound():
+            raise personal.node_identity.NodeIdentityError("unbound")
+
+        monkeypatch.setattr(personal.node_identity, "bound_mesh_owner", unbound)
+    with personal.bound(), pytest.raises(NodeMeshError) as refused:
+        await personal.authority(owner="other" if failure == "foreign_owner" else "owner")
+    assert refused.value.code == "node.owner_mismatch" and not personal.minted
+
+
+async def test_personal_authority_refuses_another_agents_tool(runtime, personal):
+    with personal.bound(), pytest.raises(NodeMeshError) as refused:
+        await personal.authority(agent="other")
+    assert refused.value.code == "request.call_mismatch" and not personal.minted
+
+
+@pytest.mark.parametrize("kind", ["none", "text", "other_ticket"])
+async def test_personal_authority_needs_the_exact_call_request_it_was_bound_with(runtime, personal, kind):
+    request = personal.reference
+    if kind == "none":
+        request = None
+    if kind == "text":
+        request = RequestReference("r1", "chat", "dev-phone", "dev-node", "do it", None, None)
+    if kind == "other_ticket":
+        request = RequestReference(
+            "r1", "chat", "dev-phone", "dev-node", "do it", None,
+            ("call-1", "lookup", personal.reference.call[2], personal.reference.call[3], '{"other":1}'),
+        )
+    with personal.bound(request), pytest.raises(NodeMeshError) as refused:
+        await personal.authority()
+    assert refused.value.code == "request.call_mismatch" and not personal.minted and runtime.mesh.calls == 0
+
+
+async def test_personal_authority_passes_on_the_kernels_refusals(runtime, personal):
+    runtime.mesh.personal_authority_context.side_effect = NodeMeshError("gate.mesh_stopped")
+    with personal.bound(), pytest.raises(NodeMeshError) as stopped:
+        await personal.authority()
+    assert stopped.value.code == "gate.mesh_stopped" and not personal.minted
+    runtime.mesh.personal_authority_context.side_effect = None
+    runtime.mesh.error = NodeMeshError("ticket.stopped")
+    with personal.bound(), pytest.raises(NodeMeshError) as refused:
+        await personal.authority()
+    assert refused.value.code == "ticket.stopped" and not personal.minted
+
+
+@pytest.mark.parametrize("change,code", [("permission", "gate.permission_denied"), ("owner", "node.owner_mismatch")])
+async def test_personal_authority_is_refused_when_authority_is_lost_during_verification(runtime, personal, change, code):
+    def mutate(calls):
+        if change == "permission":
+            runtime.permission[0] = False
+        else:
+            runtime.owners[0] = "someone.else"
+
+    runtime.mesh.mutation = mutate
+    with personal.bound(), pytest.raises(NodeMeshError) as refused:
+        await personal.authority()
+    assert refused.value.code == code and not personal.minted
+
+
+async def test_personal_authority_reports_an_unavailable_signing_key(runtime, personal, monkeypatch):
+    def missing(create=True):
+        raise personal.node_identity.NodeIdentityError("no key")
+
+    monkeypatch.setattr(personal.node_identity, "load_node_identity", missing)
+    with personal.bound(), pytest.raises(NodeMeshError) as refused:
+        await personal.authority()
+    assert refused.value.code == "node.signing_key_unavailable"

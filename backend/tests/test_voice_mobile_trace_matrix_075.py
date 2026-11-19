@@ -1,11 +1,9 @@
 """Exercises composed voice routes and runtime transitions with an in-memory repository and overridden HTTP identity.
-Real binding verification covers stale and expired authority; scripted chat dispatches exercise transition formatting without qualifying permission, LETS or physical mobile acceptance.
+Real binding verification covers stale and expired authority and connection replacement.
 """
 
 from __future__ import annotations
 
-import asyncio
-import hashlib
 import json
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
@@ -40,10 +38,7 @@ from orchestrator.voice_sessions import (
 )
 from shared.protocol import (
     Message,
-    VoiceLocalFinal,
-    VoiceLocalPlayoutEvent,
     VoiceLocalReady,
-    VoiceLocalRecognitionStarted,
     VoicePlayoutEvent,
 )
 
@@ -752,69 +747,6 @@ class _ChatHistory:
         return dict(chat) if chat is not None else None
 
 
-class _Dispatcher:
-    def __init__(self, harness: "_Harness") -> None:
-        self.harness = harness
-        self.dispatched: list[dict[str, Any]] = []
-        self.denials: list[str] = []
-
-    async def __call__(
-        self,
-        websocket: Any,
-        message: str,
-        chat_id: str,
-        *,
-        user_id: str,
-        voice_dispatch: Any = None,
-        **_: Any,
-    ) -> None:
-        if self.denials:
-            reason = self.denials.pop(0)
-            turn = voice_dispatch.admission.turn
-            self.dispatched.append(
-                {
-                    "user_id": user_id,
-                    "chat_id": chat_id,
-                    "text": message,
-                    "replayed": bool(voice_dispatch.admission.replayed),
-                    "turn_id": turn.turn_id,
-                    "denied": True,
-                }
-            )
-            await self.harness.socket_orchestrator._reject_voice_submission(
-                websocket,
-                user_id=user_id,
-                origin=voice_dispatch.origin,
-                submission_id=str(turn.submission_id),
-                request_generation=str(turn.request_generation),
-                chat_id=str(turn.chat_id),
-                connection_generation=voice_dispatch.connection_generation,
-                reason=reason,
-                retry_policy="none",
-            )
-            return
-        self.dispatched.append(
-            {
-                "user_id": user_id,
-                "chat_id": chat_id,
-                "text": message,
-                "replayed": bool(voice_dispatch.admission.replayed),
-                "turn_id": voice_dispatch.admission.turn.turn_id,
-                "denied": False,
-            }
-        )
-        await asyncio.to_thread(
-            self.harness.services.repository.accept_transcript,
-            user_id=user_id,
-            turn_id=voice_dispatch.admission.turn.turn_id,
-            message_id=len(self.dispatched) + 100,
-            accepted_connection_generation=voice_dispatch.connection_generation,
-            acceptance_commit_id="commit-trace",
-            operation_id="operation-trace",
-            now=self.harness.clock.utcnow(),
-        )
-
-
 async def _safe_send_recorder(self, websocket: Any, data: str) -> bool:
     self._sent_frames.append(data)
     return True
@@ -860,7 +792,6 @@ class _Harness:
             backend_selection=self.selection,
         )
         self.history = _ChatHistory()
-        self.dispatcher = _Dispatcher(self)
         self.sent_frames: list[str] = []
         self.composer_publications: list[dict[str, Any]] = []
         self.issuer = VoiceControlBindingIssuer(
@@ -899,9 +830,6 @@ class _Harness:
         stub._handle_voice_local_recognition_started = MethodType(
             Orchestrator._handle_voice_local_recognition_started, stub
         )
-        stub._handle_voice_local_final = MethodType(
-            Orchestrator._handle_voice_local_final, stub
-        )
         stub._handle_voice_local_playout_event = MethodType(
             Orchestrator._handle_voice_local_playout_event, stub
         )
@@ -917,7 +845,6 @@ class _Harness:
         stub.validate_voice_control_binding = MethodType(
             Orchestrator.validate_voice_control_binding, stub
         )
-        stub.handle_chat_message = self.dispatcher
         stub.handle_ui_message = MethodType(Orchestrator.handle_ui_message, stub)
         stub.publish_voice_composer_state = self._publish_composer
         return stub
@@ -1060,52 +987,6 @@ def _local_ready_frame(
     )
 
 
-def _local_recognition_frame(
-    binding: _RegisteredBinding,
-    session: dict[str, Any],
-    *,
-    client_turn_id: str,
-    chat_id: str,
-    chat_context_revision: int,
-    recognition_sequence: int,
-) -> VoiceLocalRecognitionStarted:
-    return VoiceLocalRecognitionStarted(
-        device_id=binding.claims.device_id,
-        connection_generation=binding.connection_generation,
-        session_id=session["session_id"],
-        generation=session["generation"],
-        speech_revision=_speech_revision(session),
-        client_turn_id=client_turn_id,
-        chat_id=chat_id,
-        chat_context_revision=chat_context_revision,
-        recognition_sequence=recognition_sequence,
-    )
-
-
-def _local_final_frame(
-    binding: _RegisteredBinding,
-    turn_bound: dict[str, Any],
-    *,
-    text: str = TURN_TEXT,
-) -> VoiceLocalFinal:
-    return VoiceLocalFinal(
-        device_id=binding.claims.device_id,
-        connection_generation=binding.connection_generation,
-        session_id=turn_bound["session_id"],
-        generation=turn_bound["generation"],
-        speech_revision=turn_bound["speech_revision"],
-        client_turn_id=turn_bound["client_turn_id"],
-        turn_id=turn_bound["turn_id"],
-        submission_id=turn_bound["submission_id"],
-        request_generation=turn_bound["request_generation"],
-        chat_id=turn_bound["chat_id"],
-        chat_context_revision=turn_bound["chat_context_revision"],
-        recognition_sequence=turn_bound["recognition_sequence"],
-        text=text,
-        text_digest_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
-    )
-
-
 def _local_capability_payload() -> dict[str, Any]:
     return {
         "contract": "client_local/v1",
@@ -1200,91 +1081,6 @@ async def _patch_session(
         )
 
 
-async def _ready_and_recognize(
-    harness: _Harness,
-    binding: _RegisteredBinding,
-    session: dict[str, Any],
-    *,
-    chat_id: str = CHAT_HOME,
-    client_sequence: int = 1,
-    recognition_sequence: int | None = None,
-    text: str = TURN_TEXT,
-) -> tuple[dict[str, Any], str]:
-    await harness.send_frame(
-        binding,
-        _local_ready_frame(
-            binding,
-            session,
-            client_sequence=client_sequence,
-        ),
-    )
-    ready_reply = Message.from_json(harness.sent_frames.pop())
-    if recognition_sequence is None:
-        recognition_sequence = client_sequence + 1
-    client_turn_id = _uuid(30 + recognition_sequence)
-    await harness.send_frame(
-        binding,
-        _local_recognition_frame(
-            binding,
-            session,
-            client_turn_id=client_turn_id,
-            chat_id=chat_id,
-            chat_context_revision=session["chat_context_revision"],
-            recognition_sequence=recognition_sequence,
-        ),
-    )
-    bound_reply = Message.from_json(harness.sent_frames.pop())
-    turn_bound = {
-        "session_id": bound_reply.session_id,
-        "generation": bound_reply.generation,
-        "speech_revision": bound_reply.speech_revision,
-        "client_turn_id": bound_reply.client_turn_id,
-        "turn_id": bound_reply.turn_id,
-        "submission_id": bound_reply.submission_id,
-        "request_generation": bound_reply.request_generation,
-        "chat_id": bound_reply.chat_id,
-        "chat_context_revision": bound_reply.chat_context_revision,
-        "recognition_sequence": bound_reply.recognition_sequence,
-    }
-    assert ready_reply.type == "voice_local_session_ready"
-    assert bound_reply.type == "voice_local_turn_bound"
-    await harness.send_frame(binding, _local_final_frame(binding, turn_bound, text=text))
-    return turn_bound, client_turn_id
-
-
-def _rejected_frames(harness: _Harness) -> list[Any]:
-    return [
-        frame
-        for frame in harness.sent_protocol_frames()
-        if _frame_type(frame) == "voice_local_final_rejected"
-    ]
-
-
-def _playout_frame(
-    binding: _RegisteredBinding,
-    session: dict[str, Any],
-    announcement: dict[str, Any],
-    *,
-    phase: str,
-    client_sequence: int,
-    clock: _Clock,
-) -> VoiceLocalPlayoutEvent:
-    return VoiceLocalPlayoutEvent(
-        device_id=binding.claims.device_id,
-        connection_generation=binding.connection_generation,
-        session_id=session["session_id"],
-        generation=session["generation"],
-        speech_revision=_speech_revision(session),
-        announcement_id=announcement.announcement_id,
-        announcement_sequence=announcement.announcement_sequence,
-        turn_id=announcement.turn_id,
-        kind=announcement.kind,
-        phase=phase,
-        client_sequence=client_sequence,
-        observed_at=clock.utcnow().isoformat().replace("+00:00", "Z"),
-    )
-
-
 @pytest.fixture
 def local_harness() -> _Harness:
     return _Harness(VoiceSpeechBackend.CLIENT_LOCAL)
@@ -1372,297 +1168,6 @@ async def test_local_connection_replacement_fences_stale_socket_and_restores_cap
     assert recovered.connection_generation == CONNECTION_CELLULAR
     record = harness.repository.sessions[(USER, session["session_id"])]
     assert record.state == "active"
-    harness.assert_no_sensitive_material_durable()
-
-
-async def test_local_background_disables_capture_and_refuses_final_until_foreground(
-    local_harness: _Harness,
-) -> None:
-    harness = local_harness
-    binding = harness.register_socket(CONNECTION_WIFI)
-    created = await _create_local_session(harness, binding)
-    session = created.json()
-
-    backgrounded = await _patch_session(
-        harness,
-        binding,
-        session,
-        foreground_active=False,
-        foreground_reason="backgrounded",
-        microphone_enabled=False,
-    )
-    assert backgrounded.status_code == 200
-    assert backgrounded.json()["microphone_enabled"] is False
-    assert harness.media.calls == [("capture", False)]
-    assert (session["session_id"], session["generation"]) in (
-        harness.services.announcement_suspended_sessions
-    )
-
-    await harness.send_frame(
-        binding,
-        _local_ready_frame(binding, session, client_sequence=1),
-    )
-    assert [
-        frame
-        for frame in harness.sent_protocol_frames()
-        if _frame_type(frame) == "voice_local_session_ready"
-    ] == []
-    assert harness.dispatcher.dispatched == []
-    assert harness.repository.turns == {}
-
-    restored = await _patch_session(
-        harness,
-        binding,
-        session,
-        foreground_active=True,
-        foreground_reason="foreground",
-        microphone_enabled=True,
-    )
-    assert restored.status_code == 200
-    assert restored.json()["state"] == "active"
-    assert ("capture", True) in harness.media.calls
-    harness.sent_frames.clear()
-
-    turn_bound, _client_turn = await _ready_and_recognize(
-        harness,
-        binding,
-        session,
-        client_sequence=2,
-    )
-    accepted = [
-        turn
-        for turn in harness.repository.turns.values()
-        if turn.state == "accepted"
-    ]
-    assert len(accepted) == 1
-    assert accepted[0].client_turn_id == turn_bound["client_turn_id"]
-    assert len(harness.dispatcher.dispatched) == 1
-    assert harness.dispatcher.dispatched[0]["chat_id"] == CHAT_HOME
-    assert harness.dispatcher.dispatched[0]["text"] == TURN_TEXT
-    harness.assert_no_sensitive_material_durable()
-
-
-async def test_local_playout_interruption_stops_speech_and_refuses_stale_playout(
-    local_harness: _Harness,
-) -> None:
-    harness = local_harness
-    binding = harness.register_socket(CONNECTION_WIFI)
-    created = await _create_local_session(harness, binding)
-    session = created.json()
-    turn_bound, _client_turn = await _ready_and_recognize(
-        harness, binding, session
-    )
-
-    announcement = harness.services.local_announcements.issue(
-        session=harness.repository.sessions[(USER, session["session_id"])],
-        kind="greeting",
-        turn_id=None,
-        requested_text="Hello, voice is ready.",
-        output_policy="lifecycle",
-        mute_revision=1,
-        consent_revision=1,
-        now=harness.clock.utcnow(),
-    )
-    await harness.send_frame(
-        binding,
-        _playout_frame(
-            binding,
-            session,
-            announcement,
-            phase="started",
-            client_sequence=1,
-            clock=harness.clock,
-        ),
-    )
-    coupled = await _patch_session(
-        harness,
-        binding,
-        session,
-        foreground_active=False,
-        foreground_reason="audio_interrupted",
-    )
-    assert coupled.status_code == 400
-    interrupted = await _patch_session(
-        harness,
-        binding,
-        session,
-        foreground_active=False,
-        foreground_reason="audio_interrupted",
-        microphone_enabled=False,
-    )
-    assert interrupted.status_code == 200
-    assert interrupted.json()["state"] == "suspended"
-    assert (session["session_id"], session["generation"]) in (
-        harness.services.announcement_suspended_sessions
-    )
-
-    await harness.send_frame(
-        binding,
-        _playout_frame(
-            binding,
-            session,
-            announcement,
-            phase="finished",
-            client_sequence=2,
-            clock=harness.clock,
-        ),
-    )
-    assert harness.repository.playout_records == []
-
-    harness.sent_frames.clear()
-    restored = await _patch_session(
-        harness,
-        binding,
-        session,
-        foreground_active=True,
-        foreground_reason="foreground",
-        microphone_enabled=True,
-    )
-    assert restored.json()["state"] == "active"
-    assert ("capture", True) in harness.media.calls
-    harness.sent_frames.clear()
-    await harness.send_frame(
-        binding,
-        _local_ready_frame(binding, session, client_sequence=3),
-    )
-    ready_reply = Message.from_json(harness.sent_frames.pop())
-    assert ready_reply.type == "voice_local_session_ready"
-    harness.sent_frames.clear()
-    replay_bound, _replay_turn = await _ready_and_recognize(
-        harness,
-        binding,
-        session,
-        client_sequence=4,
-    )
-    accepted = [
-        turn for turn in harness.repository.turns.values() if turn.state == "accepted"
-    ]
-    assert len(accepted) == 2
-    assert len({turn.client_turn_id for turn in accepted}) == 2
-    accepted_texts = [
-        call["text"] for call in harness.dispatcher.dispatched
-    ]
-    assert accepted_texts.count(TURN_TEXT) == 2
-    harness.assert_no_sensitive_material_durable()
-
-
-async def test_local_chat_change_during_reconnect_routes_turn_to_new_chat(
-    local_harness: _Harness,
-) -> None:
-    harness = local_harness
-    binding = harness.register_socket(CONNECTION_WIFI)
-    created = await _create_local_session(harness, binding)
-    session = created.json()
-
-    switched = await _patch_session(
-        harness,
-        binding,
-        session,
-        visible_chat_id=CHAT_NEW,
-        foreground_active=True,
-        foreground_reason="foreground",
-    )
-    assert switched.status_code == 200, switched.text
-    assert switched.json()["visible_chat_id"] == CHAT_NEW
-    assert switched.json()["chat_context_synced"] is True
-    session = switched.json()
-    context_calls = [call for call in harness.media.calls if call[0] == "context"]
-    assert context_calls == [("context", CHAT_NEW)]
-
-    turn_bound, _client_turn = await _ready_and_recognize(
-        harness, binding, session, chat_id=CHAT_NEW
-    )
-    assert harness.dispatcher.dispatched[0]["chat_id"] == CHAT_NEW
-    turn = next(iter(harness.repository.turns.values()))
-    assert turn.chat_id == CHAT_NEW
-
-    stale_chat = await _patch_session(
-        harness,
-        binding,
-        session,
-        visible_chat_id=CHAT_NEW,
-        expected_generation=session["generation"] + 3,
-        expected_media_grant_revision=session["media_grant_revision"],
-    )
-    assert stale_chat.status_code == 409
-    assert stale_chat.json()["code"] == "stale_generation"
-    harness.assert_no_sensitive_material_durable()
-
-
-async def test_local_scripted_rejections_after_recovery_preserve_bounded_state(
-    local_harness: _Harness,
-) -> None:
-    harness = local_harness
-    binding = harness.register_socket(CONNECTION_WIFI)
-    created = await _create_local_session(harness, binding)
-    session = created.json()
-    _turn_bound, _client_turn = await _ready_and_recognize(
-        harness, binding, session
-    )
-    assert len(harness.dispatcher.dispatched) == 1
-
-    backgrounded = await _patch_session(
-        harness,
-        binding,
-        session,
-        foreground_active=False,
-        foreground_reason="backgrounded",
-        microphone_enabled=False,
-    )
-    assert backgrounded.status_code == 200
-    restored = await _patch_session(
-        harness,
-        binding,
-        session,
-        foreground_active=True,
-        foreground_reason="foreground",
-        microphone_enabled=True,
-    )
-    assert restored.json()["state"] == "active"
-    assert ("capture", True) in harness.media.calls
-    harness.sent_frames.clear()
-
-    harness.dispatcher.denials.append("permission_denied")
-    recovered_bound, _recovered_turn = await _ready_and_recognize(
-        harness,
-        binding,
-        session,
-        client_sequence=3,
-    )
-    harness.dispatcher.denials.append("capacity_exhausted")
-    _again_bound, _again_turn = await _ready_and_recognize(
-        harness,
-        binding,
-        session,
-        client_sequence=5,
-    )
-    rejections = _rejected_frames(harness)
-    assert [frame.reason for frame in rejections] == [
-        "invalid_binding",
-        "capacity_exhausted",
-    ]
-    assert [frame.retry_policy for frame in rejections] == ["none", "none"]
-    rejected_turns = [
-        turn
-        for turn in harness.repository.turns.values()
-        if turn.state == "rejected"
-    ]
-    assert len(rejected_turns) == 2
-    assert [turn.rejection_reason for turn in rejected_turns] == [
-        "permission_denied",
-        "capacity_exhausted",
-    ]
-    accepted_after_recovery = [
-        call for call in harness.dispatcher.dispatched if not call["denied"]
-    ]
-    assert len(accepted_after_recovery) == 1
-    denied_dispatches = [
-        call for call in harness.dispatcher.dispatched if call["denied"]
-    ]
-    assert [call["turn_id"] for call in denied_dispatches] == [
-        recovered_bound["turn_id"],
-        _again_bound["turn_id"],
-    ]
     harness.assert_no_sensitive_material_durable()
 
 
@@ -1786,8 +1291,6 @@ async def test_expired_current_control_binding_refuses_refresh_and_replay_before
     assert harness.media.calls == media_before
     assert harness.repository.sessions[(USER, session["session_id"])] == record_before
     assert harness.runtime._active_worker_assignments == assignments_before
-    assert harness.dispatcher.dispatched == []
-    assert harness.dispatcher.denials == []
 
     renewed = harness.register_socket(CONNECTION_WIFI)
     assert renewed.claims.binding_id != binding.claims.binding_id
@@ -1825,8 +1328,6 @@ async def test_expired_media_grant_refresh_and_replay_keep_current_control_autho
     assert replayed.status_code == 200, replayed.text
     assert replayed.json()["replayed"] is True
     assert replayed.json()["session"]["media_grant_revision"] == 2
-    assert harness.dispatcher.dispatched == []
-    assert harness.dispatcher.denials == []
     ended = await _end_remote_session(harness, binding, updated)
     assert ended.status_code == 204, ended.text
     assert harness.runtime._active_worker_assignments == {}

@@ -1,5 +1,5 @@
 """Tests for typesafe_store.py's TypeSafeCredentialStore: encrypted round trips,
-status/usability semantics, save/clear/outcome recording, undecryptable-row handling,
+status/usability semantics, save/clear, undecryptable-row handling,
 and read-through cache invalidation.
 """
 
@@ -63,21 +63,6 @@ def test_status_after_save_is_active(typesafe_store) -> None:
     assert status.last_verified_at is not None
 
 
-def test_a_rejected_key_is_not_usable_but_an_unavailable_one_is(typesafe_store) -> None:
-    typesafe_store.save_sync(USER, KEY)
-    fingerprint = key_fingerprint(KEY)
-
-    typesafe_store.record_outcome_sync(USER, "rejected", fingerprint)
-    rejected = typesafe_store.status_sync(USER)
-    assert rejected.name == "rejected"
-    assert rejected.is_usable is False
-
-    typesafe_store.record_outcome_sync(USER, "unavailable", fingerprint)
-    unavailable = typesafe_store.status_sync(USER)
-    assert unavailable.name == "unavailable"
-    assert unavailable.is_usable is True
-
-
 def test_status_carries_no_key_material(typesafe_store) -> None:
     typesafe_store.save_sync(USER, KEY)
     rendered = repr(typesafe_store.status_sync(USER))
@@ -111,17 +96,6 @@ def test_save_is_owner_scoped(typesafe_store) -> None:
     assert typesafe_store.get_key_sync(OTHER_USER) is None
 
 
-def test_saving_again_replaces_the_key_and_clears_rejection(typesafe_store) -> None:
-    typesafe_store.save_sync(USER, KEY)
-    typesafe_store.record_outcome_sync(USER, "rejected", key_fingerprint(KEY))
-    assert typesafe_store.status_sync(USER).name == "rejected"
-
-    typesafe_store.save_sync(USER, OTHER_KEY)
-
-    assert typesafe_store.get_key_sync(USER).api_key == OTHER_KEY
-    assert typesafe_store.status_sync(USER).name == "active"
-
-
 @pytest.mark.parametrize("bad", ["", "   ", None, 7, b"bytes"])
 def test_an_empty_or_non_string_key_is_refused(typesafe_store, bad: object) -> None:
     with pytest.raises(ValueError):
@@ -153,39 +127,6 @@ def test_clear_is_owner_scoped(typesafe_store) -> None:
     typesafe_store.save_sync(OTHER_USER, OTHER_KEY)
     typesafe_store.clear_sync(USER)
     assert typesafe_store.get_key_sync(OTHER_USER).api_key == OTHER_KEY
-
-
-def test_an_outcome_on_a_replaced_key_updates_nothing(typesafe_store) -> None:
-    typesafe_store.save_sync(USER, KEY)
-    stale_fingerprint = key_fingerprint(KEY)
-    typesafe_store.save_sync(USER, OTHER_KEY)
-
-    applied = typesafe_store.record_outcome_sync(USER, "rejected", stale_fingerprint)
-
-    assert applied is False
-    assert typesafe_store.status_sync(USER).name == "active"
-
-
-def test_an_outcome_on_the_current_key_applies(typesafe_store) -> None:
-    typesafe_store.save_sync(USER, KEY)
-    applied = typesafe_store.record_outcome_sync(USER, "rejected", key_fingerprint(KEY))
-    assert applied is True
-    assert typesafe_store.status_sync(USER).name == "rejected"
-
-
-def test_recording_an_outcome_for_a_user_with_no_row_is_harmless(typesafe_store) -> None:
-    assert typesafe_store.record_outcome_sync(USER, "valid", key_fingerprint(KEY)) is False
-
-
-def test_outcome_recording_never_raises(typesafe_store, monkeypatch) -> None:
-    typesafe_store.save_sync(USER, KEY)
-
-    def _explode(*args: object, **kwargs: object) -> None:
-        raise RuntimeError("durable store is on fire")
-
-    monkeypatch.setattr(typesafe_store._repository.repository, "record_outcome", _explode)
-
-    assert typesafe_store.record_outcome_sync(USER, "valid", key_fingerprint(KEY)) is False
 
 
 def test_an_undecryptable_row_is_discarded_and_reads_as_absent(
@@ -256,10 +197,6 @@ def test_the_async_wrappers_mirror_the_sync_core(typesafe_store) -> None:
         assert stored.api_key == KEY
         status = await typesafe_store.status(USER)
         assert status.name == "active"
-        assert await typesafe_store.record_outcome_async(
-            USER, "rejected", stored.fingerprint
-        )
-        assert (await typesafe_store.status(USER)).name == "rejected"
         assert await typesafe_store.clear(USER) is True
         assert await typesafe_store.get_key(USER) is None
 
@@ -349,16 +286,6 @@ def test_custom_decisions_round_trip_is_encrypted_and_owner_scoped(
     assert status.provider == "custom" and status.model == stored.model
     assert status.is_set and status.has_key == bool(api_key)
     assert KEY not in repr(status)
-
-
-def test_replacing_decision_endpoint_invalidates_old_outcomes(typesafe_store):
-    typesafe_store.save_config_sync(USER, provider="custom", base_url="https://one.example/v1",
-                                   model="nimble", api_key=KEY)
-    previous = typesafe_store.get_key_sync(USER).fingerprint
-    typesafe_store.save_config_sync(USER, provider="custom", base_url="https://two.example/v1",
-                                   model="nimble", api_key=KEY)
-    assert not typesafe_store.record_outcome_sync(USER, "rejected", previous)
-    assert typesafe_store.status_sync(USER).name == "active"
 
 
 def test_legacy_typesafe_keys_keep_the_hosted_defaults(typesafe_store):

@@ -21,6 +21,7 @@ from tests.test_computer_use_076 import _descriptor, _FakeDB, _FakeOrch
 from tests.test_hitl_public_research import _dispatch, runtime as runtime  # noqa: F401
 from tests.test_hitl_task_continuation import _registered_controller, task_runtime as task_runtime  # noqa: F401
 from tests.test_lets_gate_ordering import gate_orchestrator as gate_orchestrator  # noqa: F401
+from tests.helpers.approval_task import begin_task
 
 OWNER, CHAT = "owner-a", "chat-a"
 ROOT = "/Users/sam/Projects/x"
@@ -61,7 +62,7 @@ async def _mac(task_runtime, windows=(TEXTEDIT, NOTES, SAFARI), remote=False):
     session.remember_windows([dict(w) for w in windows])
     orch.agents["computer-use-1"] = object()
     orch.tool_permissions.get_tool_scope_map.return_value = SCOPES
-    hc.begin_task(orch, ws, OWNER, CHAT)
+    begin_task(orch, ws, OWNER, CHAT)
     if remote:
         source = make_remote_confirmation_plane_source(_FakeDB())
         orch.runtime_composition = SimpleNamespace(plane=SimpleNamespace(
@@ -153,7 +154,7 @@ async def test_application_grant_is_cleared_by_pause_stop_and_revocation(task_ru
     session, host = await _mac(task_runtime, windows=(TEXTEDIT, OPEN_PANEL))
     first = await _call(task_runtime, "type_text", text="a", hwnd=42)
     await hc.handle_decision(orch, ws, OWNER, _grant_payload(first, "app"))
-    hc.begin_task(orch, ws, OWNER, CHAT)
+    begin_task(orch, ws, OWNER, CHAT)
     grant, = orch.computer_sessions.grants.list(session.session_id)
     granted_session = session.session_id
     if change == "pause":
@@ -228,7 +229,7 @@ async def test_grant_survives_turns_and_is_revoked_with_the_session_pause(task_r
     session, _host = await _mac(task_runtime)
     first = await _call(task_runtime, "type_text", text="a", hwnd=42)
     await hc.handle_decision(orch, ws, OWNER, _payload(first, "grant_task"))
-    hc.begin_task(orch, ws, OWNER, CHAT)
+    begin_task(orch, ws, OWNER, CHAT)
     assert (await _call(task_runtime, "type_text", text="b", hwnd=42)).result["_data"]["ok"]
     await orch.computer_sessions.pause(session, "local_input")
     await orch.computer_sessions.resume(session, local=True)
@@ -545,7 +546,7 @@ async def test_browser_navigation_to_a_refused_url_never_gets_a_card(task_runtim
 
 def test_task_origin_carries_an_audit_task_id(task_runtime):
     orch, ws, *_ = task_runtime
-    hc.begin_task(orch, ws, OWNER, CHAT)
+    begin_task(orch, ws, OWNER, CHAT)
     origin = orch._hitl_task_origins[(OWNER, CHAT)]
     assert origin[0] is ws and len(origin[1].task_id) == 32
 
@@ -669,7 +670,7 @@ async def test_owner_revoke_from_the_session_frame_ends_later_effects_and_refuse
     monkeypatch.setattr(my_computers, "_enabled", lambda: True)
     first = await _call(task_runtime, "type_text", text="a", hwnd=42)
     await hc.handle_decision(orch, ws, OWNER, _payload(first, "grant_task"))
-    hc.begin_task(orch, ws, OWNER, CHAT)
+    begin_task(orch, ws, OWNER, CHAT)
     grant, = orch.computer_sessions.grants.list(session.session_id)
     payload = {"grant_id": grant.grant_id, "session_id": session.session_id, "host_id": host.host_id, "chat_id": CHAT}
     _key, _params, denied = await my_computers.HANDLERS["chrome_computer_grant_revoke"](

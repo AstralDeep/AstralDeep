@@ -10,7 +10,6 @@ import pytest
 from cryptography.fernet import Fernet
 
 
-
 _ALL_SCOPES = ("operations.submit", "operations.read", "operations.control", "artifacts.read")
 
 

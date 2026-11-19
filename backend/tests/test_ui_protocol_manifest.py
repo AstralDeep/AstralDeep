@@ -70,7 +70,6 @@ UI_SEND_MODULES = [
     "orchestrator/orchestrator.py",
     "orchestrator/chrome_events.py",
     "orchestrator/async_tasks.py",
-    "orchestrator/chat_steps.py",
     "orchestrator/stream_manager.py",
     "orchestrator/api.py",
     "orchestrator/agentic_creation.py",

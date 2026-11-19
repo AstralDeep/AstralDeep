@@ -6,7 +6,6 @@ handlers over real IAM, owner scoping, and exact-receipt replay.
 from __future__ import annotations
 
 
-
 from orchestrator.projection_surfaces import authoring, guidance
 
 

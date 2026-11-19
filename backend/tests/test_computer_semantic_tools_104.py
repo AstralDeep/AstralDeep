@@ -27,6 +27,7 @@ from tests.test_computer_use_076 import OWNER, _AgentOrch, _descriptor, _FakeHos
 from tests.test_hitl_public_research import runtime as runtime  # noqa: F401
 from tests.test_hitl_task_continuation import _registered_controller, task_runtime as task_runtime  # noqa: F401
 from tests.test_lets_gate_ordering import gate_orchestrator as gate_orchestrator  # noqa: F401
+from tests.helpers.approval_task import begin_task
 
 CHAT = "chat-1"
 CTX = {"user_id": OWNER, "session_id": CHAT}
@@ -656,7 +657,7 @@ async def test_a_bypass_frame_right_after_registration_covers_later_cards(task_r
     assert "Bypass on" in json.dumps(notice) and orch.computer_sessions.bypass_on(GATE_OWNER, host.host_id)
     session = await orch.computer_sessions.start(GATE_OWNER, host, ws, GATE_CHAT, wait_for_ack=False)
     session.remember_windows([dict(TEXTEDIT)])
-    hc.begin_task(orch, ws, GATE_OWNER, GATE_CHAT)
+    begin_task(orch, ws, GATE_OWNER, GATE_CHAT)
     response = await _call(task_runtime, "type_text", text="hello", hwnd=42)
     assert response.result["_data"]["approval_source"] == "bypass" and [name for name, _a in effects] == ["type_text"]
 
@@ -674,7 +675,7 @@ async def test_a_bypass_frame_right_after_registration_covers_later_cards(task_r
     assert orch.computer_sessions.bypass_on(GATE_OWNER, restarted.host_id)
     session = await orch.computer_sessions.start(GATE_OWNER, restarted, ws, GATE_CHAT, wait_for_ack=False)
     session.remember_windows([dict(TEXTEDIT)])
-    hc.begin_task(orch, ws, GATE_OWNER, GATE_CHAT)
+    begin_task(orch, ws, GATE_OWNER, GATE_CHAT)
     restored = await _call(task_runtime, "press_keys", keys="enter", hwnd=42)
     assert restored.result["_data"]["approval_source"] == "bypass" and len(effects) == 2
 

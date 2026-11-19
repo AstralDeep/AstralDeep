@@ -637,29 +637,6 @@ def _voice_guidance_message(message):
         and type(message["payload"].get("voice_origin")) is dict))
 
 
-async def current_socket_human_read(*, expected_orchestrator, websocket,
-                                    operation_context=None):
-    from orchestrator.connection_context import _CONNECTION_OPERATION_CONTEXT
-    context = operation_context
-    if not isinstance(context, dict):
-        context = _CONNECTION_OPERATION_CONTEXT.get() or {}
-    pending = context.get("human_request")
-    if (type(pending) is not _HumanSocketRequest or pending.purpose != "skill_lookup"
-            or pending.boundary.orchestrator is not expected_orchestrator
-            or pending.websocket is not websocket or pending.method != "WS_READ"):
-        raise AssignmentError("human_skill_lookup_unavailable", 503)
-    return await pending.authenticate()
-
-
-def retire_socket_human_read(caller):
-    if type(caller) is not CurrentHumanCaller:
-        _unauthenticated()
-    pending = caller._binding.socket_request
-    if type(pending) is not _HumanSocketRequest or pending.purpose != "skill_lookup":
-        _unauthenticated()
-    pending.close()
-
-
 @contextmanager
 def bind_human_caller(caller):
     if type(caller) is not CurrentHumanCaller:

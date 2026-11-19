@@ -11,9 +11,9 @@ USER = [{"role": "user", "content": "hi"}]
 def clean(monkeypatch):
     monkeypatch.delenv("LLM_FALLBACK_MODELS", raising=False)
     monkeypatch.setattr("orchestrator.model_router.router_enabled", lambda: False)
-    llm_recovery.reset_turn()
+    llm_recovery.TURN_MODEL.set(None)
     yield
-    llm_recovery.reset_turn()
+    llm_recovery.TURN_MODEL.set(None)
 
 
 def models(comp):
@@ -85,7 +85,7 @@ async def test_fallback_sticks_for_the_turn_and_resets_with_it(monkeypatch):
     await orch._call_llm(None, USER)
     await orch._call_llm(None, USER)
     assert models(comp)[-1] == "m2" and models(comp).count("m1") == 3
-    llm_recovery.reset_turn()
+    llm_recovery.TURN_MODEL.set(None)
     await orch._call_llm(None, USER)
     assert models(comp).count("m1") == 6
 

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
-import copy
 import hashlib
 import json
 import logging
@@ -36,8 +35,8 @@ POINTER_VERBS = frozenset({"click", "double_click", "right_click", "move", "drag
 POINTER_REFUSAL = "Call list_windows and pass hwnd for the target window."
 CONTROL_VERBS = frozenset({"interrupt_command"})
 REMOTE_MCP_CALL = ("remote-mcp-1", "call_remote_tool")
-CONTINUATION_TEXT = ("The exact approved action completed. Continue the remaining original task using current "
-                     "observations; any further effects still require their ordinary authorization and review.")
+
+
 REMOTE_REVIEWED_VERBS = frozenset({"run_command", "write_file", "delete_path", "project_preview", "browser_evaluate",
                                    "browser_tabs"})
 _BUNDLE_ID = re.compile(r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")
@@ -125,7 +124,8 @@ class Approval:
 
 _APPROVAL = contextvars.ContextVar("hitl_approval", default=None)
 _GOAL_CALL_TOKEN = contextvars.ContextVar("hitl_goal_call_token", default=None)
-_GOAL_CONTINUATION = contextvars.ContextVar("hitl_goal_continuation", default=None)
+
+
 _SERVER_ARGUMENTS = frozenset({"_credentials", "_credentials_encrypted", "_session_llm_credentials",
                                "_delegation_token", "_cap_job_id"})
 _DESTINATION_FIELDS = frozenset({"to", "cc", "bcc", "recipient", "recipients", "email", "to_email",
@@ -209,18 +209,6 @@ def _current_session(orch, websocket, call: PendingCall, *, allow_local_pause=Fa
                                                allow_local_pause=allow_local_pause)))
 
 
-def begin_task(orch, websocket, owner, chat) -> None:
-    if not owner or not chat or not _attended(orch, websocket, owner):
-        return
-    tasks = getattr(orch, "_hitl_task_origins", {})
-    tasks.pop((owner, chat), None)
-    tasks[(owner, chat)] = (websocket, SimpleNamespace(task_id=uuid.uuid4().hex))
-    getattr(orch, "_hitl_goal_contexts", {}).pop((owner, chat), None)
-    while len(tasks) > 256:
-        tasks.pop(next(iter(tasks)))
-    orch._hitl_task_origins = tasks
-
-
 def _task(orch, websocket, owner, chat):
     task = getattr(orch, "_hitl_task_origins", {}).get((owner, chat))
     return task if task is not None and task[0] is websocket else None
@@ -258,29 +246,6 @@ def cancellation_witness(orch, websocket, owner, chat, *, create=False):
     return entry[0] if entry is not None else None
 
 
-def bind_goal_context(orch, websocket, owner, chat, progress, project, contract):
-    if (not isinstance(owner, str) or not owner or not isinstance(chat, str) or not chat
-            or not _attended(orch, websocket, owner)
-            or getattr(orch, "_ws_active_chat", {}).get(id(websocket)) != chat):
-        return None
-    task = _task(orch, websocket, owner, chat)
-    if task is None or getattr(orch, "cancelled_sessions", {}).get(id(websocket), False):
-        return None
-    cancellation = cancellation_witness(orch, websocket, owner, chat, create=True)
-    try:
-        frozen_project = copy.deepcopy(project)
-    except Exception:
-        return None
-    binding = GoalContinuation(orch, websocket, owner, chat, task, cancellation, progress,
-                               frozen_project, contract)
-    contexts = getattr(orch, "_hitl_goal_contexts", {})
-    contexts[(owner, chat)] = binding
-    while len(contexts) > 256:
-        contexts.pop(next(iter(contexts)))
-    orch._hitl_goal_contexts = contexts
-    return binding
-
-
 def _goal_context_current(binding) -> bool:
     if not isinstance(binding, GoalContinuation):
         return False
@@ -293,16 +258,6 @@ def _goal_context_current(binding) -> bool:
         and not getattr(orch, "cancelled_sessions", {}).get(id(binding.websocket), False)
         and getattr(orch, "_ws_active_chat", {}).get(id(binding.websocket)) == binding.chat
     )
-
-
-def current_goal_context(orch, websocket, owner, chat):
-    binding = _GOAL_CONTINUATION.get()
-    if (not isinstance(binding, GoalContinuation)
-            or (binding.orchestrator, binding.websocket, binding.owner, binding.chat)
-            != (orch, websocket, owner, chat)
-            or not _goal_context_current(binding)):
-        return None
-    return binding
 
 
 @contextmanager
@@ -318,15 +273,6 @@ def goal_call_scope(token):
 
 def current_goal_call_token():
     return _GOAL_CALL_TOKEN.get()
-
-
-@contextmanager
-def _goal_continuation_scope(binding):
-    context_token = _GOAL_CONTINUATION.set(binding)
-    try:
-        yield
-    finally:
-        _GOAL_CONTINUATION.reset(context_token)
 
 
 def matching_approval(orch, owner, chat, agent, tool, args) -> bool:
@@ -1348,73 +1294,6 @@ async def evaluate(orch, websocket, owner, chat, agent, tool, args, risks) -> MC
         return _refused("Confirmation could not be prepared. Correct the action arguments and retry.")
 
 
-async def continuation_guidance(orch, websocket):
-    from orchestrator import evidence_context, user_skills
-    from orchestrator.connection_context import _CONNECTION_OPERATION_CONTEXT
-    from orchestrator.human_request_authority import current_socket_human_read, retire_socket_human_read
-    from orchestrator.turn_guidance_authority import capture_turn_guidance_from_human
-    from persistent_agents.models import AssignmentError
-
-    if not user_skills.enabled() and not evidence_context.needs_authority(orch):
-        return None, True
-    context = _CONNECTION_OPERATION_CONTEXT.get() or {}
-    try:
-        pending = context.get("human_request")
-        if getattr(pending, "purpose", None) == "remote_effect":
-            return await capture_turn_guidance_from_human(await pending.authenticate(),
-                                                          expected_orchestrator=orch), True
-        caller = await current_socket_human_read(expected_orchestrator=orch, websocket=websocket,
-                                                 operation_context=context)
-        try:
-            return await capture_turn_guidance_from_human(caller, expected_orchestrator=orch), True
-        finally:
-            retire_socket_human_read(caller)
-    except AssignmentError as exc:
-        logger.warning("Approval continuation guidance unavailable: %s (%s)", exc.code, exc.status_code)
-        return None, False
-
-
-def continue_after_approval(orch, websocket, owner, chat, message, display, origin, *, guard=None,
-                            goal_context=None, name):
-    from orchestrator.detached_context import detached_context
-    from persistent_agents.models import AssignmentError
-
-    task = getattr(orch, "_hitl_task_origins", {}).get((owner, chat))
-
-    async def run():
-        from orchestrator.turn_guidance_authority import bind_http_guidance, use_turn_guidance
-
-        try:
-            if guard is not None and not guard():
-                return
-            if goal_context is not None and not _goal_context_current(goal_context):
-                return
-            await announce_turn(orch, websocket, "thinking", "Continuing after approval")
-            async def current_call():
-                if goal_context is None:
-                    await orch._serialized_chat(
-                        websocket, message, chat, display, user_id=owner, continuation_guard=guard)
-                else:
-                    with _goal_continuation_scope(goal_context):
-                        await orch._serialized_chat(
-                            websocket, message, chat, display, user_id=owner, continuation_guard=guard)
-            if origin is None:
-                await current_call()
-                return
-            binding = bind_http_guidance(origin, expected_orchestrator=orch, websocket=websocket, chat_id=chat)
-            with use_turn_guidance(binding, expected_orchestrator=orch):
-                await current_call()
-        except AssignmentError as exc:
-            logger.warning("Approval continuation refused: %s (%s)", exc.code, exc.status_code)
-        finally:
-            if origin is not None:
-                origin.close()
-            if getattr(orch, "_hitl_task_origins", {}).get((owner, chat)) in (None, task):
-                await announce_turn(orch, websocket, "done")
-
-    return asyncio.create_task(run(), context=detached_context(orch), name=name)
-
-
 async def announce_turn(orch, websocket, status, message="") -> None:
     send = getattr(orch, "_safe_send", None)
     if websocket is not None and callable(send):
@@ -1472,14 +1351,9 @@ async def _finish_card(orch, websocket, call, title, message, components=None, *
 
 
 async def handle_decision(orch, websocket, owner, payload, *, admission_check=None) -> None:
-    held = []
-    try:
-        from orchestrator.approval_receipts import run
-        await run(orch, websocket, owner, payload, "hitl_request_id",
-                  lambda: _handle_decision(orch, websocket, owner, payload, admission_check, held))
-    finally:
-        for origin in held:
-            origin.close()
+    from orchestrator.approval_receipts import run
+    await run(orch, websocket, owner, payload, "hitl_request_id",
+              lambda: _handle_decision(orch, websocket, owner, payload, admission_check))
 
 
 def _chosen_offer(call, payload) -> GrantOffer | None:
@@ -1489,7 +1363,7 @@ def _chosen_offer(call, payload) -> GrantOffer | None:
     return next((offer for offer in call.grant_offers if offer.scope["kind"] == wanted), None)
 
 
-async def _handle_decision(orch, websocket, owner, payload, admission_check, held) -> None:
+async def _handle_decision(orch, websocket, owner, payload, admission_check) -> None:
     pending = _pending(orch)
     request_id = payload.get("hitl_request_id") if isinstance(payload, dict) else None
     call = pending.get(request_id) if isinstance(request_id, str) else None
@@ -1543,10 +1417,6 @@ async def _handle_decision(orch, websocket, owner, payload, admission_check, hel
         await orch.send_ui_render(websocket, [Alert(message="This action has no reviewed local resume target.",
                                                   variant="warning").to_dict()], target="chat")
         return
-    origin, guided = (await continuation_guidance(orch, websocket) if payload["decision"] != "decline"
-                      else (None, False))
-    if origin is not None:
-        held.append(origin)
     pending = _pending(orch)
     if pending.get(request_id) is not call:
         await orch.send_ui_render(websocket, [Alert(message="This confirmation is unavailable in this conversation. "
@@ -1611,11 +1481,11 @@ async def _handle_decision(orch, websocket, owner, payload, admission_check, hel
     from orchestrator.approval_receipts import note
     note(orch, call.request_id, "accepted", "Approval accepted. The action remains subject to effect-time checks.")
     await announce_turn(orch, websocket, "executing", f"Running: {call.tool}...")
-    if not await _decided_effect(orch, websocket, owner, call, resume_requested, origin, guided, held):
+    if not await _decided_effect(orch, websocket, owner, call, resume_requested):
         await announce_turn(orch, websocket, "done")
 
 
-async def _decided_effect(orch, websocket, owner, call, resume_requested, origin, guided, held) -> bool:
+async def _decided_effect(orch, websocket, owner, call, resume_requested) -> bool:
     from orchestrator.remote_confirmation import pause_failed_computer_approval
 
     token = _APPROVAL.set(Approval(orch, call))
@@ -1703,12 +1573,4 @@ async def _decided_effect(orch, websocket, owner, call, resume_requested, origin
             machine_id=call.computer_authority.host.host_id, tool_name=call.tool,
             arguments=json.loads(call.arguments))
         _computer_use_on_approved(orch, row, websocket, call.computer_authority)
-    if call.task is None or not guided:
-        return False
-    if origin is not None:
-        held.remove(origin)
-    continue_after_approval(orch, websocket, call.owner, call.chat, CONTINUATION_TEXT, "Approved — continuing",
-                            origin, guard=lambda: _current_session(orch, websocket, call),
-                            goal_context=call.goal_context,
-                            name=f"hitl-continue-{call.request_id}")
-    return True
+    return False

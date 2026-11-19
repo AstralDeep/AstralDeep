@@ -13,9 +13,7 @@ import pytest
 
 from agents.computer_use import browser_tools, mcp_tools
 from orchestrator import computer_use_policy as policy
-from orchestrator import datamarking
 from orchestrator.computer_grants import GrantStore
-from orchestrator.orchestrator import Orchestrator
 from shared.protocol import MCPRequest
 from tests.test_computer_use_076 import (
     OWNER,
@@ -349,12 +347,6 @@ async def test_snapshot_forwards_the_bounded_request_and_returns_untrusted_lines
     assert "_model_digest" not in out and "_model_digest" not in data and out["_ui_components"] == []
     assert browser_tools.page_url(world.session.session_id, {"snapshot_id": "s9"}) == PAGE
 
-    res = SimpleNamespace(error=None, result=out)
-    assert Orchestrator._result_has_model_digest(res) is False
-    content = Orchestrator._tool_result_to_llm_content(res, "browser_snapshot")
-    marked = datamarking.spotlight(content, "SENTINEL")
-    assert marked.startswith("<<UNTRUSTED SENTINEL>>") and '[e3] button \\"Submit\\"' in marked
-
 
 async def test_snapshot_modes_scope_and_limits(world):
     world.replies["browser_snapshot"] = _snapshot_reply()
@@ -539,8 +531,6 @@ async def test_a_stale_reference_tells_the_model_to_take_a_new_snapshot(world):
     assert data["status"] == "refused" and data["code"] == "stale_ref" and data["computer"] == "RYZENROLL"
     assert "browser_snapshot" in data["next_action"] and "snapshot_id" in data["next_action"]
     assert out["_ui_components"] == []
-    res = SimpleNamespace(error=None, result=out)
-    assert "browser_snapshot" in Orchestrator._tool_result_to_llm_content(res, "browser_click")
 
 
 async def test_actionable_refusals_survive_the_mcp_server_as_results_not_errors(world):

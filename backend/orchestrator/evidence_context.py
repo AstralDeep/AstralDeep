@@ -1069,58 +1069,6 @@ class EvidenceContext:
             raise EvidenceDenied()
         return current
 
-    async def summary_view(self, text, messages, *, websocket, owner, chat):
-        captured = None
-        try:
-            adapter_binding = self._view_adapter()
-            await self._owner(websocket, owner, chat)
-            self._view_adapter(adapter_binding)
-            references = sorted(set(_REFERENCE_TOKENS.findall(_json(messages))))
-            if not references or any(_REFERENCE.fullmatch(reference) is None for reference in references):
-                raise EvidenceDenied()
-            dependencies, stamps = [], {}
-            for reference in references:
-                observation = self.archive.inspect(reference, owner_id=owner,
-                    conversation_id=chat, audience_id=f"user:{owner}")
-                await self._source_authorized(websocket, owner, chat, observation)
-                self._view_adapter(adapter_binding)
-                dependencies.append(self._dependency(observation))
-                stamps[reference] = self._source_stamp(websocket, owner, chat, observation, None)
-            permitted = await self._permitted_text(text)
-            self._view_adapter(adapter_binding)
-            if not permitted.strip():
-                raise EvidenceDenied()
-            await self._owner(websocket, owner, chat)
-            self._view_adapter(adapter_binding)
-            self._view_sources_current(tuple(dependencies), websocket=websocket, owner=owner, chat=chat, stamps=stamps)
-            if len(self._retained_views) >= self.views.max_records:
-                raise EvidenceCaptureError("context_view_cleanup_limit")
-            captured = self.views.capture(permitted, owner_id=owner, conversation_id=chat,
-                                          audience_id=f"user:{owner}", dependencies=tuple(dependencies))
-            self._retained_views[captured.reference] = (copy.deepcopy(captured), None, None, [None])
-            self._view_adapter(adapter_binding)
-            await self._audit(owner, chat, "view_capture", extra={
-                "view_digest": _digest(captured.reference), "bytes": captured.size_bytes,
-                "source_count": len(dependencies),
-            })
-            self._view_adapter(adapter_binding)
-            await self._owner(websocket, owner, chat)
-            self._view_adapter(adapter_binding)
-            self._view_sources_current(tuple(dependencies), websocket=websocket, owner=owner, chat=chat, stamps=stamps)
-            self.views.inspect(captured.reference, owner_id=owner, conversation_id=chat,
-                               audience_id=f"user:{owner}", dependencies=tuple(dependencies))
-            return captured.reference
-        except BaseException as exc:
-            if captured is not None:
-                try:
-                    self.views.delete(captured.reference, owner_id=owner, conversation_id=chat, audience_id=f"user:{owner}")
-                except Exception as cleanup_error:
-                    logger.warning("Temporary context view cleanup refused: %s", type(cleanup_error).__name__)
-            if not isinstance(exc, Exception):
-                raise
-            logger.warning("Temporary context view refused: %s", type(exc).__name__)
-            return None
-
     async def _view_content(self, view_id, *, websocket, owner, chat, parent=None, initiator=None, adapter_binding=None):
         adapter_binding = self._view_adapter(adapter_binding)
         await self._owner(websocket, owner, chat)

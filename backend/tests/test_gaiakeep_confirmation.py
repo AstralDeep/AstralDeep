@@ -206,16 +206,12 @@ def test_upload_approval_preserves_the_selected_request_identity_mode(monkeypatc
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('mode', ['single', 'parallel'])
-async def test_normal_dispatch_requires_approval_and_binds_owner(real_orch, monkeypatch, mode):
+async def test_normal_dispatch_requires_approval_and_binds_owner(real_orch, monkeypatch):
     monkeypatch.setattr(rc, '_machine_label', lambda *a: 'registered DGX')
     tool = 'gaiakeep_core_auditack'
     tool_call = _tc(tool, {'machine_id': 'mine', 'params': {'reason': 'requested'}, 'user_id': 'attacker'})
     real_orch._execute_with_retry_audited = AsyncMock()
-    if mode == 'single':
-        response = await real_orch.execute_single_tool(_WS(), tool_call, {tool: 'gaiakeep-1'}, 'chat', user_id=USER)
-    else:
-        response, = await real_orch.execute_parallel_tools(_WS(), [tool_call], {tool: 'gaiakeep-1'}, 'chat', user_id=USER)
+    response = await real_orch.execute_single_tool(_WS(), tool_call, {tool: 'gaiakeep-1'}, 'chat', user_id=USER)
     assert response.error is None and response.result['_data']['status'] == 'confirmation_required'
     row, = real_orch.proposal_storage.rows.values()
     assert response.ui_components[0]['id'] == rc.card_component_id(row['proposal_id'])
@@ -228,10 +224,9 @@ async def test_normal_dispatch_requires_approval_and_binds_owner(real_orch, monk
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('mode', ['single', 'parallel'])
 @pytest.mark.parametrize('case', ['invalid-arguments', 'foreign-machine', 'machine-lookup-failure',
                                  'unattended', 'stale-approval', 'changed-approval', 'permission'])
-async def test_normal_gaia_denial_remains_an_error_without_pending_result(real_orch, monkeypatch, mode, case):
+async def test_normal_gaia_denial_remains_an_error_without_pending_result(real_orch, monkeypatch, case):
     from orchestrator import remote_machines
     tool = 'gaiakeep_core_auditack'
     args = {'machine_id': 'mine', 'params': {'reason': 'requested'}, 'user_id': USER}
@@ -258,10 +253,7 @@ async def test_normal_gaia_denial_remains_an_error_without_pending_result(real_o
     before = copy.deepcopy(real_orch.proposal_storage.rows)
     real_orch._execute_with_retry_audited = AsyncMock()
     tool_call = _tc(tool, args)
-    if mode == 'single':
-        response = await real_orch.execute_single_tool(socket, tool_call, {tool: 'gaiakeep-1'}, 'chat', user_id=USER)
-    else:
-        response, = await real_orch.execute_parallel_tools(socket, [tool_call], {tool: 'gaiakeep-1'}, 'chat', user_id=USER)
+    response = await real_orch.execute_single_tool(socket, tool_call, {tool: 'gaiakeep-1'}, 'chat', user_id=USER)
     assert response.error and response.error['retryable'] is False
     assert response.result is None and response.ui_components is None
     assert 'private repository detail' not in json.dumps(response.error)

@@ -14,6 +14,7 @@ import pytest
 from orchestrator import hitl, hitl_confirmation as hc, memory_chat
 from personalization.memory_tools import MemoryTools
 from tests.test_lets_gate_ordering import gate_orchestrator  # noqa: F401
+from tests.helpers.approval_task import begin_task
 
 FACT_ID = "7f1c2a7e-3b1d-4c55-9a0e-2d5b8f4e6a11"
 
@@ -173,14 +174,14 @@ async def test_forget_proposals_are_capped_per_turn(runtime):
     for index, memory_id in enumerate(ids):
         runtime.repo.add(memory_id, f"likes tea number {index}")
     runtime.orch._active_request = {"chat-a": "forget everything about tea"}
-    hc.begin_task(runtime.orch, runtime.ws, "owner-a", "chat-a")
+    begin_task(runtime.orch, runtime.ws, "owner-a", "chat-a")
     for memory_id in ids[:memory_chat.MAX_FORGETS_PER_TURN]:
         _card(await _forget(runtime, memory_id))
     capped = await _forget(runtime, ids[-1])
     assert capped.result["status"] == "refused"
     assert _deletes(runtime) == [("failure", {"memory_id": ids[-1], "reason": "turn_limit"})]
 
-    hc.begin_task(runtime.orch, runtime.ws, "owner-a", "chat-a")
+    begin_task(runtime.orch, runtime.ws, "owner-a", "chat-a")
     _card(await _forget(runtime, ids[-1]))
     assert len(runtime.repo.memory) == len(ids)
 

@@ -1,5 +1,5 @@
-"""Proves the phase 3 connection gates on the node: a model key sealed to the node answers a node request against the fixture model server, a key not sealed to it is unusable there, the stdio launcher refuses with its sandbox code, an A2A OAuth sign-in runs through the operator routes, and phase 2 connections and legacy rows stay unchanged.
-Model and stdio checks run on the real kernel binding, the A2A sign-in on the fake kernel because the pinned kernel admits a node only to a non-local https connection, and every scan has a planted negative control.
+"""Proves the phase 3 connection gates on the node: the stdio launcher refuses with its sandbox code, an A2A OAuth sign-in runs through the operator routes, and phase 2 connections and legacy rows stay unchanged.
+Stdio checks run on the real kernel binding, the A2A sign-in on the fake kernel because the pinned kernel admits a node only to a non-local https connection, and every scan has a planted negative control.
 """
 
 from __future__ import annotations
@@ -25,9 +25,7 @@ from tests.test_node_connection_api import Operator, personal
 from tests.test_node_connections import CredentialSpy
 from tests.test_node_mesh_kernel_integration import ak as binding, paired, until  # noqa: F401
 from tests.test_node_mesh_peer_tools import node_host  # noqa: F401
-from tests.test_node_mesh_turn_tools import turn_host  # noqa: F401
 
-REPLY = "the node answered from its provider book"
 CONNECTION = "cd" * 16
 
 

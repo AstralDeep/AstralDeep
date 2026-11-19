@@ -52,14 +52,6 @@ class CatalogTool:
 
 
 @dataclass(frozen=True)
-class TurnTool:
-    agent_id: str
-    tool: str
-    definition: str
-    scope: str
-
-
-@dataclass(frozen=True)
 class CallOutcome:
     status: str
     content: str
@@ -184,19 +176,6 @@ class OrchestratorCalls:
             )
             for agent_id, tool in self._entries(owner_id)
         }
-
-    def turn_tools(self, owner_id: str, grants: Any) -> List[TurnTool]:
-        permissions = self._orch.tool_permissions
-        found: List[TurnTool] = []
-        for (agent_id, name), entry in sorted(self.catalog(owner_id).items()):
-            if current_definition(self._orch, agent_id, name) != entry.definition:
-                continue
-            if not grant_covers(grants, name, entry.definition, entry.effect):
-                continue
-            if not permissions.is_tool_allowed(owner_id, agent_id, name):
-                continue
-            found.append(TurnTool(agent_id, name, entry.definition, permissions.get_tool_scope(agent_id, name)))
-        return found
 
     def _entries(self, owner_id: str) -> List[Tuple[str, Dict[str, Any]]]:
         tools = [

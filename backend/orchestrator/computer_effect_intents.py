@@ -198,9 +198,6 @@ class EffectIntentLedger:
     def live_count(self) -> int:
         return len(self._live)
 
-    def unknown_for(self, owner_id: str, chat_id: str) -> Tuple[EffectIntent, ...]:
-        return tuple(self._unknown.get((owner_id, chat_id or ""), {}).values())
-
     def lost_approvals(self, owner_id: str, chat_id: str) -> Tuple[str, ...]:
         return tuple(self._lost_approvals.get((owner_id, chat_id or ""), {}))
 

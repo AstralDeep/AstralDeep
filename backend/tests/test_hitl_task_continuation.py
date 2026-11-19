@@ -1,4 +1,4 @@
-"""Verifies exact owner approvals and continuation through the real gate and effect boundary.
+"""Verifies exact owner approvals through the real gate and effect boundary.
 Synthetic dispatch receivers record physical effects independently from UI responses.
 """
 
@@ -18,6 +18,7 @@ from tests.test_computer_use_076 import _descriptor, _FakeDB, _FakeOrch
 from tests.helpers.remote_plane_runtime import make_remote_confirmation_plane_source
 from tests.test_hitl_public_research import _decision, _dispatch, runtime  # noqa: F401
 from tests.test_lets_gate_ordering import gate_orchestrator  # noqa: F401
+from tests.helpers.approval_task import begin_task
 
 
 @pytest.fixture
@@ -60,12 +61,17 @@ def task_runtime(runtime, monkeypatch):  # noqa: F811
         if message == "original":
             proposals.append(await _dispatch(runtime, args={"to": "a@example.org", "body": "safe"}))
 
+    async def serialized_chat(websocket, message, chat_id, display, user_id=None, **kwargs):
+        begin_task(orch, websocket, user_id, chat_id)
+        await orch.handle_chat_message(websocket, message, chat_id, display, **kwargs)
+
     orch._execute_with_retry = execute
     orch.handle_chat_message = chat
+    orch._serialized_chat = serialized_chat
     return orch, ws, effects, turns, proposals, outcome
 
 
-async def test_successful_exact_approval_resumes_origin_once(task_runtime):
+async def test_successful_exact_approval_executes_once(task_runtime):
     orch, ws, effects, turns, proposals, _outcome = task_runtime
     await orch._serialized_chat(ws, "original", "chat-a", "original", user_id="owner-a")
     decision = _decision(proposals[0])
@@ -73,14 +79,13 @@ async def test_successful_exact_approval_resumes_origin_once(task_runtime):
     await hc.handle_decision(orch, ws, "owner-a", decision)
     await asyncio.sleep(0)
     assert len(effects) == 1
-    assert len(turns) == 2
     await hc.handle_decision(orch, ws, "owner-a", decision)
     await asyncio.sleep(0)
-    assert len(effects) == 1 and len(turns) == 2
+    assert len(effects) == 1
 
 
 @pytest.mark.parametrize("change", ["new_task", "cancel", "owner", "chat", "expired", "decline"])
-async def test_stale_or_declined_approval_has_no_effect_or_continuation(task_runtime, change):
+async def test_stale_or_declined_approval_has_no_effect(task_runtime, change):
     orch, ws, effects, turns, proposals, _outcome = task_runtime
     await orch._serialized_chat(ws, "original", "chat-a", "original", user_id="owner-a")
     decision = _decision(proposals[0])
@@ -114,46 +119,6 @@ async def test_failed_or_uncertain_effect_does_not_resume(task_runtime, result):
     await asyncio.sleep(0)
     assert len(effects) == 1
     assert len(turns) == 1
-
-
-async def test_new_task_invalidates_continuation_waiting_on_workspace_lock(task_runtime):
-    orch, ws, effects, turns, proposals, _outcome = task_runtime
-    await orch._serialized_chat(ws, "original", "chat-a", "original", user_id="owner-a")
-    lock = orch._workspace_locks["chat-a"]
-    await lock.acquire()
-    try:
-        replacement = asyncio.create_task(orch._serialized_chat(ws, "replacement", "chat-a", "new", user_id="owner-a"))
-        await asyncio.sleep(0)
-        await hc.handle_decision(orch, ws, "owner-a", _decision(proposals[0]))
-        await asyncio.sleep(0)
-    finally:
-        lock.release()
-    await replacement
-    assert len(effects) == 1
-    assert turns == ["original", "replacement"]
-
-
-async def test_queued_turn_cannot_donate_its_origin_to_running_turn(task_runtime):
-    orch, ws, effects, turns, proposals, _outcome = task_runtime
-    entered, release = asyncio.Event(), asyncio.Event()
-
-    async def chat(websocket, message, chat_id, display, **kwargs):
-        turns.append(message)
-        if message == "first":
-            entered.set()
-            await release.wait()
-            proposals.append(await _dispatch((orch, ws), args={"to": "a@example.org", "body": "safe"}))
-
-    orch.handle_chat_message = chat
-    first = asyncio.create_task(orch._serialized_chat(ws, "first", "chat-a", "first", user_id="owner-a"))
-    await entered.wait()
-    second = asyncio.create_task(orch._serialized_chat(ws, "second", "chat-a", "second", user_id="owner-a"))
-    await asyncio.sleep(0)
-    release.set()
-    await asyncio.gather(first, second)
-    await hc.handle_decision(orch, ws, "owner-a", _decision(proposals[0]))
-    await asyncio.sleep(0)
-    assert effects == [] and turns == ["first", "second"]
 
 
 async def test_escalated_risk_requires_fresh_review_before_physical_effect(task_runtime, monkeypatch):
@@ -238,7 +203,7 @@ async def test_self_host_targeted_review_explicitly_resumes_once(task_runtime):
     await orch.computer_sessions.pause(session, "local_input")
     await hc.handle_decision(orch, ws, "owner-a", button["payload"])
     await asyncio.sleep(0)
-    assert session.state == "active" and len(effects) == 1 and len(turns) == 2
+    assert session.state == "active" and len(effects) == 1
     await hc.handle_decision(orch, ws, "owner-a", button["payload"])
     assert len(effects) == 1
     await orch.computer_sessions.end(session, "user_stop")
@@ -297,23 +262,6 @@ async def test_combined_decision_failure_leaves_local_session_paused(task_runtim
         rendered = str(orch.send_ui_render.await_args_list)
         assert "Resume" in rendered and "reissue" in rendered
     await orch.computer_sessions.end(session, "user_stop")
-
-
-async def test_stale_continuation_does_not_remove_another_turn_recorder(task_runtime):
-    orch, ws, _effects, _turns, _proposals, _outcome = task_runtime
-    recorder = object()
-    orch._chat_recorders[id(ws)] = recorder
-    await orch._serialized_chat(ws, "stale", "chat-a", "stale", user_id="owner-a", continuation_guard=lambda: False)
-    assert orch._chat_recorders[id(ws)] is recorder
-
-
-async def test_evicted_task_origin_cannot_reactivate_pending_effect(task_runtime):
-    orch, ws, effects, turns, proposals, _outcome = task_runtime
-    await orch._serialized_chat(ws, "original", "chat-a", "original", user_id="owner-a")
-    for index in range(256):
-        hc.begin_task(orch, ws, "owner-a", f"other-{index}")
-    await hc.handle_decision(orch, ws, "owner-a", _decision(proposals[0]))
-    assert not effects and len(turns) == 1
 
 
 async def test_host_loss_during_explicit_resume_cannot_dispatch(task_runtime, monkeypatch):
@@ -403,7 +351,7 @@ async def test_terminal_launch_passes_remote_and_source_review_once_before_grant
     await hc.handle_decision(orch, ws, "owner-a", {"hitl_request_id": pending.request_id,
                                                 "decision": "approve_and_resume" if combined else "approve"})
     await asyncio.sleep(0)
-    assert len(effects) == 1 and session.terminal_ok and len(turns) == 2
+    assert len(effects) == 1 and session.terminal_ok
     assert not orch._hitl_pending_calls
     await orch.computer_sessions.end(session, "user_stop")
 
@@ -440,7 +388,7 @@ async def test_exact_terminal_keyboard_review_issues_one_targeted_input_permit(t
     await asyncio.sleep(0)
     assert physical == [{"text": "reviewed command", "hwnd": 42,
                          "terminal_app": "com.apple.Terminal", "terminal_ok": True}]
-    assert not session.terminal_ok and len(turns) == 2
+    assert not session.terminal_ok
     await orch.computer_sessions.end(session, "user_stop")
 
 
@@ -526,7 +474,7 @@ async def test_queued_approved_input_rechecks_authority_before_physical_send(tas
         if change == "cancel":
             orch.cancelled_sessions[id(ws)] = True
         elif change == "task":
-            hc.begin_task(orch, ws, "owner-a", "chat-a")
+            begin_task(orch, ws, "owner-a", "chat-a")
         elif change == "chat":
             orch._ws_active_chat[id(ws)] = "chat-b"
         elif change == "expired":
@@ -708,8 +656,6 @@ async def test_self_host_approval_reply_completes_through_actual_socket_admissio
             assert any(call.args[0].action_type == "hitl.effect_uncertain"
                        for call in orch.audit_recorder.record.await_args_list)
             assert "inspect current state" in str(orch.send_ui_render.await_args_list).lower()
-        else:
-            assert turns[-1] != "original" and len(turns) == 2
         assert not orch.computer_hosts._pending
         context = orch._connection_contexts[id(ws)]
         assert any(work.frame.action == "authorize_action" for work in context.operations.values())
@@ -914,7 +860,7 @@ async def test_cancel_witness_survives_pending_pop_and_new_turn_reset(task_runti
         await orch._route_ui_frame(context, json.dumps({"type": "ui_event", "action": "cancel_task", "payload": {}}))
         await asyncio.gather(*context.tracked_tasks)
         orch.cancelled_sessions[id(ws)] = False
-        hc.begin_task(orch, ws, "owner-a", "chat-a")
+        begin_task(orch, ws, "owner-a", "chat-a")
     finally:
         release.set()
     await approve

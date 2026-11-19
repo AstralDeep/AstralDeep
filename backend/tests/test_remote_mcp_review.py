@@ -9,6 +9,7 @@ import pytest
 
 from orchestrator import hitl_confirmation as confirmation
 from orchestrator.remote_mcp_pins import definition_hash
+from tests.helpers.approval_task import begin_task
 
 
 CONNECTOR_ID = "1" * 32
@@ -45,7 +46,7 @@ def review_world(monkeypatch):
         _map_file_paths=lambda _chat, args, **_kwargs: args,
         audit_recorder=SimpleNamespace(record=record),
     )
-    confirmation.begin_task(orch, socket, "owner-a", "chat-a")
+    begin_task(orch, socket, "owner-a", "chat-a")
     return orch, socket, events
 
 
@@ -100,7 +101,7 @@ async def test_forged_routing_identifiers_never_receive_a_review_card(review_wor
 async def test_connector_lookup_uses_current_owner_instead_of_payload_owner(review_world):
     orch, socket, events = review_world
     orch.ui_sessions[socket] = {"sub": "owner-b"}
-    confirmation.begin_task(orch, socket, "owner-b", "chat-a")
+    begin_task(orch, socket, "owner-b", "chat-a")
     response = await evaluate(review_world, {**call_arguments(), "user_id": "owner-a"}, owner="owner-b")
     assert response.error
     assert not response.ui_components

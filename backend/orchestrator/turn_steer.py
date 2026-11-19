@@ -33,15 +33,6 @@ _UNSAVED = "This steer could not be saved, so it was not applied."
 _NOTICE_TASKS: set = set()
 
 
-class _Mailbox:
-    __slots__ = ("applied", "pending", "seen")
-
-    def __init__(self, request) -> None:
-        self.applied: list = [request] if request else []
-        self.pending: list[tuple[str, str]] = []
-        self.seen: set[str] = set()
-
-
 def negotiated(profile, device, capabilities) -> bool:
     device_type = getattr(getattr(profile, "device_type", None), "value", None)
     console = getattr(profile, "console_contract", None) == "console/v2"
@@ -148,10 +139,6 @@ async def receive(orch, websocket, user_id, chat_id, payload) -> None:
     mailbox.pending.append((client_message_id, text))
 
 
-def open_turn(orch, websocket, chat_id, user_id, request=None) -> None:
-    _mailboxes(orch)[_key(websocket, chat_id, user_id)] = _Mailbox(request)
-
-
 def running_texts(orch, websocket, chat_id, user_id) -> list:
     mailbox = _mailboxes(orch).get(_key(websocket, chat_id, user_id))
     return list(mailbox.applied) if mailbox else []
@@ -183,12 +170,3 @@ async def deliver(orch, websocket, chat_id, user_id, stage, messages, *, screene
         orch._typesafe_set_turn_verdict(chat_id, Verdict.CONFIRM_TOOLS)
     return delivered
 
-
-def close_turn(orch, websocket, chat_id, user_id) -> list[str]:
-    mailbox = _mailboxes(orch).pop(_key(websocket, chat_id, user_id), None)
-    return [client_message_id for client_message_id, _text in mailbox.pending] if mailbox else []
-
-
-async def hand_back(orch, websocket, chat_id, unapplied) -> None:
-    for client_message_id in unapplied:
-        await _refuse(orch, websocket, chat_id, client_message_id, "stale_turn")

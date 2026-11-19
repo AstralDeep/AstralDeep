@@ -15,19 +15,6 @@ class ChatStatusEnum(str, Enum):
     done = "done"
 
 
-class ChatMessageRequest(BaseModel):
-    message: str = Field(..., description="The user's message text")
-    display_message: Optional[str] = Field(None, description="Optional formatted version of the message to display in the UI")
-
-    model_config = {"json_schema_extra": {"examples": [{"message": "What is the weather in Lexington, KY?"}]}}
-
-
-class ChatMessageResponse(BaseModel):
-    chat_id: str = Field(..., description="The chat session ID")
-    status: str = Field("accepted", description="Message acceptance status")
-    message: str = Field("Message received. Results will stream via WebSocket.", description="Info message")
-
-
 class ChatSummary(BaseModel):
     id: str
     project_id: Optional[str] = None

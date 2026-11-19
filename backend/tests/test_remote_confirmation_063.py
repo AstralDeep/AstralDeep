@@ -540,13 +540,13 @@ def real_orch(monkeypatch):
     return o
 
 
-async def test_parallel_batch_with_destructive_verbs_still_gates(real_orch):
+async def test_each_destructive_verb_in_turn_still_gates(real_orch):
     t = _fake()
-    results = await real_orch.execute_parallel_tools(
-        _WS(), [_tc("remove_path", {"machine_id": "m", "path": "/data"}),
-                _tc("cancel_job", {"machine_id": "m", "job_id": "7"})],
-        {"remove_path": "remote-compute-1", "cancel_job": "remote-compute-1"},
-        "chat-1", USER)
+    results = []
+    for tool, args in (("remove_path", {"machine_id": "m", "path": "/data"}),
+                       ("cancel_job", {"machine_id": "m", "job_id": "7"})):
+        results.append(await real_orch.execute_single_tool(
+            _WS(), _tc(tool, args), {tool: "remote-compute-1"}, "chat-1", user_id=USER))
     assert len(results) == 2
     for r in results:
         assert r.error and "confirmation_required" in r.error["message"]

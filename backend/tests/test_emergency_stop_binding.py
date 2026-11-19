@@ -28,7 +28,6 @@ def _fake_plane_source(monkeypatch):
     monkeypatch.setattr(binding, "plane_source", lambda orch: _SOURCE)
 
 
-
 def _receipt(event, **changes):
     return AuditEventDTO(**(event.model_dump(exclude={"actor_user_id", "auth_principal"})
                            | {"event_id": "event-1", "recorded_at": datetime.now(UTC)} | changes))

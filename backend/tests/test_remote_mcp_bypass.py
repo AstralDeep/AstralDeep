@@ -11,6 +11,7 @@ from orchestrator import hitl_confirmation as confirmation
 from orchestrator.remote_mcp_pins import definition_hash
 from orchestrator.hitl import CROSS_PRINCIPAL, UNTRUSTED_TAINTED
 from shared.protocol import MCPResponse
+from tests.helpers.approval_task import begin_task
 
 
 CONNECTOR_ID = "1" * 32
@@ -84,7 +85,7 @@ def world(monkeypatch):
 
     orch.execute_single_tool = execute_single_tool
     orch.reentry_risks = RISKS
-    confirmation.begin_task(orch, mac, "owner-a", "chat-a")
+    begin_task(orch, mac, "owner-a", "chat-a")
     return SimpleNamespace(orch=orch, mac=mac, events=events, executed=executed)
 
 
@@ -133,7 +134,7 @@ async def test_bypass_on_another_computer_does_not_cover_a_chat_from_this_socket
     web = object()
     world.orch.ui_sessions[web] = {"sub": "owner-a"}
     world.orch._ws_active_chat[id(web)] = "chat-a"
-    confirmation.begin_task(world.orch, web, "owner-a", "chat-a")
+    begin_task(world.orch, web, "owner-a", "chat-a")
 
     response = await evaluate(world, call_arguments(), socket=web)
 

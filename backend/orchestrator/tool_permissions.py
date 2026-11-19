@@ -204,12 +204,6 @@ class ToolPermissionManager:
         stored = {row.scope: row.enabled for row in rows}
         return {scope: stored.get(scope, False) for scope in VALID_SCOPES}
 
-    def has_any_enabled_scope(self, user_id: str) -> bool:
-        return self._policy.call(
-            self._policy.repository.has_any_enabled_scope,
-            owner_id=user_id,
-        )
-
     def list_disabled_agents(self, user_id: str) -> tuple[str, ...]:
         return self._policy.call(
             self._policy.repository.list_disabled_agents,

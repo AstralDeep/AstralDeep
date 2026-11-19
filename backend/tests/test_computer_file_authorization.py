@@ -14,6 +14,7 @@ from tests.test_computer_grant_flow_102 import CHAT, OWNER, ROOT, SCOPES, _call,
 from tests.test_hitl_public_research import runtime as runtime  # noqa: F401
 from tests.test_hitl_task_continuation import task_runtime as task_runtime  # noqa: F401
 from tests.test_lets_gate_ordering import gate_orchestrator as gate_orchestrator  # noqa: F401
+from tests.helpers.approval_task import begin_task
 
 
 @pytest.fixture(autouse=True)
@@ -118,7 +119,6 @@ async def test_server_failure_pause_can_be_captured_and_reviewed_again(task_runt
 
 @pytest.mark.parametrize("change", ["task", "chat", "generation", "manual_pause", "unanchored"])
 async def test_server_pause_never_recovers_changed_or_unanchored_authority(task_runtime, change):
-    from orchestrator import hitl_confirmation as hc
 
     orch, ws, *_ = task_runtime
     session, _host = await _mac(task_runtime, remote=True)
@@ -128,7 +128,7 @@ async def test_server_pause_never_recovers_changed_or_unanchored_authority(task_
     else:
         await rc.pause_failed_computer_approval(orch, ws, authority)
     if change == "task":
-        hc.begin_task(orch, ws, OWNER, CHAT)
+        begin_task(orch, ws, OWNER, CHAT)
     elif change == "chat":
         orch._ws_active_chat[id(ws)] = "other"
     elif change == "generation":
@@ -332,7 +332,6 @@ async def test_server_pause_without_a_task_origin_cannot_recover(task_runtime):
 
 
 async def test_bypass_task_change_during_server_resume_is_refused_without_review(task_runtime, monkeypatch):
-    from orchestrator import hitl_confirmation as hc
 
     orch, ws, effects, *_ = task_runtime
     session, _host = await _bypassed(task_runtime)
@@ -342,7 +341,7 @@ async def test_bypass_task_change_during_server_resume_is_refused_without_review
 
     async def changed(*args, **kwargs):
         await resume(*args, **kwargs)
-        hc.begin_task(orch, ws, OWNER, CHAT)
+        begin_task(orch, ws, OWNER, CHAT)
 
     monkeypatch.setattr(orch.computer_sessions, "resume", changed)
     response = await _call(task_runtime, "type_text", text="hello", hwnd=42)

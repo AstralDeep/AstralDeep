@@ -181,20 +181,6 @@ class ChainBudget:
                 return parent_reason
         return None
 
-    def slice(self, *, max_hops: Optional[int] = None,
-              wall_clock_s: Optional[float] = None) -> "ChainBudget":
-        return ChainBudget(
-            turn_id=self.turn_id,
-            chat_id=self.chat_id,
-            max_depth=self.max_depth,
-            max_hops=min(max_hops if max_hops is not None else self.max_hops,
-                         self.max_hops),
-            wall_clock_s=min(
-                wall_clock_s if wall_clock_s is not None else self.wall_clock_s,
-                max(self.wall_clock_s - self.elapsed_s(), 0.0)),
-            parent=self,
-        )
-
 
 @dataclass(frozen=True)
 class MachineAuthority:

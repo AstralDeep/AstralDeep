@@ -1093,8 +1093,6 @@ async def test_a2a_fallback_rejects_reserved_remote_mcp_id(monkeypatch, local_ga
         await runner.cleanup()
 
 
-
-
 _PEER_SIGNER = TestSigner()
 
 

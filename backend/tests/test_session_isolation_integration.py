@@ -37,7 +37,7 @@ def test_user_context_propagation(history_manager: HistoryManager):
 
     chat1_id = hm.create_chat(user_id="user1")
     hm.add_message(chat1_id, "user", "hello from user1", user_id="user1")
-    hm.update_chat_title(chat1_id, "User1 Chat", user_id="user1")
+    hm.rename_chat(chat1_id, "User1 Chat", user_id="user1")
     comp1_id = hm.save_component(
         chat_id=chat1_id,
         component_data={
@@ -52,7 +52,7 @@ def test_user_context_propagation(history_manager: HistoryManager):
 
     chat2_id = hm.create_chat(user_id="user2")
     hm.add_message(chat2_id, "user", "hello from user2", user_id="user2")
-    hm.update_chat_title(chat2_id, "User2 Chat", user_id="user2")
+    hm.rename_chat(chat2_id, "User2 Chat", user_id="user2")
     comp2_id = hm.save_component(
         chat_id=chat2_id,
         component_data={

@@ -302,20 +302,6 @@ def test_chat_created_draft_appears_in_drafts_surface_and_discards(monkeypatch):
         orch.sent.append((target, components))
     orch.send_ui_render = send_ui_render
 
-    async def handle_chat_message(websocket, message, chat_id, display_message=None,
-                                  user_id=None, draft_agent_id=None, selected_tools=None,
-                                  attachments=None):
-        await websocket.send_json({"type": "ui_render", "components": [
-            {"type": "card", "title": "ok", "content": [{"type": "text", "content": "fine"}]}]})
-    orch.handle_chat_message = handle_chat_message
-
-    async def derive_machine_authority(**kwargs):
-        from orchestrator.chain_authority import AuthoritySkip
-        return AuthoritySkip("missing_consent", "test double")
-    orch.derive_machine_authority = derive_machine_authority
-    orch._bind_machine_turn = lambda vws, authority: None
-    orch._unbind_machine_turn = lambda vws: None
-
     res = run(ac.handle_meta_tool(
         orch, "create_capability",
         {"agent_name": "Conv Agent", "description": "does convergence things",

@@ -255,39 +255,6 @@ class TypeSafeCredentialStore:
     async def clear(self, user_id: str) -> bool:
         return await asyncio.to_thread(self.clear_sync, user_id)
 
-    def record_outcome_sync(
-        self,
-        user_id: str,
-        outcome: Outcome,
-        fingerprint: str,
-    ) -> bool:
-        try:
-            applied = bool(
-                self._repository.call(
-                    self._repository.repository.record_outcome,
-                    owner_id=user_id,
-                    outcome=outcome,
-                    at=datetime.now(UTC),
-                    expected_fingerprint=fingerprint,
-                )
-            )
-        except Exception:  # pragma: no cover
-            logger.debug("TypeSafe outcome recording failed (non-fatal)", exc_info=True)
-            return False
-        if applied:
-            self.invalidate(user_id)
-        return applied
-
-    async def record_outcome_async(
-        self,
-        user_id: str,
-        outcome: Outcome,
-        fingerprint: str,
-    ) -> bool:
-        return await asyncio.to_thread(
-            self.record_outcome_sync, user_id, outcome, fingerprint
-        )
-
     def _discard_undecryptable(self, user_id: str) -> None:
         logger.warning(
             "Discarding undecryptable TypeSafe credential row (key rotation or "

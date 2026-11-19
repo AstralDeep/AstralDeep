@@ -6,63 +6,16 @@ from __future__ import annotations
 
 import asyncio
 import json
-from types import SimpleNamespace
-from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
 
 from orchestrator import node_mesh_chat
 from orchestrator.history import ConversationNotFound
-from orchestrator.node_mesh_calls import OrchestratorCalls
-from shared.feature_flags import flags
 from tests.test_node_mesh_kernel_integration import ak, paired, until  # noqa: F401
 from tests import test_node_mesh_peer_tools as peer_tools
 
 node_host = peer_tools.node_host
-
-
-@pytest.mark.parametrize("routing", [False, True])
-async def test_a_committed_node_answer_reaches_the_requesting_peer(node_host, tmp_path, monkeypatch, routing):
-    orch = node_host.orch
-    monkeypatch.setitem(flags._flags, "typesafe_routing", routing)
-    orch._llm_store.set_sync(
-        node_host.owner, provider="custom", base_url="http://test.invalid/v1", model="test-model", api_key="test-key",
-    )
-    usage = SimpleNamespace(prompt_tokens=1, completion_tokens=1, total_tokens=2)
-
-    async def model(*args, **kwargs):
-        return SimpleNamespace(
-            role="assistant", content="the committed node answer", tool_calls=None, reasoning_content=None,
-        ), usage
-
-    monkeypatch.setattr(orch, "_call_llm", model)
-    monkeypatch.setattr(orch, "_resolve_llm_client_for", AsyncMock(
-        return_value=(object(), None, SimpleNamespace(model="test-model", base_url=None)),
-    ))
-    monkeypatch.setattr(orch, "summarize_chat_title", AsyncMock())
-    async with paired(tmp_path, monkeypatch, creator=node_host.mesh_creator, calls=OrchestratorCalls(orch), history=orch.history) as (
-        node, peer, node_device, bridge,
-    ):
-        bridge._runner = node_mesh_chat.orchestrator_runner(orch)
-        chat = peer.create_chat("committed answer")
-        peer.send_message(chat, "hello", None)
-        await until(lambda: any(item.chat_id == chat for item in node.kernel.list_chats()), "chat sync")
-        request_id = peer.send_request(chat, "answer this request", node_device, None, None)
-        await until(
-            lambda: peer.request(request_id).state in (ak.RequestState.ANSWERED, ak.RequestState.REFUSED),
-            "node request completion",
-        )
-        request = peer.request(request_id)
-        assert request.state == ak.RequestState.ANSWERED, request.code
-        await until(
-            lambda: any(item.text == "the committed node answer" for item in peer.chat(chat).view.messages),
-            "answer sync",
-        )
-        assert [turn.id for turn in peer.chat(chat).view.turns] == [request.turn]
-        local = bridge.state.local_for(chat)
-        stored = await asyncio.to_thread(orch.history.get_chat, local, node_host.owner)
-        assert "the committed node answer" in json.dumps(stored)
 
 
 async def test_an_aborted_node_answer_is_never_observed(node_host, monkeypatch):

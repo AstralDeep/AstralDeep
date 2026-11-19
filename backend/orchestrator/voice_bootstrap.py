@@ -58,7 +58,6 @@ from orchestrator.voice_runtime import (
 )
 from orchestrator.voice_sessions import (
     ChatUnavailableMutation,
-    LocalTranscriptSubmission,
     RecognitionBinding,
     SessionControl,
     TranscriptAdmission,
@@ -2091,39 +2090,6 @@ class VoiceServices:
             raise failure
         return mutation.turn, authority
 
-    async def admit_local_final(
-        self,
-        *,
-        socket_id: int,
-        current_socket_id: int | None,
-        user_id: str,
-        frame: Any,
-        now: datetime,
-    ) -> TranscriptAdmission:
-        canonical = await self.verify_local_final_authority(
-            socket_id=socket_id,
-            current_socket_id=current_socket_id,
-            user_id=user_id,
-            frame=frame,
-            now=now,
-        )
-        authority = self.local_bindings.get_turn(
-            user_id=user_id,
-            client_turn_id=frame.client_turn_id,
-            now=now,
-        )
-        return await asyncio.to_thread(
-            self.repository.admit_local_transcript,
-            LocalTranscriptSubmission.from_authority(
-                user_id=user_id,
-                authority=authority,
-                expected_control_owner_id=self.runtime._replica_id,
-                detected_language="en",
-                canonical_text=canonical,
-            ),
-            now=now,
-        )
-
     async def verify_local_final_authority(
         self,
         *,
@@ -3888,38 +3854,6 @@ class VoiceServices:
             now=now,
         )
 
-    async def start_turn_announcements(self, turn: VoiceTurnRecord) -> None:
-        if not isinstance(turn, VoiceTurnRecord):
-            raise TypeError("turn must be VoiceTurnRecord")
-        if self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL:
-            try:
-                await self._publish_local_announcement(
-                    turn,
-                    kind="acknowledgement",
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.warning("voice_local_acknowledgement_unavailable")
-            return
-        await self._set_turn_idle(
-            turn,
-            listening=False,
-            user_input_gate=False,
-        )
-        future = asyncio.get_running_loop().create_future()
-        try:
-            runner = await self._announcement_runner(turn)
-            runner.submit(_AnnouncementCommand("start", turn, future))
-            await future
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger.warning(
-                "voice_acknowledgement_unavailable reason=%s",
-                _safe_failure_reason(exc),
-            )
-
     async def speak_preacceptance_rejection(
         self,
         turn: VoiceTurnRecord,
@@ -4041,155 +3975,6 @@ class VoiceServices:
         runner = await self._announcement_runner(turn)
         runner.submit(_AnnouncementCommand("resume", turn, future))
         await future
-
-    async def finish_turn_announcements(
-        self,
-        turn: VoiceTurnRecord,
-        *,
-        terminal_kind: str,
-        recap_text: str,
-        recap_source: str,
-        sensitivity: str,
-        result_commit_id: str | None,
-        with_delivery_status: bool = False,
-    ) -> VoiceTurnRecord | VoiceTerminalAnnouncementResult:
-        if terminal_kind not in {"succeeded", "failed", "refused", "cancelled"}:
-            raise ValueError("invalid_terminal_kind")
-        if self.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL:
-            terminal = await asyncio.to_thread(
-                self.repository.terminalize_turn,
-                user_id=turn.user_id,
-                turn_id=turn.turn_id,
-                terminal_kind=terminal_kind,
-                result_commit_id=result_commit_id,
-                recap_source=recap_source,
-                sensitivity=sensitivity,
-                now=datetime.now(UTC),
-            )
-            terminal_turn = terminal.turn
-            kind = {
-                "succeeded": "result",
-                "failed": "failure",
-                "refused": "refusal",
-                "cancelled": "cancellation",
-            }[terminal_kind]
-            try:
-                if kind == "result" and sensitivity == "non_sensitive" and recap_text:
-                    await self._publish_local_announcement(
-                        terminal_turn,
-                        kind=kind,
-                        text=recap_text,
-                        output_policy="full_recap",
-                        server_authorized=True,
-                    )
-                elif kind != "result":
-                    await self._publish_local_announcement(
-                        terminal_turn,
-                        kind=kind,
-                    )
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.warning("voice_local_terminal_announcement_unavailable")
-            delivery = VoiceTerminalAnnouncementResult(
-                turn=terminal_turn,
-                speech_outcome="source_finished",
-            )
-            return delivery if with_delivery_status else terminal_turn
-        future = asyncio.get_running_loop().create_future()
-        try:
-            runner = await self._announcement_runner(turn)
-            runner.submit(
-                _AnnouncementCommand(
-                    "terminal",
-                    turn,
-                    future,
-                    terminal_kind=terminal_kind,
-                    recap_text=recap_text,
-                    recap_source=recap_source,
-                    sensitivity=sensitivity,
-                    result_commit_id=result_commit_id,
-                )
-            )
-            delivery = await future
-            if not isinstance(delivery, VoiceTerminalAnnouncementResult):
-                raise VoiceBootstrapError("terminal_speech_outcome_unavailable")
-            terminal_turn = delivery.turn
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger.warning(
-                "voice_terminal_announcement_unavailable reason=%s",
-                _safe_failure_reason(exc),
-            )
-            refreshed = await asyncio.to_thread(
-                self.repository.get_turn,
-                user_id=turn.user_id,
-                turn_id=turn.turn_id,
-            )
-            if refreshed.state in {"succeeded", "failed", "refused", "cancelled"}:
-                await self._record_turn_event(
-                    refreshed,
-                    "turn",
-                    refreshed.state,
-                )
-                delivery = VoiceTerminalAnnouncementResult(
-                    turn=refreshed,
-                    speech_outcome=self._fallback_terminal_speech_outcome(refreshed),
-                )
-                return delivery if with_delivery_status else refreshed
-            if (
-                refreshed.state == "abandoned"
-                and refreshed.origin_chat_unavailable_at is not None
-            ):
-                return refreshed
-            if refreshed.state not in {
-                "accepted",
-                "processing",
-                "waiting_on_user",
-            }:
-                raise
-            terminal = await asyncio.to_thread(
-                self.repository.terminalize_turn,
-                user_id=refreshed.user_id,
-                turn_id=refreshed.turn_id,
-                terminal_kind=terminal_kind,
-                result_commit_id=result_commit_id,
-                recap_source=recap_source,
-                sensitivity=sensitivity,
-                now=datetime.now(UTC),
-            )
-            terminal_turn = terminal.turn
-            delivery = VoiceTerminalAnnouncementResult(
-                turn=terminal_turn,
-                speech_outcome=self._fallback_terminal_speech_outcome(terminal_turn),
-            )
-        await self._record_turn_event(
-            terminal_turn,
-            "turn",
-            terminal_kind,
-        )
-        if (
-            terminal_turn.session_id,
-            terminal_turn.session_generation,
-        ) in self.listening_sessions:
-            await self._set_turn_idle(
-                terminal_turn,
-                listening=True,
-                user_input_gate=False,
-            )
-        return delivery if with_delivery_status else terminal_turn
-
-    def _fallback_terminal_speech_outcome(self, turn: VoiceTurnRecord) -> str:
-        key = (turn.session_id, turn.session_generation)
-        if (
-            key in self.announcement_closed_sessions
-            or key in self.announcement_muted_sessions
-            or key in self.announcement_suspended_sessions
-            or turn.turn_id in self.announcement_abandoned_turns
-        ):
-            return "suppressed"
-        return "failed"
 
     async def stop_session_speech(
         self,
@@ -4431,24 +4216,6 @@ class VoiceServices:
                 )
                 break
         return prepared
-
-    async def remember_sensitive_recap(
-        self,
-        turn: VoiceTurnRecord,
-        *,
-        result_id: str,
-        text: str,
-    ) -> None:
-        await self.sensitive_recaps.remember(
-            user_id=turn.user_id,
-            session_id=turn.session_id,
-            generation=turn.session_generation,
-            media_grant_revision=turn.media_grant_revision,
-            turn_id=turn.turn_id,
-            result_id=result_id,
-            text=text,
-            now=datetime.now(UTC),
-        )
 
     async def consent_sensitive_recap(
         self,
