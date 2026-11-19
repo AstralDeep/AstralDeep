@@ -30,6 +30,7 @@ class Kernel:
         self.network = False
         self.tickets: list = []
         self.error = None
+        self.expiry = 4000
         Kernel.opened.append(self)
 
     @classmethod
@@ -55,7 +56,8 @@ class Kernel:
         self.tickets.append((ticket_json, action_json, effect))
         if self.error:
             raise KernelError(self.error)
-        return SimpleNamespace(mesh="m", device="d", turn="t", action_digest="sha256:" + "9" * 64, agents=["a"])
+        return SimpleNamespace(expires_s=self.expiry, mesh="m", device="d", turn="t",
+                               action_digest="sha256:" + "9" * 64, agents=["a"])
 
 
 class Denied(Exception):
@@ -168,7 +170,7 @@ async def test_an_enrolled_executor_verifies_and_maps_kernel_refusals(tmp_path):
     kernel.state = "ENROLLED"
     assert await verifier.state() == "enrolled"
     claims = await verifier.verify("T", "A", "outside_effect")
-    assert claims == mesh.Verified("m", "d", "t", "sha256:" + "9" * 64, ("a",))
+    assert claims == mesh.Verified("m", "d", "t", "sha256:" + "9" * 64, 4000, ("a",))
     assert kernel.tickets == [("T", "A", "outside_effect")]
     with pytest.raises(mesh.Refused, match="executor.enrolled"):
         await verifier.pairing_offer()
@@ -182,6 +184,55 @@ async def test_an_enrolled_executor_verifies_and_maps_kernel_refusals(tmp_path):
     kernel.error = None
     assert await verifier.state() == "enrolled"
     await verifier.stop()
+
+
+@pytest.mark.parametrize("after, expected", [
+    (None, None), ("gate.mesh_stopped", "gate.mesh_stopped"), (mesh.PENDING_LINEAGE, mesh.PENDING_LINEAGE),
+    ("sync.failure", "sync.failure"), ("removed", "executor.not_enrolled"),
+])
+async def test_verified_consent_lineage_can_sync_before_a_call(tmp_path, monkeypatch, after, expected):
+    verifier = await opened(tmp_path, None, loopback=True)
+    try:
+        await until(lambda: _is(verifier, "not_enrolled"))
+        kernel, = Kernel.opened
+        kernel.state = "ENROLLED"
+        kernel.error = mesh.PENDING_LINEAGE
+        syncs = []
+
+        async def sync():
+            syncs.append(True)
+            if after == "sync.failure":
+                raise KernelError(after)
+            if after == "removed":
+                kernel.state = "NOT_ENROLLED"
+            kernel.error = after
+
+        monkeypatch.setattr(kernel, "sync_now", sync, raising=False)
+        if after == mesh.PENDING_LINEAGE:
+            monkeypatch.setattr(mesh, "CONSENT_SYNC_SECONDS", 0.02)
+        if expected is None:
+            assert (await verifier.verify("T", "A", "outside_effect")).expires_s == 4000
+        else:
+            with pytest.raises(mesh.Refused) as refused:
+                await verifier.verify("T", "A", "outside_effect")
+            assert refused.value.code == expected
+        assert syncs == [True] and set(kernel.tickets) == {("T", "A", "outside_effect")}
+    finally:
+        await verifier.stop()
+
+
+@pytest.mark.parametrize("bad_expiry", [0, None, True, 2**63, "4000"])
+async def test_kernel_claims_require_a_valid_ticket_expiry(tmp_path, bad_expiry):
+    verifier = await opened(tmp_path, None, loopback=True)
+    try:
+        await until(lambda: _is(verifier, "not_enrolled"))
+        kernel, = Kernel.opened
+        kernel.state = "ENROLLED"
+        kernel.expiry = bad_expiry
+        with pytest.raises(mesh.Refused, match="ticket.bad_expiry"):
+            await verifier.verify("T", "A", "outside_effect")
+    finally:
+        await verifier.stop()
 
 
 async def test_the_keys_made_for_the_kernel_are_private_and_kept(tmp_path):

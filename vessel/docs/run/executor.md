@@ -36,9 +36,11 @@ The kernel's action has nine fixed fields and no owner or workspace, so a ticket
 
 Every refusal returns HTTP 403 with a dotted `code`, and nothing runs. 
 
+When an authenticated owner approval reaches the executor before the matching signed chat records, the executor requests mesh sync and rechecks the same ticket for up to six seconds. A missing approval after that interval returns `ticket.consent_sync_pending`. Verification completes before the executor records a use or calls the sandbox.
+
 ## Replay memory
 
-The executor writes each ticket's id to `spent.db` in its data volume before the tool runs, so a restart cannot replay a ticket. An id is kept for `VESSEL_REPLAY_RETENTION_SECONDS` (default 3600), which must be longer than the longest ticket life the owner's devices mint. The kernel's default is 300 seconds. The file holds at most 65536 live ids. When it is full the executor answers HTTP 429 with `executor.replay_memory_full` and runs nothing, rather than forget an id.
+The executor writes each ticket's id to `spent.db` in its data volume before the tool runs, so a restart cannot replay a ticket. New records retain the id through the ticket’s verified expiry second and for at least `VESSEL_REPLAY_RETENTION_SECONDS` (default 3600). Earlier records retain their recorded deadlines because they contain only the configured retention time. The file holds at most 65536 live ids. When it is full the executor answers HTTP 429 with `executor.replay_memory_full` and runs nothing, rather than forget an id.
 
 ## Joining the mesh
 
