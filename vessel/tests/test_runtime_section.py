@@ -6,6 +6,7 @@ import os
 import stat
 
 import pytest
+from conftest import needs_sh_scripts
 from pydantic import BaseModel, ConfigDict, ValidationError
 from test_deploy import LEGACY_OWNER, deployment_text
 
@@ -48,6 +49,7 @@ def test_a_compose_file_means_container_data_and_nothing_is_written(tmp_path, pa
     assert tree_bytes(tmp_path) == before
 
 
+@needs_sh_scripts
 def test_docker_volumes_alone_mean_container_data(tmp_path, package_dir, monkeypatch):
     path = write(tmp_path, package_dir)
     fake = tmp_path / "bin"

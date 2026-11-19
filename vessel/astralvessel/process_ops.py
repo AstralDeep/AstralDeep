@@ -203,7 +203,8 @@ def down(args: argparse.Namespace, stack: Stack, deployment: Deployment, *, runn
             except ProcessLookupError:
                 break
             time.sleep(0.2)
-    manager = Manager(sys.platform, deployment.node.project, runner, None, os.getuid())
+    manager = Manager(sys.platform, deployment.node.project, runner, None,
+                      os.getuid() if hasattr(os, "getuid") else 0)
     if any(manager._file(role).exists() for role in roles_of(deployment)):
         manager.stop(roles_of(deployment))
     if args.volumes:

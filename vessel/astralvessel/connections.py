@@ -162,6 +162,9 @@ def resolve(rows: list[dict[str, Any]], key: str) -> dict[str, Any]:
 class Listener(HTTPServer):
     # Bound before sign-in starts so the redirect's port is known; it keeps only the one callback address.
     def __init__(self, port: int = 0) -> None:
+        if sys.platform.startswith("win32"):
+            # Windows SO_REUSEADDR permits rebinding a live port; exclusive use keeps the busy-port refusal.
+            self.allow_reuse_address = False
         super().__init__((LISTEN_HOST, port), Handler)
         self.captured: str | None = None
         self.expected_state: str | None = None

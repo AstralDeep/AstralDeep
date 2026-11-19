@@ -80,7 +80,7 @@ class InstalledBundle:
 
 
 def platform_name() -> str:
-    machine = os.uname().machine.lower()
+    machine = os.uname().machine.lower() if hasattr(os, "uname") else "unknown"
     if sys.platform == "darwin":
         if machine in ("arm64", "aarch64"):
             return "macos-arm64"
@@ -147,8 +147,8 @@ def _permitted(location: str) -> None:
         return
     if url.scheme == "http" and (url.hostname or "").lower() in LOOPBACK_HOSTS:
         return
-    if url.scheme in ("", "file"):
-        return
+    if url.scheme in ("", "file") or len(url.scheme) == 1:
+        return  # a Windows drive letter parses as a one-character scheme
     raise BundleError("bundle.address", f"{location} is not an https address, a loopback address or a local path")
 
 
@@ -253,6 +253,8 @@ def tree_problems(root: Path, manifest: dict[str, Any]) -> list[str]:
             target = root / path
             if target.stat().st_size != entry.get("size") or _sha256_file(target) != entry.get("sha256"):
                 problems.append(f"content changed {path}")
+            elif sys.platform.startswith("win32"):
+                pass  # Windows cannot represent the executable bit; content digests still verify the tree
             elif bool(entry.get("executable")) != bool(mode & stat.S_IXUSR):
                 problems.append(f"mode changed {path}")
     return problems
@@ -277,6 +279,8 @@ def _load_manifest(path: Path, descriptor: dict[str, Any]) -> dict[str, Any]:
 
 
 def host_glibc() -> tuple[int, int] | None:
+    if not hasattr(os, "confstr"):
+        return None
     try:
         name = os.confstr("CS_GNU_LIBC_VERSION") or ""
     except (ValueError, OSError):

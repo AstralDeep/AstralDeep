@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 import pytest
+from conftest import needs_bash, needs_posix_modes
 from test_deploy import deployment_text
 
 from astralvessel import sandbox
@@ -117,17 +118,18 @@ def test_the_catalog_lists_every_tool_with_its_scope_and_definition(stack):
     listing = catalog(deployment)["guide"]
     assert listing["description"] == "A test agent." and listing["scope"] == "tools:execute"
     tools = {t["name"]: t for t in listing["tools"]}
-    assert set(tools) == {"read", "grep", "glob", "list", "bash", "echo"}
+    assert set(tools) == {"read", "grep", "glob", "list", "bash", "echo", "slow"}
     assert tools["bash"]["scope"] == "tools:execute" and tools["echo"]["input_schema"]["type"] == "object"
     assert tools["read"]["definition"] == definition_hash("guide", "read", tools["read"]["description"],
                                                          tools["read"]["input_schema"], {})
-    assert len({t["definition"] for t in tools.values()}) == 6
+    assert len({t["definition"] for t in tools.values()}) == 7
     assert effect_kind("tools:read") == effect_kind("tools:search") == "outward_read"
     assert effect_kind("tools:files") == effect_kind("tools:execute") == "outside_effect"
     assert args_digest("{}") == "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
     assert executor_token("m" * 16) != executor_token("n" * 16)
 
 
+@needs_posix_modes
 def test_replays_are_remembered_across_a_restart_and_forgotten_with_the_ticket(tmp_path):
     now = [1000.0]
     path = tmp_path / "state" / "spent.db"
@@ -193,6 +195,7 @@ async def test_expired_verified_claim_refuses_before_sandbox(stack, client):
     assert (response.status_code, response.json()["code"]) == (403, "ticket.expired")
 
 
+@needs_bash
 async def test_a_verified_call_runs_in_the_sandbox_and_returns_its_output(stack, client):
     deployment, verifier, _ = stack
     response = await client.post("/run", json=call(deployment), headers=AUTH)
@@ -298,10 +301,10 @@ async def test_an_agents_token_runs_only_that_agent_and_lists_only_its_tools(pac
     other.mkdir()
     (other / "vessel.toml").write_text(
         f'[agent]\nname = "other"\ndescription = "Another."\n[tools]\nbuiltin = ["list"]\n'
-        f'[sandbox]\nworkdir = "{tmp_path}"\n')
+        f'[sandbox]\nworkdir = "{tmp_path.as_posix()}"\n')
     path = tmp_path / "deployment.toml"
     path.write_text(deployment_text(package_dir, mounts="", egress=False) +
-                    f'\n[[agents]]\nid = "other"\npackage = "{other}"\n')
+                    f'\n[[agents]]\nid = "other"\npackage = "{other.as_posix()}"\n')
     deployment = load_deployment(path)
     runners = {}
     for agent_id, agent in deployment.agents.items():
@@ -366,6 +369,7 @@ async def test_ending_a_turn_reaches_the_sandbox_and_checks_its_arguments(stack,
         assert (response.status_code, response.json()["code"]) == (400, "request.malformed")
 
 
+@needs_bash
 async def test_long_output_is_clipped_to_the_agents_limit(stack, client):
     deployment, _, _ = stack
     limit = deployment.agents["guide"].package.manifest.sandbox.tool_output_chars

@@ -8,6 +8,7 @@ import stat
 from types import SimpleNamespace
 
 import pytest
+from conftest import needs_posix_modes
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
@@ -119,6 +120,8 @@ async def test_without_a_binding_every_ticket_is_refused(tmp_path):
     await verifier.stop()
 
 
+@needs_posix_modes
+@needs_posix_modes
 async def test_the_executor_waits_for_the_nodes_mailbox_and_then_offers_pairing(tmp_path):
     verifier = await opened(tmp_path, None, None, "MAILBOX")
     assert await verifier.state() == "waiting_for_node"
@@ -147,6 +150,8 @@ async def test_the_executor_waits_for_the_nodes_mailbox_and_then_offers_pairing(
     assert not kernel.network
 
 
+@needs_posix_modes
+@needs_posix_modes
 async def test_a_loopback_executor_opens_at_once_without_a_mailbox_and_stays_on_loopback(tmp_path):
     verifier = await opened(tmp_path, None, loopback=True)
     await until(lambda: _is(verifier, "not_enrolled"))
@@ -159,6 +164,8 @@ async def _is(verifier, state):
     return await verifier.state() == state
 
 
+@needs_posix_modes
+@needs_posix_modes
 async def test_an_enrolled_executor_verifies_and_maps_kernel_refusals(tmp_path):
     verifier = await opened(tmp_path, "MAILBOX")
 
@@ -186,55 +193,54 @@ async def test_an_enrolled_executor_verifies_and_maps_kernel_refusals(tmp_path):
     await verifier.stop()
 
 
+@pytest.fixture
+def enrolled_verifier(tmp_path):
+    kernel = Kernel(config=None, signer=None)
+    kernel.state = "ENROLLED"
+    verifier = mesh.KernelVerifier(tmp_path, binding=binding(), mailbox=Mailbox(None))
+    verifier._kernel = kernel
+    return verifier, kernel
+
+
 @pytest.mark.parametrize("after, expected", [
     (None, None), ("gate.mesh_stopped", "gate.mesh_stopped"), (mesh.PENDING_LINEAGE, mesh.PENDING_LINEAGE),
     ("sync.failure", "sync.failure"), ("removed", "executor.not_enrolled"),
 ])
-async def test_verified_consent_lineage_can_sync_before_a_call(tmp_path, monkeypatch, after, expected):
-    verifier = await opened(tmp_path, None, loopback=True)
-    try:
-        await until(lambda: _is(verifier, "not_enrolled"))
-        kernel, = Kernel.opened
-        kernel.state = "ENROLLED"
-        kernel.error = mesh.PENDING_LINEAGE
-        syncs = []
+async def test_verified_consent_lineage_can_sync_before_a_call(enrolled_verifier, monkeypatch, after, expected):
+    verifier, kernel = enrolled_verifier
+    kernel.error = mesh.PENDING_LINEAGE
+    syncs = []
 
-        async def sync():
-            syncs.append(True)
-            if after == "sync.failure":
-                raise KernelError(after)
-            if after == "removed":
-                kernel.state = "NOT_ENROLLED"
-            kernel.error = after
+    async def sync():
+        syncs.append(True)
+        if after == "sync.failure":
+            raise KernelError(after)
+        if after == "removed":
+            kernel.state = "NOT_ENROLLED"
+        kernel.error = after
 
-        monkeypatch.setattr(kernel, "sync_now", sync, raising=False)
-        if after == mesh.PENDING_LINEAGE:
-            monkeypatch.setattr(mesh, "CONSENT_SYNC_SECONDS", 0.02)
-        if expected is None:
-            assert (await verifier.verify("T", "A", "outside_effect")).expires_s == 4000
-        else:
-            with pytest.raises(mesh.Refused) as refused:
-                await verifier.verify("T", "A", "outside_effect")
-            assert refused.value.code == expected
-        assert syncs == [True] and set(kernel.tickets) == {("T", "A", "outside_effect")}
-    finally:
-        await verifier.stop()
+    monkeypatch.setattr(kernel, "sync_now", sync, raising=False)
+    if after == mesh.PENDING_LINEAGE:
+        monkeypatch.setattr(mesh, "CONSENT_SYNC_SECONDS", 0.02)
+    if expected is None:
+        assert (await verifier.verify("T", "A", "outside_effect")).expires_s == 4000
+    else:
+        with pytest.raises(mesh.Refused) as refused:
+            await verifier.verify("T", "A", "outside_effect")
+        assert refused.value.code == expected
+    assert syncs == [True] and set(kernel.tickets) == {("T", "A", "outside_effect")}
 
 
 @pytest.mark.parametrize("bad_expiry", [0, None, True, 2**63, "4000"])
-async def test_kernel_claims_require_a_valid_ticket_expiry(tmp_path, bad_expiry):
-    verifier = await opened(tmp_path, None, loopback=True)
-    try:
-        await until(lambda: _is(verifier, "not_enrolled"))
-        kernel, = Kernel.opened
-        kernel.state = "ENROLLED"
-        kernel.expiry = bad_expiry
-        with pytest.raises(mesh.Refused, match="ticket.bad_expiry"):
-            await verifier.verify("T", "A", "outside_effect")
-    finally:
-        await verifier.stop()
+async def test_kernel_claims_require_a_valid_ticket_expiry(enrolled_verifier, bad_expiry):
+    verifier, kernel = enrolled_verifier
+    kernel.expiry = bad_expiry
+    with pytest.raises(mesh.Refused, match="ticket.bad_expiry"):
+        await verifier.verify("T", "A", "outside_effect")
 
 
+@needs_posix_modes
+@needs_posix_modes
 async def test_the_keys_made_for_the_kernel_are_private_and_kept(tmp_path):
     verifier = await opened(tmp_path, "MAILBOX")
 
@@ -257,6 +263,8 @@ async def test_the_keys_made_for_the_kernel_are_private_and_kept(tmp_path):
     await again.stop()
 
 
+@needs_posix_modes
+@needs_posix_modes
 async def test_the_signer_signs_for_the_kernel_but_never_for_an_owners_consent(tmp_path):
     verifier = await opened(tmp_path, "MAILBOX")
 
@@ -280,6 +288,7 @@ async def test_the_signer_signs_for_the_kernel_but_never_for_an_owners_consent(t
     await verifier.stop()
 
 
+@needs_posix_modes
 def test_a_key_file_with_loose_modes_or_bad_content_is_refused(tmp_path):
     def load():
         return keys.ExecutorKeys.load_or_create(tmp_path, new_secret=lambda: os.urandom(32))
@@ -305,6 +314,7 @@ def test_a_key_file_with_loose_modes_or_bad_content_is_refused(tmp_path):
         load()
 
 
+@needs_posix_modes
 def test_a_loose_directory_is_tightened_and_a_failed_write_leaves_no_half_file(tmp_path):
     tmp_path.chmod(0o755)
     keys.ExecutorKeys.load_or_create(tmp_path, new_secret=lambda: os.urandom(32))
