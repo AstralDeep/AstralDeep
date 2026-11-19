@@ -10,8 +10,10 @@ owner's rulings on the open questions, the phases, and how to tell each phase is
 Paths under "105" are `specs/105-decentralized-personal-mesh/contracts/`. Paths under "106" are
 `specs/106-sign-in-free-clients/contracts/`. Kernel paths are in the AstralKernel repository at
 `eb9821f4`. A line marked **today** was read from the code or a contract on 2026-11-18. The
-[spec](spec.md) checked these lines again at Kernel `dbab48b9` and corrected one, in section 3.6.
-It also proposes one change, in sections 3.7 and 5, which awaits the owner (spec section 9).
+[spec](spec.md) read some of these lines again at Kernel `dbab48b9` and covered the rest by the
+diff since `eb9821f4` (spec section 4). It corrected one, in section 3.6. It proposes writing the
+capability statement only from Phase 3, in sections 3.7 and 5, which awaits the owner. Spec section 9
+lists that call, the others and the decisions made under delegation.
 
 ## 1. The ruling
 
@@ -124,12 +126,14 @@ new key.
 106 `phi-destinations.md` section 8 already states this rule for both groups, and its section 10
 says the first personal write after an epoch change introduces a new key. Its vectors carry the
 personal cases. The Kernel applies the rule only to PHI writes, through `chat_write_key`, so this is
-Kernel conformance work and needs no contract change. Corrected 2026-11-18 against Kernel `dbab48b9`.
+Kernel conformance work and changes no contract rule. Corrected 2026-11-18 against Kernel `dbab48b9`.
+106 says a deployed Kernel keeps sealing with the `chat.create` key. That holds for the pre-106
+Kernel, while 2.1.0 adopts a rotated key (spec section 4), so task R4.8 adds a note to 106.
 
 Two things follow.
 
-- `from_now` then means what it says. The joiner reads every message written after it joined, in old
-  chats and new ones.
+- `from_now` then means what it says. The joiner reads every message sealed after it joined by a
+  writer that has folded the join epoch, in old chats and new ones.
 - Removing a device then protects later messages in old chats, which the epoch change alone does not
   do today.
 
@@ -183,7 +187,7 @@ never receives their bodies.
 | 105 `event.md` sections 2, 6, 7, 11 | Header sealed under the epoch key | The split envelope form, the new key reference, the error codes |
 | 105 `roster.md` section 8, 106 `roster-v2.md` | "The owner may grant only the current one" | The three history choices, the header-only grant, `pairing.history_unavailable` and its reasons |
 | 105 `sync.md` sections 4 and 5 | Hold aside on an unknown epoch, withhold PHI | Serving header-only holders, the `history` reason, the capability and activation statements |
-| 106 `phi-destinations.md` | The current-key rule for both groups, and line 140. The Kernel follows it for PHI only | Line 140 is revised. The Kernel follows the rule for personal chats |
+| 106 `phi-destinations.md` | The current-key rule for both groups, and line 140. The Kernel follows it for PHI only | Line 140 is revised, and a note on 2.1.0 is added to sections 8 and 10. The Kernel follows the rule for personal chats |
 | Vectors and reference | 105 `event`, `keys`, `roster`, `sync`, `mailbox`. 106 `share`, `phi-destination`, `contacts`, `roster-v2` | New vectors for both forms. The Kernel's pinned copies are vendored again |
 | Kernel `astral-core` | `KeyRing`, `SealRequest`, `seal_event_with`, `open_header`, `wrap_epoch_key` | Derived keys, both forms, the header-only wrap |
 | Kernel `astral-mesh` | `EpochKeys`, `HistoryGrant`, `approve_request`, `grant_epochs`, `join_from_bundle` | Header-only holdings, the grant, activation |
@@ -230,18 +234,20 @@ timing is proposed by the spec and awaits the owner.
 Finished when a mixed mesh of old-form and new-form writers converges in the Kernel's sync tests, and
 a header-only holder verifies every chain and opens no old content key.
 
-### Phase 3: activation and the current-key rule
+### Phase 3: activation and limited history
 
-Activation, split-format writing, the personal current-key rule, and the pairing refusal behind
-activation.
+Activation, split-format writing, `from_now` grants, and the pairing refusal behind activation.
 
 Finished when these pass through the real Kernel calls.
 
-- `from_now`: the joiner reads messages written after the join in an old chat, and reads nothing
-  written before it.
-- A removed device cannot open a message written to an old chat after its removal.
+- `from_now`: the joiner reads messages written after the join in an old chat by a writer that has
+  folded the join epoch, and reads nothing written before it.
 - Pairing with limited history is refused before activation, and the refusal names the devices.
-- A device that cannot announce the capability is refused at pairing.
+- A device that cannot announce the capability is refused at pairing and not seated by the fold.
+
+The personal current-key rule is not part of this phase. It ships on its own as track R4 in the
+[tasks](tasks.md), as ruling 4 requires. Its finish line is that a removed device cannot open a
+message written to an old chat after its removal.
 
 ### Phase 4: consumers
 
