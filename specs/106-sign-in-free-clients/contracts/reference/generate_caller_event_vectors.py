@@ -16,7 +16,7 @@ sys.path.insert(0, str(HERE))
 caller_events = importlib.import_module("caller_events")
 
 VECTORS = HERE.parent / "vectors"
-NAME = "caller-events-v1.json"
+NAME = "caller-events-v2.json"
 SPEC = "106/contracts/caller-events.md"
 SECRET_EVENT = {
     "signal": "consent.blocked",
@@ -50,6 +50,12 @@ def generate() -> dict[str, Any]:
                     "visible",
                     {"principal": principal, "turns": turns, "signal": signal},
                 )
+    for principal in caller_events.PRINCIPALS:
+        for device in ("requesting-device", "another-device"):
+            add(f"node_consent_{principal}_{device}", "node_consent_recipient",
+                {"principal": principal, "device": device, "requester": "requesting-device"})
+    add("node_consent_missing_requester", "node_consent_recipient",
+        {"principal": "owner-device", "device": "requesting-device", "requester": ""})
     add("consent_class_unknown_principal", "consent_class", {"principal": "contact", "turns": False})
     add("consent_class_turns_not_boolean", "consent_class", {"principal": "caller-ticket", "turns": 1})
     add("visible_unknown_signal", "visible", {"principal": "owner-device", "turns": True, "signal": "ConsentApproved"})

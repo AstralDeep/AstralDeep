@@ -12,7 +12,7 @@ import pytest
 import caller_events
 
 ROOT = Path(__file__).resolve().parents[5]
-VECTORS = json.loads((Path(__file__).resolve().parents[2] / "vectors" / "caller-events-v1.json").read_text())
+VECTORS = json.loads((Path(__file__).resolve().parents[2] / "vectors" / "caller-events-v2.json").read_text())
 ORCHESTRATOR = ROOT / "backend" / "orchestrator"
 
 
@@ -53,6 +53,14 @@ def node_tables() -> dict[str, set[str]]:
 @pytest.mark.parametrize("case", VECTORS["cases"], ids=lambda case: case["name"])
 def test_the_reference_answers_every_vector(case):
     assert caller_events.run(case["kind"], case["input"]) == case["expect"]
+
+
+def test_only_the_requesting_owner_can_review_a_node_turn():
+    cases = [c for c in VECTORS["cases"] if c["kind"] == "node_consent_recipient"]
+    assert [c["input"] for c in cases if c["expect"].get("visible")] == [
+        {"principal": "owner-device", "device": "requesting-device", "requester": "requesting-device"},
+    ]
+    assert any(c["expect"].get("code") == "events.malformed" for c in cases)
 
 
 def test_the_vector_header_matches_the_reference():

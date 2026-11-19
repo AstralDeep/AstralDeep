@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Any
 
-FORMAT = "astral.caller-events/v1"
+FORMAT = "astral.caller-events/v2"
 UNAUTHORIZED = (
     "node.bearer_refused",
     "caller.malformed",
@@ -85,6 +85,13 @@ def visible(principal: Any, turns: Any, signal: Any) -> bool:
     return False
 
 
+def can_review_node_consent(principal: Any, device: Any, requester: Any) -> bool:
+    _principal(principal, True)
+    if not all(isinstance(item, str) and item for item in (device, requester)):
+        raise EventsError("events.malformed")
+    return principal == "owner-device" and device == requester
+
+
 def redact(event: Any) -> dict[str, Any]:
     if not isinstance(event, dict) or event.get("signal") not in CALLER_SIGNALS or not isinstance(event.get("request"), str):
         raise EventsError("events.malformed")
@@ -99,6 +106,8 @@ def run(kind: str, case: dict[str, Any]) -> dict[str, Any]:
             return {"consent": consent_class(case["principal"], case["turns"])}
         if kind == "visible":
             return {"visible": visible(case["principal"], case["turns"], case["signal"])}
+        if kind == "node_consent_recipient":
+            return {"visible": can_review_node_consent(case["principal"], case["device"], case["requester"])}
         if kind == "redact":
             return {"event": redact(case["event"])}
     except EventsError as error:
