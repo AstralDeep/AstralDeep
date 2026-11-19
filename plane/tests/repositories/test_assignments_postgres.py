@@ -2892,7 +2892,9 @@ def test_revision_cannot_reinterpret_spent_or_outstanding_currency(
 def test_retirement_cancels_queued_work_and_preserves_existing_read_state(tx, repo):
     persistent = create(repo, tx)
     current = claim(repo, tx)
-    task = AssignmentTask("task", "plan", 1, "Read", "Read source", persistent.definition.allowed_tools)
+    task = AssignmentTask(
+        "task", "plan", 1, "Read", "Read source", persistent.definition.allowed_tools
+    )
     repo.put_task_plan(
         tx, fence=current.fence, expected_state_version=current.assignment.state_version,
         plan_key="plan", plan_digest=digest([task]), tasks=(task,),

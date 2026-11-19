@@ -1,11 +1,9 @@
 # Production deployment (operator guide)
 
-AstralDeep is a **server-driven UI (SDUI) backend service**: one Python
-process serves the REST API and the WebSocket channel on port **8001**. It
-hosts no web shell or static assets, and it runs turns only on the Kernel engine. There is no frontend build step, no
-Node toolchain, and no separate static server. `astralprims` defines the
-primitives, the orchestrator renders them (`components/AstralProjection/backend/webrender/`), and ROTE
-adapts the output per device.
+AstralDeep serves the personal node API on port **8001**. It publishes the node
+descriptor and provides loopback pairing and operator controls. When enabled,
+MCP and A2A accept calls with owner-minted tickets. Owner devices send turns
+over the mesh, and the Kernel runs them.
 
 This guide covers one personal node in production posture. A personal node
 serves one owner and has no sign-in. Callers authenticate by a roster-listed
@@ -44,10 +42,9 @@ Additionally, in production mode:
   only after the peer answers an unauthenticated probe with the
   `AstralAgentKey` challenge, and only to a destination listed under
   `AGENT_KEY_TRUSTED_HOSTS` (see below).
-- The node hosts no browser shell. A web client is a later application-layer client.
-  REST and WebSocket requests without a roster-listed device key and a mesh
-  ticket, or an owner-minted caller ticket, are refused. Bearer JWTs are
-  refused.
+- Owner devices send turns over the mesh. The optional MCP and A2A endpoints
+  require an owner-minted caller ticket and a proof signed by its holder.
+  Loopback pairing and operator requests use separate local secrets.
 
 Local development opts out explicitly with `ASTRAL_ENV=development`.
 
@@ -69,38 +66,19 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 
 ## LLM credentials (feature 054 — bring your own)
 
-The product ships with **no LLM credential** and no way to supply a
-deployment-wide default for user traffic:
+The owner configures a model provider on their Mac or iPhone. The device uses
+its secure field and keystore. A pasted key can sync sealed to the owner's
+devices. A sign-in credential stays on the device that signed in. Booting
+the personal node requires no provider credential. See the
+[credential item contract](../specs/106-sign-in-free-clients/contracts/credential-items.md).
 
-- **Users** connect their own provider through the mandatory first-run
-  dialog (or Settings → LLM settings later). The configuration persists
-  per-user (`user_llm_config`; API key Fernet-encrypted under
-  `CREDENTIAL_ENCRYPTION_KEY`) and applies to all of the user's devices.
-- **Admins** configure the deployment-wide **System LLM** (Settings →
-  System LLM, admin-only, web) used exclusively for background work —
-  scheduled jobs, attachment-parser codegen, knowledge synthesis,
-  conversation compaction, workspace combine/condense, job summaries.
-  Without it those features skip/fail honestly; user chat is unaffected.
-- **Migration from pre-054 deployments**: the legacy env vars
-  (`OPENAI_API_KEY`, `OPENAI_BASE_URL`, `LLM_MODEL`, `KNOWLEDGE_LLM_MODEL`)
-  are **inert** — remove them from the host `.env`. They are never
-  migrated into any store: the owner configures fresh at the next start,
-  and an admin sets the System LLM in-app if background features are
-  wanted. Boot does not require any LLM configuration.
+## Client-hosted agents
 
-## BYO client-side agents (features 057/058 — default OFF)
-
-User-authored agents that run on the **user's own desktop** as an isolated child
-process and tunnel inward over the client's authenticated UI socket. **Off by
-default** and safe to leave off. To enable, set `FF_BYO_AGENTS=true` in the host
-`.env` and run `make apply-config` — the flag is read once at import, so a plain
-container restart does not reload a changed Compose environment. The apply target
-recreates the service and prints only the normalized effective flag value. There
-is no admin UI for this boot switch. No new runtime dependency or port is added.
-User code is never executed on the orchestrator (pure-AST static validation); it
-runs only on an eligible user's desktop and is untrusted at the boundary. Full
-enablement, verification, security posture, lifecycle/recovery, compatibility,
-rollback, and desktop-host packaging guidance: **[byo-client-agents.md](byo-client-agents.md)**.
+The legacy desktop agent tunnel required a browser UI socket and is unavailable
+on a personal node. For the historical transport and feature flag, see
+[BYO client agents](byo-client-agents.md). The current node pairs over the
+mesh and publishes tools from its configured executor. See
+[sandboxed tools](personal-node.md#sandboxed-tools).
 
 ## Server-hosted generated agents (features 027/031) — pre-execution gate
 
@@ -139,16 +117,16 @@ reverse proxy (nginx, Caddy, Traefik) in front of it in production:
 2. The orchestrator trusts those headers only from `FORWARDED_ALLOW_IPS`
    (default `127.0.0.1`; set to your proxy's address or `*` inside a private
    network). This is what makes `request.base_url` https.
-3. WebSockets: ensure the proxy upgrades `/ws` (and `/agent` if agents
-   connect through it). nginx needs the standard
-   `proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection "upgrade";`.
+3. Deployments that enable the voice worker control socket must forward WebSocket
+   upgrades for `/api/voice/worker-control` on the worker's configured route.
 4. Set `PUBLIC_BASE_URL`/`BACKEND_PUBLIC_URL` to the public https origin.
 
 ## Conversational voice (features 065/066/075) — deployment topology contract
 
-This section is the FR-037 production topology contract: the reverse-proxy
-voice host rules, the environment contract (including worker closure digest
-provenance and coordinator replica identity), and the diagnosis runbook.
+Mac and iPhone voice input runs on the owner device. The personal node can
+host an authenticated worker control socket. The worker settings below also
+apply to the isolated qualification app that exercises voice session lifecycle
+and media.
 
 ### Production URLs
 
@@ -161,10 +139,9 @@ different things and BOTH must be TLS in production:
 2. `LIVEKIT_INTERNAL_URL=https://<voice vhost>` — what the ORCHESTRATOR and
    the VOICE WORKER use. The coordinator derives the worker's RTC URL from it
    (`http`→`ws`, `https`→`wss`) and refuses a plaintext derivation outside
-   development — the symptom is every `POST /api/voice/sessions` failing
-   `503 invalid_livekit_url`. The compose default
-   (`http://livekit:7880`) is for local development only; production MUST
-   override it in `.env`.
+   development with `invalid_livekit_url`. The Compose default
+   (`http://livekit:7880`) is for local development. Set an HTTPS URL for a
+   production worker.
 
 ### Reverse-proxy voice host rules
 
@@ -189,10 +166,8 @@ and LiveKit's HTTP admin API (`/twirp`) — a plain `proxy_pass` to
 WebRTC MEDIA does not traverse the proxy: `LIVEKIT_NODE_IP` must be the
 host's routable address, and the UDP media range (`50000-50099` in the
 bundled config, plus TCP 7881 fallback) must be reachable from clients.
-The MAIN app vhost proxies `/api/voice/*` REST plus the worker-control
-WebSocket (`/api/voice/worker-control`) to the orchestrator like every
-other `/api` route. The watchOS PCM bridge is the one exception: the
-WORKER serves `/api/voice/watch-bridge` itself on
+The main app vhost proxies the configured worker-control WebSocket at
+`/api/voice/worker-control` to the orchestrator. The worker serves `/api/voice/watch-bridge` itself on
 `VOICE_WATCH_BRIDGE_LISTEN_PORT` (compose publishes `127.0.0.1:7890`), so
 `VOICE_WATCH_BRIDGE_PUBLIC_URL`'s host needs its own upgrade-capable proxy
 rule to the worker's port — proxying that path to the orchestrator 404s.
@@ -240,15 +215,14 @@ changed Compose environment. Apply either change with:
 docker compose up -d --force-recreate astraldeep
 ```
 
-For a planned backend change:
+For a planned backend change in the isolated voice session qualification app:
 
 1. Announce the maintenance window and drain or end known voice sessions
    through their normal authenticated controls. Keep the current selector, set
    `FF_CONVERSATIONAL_VOICE=false`, and force-recreate `astraldeep`. Graceful
    shutdown ends sessions owned by the outgoing replica; the replacement
-   process refuses new voice admission. Confirm authenticated
-   `/api/voice/v2/capability` and `/api/voice/v2/status` report
-   `feature_disabled`.
+   process refuses new voice admission. Verify the qualification client's
+   capability and status responses report `feature_disabled`.
 2. If the outgoing process did not shut down cleanly, an old-backend row stays
    bound to its original backend and the replacement refuses non-terminal work
    through another strategy. End it through the shared authenticated control,
@@ -288,20 +262,13 @@ fall back silently within a session.
 
 ### Diagnosis runbook
 
-First stop (FR-034): `GET /api/voice/status` (authenticated) reports
-admitted workers (identity, accepted/active sessions, registered-at) and the
-most recent admission refusals with stage + reason. `reason:
-"worker_unavailable"` with an `authentication`-stage refusal loop means a
-control-secret mismatch — recreate the worker (stale env). An empty worker
-list with NO refusals means the worker never dialed in — check its own logs
-for preflight or DNS failures.
-
-The full log-correlation runbook (both-container log reads, recreate
-commands, closure verification) lives at
-[specs/066-canvas-first-uiux/voice-prod-diagnosis.md](../specs/066-canvas-first-uiux/voice-prod-diagnosis.md);
-its two top suspects — stale recreated env and a worker that preflighted
-before the speech service was live — are the observed production failure
-modes.
+Use `docker compose logs --since=10m voice-worker astraldeep` to inspect both
+ends of the worker connection. Worker logs record speech preflight failures
+and reconnect attempts. Orchestrator logs record worker-control closure
+reasons. If the worker repeatedly fails its authentication challenge, verify
+that both containers were recreated with the same worker-control secret.
+For a closure mismatch, verify the deployed worker digest against its build
+manifest.
 
 ## External LETS warden (feature 074 Phase B — default `off`)
 
@@ -320,7 +287,7 @@ without LETS.
 | Endpoint | Meaning | Use |
 |---|---|---|
 | `GET /healthz` | Process is serving | Liveness probe |
-| `GET /readyz` | Database answers (`503` + `{"db":"unreachable"}` otherwise) | Readiness probe / compose healthcheck |
+| `GET /readyz` | Checks persistence and LETS readiness. A failed persistence probe returns 503 with `persistence: unready`. | Readiness probe / Compose healthcheck |
 
 Both are ungated (no user data) and excluded from access logs.
 `docker-compose.yml` wires `/readyz` as the container healthcheck
@@ -355,9 +322,8 @@ In `shadow` or `enforce` mode it reads:
   enforce instance whose warden went away is taken out of rotation within
   one probe interval. A failed probe never changes boot: the process still
   starts and the readiness probe, not the constructor, gates traffic.
-  `shadow` degradation stays 200 (`status: degraded`, existing behavior
-  unchanged). Admins can read the full redacted projection at
-  `GET /lets/health`.
+  In `shadow` mode, a degraded warden leaves HTTP readiness at 200. Inspect
+  the `lets` entry in the same response for its reason.
 
 ## Apple clients (App Store)
 
@@ -656,9 +622,9 @@ provisioning profiles / ASC API key, and the on-device verification evidence.
   lines (surface renders, chat-turn phases, boot phases);
   summarize with `python scripts/perf_report.py` (run from `backend/`,
   feeding it the app log).
-- The tamper-evident audit trail (per-user HMAC hash chain) is queryable via
-  `GET /api/audit` (per-user) and verifiable server-side:
-  `python -m audit.cli verify-chain --user-id <id>`.
+- To verify a user's HMAC-linked audit trail, run
+  `python -m audit.cli verify-chain --user-id <id>` from the backend
+  directory in the configured node environment.
 
 ## Deploying the node image (GHCR path)
 
@@ -761,8 +727,8 @@ DB_PORT=5432
   `http://127.0.0.1:8001`, forwarding `X-Forwarded-Proto`/`X-Forwarded-For`.
 - The orchestrator trusts those headers **only** from `FORWARDED_ALLOW_IPS`
   (set it to the proxy's address).
-- The proxy must upgrade WebSockets on `/ws` (and `/agent` if agents connect
-  through it).
+- If voice worker control is enabled, its proxy route must forward WebSocket
+  upgrades for `/api/voice/worker-control`.
 
 The exit-78 boot gate is the final guard: if the host `.env` is incomplete,
 the pulled image refuses to serve and prints one consolidated checklist in
@@ -784,7 +750,7 @@ the pulled image refuses to serve and prints one consolidated checklist in
     anything other than loopback or a Docker host alias (else its card
     fetch 401s and the agent never registers)
 [ ] PUBLIC_BASE_URL/BACKEND_PUBLIC_URL = public https origin
-[ ] Reverse proxy terminates TLS, forwards X-Forwarded-*, upgrades /ws
+[ ] Reverse proxy terminates TLS and forwards X-Forwarded-* from trusted sources
 [ ] FORWARDED_ALLOW_IPS = proxy address
 [ ] Node data directory backed up, including the node key and mesh keys
 [ ] docker compose up -d; container healthcheck goes healthy (/readyz)
