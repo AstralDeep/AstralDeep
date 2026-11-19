@@ -297,4 +297,3 @@ async def test_execute_mcp_tool_uses_gate_dispatch_and_cap_cleanup_without_token
         tool_name="read",
         arguments={},
     ) is completed
-

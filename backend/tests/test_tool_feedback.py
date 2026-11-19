@@ -54,5 +54,3 @@ def test_review_refusal_explains_no_execution_without_leaking_arguments(code):
     assert notice["message"] == tool_feedback.PUBLIC_ERRORS[code]
     assert notice["message"].startswith("No ")
     assert "private patient and credential detail" not in json.dumps(notice)
-
-

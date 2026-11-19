@@ -297,5 +297,3 @@ async def test_deliver_hop_response_send_failure_swallowed(orch):
             raise RuntimeError("socket dead")
 
     await orch._deliver_hop_response(_BadWS(), "hop-1", MCPResponse(result="x"))
-
-

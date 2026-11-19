@@ -145,4 +145,3 @@ _ACTIVE_STAGE: contextvars.ContextVar[ScheduledHistoryStage | None] = (
 
 def current_scheduled_history_stage() -> ScheduledHistoryStage | None:
     return _ACTIVE_STAGE.get()
-

@@ -130,4 +130,3 @@ async def test_single_tool_valid_json_still_dispatches_normally() -> None:
     assert "JSON" not in result.error["message"]
     rendered_msgs = [c["message"] for c in orch._rendered_ui[0]["components"]]
     assert not any("not valid JSON" in m for m in rendered_msgs)
-

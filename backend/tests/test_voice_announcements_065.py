@@ -25,4 +25,3 @@ def test_bounded_terminal_and_rejection_phrases_remain_concise(
     expected_text: str,
 ) -> None:
     assert APPROVED_PHRASE_TEXT[phrase_key] == expected_text
-

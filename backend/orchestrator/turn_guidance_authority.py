@@ -420,4 +420,3 @@ class TurnGuidanceReader:
             raise
         except Exception as exc:
             _refuse(cause=exc)
-

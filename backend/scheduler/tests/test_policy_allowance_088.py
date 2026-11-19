@@ -231,4 +231,3 @@ def test_stop_job_refuses_stale_version_and_missing_policy(
     with pytest.raises(ScheduleActionError) as excinfo:
         store.stop_job(owner, job_id, expected_version=99)
     assert excinfo.value.code == "schedule_policy_version_conflict"
-

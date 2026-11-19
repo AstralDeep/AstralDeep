@@ -95,4 +95,3 @@ def get_context_window(
     context_window: int | None = None,
 ) -> int:
     return _qualified_context_window(model_name, provider, context_window=context_window)
-

@@ -378,5 +378,3 @@ async def test_durable_execution_socket_forwards_only_rejection_and_scrubs() -> 
     assert "owner-065" not in repr(socket)
     await socket.send_json({"type": "voice_submission_rejected"})
     assert len(origin.sent) == 1
-
-

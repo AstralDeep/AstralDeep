@@ -353,4 +353,3 @@ async def test_real_sensitive_output_remains_redacted(command_world):
     response = await world.call()
     data = response.result["_data"]
     assert "123-45-6789" not in data["stdout"] and data["privacy"] in {"redacted", "withheld"}
-

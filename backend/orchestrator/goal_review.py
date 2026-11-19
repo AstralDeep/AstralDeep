@@ -10,4 +10,3 @@ _ACTIVE_COMMAND = contextvars.ContextVar("goal_review_command", default=None)
 
 def is_active_review_command(arguments):
     return _ACTIVE_COMMAND.get() == arguments and _ACTIVE_COMMAND.get() is not None
-

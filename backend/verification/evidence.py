@@ -93,4 +93,3 @@ class CapturedEvidence:
             "extra": self.extra,
             "near_exposure": self.near_exposure,
         }
-

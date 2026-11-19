@@ -289,4 +289,3 @@ def store_for(orch):
         store = UserSkillFacade(orch, knowledge_dir)
         orch._user_skill_store = store
     return store
-

@@ -262,4 +262,3 @@ def test_alert_unknown_tool_does_not_require_agent_label() -> None:
     alert = Orchestrator._alert_for_disabled_tool(diag, "wat_tool")
     assert "wat_tool" in alert.message
     assert alert.variant == "error"
-

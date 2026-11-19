@@ -508,12 +508,3 @@ async def test_typed_turn_uses_original_socket_without_durable_adapter() -> None
     assert completed == [work.operation_id]
     assert runtime.ui_sessions == {origin: {"sub": USER_ID}}
     assert runtime.rote.cleaned == []
-
-
-
-
-
-
-
-
-
