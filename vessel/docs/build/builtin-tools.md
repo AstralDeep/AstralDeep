@@ -1,6 +1,6 @@
 # Built-in tools
 
-AstralVessel ships seven tools an agent can list in `[tools] builtin`. This page gives each one's arguments,
+AstralVessel ships eight tools an agent can list in `[tools] builtin`. This page gives each one's arguments,
 limits and where it runs.
 
 ```toml
@@ -15,6 +15,7 @@ builtin = ["read", "grep", "glob", "list", "bash"]
 | `glob` | sandbox server | `tools:files` | Finds files by path pattern |
 | `list` | sandbox server | `tools:files` | Lists a directory |
 | `bash` | sandbox, confined | `tools:execute` | Runs a shell command |
+| `cad` | sandbox, confined | `tools:execute` | Builds a build123d model and returns CAD files |
 
 Paths may be absolute or relative to the agent's `workdir`. The file tools can reach only the system directories,
 the agent folder (`/agent`), the `workdir`, the mounted data and the turn's workspace; anything else is refused as
@@ -73,4 +74,18 @@ Runs `/bin/sh -c <command>` in the `workdir` as a confined process and returns t
 `[exit code N]`. A non-zero exit marks the result as an error. The same confinement, environment and output limits
 as [declared tools](declared-tools.md#where-it-runs) apply. `bash` gives the caller a general-purpose shell over
 everything the agent can read, so it carries the strongest scope.
+
+## cad
+
+| Argument | Type | Default | Notes |
+|---|---|---|---|
+| `script` | string | required | A build123d script, at most 256 KB |
+
+Runs `python -I -` in the sandbox as a confined process with no network, feeding it the script after a prelude.
+Models are in millimetres with +Z up. The prelude provides `export_step(shapes, name)`, `export_stl(shapes, name,
+tolerance=0.1, angular_tolerance=0.2)` and `export_glb(shapes, name, tolerance=0.1, angular_tolerance=0.2)`; each
+takes one shape or a list of shapes and a plain file name, and writes into the turn's outbox. The sandbox image
+ships the build123d kernel; a sandbox without it answers with a clear error. Returned files must still be listed in
+`[output] files` to reach the caller. The call is stopped at the agent's `tool_timeout_seconds`, so agents that
+build large models raise it.
 

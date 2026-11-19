@@ -53,6 +53,42 @@ def test_the_outbox_returns_at_most_four_files_per_call(tmp_path):
     assert len(found) == outputs.MAX_FILES_PER_CALL and len(notes) == 2 and "at most 4" in notes[0]
 
 
+def test_cad_files_are_checked_by_their_own_format_and_limit(tmp_path):
+    box = tmp_path / "outbox"
+    box.mkdir()
+    stl = b"binary solid".ljust(80, b"\x00") + (2).to_bytes(4, "little") + b"\x00" * 100
+    (box / "part.step").write_bytes(b"ISO-10303-21;\nHEADER;\nEND-ISO-10303-21;\n")
+    (box / "part.stl").write_bytes(stl)
+    (box / "part.3mf").write_bytes(b"PK\x03\x04" + b"\x00" * 32)
+    (box / "part.glb").write_bytes(b"glTF" + (2).to_bytes(4, "little") + (12).to_bytes(4, "little") + b"\x00" * 4)
+    (box / "bad.step").write_text("not step")
+    (box / "bad.stl").write_bytes(b"not an ascii solid and wrong size")
+    (box / "bad.3mf").write_bytes(b"RAR!")
+    (box / "bad.glb").write_bytes(b"glTF" + (1).to_bytes(4, "little") + b"\x00" * 8)
+    found, notes = outputs.collect(str(box), ["step", "stl", "3mf", "glb"])
+    assert [(f.name, f.media_type) for f in found] == [("part.3mf", "model/3mf"), ("part.glb", "model/gltf-binary"),
+                                                       ("part.step", "application/step"), ("part.stl", "model/stl")]
+    text = "\n".join(notes)
+    for name in ("bad.step", "bad.stl", "bad.3mf", "bad.glb"):
+        assert f"{name}: not a valid" in text
+
+
+def test_cad_files_carry_a_larger_limit_than_documents(tmp_path):
+    box = tmp_path / "outbox"
+    box.mkdir()
+    (box / "big.step").write_bytes(b"ISO-10303-21;\n" + b"\x00" * (outputs.MAX_FILE_BYTES + 8))
+    (box / "big.csv").write_bytes(b"a" * (outputs.MAX_FILE_BYTES + 1))
+    found, notes = outputs.collect(str(box), ["step", "csv"])
+    assert [f.name for f in found] == ["big.step"]
+    text = "\n".join(notes)
+    assert "big.csv: larger than 4 MB" in text and "big.step" not in text
+    assert outputs.limit_for("x.step") == outputs.MAX_CAD_FILE_BYTES > outputs.limit_for("x.csv")
+    oversized = base64.b64encode(b"PK\x03\x04" + b"\x00" * (outputs.MAX_CAD_FILE_BYTES + 8)).decode()
+    within = base64.b64encode(b"ISO-10303-21;\n").decode()
+    assert outputs.from_wire([{"name": "o.3mf", "data": oversized}], ["3mf"]) == []
+    assert [f.name for f in outputs.from_wire([{"name": "ok.step", "data": within}], ["step"])] == ["ok.step"]
+
+
 def test_a_flooded_outbox_gives_the_model_a_short_summary(tmp_path):
     for index in range(50):
         (tmp_path / f"t{index}.txt").write_text("x")

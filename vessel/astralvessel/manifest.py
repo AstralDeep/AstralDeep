@@ -11,11 +11,11 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-BUILTIN_TOOLS = ("read", "grep", "glob", "list", "bash")
+BUILTIN_TOOLS = ("read", "grep", "glob", "list", "bash", "cad")
 # Astral's six permission scopes, weakest first; each tool has one and an agent's catalog entry carries the strongest.
 SCOPES = ("tools:read", "tools:search", "tools:files", "tools:write", "tools:system", "tools:execute")
 BUILTIN_SCOPES = {"read": "tools:files", "grep": "tools:search", "glob": "tools:files", "list": "tools:files",
-                  "bash": "tools:execute"}
+                  "bash": "tools:execute", "cad": "tools:execute"}
 
 
 class Strict(BaseModel):
@@ -59,7 +59,7 @@ class ToolsSection(Strict):
 
 class OutputSection(Strict):
     # File types a tool may return by writing into $VESSEL_OUTBOX; none unless listed.
-    files: list[Literal["png", "svg", "csv", "pdf"]] = []
+    files: list[Literal["png", "svg", "csv", "pdf", "step", "stl", "3mf", "glb"]] = []
 
 
 class Manifest(Strict):

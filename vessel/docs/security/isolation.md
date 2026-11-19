@@ -74,7 +74,7 @@ Each sandbox holds its own token, derived from the master secret, and nothing of
 
 ### Each tool call
 
-`grep`, `bash` and declared command tools run as separate processes. Before each one runs, it is confined:
+`grep`, `bash`, `cad` and declared command tools run as separate processes. Before each one runs, it is confined:
 
 | Mechanism | Effect |
 |---|---|

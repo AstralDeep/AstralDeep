@@ -65,7 +65,7 @@ An agent that lists file types can return files to the caller:
 
 ```toml
 [output]
-files = ["png", "csv"]   # any of png, svg, csv, pdf
+files = ["png", "csv"]   # any of png, svg, csv, pdf, step, stl, 3mf, glb
 ```
 
 A confined call writes files into `$VESSEL_OUTBOX`, a folder inside its workspace:
@@ -80,8 +80,8 @@ After each call the sandbox takes every entry out of the outbox. It keeps a file
 |---|---|
 | Type | A regular file (not a link, folder or pipe) |
 | Name | Starts with a letter or digit, then letters, digits, `.`, `_` or `-`, up to 100 characters, ending in a listed extension |
-| Content | PNG and PDF must start with their signatures; SVG and CSV must be UTF-8 without NUL bytes, and SVG must contain `<svg` near the start |
-| Size | At most 4 MB each |
+| Content | PNG, PDF, STEP and GLB must start with their signatures; STL must be a binary STL of the size its header declares or an ASCII STL; 3MF must be a zip; SVG and CSV must be UTF-8 without NUL bytes, and SVG must contain `<svg` near the start |
+| Size | At most 4 MB each; the CAD formats (`step`, `stl`, `3mf`, `glb`) at most 32 MB each |
 | Count | At most 4 per call |
 
 The executor checks every file again when it arrives.
@@ -96,6 +96,10 @@ The executor checks every file again when it arrives.
 | `svg` | `image/svg+xml` |
 | `csv` | `text/csv` |
 | `pdf` | `application/pdf` |
+| `step` | `application/step` |
+| `stl` | `model/stl` |
+| `3mf` | `model/3mf` |
+| `glb` | `model/gltf-binary` |
 
 !!! warning "SVG can carry script"
     Show an SVG as an `<img>` or offer it as a download. Never insert it inline into a page.

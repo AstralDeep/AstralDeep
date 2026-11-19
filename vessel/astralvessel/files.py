@@ -15,9 +15,10 @@ from typing import Any
 
 OUTBOX = "outbox"
 MAX_FILE_BYTES = 4 * 1024 * 1024
+MAX_CAD_FILE_BYTES = 32 * 1024 * 1024
 MAX_FILES_PER_CALL = 4
 MAX_FILES_PER_TURN = 8
-MAX_TURN_BYTES = 16 * 1024 * 1024
+MAX_TURN_BYTES = 64 * 1024 * 1024
 MAX_NOTES = 10
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 
@@ -30,14 +31,45 @@ def _text(data: bytes) -> bool:
     return b"\x00" not in data
 
 
-# extension -> (media type, content check)
+def _step(data: bytes) -> bool:
+    return data.startswith(b"ISO-10303-21")
+
+
+def _stl(data: bytes) -> bool:
+    if len(data) >= 84:
+        triangles = int.from_bytes(data[80:84], "little")
+        if triangles and len(data) == 84 + triangles * 50:
+            return True
+    return data.startswith(b"solid") and b"facet" in data[:4096].lower()
+
+
+def _3mf(data: bytes) -> bool:
+    return data.startswith(b"PK\x03\x04")
+
+
+def _glb(data: bytes) -> bool:
+    return len(data) >= 12 and data[:4] == b"glTF" and int.from_bytes(data[4:8], "little") == 2
+
+
+# extension -> (media type, content check, size limit)
 FILE_TYPES = {
-    "png": ("image/png", lambda d: d.startswith(b"\x89PNG\r\n\x1a\n")),
-    "svg": ("image/svg+xml", lambda d: _text(d) and b"<svg" in d[:4096]),
-    "csv": ("text/csv", _text),
-    "pdf": ("application/pdf", lambda d: d.startswith(b"%PDF-")),
+    "png": ("image/png", lambda d: d.startswith(b"\x89PNG\r\n\x1a\n"), MAX_FILE_BYTES),
+    "svg": ("image/svg+xml", lambda d: _text(d) and b"<svg" in d[:4096], MAX_FILE_BYTES),
+    "csv": ("text/csv", _text, MAX_FILE_BYTES),
+    "pdf": ("application/pdf", lambda d: d.startswith(b"%PDF-"), MAX_FILE_BYTES),
+    "step": ("application/step", _step, MAX_CAD_FILE_BYTES),
+    "stl": ("model/stl", _stl, MAX_CAD_FILE_BYTES),
+    "3mf": ("model/3mf", _3mf, MAX_CAD_FILE_BYTES),
+    "glb": ("model/gltf-binary", _glb, MAX_CAD_FILE_BYTES),
 }
-MEDIA_TYPES = {media for media, _ in FILE_TYPES.values()}
+MEDIA_TYPES = {media for media, _, _ in FILE_TYPES.values()}
+
+
+def limit_for(name: str) -> int:
+    # The size limit for one candidate file: CAD formats run larger than documents and images.
+    extension = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+    entry = FILE_TYPES.get(extension)
+    return entry[2] if entry else MAX_FILE_BYTES
 
 
 @dataclass(frozen=True)
@@ -57,9 +89,10 @@ def check(name: str, data: bytes, allowed: list[str]) -> tuple[str | None, str]:
         return None, "only names like chart.png with an extension from " + ", ".join(sorted(FILE_TYPES))
     if extension not in allowed:
         return None, f"this agent may not return .{extension} files"
-    if len(data) > MAX_FILE_BYTES:
-        return None, f"larger than {MAX_FILE_BYTES // (1024 * 1024)} MB"
-    media_type, valid = FILE_TYPES[extension]
+    limit = FILE_TYPES[extension][2]
+    if len(data) > limit:
+        return None, f"larger than {limit // (1024 * 1024)} MB"
+    media_type, valid, _ = FILE_TYPES[extension]
     if not valid(data):
         return None, f"not a valid .{extension} file"
     return media_type, ""
@@ -113,19 +146,20 @@ def _collect_by_path(outbox: str, allowed: list[str], files: list[ToolFile], not
     for name in sorted(entry.name for entry in os.scandir(box)):
         data, reason = None, ""
         path = box / name
+        limit = limit_for(name)
         try:
             info = path.lstat()
             if path.is_symlink() or not stat.S_ISREG(info.st_mode):
                 reason = "not a regular file"
-            elif info.st_size > MAX_FILE_BYTES:
-                reason = f"larger than {MAX_FILE_BYTES // (1024 * 1024)} MB"
+            elif info.st_size > limit:
+                reason = f"larger than {limit // (1024 * 1024)} MB"
             elif len(files) >= MAX_FILES_PER_CALL:
                 reason = f"at most {MAX_FILES_PER_CALL} files per call"
             else:
                 with open(path, "rb") as handle:
-                    data = handle.read(MAX_FILE_BYTES + 1)
-                if len(data) > MAX_FILE_BYTES:
-                    reason = f"larger than {MAX_FILE_BYTES // (1024 * 1024)} MB"
+                    data = handle.read(limit + 1)
+                if len(data) > limit:
+                    reason = f"larger than {limit // (1024 * 1024)} MB"
                     data = None
         except OSError:
             reason = "could not be read"
@@ -146,12 +180,13 @@ def _collect_by_path(outbox: str, allowed: list[str], files: list[ToolFile], not
 def _drain(box: int, allowed: list[str], files: list[ToolFile], notes: list[str]) -> None:
     for name in sorted(os.listdir(box)):
         data, reason = None, ""
+        limit = limit_for(name)
         try:
             info = os.lstat(name, dir_fd=box)
             if not stat.S_ISREG(info.st_mode):
                 reason = "not a regular file"
-            elif info.st_size > MAX_FILE_BYTES:
-                reason = f"larger than {MAX_FILE_BYTES // (1024 * 1024)} MB"
+            elif info.st_size > limit:
+                reason = f"larger than {limit // (1024 * 1024)} MB"
             elif len(files) >= MAX_FILES_PER_CALL:
                 reason = f"at most {MAX_FILES_PER_CALL} files per call"
             else:
@@ -159,7 +194,7 @@ def _drain(box: int, allowed: list[str], files: list[ToolFile], notes: list[str]
                 fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=box)
                 with os.fdopen(fd, "rb") as handle:
                     if stat.S_ISREG(os.fstat(fd).st_mode):
-                        data = handle.read(MAX_FILE_BYTES + 1)
+                        data = handle.read(limit + 1)
                     else:
                         reason = "not a regular file"
         except OSError:
@@ -180,7 +215,7 @@ def from_wire(items: Any, allowed: list[str]) -> list[ToolFile]:
         if len(files) >= MAX_FILES_PER_CALL or not isinstance(item, dict):
             break
         name, encoded = item.get("name"), item.get("data")
-        if not isinstance(name, str) or not isinstance(encoded, str) or len(encoded) > MAX_FILE_BYTES * 4 // 3 + 4:
+        if not isinstance(name, str) or not isinstance(encoded, str) or len(encoded) > limit_for(name) * 4 // 3 + 4:
             continue
         try:
             data = base64.b64decode(encoded, validate=True)

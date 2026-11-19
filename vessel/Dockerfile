@@ -12,6 +12,9 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ripgrep ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+# build123d (OpenCASCADE) is the cad tool's kernel; the wheel is large, so it installs in its own layer.
+RUN pip install --no-cache-dir build123d==0.13.0
+
 WORKDIR /opt/astralvessel
 COPY pyproject.toml README.md ./
 COPY config/node-bundle.json ./config/node-bundle.json
