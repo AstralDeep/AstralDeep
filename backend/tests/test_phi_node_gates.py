@@ -245,6 +245,21 @@ async def test_a_draft_agent_starts_on_loopback_only_after_the_owner_excludes_th
             node_mesh.install(None)
 
 
+async def test_the_node_cannot_exclude_itself_so_its_own_kernel_never_opens_the_draft_launch(tmp_path, monkeypatch):
+    async with dev_node(tmp_path, monkeypatch) as mesh:
+        node_mesh.install(mesh.node)
+        try:
+            with pytest.raises(ak.KernelError) as refused:
+                mesh.node.kernel.exclude_phi_device(mesh.node_device)
+            assert "phi_group.node_device" in str(refused.value)
+            assert await mesh.node.phi_excluded() is False
+            with pytest.raises(phi_node_policy.AgentServerUnsupported) as still:
+                await phi_node_policy.refuse_on_phi_node()
+            assert still.value.detail() == PHI_REFUSAL
+        finally:
+            node_mesh.install(None)
+
+
 async def test_a_node_with_no_mesh_a_stopped_mesh_or_no_enrollment_is_refused_as_not_excluded():
     async def not_enrolled():
         return {"enrolled": False}

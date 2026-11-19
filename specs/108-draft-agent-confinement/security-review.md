@@ -202,17 +202,26 @@ before the change, and the named tests ran against it.
 | F3 | Fixed | The launch sets `HOST` to `127.0.0.1`, also when a development node turns the limits off | `test_a_real_agent_server_launched_this_way_listens_on_loopback_only` starts a real `BaseA2AAgent` and finds its port closed on the host's outward address |
 | F4 | Partly | `DB_PASSWORD` is scrubbed. `AGENT_API_KEY` stays, for the reason below. The rest of F4 is the exception itself | `test_sandbox_env_scrubs_secret_shaped_names_including_the_database_password` |
 | F5 | Fixed | A test posts to the real start route on a real dev mesh member. The route calls the real `start_draft_agent` and the real policy | `test_the_start_route_refuses_a_draft_on_a_real_phi_member_before_any_process_or_directory_exists` sees 409, no spawn, no LETS admission and no temp directory |
-| F6 | Fixed | An agent starts only when the node's own row in the PHI group reads `excluded`. Only an owner device can sign that state, and the node cannot exclude itself. No mesh, a stopped mesh, no enrollment and a node never excluded are refused with the new reason `not_excluded` | `test_the_start_route_refuses_a_draft_on_a_real_node_the_owner_never_excluded`, `test_a_node_with_no_mesh_a_stopped_mesh_or_no_enrollment_is_refused_as_not_excluded`, `test_a_draft_agent_starts_on_loopback_only_after_the_owner_excludes_the_real_node_and_is_refused_again_when_it_rejoins` |
+| F6 | Fixed, with a caveat below | An agent starts only when the node's own row in the PHI group reads `excluded`. The Kernel refuses a node that tries to exclude itself. No mesh, a stopped mesh, no enrollment and a node never excluded are refused with the new reason `not_excluded` | `test_the_start_route_refuses_a_draft_on_a_real_node_the_owner_never_excluded`, `test_the_node_cannot_exclude_itself_so_its_own_kernel_never_opens_the_draft_launch`, `test_a_node_with_no_mesh_a_stopped_mesh_or_no_enrollment_is_refused_as_not_excluded`, `test_a_draft_agent_starts_on_loopback_only_after_the_owner_excludes_the_real_node_and_is_refused_again_when_it_rejoins` |
 | F7 | Fixed | `FF_SANDBOX_CODEGEN` is read only when `ASTRAL_ENV` is a development value | `test_the_kill_switch_is_ignored_outside_development`, `test_a_production_draft_agent_keeps_its_limits_and_scrub_with_the_sandbox_flag_off` |
 | F8 | Partly | `exec-policy.md`, the spec 106 `spec.md` and the Vessel isolation page now state the exception and its end. The spec 106 plan and the sandbox qualification manifest are unchanged | None |
 
 ### Where the owner's choice is recorded
 
-The owner's choice is the PHI group state the Kernel folds from the signed roster. The node's row
-reads `excluded` only after an owner device revoked its PHI grant. So the opt-in reuses a record
-that exists today and needs no schema change. The cost is that a node never included in the group
+The owner's choice is the PHI group state the Kernel folds from the signed roster. So the opt-in
+reuses a record that exists today and needs no schema change. A node never included in the group
 cannot opt in directly. The owner adds it to the group and then excludes it. The `not_excluded`
 message says so.
+
+The state is weaker than a dedicated opt-in in three ways.
+
+- A row reads `excluded` when the device once held a PHI grant and holds no current one. An owner
+  revoke does that. So does a grant that passed its `not_after_s`, and an approver the owner removed.
+  The last two are owner-side events, but not a choice about this node.
+- The roster fold accepts a PHI revoke signed with presence by any member key. The Kernel API
+  refuses a node that excludes itself (`plan_exclude`). A process that already holds the node's own
+  keys could still forge one. Such a process already runs as the node's user.
+- A dedicated, owner-signed opt-in per node is Kernel work.
 
 ### Why `AGENT_API_KEY` stays
 
