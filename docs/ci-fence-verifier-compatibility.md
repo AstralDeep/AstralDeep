@@ -1,5 +1,7 @@
 # Fence verifier compatibility and activation
 
+The Fence pilot is rolled back and unqualified as of 2026-11-18, and no workflow calls this adapter now. See the [pilot record](ci-egress-fence-pilot.md). The text below describes the adapter for re-activation.
+
 `scripts/ci_fence_fixture_verifier_v2.py` is the read-only compatibility adapter
 qualified separately in PR492 and merged at `a1bfc19ccd9d1cc58c8298ce26718e92b76b3fb2`.
 The activation candidate uses its exact merged bytes and unchanged peer through the

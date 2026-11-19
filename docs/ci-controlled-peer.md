@@ -1,6 +1,6 @@
 # Controlled CI peer utilities
 
-`scripts/ci_network_fixture.py` provides a bounded synthetic TLS/DNS peer for an ephemeral Linux runner. The ordinary lint job qualifies its actual namespace/veth lifecycle. It installs no firewall, changes no production setting, and makes no claim that Fence is active or qualified.
+`scripts/ci_network_fixture.py` provides a bounded synthetic TLS/DNS peer for an ephemeral Linux runner. The unit tests qualify its namespace/veth lifecycle, and no workflow job runs it now. It installs no firewall, changes no production setting, and makes no claim that Fence is active or qualified.
 
 Run `python scripts/ci_network_fixture.py qualify` on a disposable Ubuntu runner with its normal sudo available. Setup creates an invocation-specific namespace and veth pair on the connected documentation prefix `192.0.2.0/30`. It changes neither the default route nor host DNS or firewall rules. Existing conflicting routes or resource identities cause refusal. The peer has no default route and drops supplementary groups, uid/gid and capabilities after binding.
 

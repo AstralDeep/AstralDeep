@@ -23,7 +23,7 @@ SECRETS = {
     "APPLE_DEVELOPER_ID_APP_CERT_P12_BASE64", "APPLE_DEVELOPER_ID_CERT_PASSWORD", "ASC_KEY_ID", "ASC_ISSUER_ID",
     "ASC_KEY_P8_BASE64", "SPARKLE_ED25519_PRIVATE_KEY",
 }
-PACKS = {"node-pack-linux-x86-64"}
+PACKS = {"node-pack-linux-aarch64", "node-pack-linux-x86-64"}
 PBXPROJ = "components/AstralProjection/apple-clients/AstralApp/AstralApp.xcodeproj/project.pbxproj"
 
 

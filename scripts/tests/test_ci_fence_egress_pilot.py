@@ -266,12 +266,12 @@ def test_script_entrypoint_refuses_different_helper_identity(tmp_path, monkeypat
     assert json.loads(capsys.readouterr().out)["state"] == "nonconforming"
 
 
-def test_actual_workflow_cli_uses_only_real_merged_helper_identities():
+def test_actual_workflow_cli_reports_the_rolled_back_pilot_as_absent():
     path = MODULE.parents[1] / ".github" / "workflows" / "ci.yml"
     result = subprocess.run([sys.executable, str(MODULE), "--check", str(path)],
                             capture_output=True, text=True, check=False)
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert json.loads(result.stdout) == {"state": "conforming", "reasons": []}
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert json.loads(result.stdout)["state"] == "absent"
 
 
 class BufferFile(io.BytesIO):

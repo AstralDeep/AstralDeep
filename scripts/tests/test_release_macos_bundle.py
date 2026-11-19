@@ -76,7 +76,7 @@ class Bundle:
             sm.sign_pack(unsigned, "-", self.root / "macos-arm64")
         else:
             shutil.copytree(unsigned.parent, self.root / "macos-arm64")
-        for platform in ("linux-x86_64",):
+        for platform in ("linux-aarch64", "linux-x86_64"):
             shutil.rmtree(self.root / platform, ignore_errors=True)
             shutil.copytree(linux_pack(scratch, platform, deep, self.inputs()).parent, self.root / platform)
 
@@ -97,17 +97,16 @@ def good(tmp_path_factory):
     return Bundle(tmp_path_factory.mktemp("bundle"))
 
 
-def test_the_sealed_packs_of_the_release_commit_are_accepted(good):
+def test_three_sealed_packs_of_the_release_commit_are_accepted(good):
     subject = good.release()
     pack = subject.verify_node_bundle()
     assert pack["signing"]["identity"] == "-" and pack["signing"]["signedFiles"] == 5
     assert pack["source_equivalence"]["releaseDeep"] == good.sha
-    assert set(pack["linux"]) == {"linux-x86_64"}
+    assert set(pack["linux"]) == {"linux-aarch64", "linux-x86_64"}
     names = [name for _, name, _ in subject.pack_sources]
-    assert len(set(names)) == len(names)
-    assert {"node-pack.json", "node-pack-manifest.json", "node-pack-linux-x86_64.json",
+    assert len(names) == 9 and len(set(names)) == 9
+    assert {"node-pack.json", "node-pack-manifest.json", "node-pack-linux-aarch64.json",
             "node-pack-linux-x86_64-manifest.json"} <= set(names)
-    assert not any("linux-aarch64" in name for name in names)
     assert all(source.is_file() and release.sha256_file(source) == digest for source, _, digest in subject.pack_sources)
     assert pack["descriptor_sha256"] == release.sha256_file(good.root / "macos-arm64/node-pack.json")
 
@@ -155,7 +154,7 @@ def test_a_forged_signing_record_is_refused_by_the_signature_check(tmp_path):
         bundle.release().verify_node_bundle()
 
 
-@pytest.mark.parametrize("folder,source", [("linux-x86_64", "macos-arm64"), ("macos-arm64", "linux-x86_64")])
+@pytest.mark.parametrize("folder,source", [("linux-aarch64", "linux-x86_64"), ("macos-arm64", "linux-aarch64")])
 def test_a_pack_with_the_wrong_platform_is_refused(tmp_path, folder, source):
     bundle = Bundle(tmp_path)
     shutil.rmtree(bundle.root / folder)

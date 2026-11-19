@@ -2882,4 +2882,4 @@ def test_ci_builds_the_linux_arm64_node_pack_and_keeps_evidence_when_it_fails() 
     gates = _workflow_job(_workflow_text(CI_WORKFLOW), "gates")
     assert "- node-pack-linux-arm64" in gates
     assert "needs.node-pack-linux-arm64.result }}' == 'success'" in gates
-    assert "node-pack-linux-aarch64" not in _workflow_text(WORKFLOWS / "release-macos.yml")
+    assert "node-pack-linux-aarch64" in _workflow_jobs(WORKFLOWS / "release-macos.yml")["release"]["needs"]
