@@ -1,0 +1,196 @@
+{
+  "format": "astral.vectors/v1",
+  "name": "descriptor-v2",
+  "spec": "106/contracts/descriptor.md",
+  "test_keys": {
+    "note": "node_key JWKs are public material copied from live descriptors; nothing here is secret"
+  },
+  "cases": [
+    {
+      "name": "minimal_loopback_node",
+      "kind": "validate",
+      "input": {
+        "document": {
+          "format": "astral.node.descriptor/v2",
+          "version": "astral.node/v1",
+          "node_id": "sha256:8d212a14e09d4a6e7ac7e0d385dc0c9f363ac57a18f6410967bb39c7e5f88f9",
+          "node_key": {
+            "kty": "OKP",
+            "crv": "Ed25519",
+            "x": "2L9zFHpuUhxdOhBZQXTvU3aO5GQltWlbYQ1JeipFL9s"
+          },
+          "owner_hash": null,
+          "capabilities": [
+            "chat",
+            "tool-dispatch",
+            "mesh-pairing",
+            "delegation-eddsa",
+            "emergency-stop"
+          ],
+          "transport_addresses": []
+        }
+      },
+      "expect": {
+        "accepted": true,
+        "capabilities": [
+          "chat",
+          "tool-dispatch",
+          "mesh-pairing",
+          "delegation-eddsa",
+          "emergency-stop"
+        ]
+      }
+    },
+    {
+      "name": "mesh_extended_enrolled_node",
+      "kind": "validate",
+      "input": {
+        "document": {
+          "format": "astral.node.descriptor/v2",
+          "version": "astral.node/v1",
+          "node_id": "sha256:8d212a14e09d4a6e7ac7e0d385dc0c9f363ac57a18f6410967bb39c7e5f88f9",
+          "node_key": {
+            "kty": "OKP",
+            "crv": "Ed25519",
+            "x": "2L9zFHpuUhxdOhBZQXTvU3aO5GQltWlbYQ1JeipFL9s"
+          },
+          "owner_hash": "sha256:13b6a46f5e8c9a445591707f55a2fbb45543d70b92e2c2c869d4e603d38a35e6",
+          "capabilities": [
+            "chat",
+            "tool-dispatch",
+            "mesh-pairing",
+            "delegation-eddsa",
+            "emergency-stop",
+            "mesh-peer",
+            "mesh-mailbox"
+          ],
+          "transport_addresses": [
+            {
+              "kind": "iroh",
+              "address": "recipient@example.invalid"
+            }
+          ],
+          "mesh": {
+            "state": "enrolled",
+            "mesh_id": "sha256:13b6a46f5e8c9a445591707f55a2fbb45543d70b92e2c2c869d4e603d38a35e6",
+            "member_id": "sha256:8d212a14e09d4a6e7ac7e0d385dc0c9f363ac57a18f6410967bb39c7e5f88f9",
+            "hardware_backed": false,
+            "requests": true,
+            "owner_binding": "bound"
+          },
+          "mailbox": {
+            "kind": "iroh-mailbox",
+            "address": "mailbox@example.invalid"
+          }
+        }
+      },
+      "expect": {
+        "accepted": true,
+        "capabilities": [
+          "chat",
+          "tool-dispatch",
+          "mesh-pairing",
+          "delegation-eddsa",
+          "emergency-stop",
+          "mesh-peer",
+          "mesh-mailbox"
+        ]
+      }
+    },
+    {
+      "name": "wrong_format_refused",
+      "kind": "validate",
+      "input": {
+        "document": {
+          "format": "astral.node.descriptor/v1",
+          "version": "astral.node/v1",
+          "node_id": "sha256:8d212a14e09d4a6e7ac7e0d385dc0c9f363ac57a18f6410967bb39c7e5f88f9",
+          "node_key": {
+            "kty": "OKP",
+            "crv": "Ed25519",
+            "x": "2L9zFHpuUhxdOhBZQXTvU3aO5GQltWlbYQ1JeipFL9s"
+          },
+          "owner_hash": null,
+          "capabilities": [
+            "chat"
+          ],
+          "transport_addresses": []
+        }
+      },
+      "expect": {
+        "code": "descriptor.format"
+      }
+    },
+    {
+      "name": "unknown_capability_refused",
+      "kind": "validate",
+      "input": {
+        "document": {
+          "format": "astral.node.descriptor/v2",
+          "version": "astral.node/v1",
+          "node_id": "sha256:8d212a14e09d4a6e7ac7e0d385dc0c9f363ac57a18f6410967bb39c7e5f88f9",
+          "node_key": {
+            "kty": "OKP",
+            "crv": "Ed25519",
+            "x": "2L9zFHpuUhxdOhBZQXTvU3aO5GQltWlbYQ1JeipFL9s"
+          },
+          "owner_hash": null,
+          "capabilities": [
+            "chat",
+            "time-travel"
+          ],
+          "transport_addresses": []
+        }
+      },
+      "expect": {
+        "code": "descriptor.capability"
+      }
+    },
+    {
+      "name": "missing_owner_hash_refused",
+      "kind": "validate",
+      "input": {
+        "document": {
+          "format": "astral.node.descriptor/v2",
+          "version": "astral.node/v1",
+          "node_id": "sha256:8d212a14e09d4a6e7ac7e0d385dc0c9f363ac57a18f6410967bb39c7e5f88f9",
+          "node_key": {
+            "kty": "OKP",
+            "crv": "Ed25519",
+            "x": "2L9zFHpuUhxdOhBZQXTvU3aO5GQltWlbYQ1JeipFL9s"
+          },
+          "capabilities": [
+            "chat"
+          ],
+          "transport_addresses": []
+        }
+      },
+      "expect": {
+        "code": "descriptor.malformed"
+      }
+    },
+    {
+      "name": "bad_node_key_refused",
+      "kind": "validate",
+      "input": {
+        "document": {
+          "format": "astral.node.descriptor/v2",
+          "version": "astral.node/v1",
+          "node_id": "sha256:8d212a14e09d4a6e7ac7e0d385dc0c9f363ac57a18f6410967bb39c7e5f88f9",
+          "node_key": {
+            "kty": "RSA",
+            "n": "whatever"
+          },
+          "owner_hash": null,
+          "capabilities": [
+            "chat"
+          ],
+          "transport_addresses": []
+        }
+      },
+      "expect": {
+        "code": "descriptor.malformed"
+      }
+    }
+  ]
+}

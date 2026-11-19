@@ -1,0 +1,143 @@
+{
+  "format": "astral.vectors/v1",
+  "name": "caller-turn-door-v0",
+  "spec": "106/contracts/caller-turn-door.md",
+  "cases": [
+    {
+      "name": "valid_door_with_required_controls",
+      "kind": "validate_door",
+      "input": {
+        "door": {
+          "principal": "caller-ticket",
+          "turns": true,
+          "consent": "own-redacted",
+          "notification_types": []
+        },
+        "controls": [
+          "consent-gate",
+          "ticket-verification",
+          "egress-allowlist",
+          "phi-gate"
+        ]
+      },
+      "expect": {
+        "accepted": true,
+        "required_controls": [
+          "consent-gate",
+          "egress-allowlist",
+          "ticket-verification"
+        ]
+      }
+    },
+    {
+      "name": "door_without_controls_refused",
+      "kind": "validate_door",
+      "input": {
+        "door": {
+          "principal": "caller-ticket",
+          "turns": true,
+          "consent": "own-redacted",
+          "notification_types": []
+        },
+        "controls": [
+          "ticket-verification"
+        ]
+      },
+      "expect": {
+        "code": "door.controls"
+      }
+    },
+    {
+      "name": "wrong_consent_class_refused",
+      "kind": "validate_door",
+      "input": {
+        "door": {
+          "principal": "caller-ticket",
+          "turns": true,
+          "consent": "full",
+          "notification_types": []
+        },
+        "controls": [
+          "consent-gate",
+          "ticket-verification",
+          "egress-allowlist"
+        ]
+      },
+      "expect": {
+        "code": "door.consent"
+      }
+    },
+    {
+      "name": "owner_principal_refused",
+      "kind": "validate_door",
+      "input": {
+        "door": {
+          "principal": "owner-device",
+          "turns": true,
+          "consent": "own-redacted",
+          "notification_types": []
+        },
+        "controls": [
+          "consent-gate",
+          "ticket-verification",
+          "egress-allowlist"
+        ]
+      },
+      "expect": {
+        "code": "door.principal"
+      }
+    },
+    {
+      "name": "valid_turn_admitted",
+      "kind": "admit_turn",
+      "input": {
+        "text": "draw a bracket for a 2020 extrusion",
+        "in_flight": 0,
+        "cap": 2,
+        "deadline_seconds": 600
+      },
+      "expect": {
+        "admitted": true
+      }
+    },
+    {
+      "name": "turn_cap_refused",
+      "kind": "admit_turn",
+      "input": {
+        "text": "another turn",
+        "in_flight": 2,
+        "cap": 2,
+        "deadline_seconds": 600
+      },
+      "expect": {
+        "code": "caller.turn_limit"
+      }
+    },
+    {
+      "name": "empty_text_refused",
+      "kind": "admit_turn",
+      "input": {
+        "text": "",
+        "in_flight": 0,
+        "cap": 2,
+        "deadline_seconds": 600
+      },
+      "expect": {
+        "code": "caller.malformed"
+      }
+    },
+    {
+      "name": "bad_deadline_refused",
+      "kind": "admit_turn",
+      "input": {
+        "text": "hello",
+        "in_flight": 0,
+        "cap": 2,
+        "deadline_seconds": 0
+      },
+      "expect": {
+        "code": "caller.turn_deadline"
+      }
+    }
+  ]
+}
