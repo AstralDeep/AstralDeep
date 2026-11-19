@@ -440,6 +440,47 @@ def test_sandboxed_tools_are_visible_without_a_connection():
     assert [(agent, skill.id) for agent, skill in pairs] == [("guide", "lookup")]
 
 
+CAD_SCHEMA = {
+    "type": "object",
+    "properties": {"script": {"type": "string", "description": "A build123d script."}},
+    "required": ["script"],
+}
+
+CAD_DEFINITION = node_mesh_calls.definition_hash("cad", "Builds a model", CAD_SCHEMA, {"agent": "studio"})
+
+CAD_CATALOG = {
+    "studio": {
+        "description": "Builds 3D models",
+        "scope": "tools:execute",
+        "tools": [
+            {"name": "cad", "description": "Builds a model", "input_schema": CAD_SCHEMA,
+             "scope": "tools:execute", "definition": CAD_DEFINITION},
+        ],
+    },
+}
+
+
+def test_a_sandboxed_cad_tool_projects_through_the_caller_surface():
+    from orchestrator.mcp_projection import project_tools
+
+    orch, _ = fake_orch(security_flags={})
+    orch.tool_permissions.is_tool_allowed = lambda owner, agent, tool: True
+    orch.tool_permissions.list_disabled_agents = lambda user: ()
+    orch._is_draft_agent = lambda agent: False
+    cards, pins = ve.build_cards(CAD_CATALOG)
+    ve.register(orch, cards, pins)
+    [(agent, skill)] = tool_visibility.eligible_tool_pairs(orch, OWNER)
+    assert (agent, skill.id, skill.scope) == ("studio", "cad", "tools:execute")
+    [published] = ve.published_tools(orch)
+    assert (published["name"], published["effect"], published["annotations"]) == (
+        "cad", "outside_effect", {"agent": "studio"},
+    )
+    assert pins[("studio", "cad")] == CAD_DEFINITION
+    [projected] = [tool for tool in project_tools(orch, OWNER) if tool.name == "cad"]
+    assert projected.descriptor["_meta"]["astral/requiredScope"] == "tools:execute"
+    assert projected.descriptor["annotations"]["readOnlyHint"] is False
+
+
 def test_an_unmarked_card_that_is_not_connected_stays_hidden():
     orch, _ = fake_orch(security_flags={})
     orch.tool_permissions.is_tool_allowed = lambda owner, agent, tool: True
