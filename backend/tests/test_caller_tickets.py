@@ -286,11 +286,20 @@ async def test_a_revoked_ticket_is_refused_and_others_still_work(tmp_path, monke
         assert (await door.call_tool(revoked, "read_value")).status_code == 200
         door.mesh.owner.kernel.revoke_caller_ticket(revoked.id)
 
-        async def refused() -> bool:
-            return code_of_or_none(await door.call_tool(revoked, "read_value")) == "caller.revoked"
+        async def revocation_applied() -> bool:
+            revoked_result = await door.call_tool(revoked, "read_value")
+            if revoked_result.status_code == 200:
+                return False
+            assert (revoked_result.status_code, code_of(revoked_result)) == (403, "caller.revoked")
+            kept_result = await door.call_tool(kept, "read_value")
+            if kept_result.status_code == 200:
+                return True
+            assert (kept_result.status_code, code_of(kept_result)) == (403, "caller.revoked")
+            return False
 
-        await until(refused, "the node to see the revoke")
-        assert (await door.call_tool(kept, "read_value")).status_code == 200
+        await until(revocation_applied, "the node to apply the named revocation and admit the other ticket")
+        final = await door.call_tool(revoked, "read_value")
+        assert (final.status_code, code_of(final)) == (403, "caller.revoked")
 
 
 def code_of_or_none(response: httpx.Response) -> Optional[str]:
@@ -345,14 +354,15 @@ async def test_a_removed_minting_device_refuses_its_tickets(tmp_path, monkeypatc
             await door.mesh.owner.approve_offer(await phone.pairing_offer())
             await until(phone.enrolled, "the phone to join")
             await until(lambda: {t.tool.name for t in phone.kernel.peer_tool_catalog()} >= {"read_value"}, "the catalog to reach the phone")
+            def node_sees_phone() -> bool:
+                return any(member.device_id == phone.device_id for member in door.mesh.node.kernel.roster().members)
+
+            await until(node_sees_phone, "the node to see the minting phone on its roster")
             ticket = phone.kernel.mint_caller_ticket(door.mesh.node_device, door.holder.holder_text, "Phone job", ["read_value"], False, 3600)
             assert (await door.call_tool(ticket, "read_value")).status_code == 200
             door.mesh.owner.kernel.remove_device(phone.device_id)
 
-            async def refused() -> bool:
-                return code_of_or_none(await door.call_tool(ticket, "read_value")) is not None
-
-            await until(refused, "the node to see the removal")
+            await until(lambda: not node_sees_phone(), "the node to remove the minting phone from its roster")
             response = await door.call_tool(ticket, "read_value")
             assert (response.status_code, code_of(response)) == (403, "caller.device_removed")
         finally:

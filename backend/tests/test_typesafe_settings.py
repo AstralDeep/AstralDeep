@@ -242,8 +242,6 @@ def test_remove_appears_only_when_a_key_is_stored(typesafe_store) -> None:
     [
         (None, "Not set"),
         ("valid", "Active"),
-        ("rejected", "Key rejected on"),
-        ("unavailable", "Temporarily unavailable"),
     ],
 )
 def test_the_status_line_reflects_the_stored_outcome(
@@ -251,8 +249,6 @@ def test_the_status_line_reflects_the_stored_outcome(
 ) -> None:
     if outcome is not None:
         run(save_key(typesafe_store, USER, KEY, probe=_probe_ok))
-        if outcome != "valid":
-            typesafe_store.record_outcome_sync(USER, outcome, key_fingerprint(KEY))
     html = _render(_orch(typesafe_store))
     assert expected in html
 

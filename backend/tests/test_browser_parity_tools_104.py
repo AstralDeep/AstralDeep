@@ -1,28 +1,18 @@
-"""Exercises the browser-pane parity tools in agents/computer_use/browser_tools.py (find, hover, zoom, console,
-network, evaluate, resize, tabs and the browser_batch composite) against a fake host, the batch's binding to its
-reviewed authority, and their review, grant and bypass behavior through the real dispatch gate.
-"""
+"""Exercises browser inspection, navigation, batch deadlines and consequential-action refusals against a synthetic computer host."""
 
 from __future__ import annotations
 
 import asyncio
 import json
-import time
-from types import SimpleNamespace
 
 import pytest
 
 from agents.computer_use import browser_tools
 from orchestrator import computer_use_policy as policy
-from orchestrator import hitl_confirmation as hc
-from orchestrator import remote_confirmation as rc
 from tests.test_browser_tools import (
-    CHAT, ORIGIN, OWNER, PAGE, _clean_pages as _clean_pages, _error, _snapshot_reply, world as world,
+    CHAT, ORIGIN, PAGE, _clean_pages as _clean_pages, _error, _snapshot_reply, world as world,
 )
-from tests.test_computer_grant_flow_102 import (
-    OWNER as GATE_OWNER, _buttons, _call, _fresh_pending_cards as _fresh_pending_cards, _mac,
-    _payload,
-)
+from tests.test_computer_grant_flow_102 import _call, _mac
 from tests.test_hitl_public_research import runtime as runtime  # noqa: F401
 from tests.test_hitl_task_continuation import task_runtime as task_runtime  # noqa: F401
 from tests.test_lets_gate_ordering import gate_orchestrator as gate_orchestrator  # noqa: F401
@@ -239,17 +229,6 @@ def test_targets_mark_scripts_new_sites_and_reviewed_batches_destructive():
         assert browser_tools.browser_target("browser_batch", {"actions": loud}, PAGE)["destructive"] is True, loud
 
 
-def test_summaries_name_the_script_size_and_the_new_tab_site():
-    assert "13-character script" in policy.summary_for("browser_evaluate", {"script": "document.body"}, "Mac")
-    assert "0-character" in policy.summary_for("browser_evaluate", {}, "Mac")
-    card = policy.summary_for("browser_tabs", {"action": "create", "url": "https://Example.org/a?x=1"}, "Mac")
-    assert "https://example.org/a" in card and "x=1" not in card and "Mac" in card
-    assert "refused" in policy.summary_for("browser_tabs", {"action": "create", "url": "file:///x"}, "Mac")
-    assert policy.summary_for("browser_tabs", {"action": "select"}, "") == (
-        "Select tabs in the Astral browser pane on your computer")
-    assert policy.summary_for("browser_tabs", {"action": ["x"]}, "Mac").startswith("Manage tabs")
-
-
 async def test_a_batch_runs_each_step_through_its_own_tool_in_order(world):
     world.replies["browser_snapshot"] = _snapshot_reply()
     world.replies["browser_fill"] = _ok(url=PAGE)
@@ -280,7 +259,7 @@ async def test_a_batch_stops_at_the_first_failure_or_review_and_sends_nothing_af
     data = out["_data"]
     assert data["stopped_at"] == 1 and data["completed"] == 1 and len(data["results"]) == 2
     assert data["results"][1]["result"]["code"] == "confirmation_required"
-    assert "confirm_element" in data["results"][1]["result"]["next_action"] and "Step 1" in data["next_action"]
+    assert "directly on the computer" in data["results"][1]["result"]["next_action"] and "Step 1" in data["next_action"]
     assert world.requests("browser_scroll") == []
     world.replies["browser_scroll"] = _error("timeout", "slow")
     failed = await world.call("browser_batch", actions=[{"tool": "browser_scroll"}, {"tool": "browser_snapshot"}])
@@ -325,36 +304,6 @@ async def test_a_batch_needs_a_signed_in_user_and_a_live_session(world):
     assert (await world.call("browser_batch", actions=[{"tool": "browser_scroll"}]))["_data"]["code"] == "no_session"
 
 
-async def test_batch_steps_carry_the_batch_approval_and_nothing_else_does(world, monkeypatch):
-    call = hc.PendingCall("r1", OWNER, CHAT, "computer-use-1", "browser_batch", "{}", (), time.monotonic() + 60,
-                          computer_authority=SimpleNamespace(session=world.session, websocket=None,
-                                                             generation=world.session.authority_generation))
-    approval = hc.Approval(world.orch, call, consumed=True, effect_started=True)
-    monkeypatch.setattr(hc, "_current_session", lambda *_args, **_kwargs: True)
-    world.replies["browser_snapshot"] = _snapshot_reply()
-    world.replies["browser_scroll"] = _ok(url=PAGE)
-    token = hc._APPROVAL.set(approval)
-    try:
-        out = await world.call("browser_batch", actions=[{"tool": "browser_snapshot"}, {"tool": "browser_scroll"}])
-        direct = await world.call("browser_scroll")
-    finally:
-        hc._APPROVAL.reset(token)
-    assert out["_data"]["completed"] == 2 and len(world.requests("browser_scroll")) == 1
-    assert direct["_data"]["code"] == "confirmation_required"
-    step = browser_tools._BatchStep(approval, world.session, "browser_scroll")
-    marker = browser_tools._BATCH.set(step)
-    try:
-        assert browser_tools.batch_effect_matches(approval, world.session, "browser_scroll")
-        assert not browser_tools.batch_effect_matches(approval, world.session, "browser_click")
-        assert not browser_tools.batch_effect_matches(object(), world.session, "browser_scroll")
-        assert not browser_tools.batch_effect_matches(approval, object(), "browser_scroll")
-        step.active = False
-        assert not browser_tools.batch_effect_matches(approval, world.session, "browser_scroll")
-    finally:
-        browser_tools._BATCH.reset(marker)
-    assert not browser_tools.batch_effect_matches(approval, world.session, "browser_scroll")
-
-
 def test_registry_describes_the_parity_tools_and_registers_the_batch_as_a_composite():
     from agents.computer_use import mcp_tools
 
@@ -381,56 +330,6 @@ async def _browser_mac(task_runtime, **kwargs):
     return session, host
 
 
-def _texts(response):
-    return json.dumps(response.ui_components[0])
-
-
-async def test_evaluate_needs_one_exact_review_and_runs_once_after_approval(task_runtime):
-    orch, ws, effects, *_ = task_runtime
-    session, _host = await _browser_mac(task_runtime, remote=True)
-    browser_tools._note_page(session.session_id, PAGE, "s1")
-    first = await _call(task_runtime, "browser_evaluate", script="document.title")
-    assert first.result["_data"]["status"] == "confirmation_required" and not effects
-    card = _texts(first)
-    assert "document.title" in card and "14-character script" in card
-    assert [b["label"] for b in _buttons(first)] == ["Approve", "Decline"]
-    await rc.handle_decision(orch, ws, GATE_OWNER, _payload(first, "approve"))
-    assert [name for name, _args in effects] == ["browser_evaluate"] and not orch._hitl_pending_calls
-
-
-async def test_bypass_runs_evaluate_and_batches_with_an_audited_bypass_source(task_runtime):
-    orch, ws, effects, *_ = task_runtime
-    session, host = await _browser_mac(task_runtime, remote=True)
-    await orch.computer_sessions.set_bypass(host, True)
-    evaluated = await _call(task_runtime, "browser_evaluate", script="1")
-    batched = await _call(task_runtime, "browser_batch", actions=[
-        {"tool": "browser_navigate", "args": {"url": "https://example.org/"}}, {"tool": "browser_snapshot"}])
-    assert evaluated.result["_data"]["approval_source"] == batched.result["_data"]["approval_source"] == "bypass"
-    assert [name for name, _args in effects] == ["browser_evaluate", "browser_batch"]
-    assert not rc._PENDING_CARDS and not getattr(orch, "_hitl_pending_calls", {})
-
-
-async def test_a_new_tab_at_a_site_uses_the_navigation_origin_approval(task_runtime):
-    orch, ws, effects, *_ = task_runtime
-    session, _host = await _browser_mac(task_runtime, remote=True)
-    first = await _call(task_runtime, "browser_tabs", action="create", url="https://example.org/a")
-    assert first.result["_data"]["status"] == "confirmation_required" and "https://example.org/a" in _texts(first)
-    await rc.handle_decision(orch, ws, GATE_OWNER, _payload(first, "approve"))
-    assert len(effects) == 1 and not orch._hitl_pending_calls
-    grant, = orch.computer_sessions.grants.list(session.session_id)
-    assert dict(grant.scope) == {"kind": "origin", "origin": "https://example.org"}
-    browser_tools._note_page(session.session_id, "https://example.org/a", "s1")
-    assert (await _call(task_runtime, "browser_tabs", action="list")).result["_data"]["ok"]
-    assert (await _call(task_runtime, "browser_hover", ref="e1", snapshot_id="s1")).result["_data"]["ok"]
-    quiet = await _call(task_runtime, "browser_batch", actions=[
-        {"tool": "browser_snapshot"}, {"tool": "browser_click", "args": {"ref": "e1", "snapshot_id": "s1"}}])
-    assert quiet.result["_data"]["ok"] and len(effects) == 4
-    loud = await _call(task_runtime, "browser_batch", actions=[
-        {"tool": "browser_navigate", "args": {"url": "https://example.org/b"}}])
-    assert loud.result["_data"]["status"] == "confirmation_required" and len(effects) == 4
-    assert [b["label"] for b in _buttons(loud)] == ["Approve", "Decline"]
-
-
 async def test_a_batch_keeps_its_result_bounded_and_says_which_outputs_were_omitted(world):
     world.replies["browser_get_text"] = _ok(text="t" * 59_000, url=PAGE, title="Form")
     out = await world.call("browser_batch", actions=[{"tool": "browser_get_text"} for _ in range(4)])
@@ -442,7 +341,7 @@ async def test_a_batch_keeps_its_result_bounded_and_says_which_outputs_were_omit
 
 async def test_a_new_tab_at_a_refused_address_never_gets_a_card(task_runtime):
     orch, *_ = task_runtime
-    await _browser_mac(task_runtime, remote=True)
+    await _browser_mac(task_runtime)
     response = await _call(task_runtime, "browser_tabs", action="create", url="javascript:alert(1)")
     assert response.error and "url_rejected" in response.error["message"]
     assert not [c for c in (response.ui_components or []) if c.get("type") == "card"]
@@ -456,3 +355,14 @@ async def test_a_batch_never_starts_a_step_that_could_outlast_its_own_deadline(w
     data = out["_data"]
     assert data["completed"] == 1 and data["stopped_at"] == 1
     assert data["results"][1]["result"]["code"] == "batch_deadline" and world.requests("browser_wait") == []
+
+
+@pytest.mark.parametrize("tool,args", [
+    ("browser_evaluate", {"script": "document.title"}),
+    ("browser_tabs", {"action": "create", "url": "https://example.org"}),
+])
+async def test_browser_effects_without_kernel_approval_are_refused(task_runtime, tool, args):
+    _, _, effects, *_ = task_runtime
+    await _browser_mac(task_runtime)
+    response = await _call(task_runtime, tool, **args)
+    assert response.error and not response.ui_components and not effects

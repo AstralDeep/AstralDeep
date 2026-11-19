@@ -77,28 +77,21 @@ async def test_real_dispatch_refuses_execution_before_approval_or_transport(orch
     confirmation.assert_not_called()
 
 
-def test_terminal_confirmation_summary_excludes_private_authority():
-    policy = remote_confirmation.policy_for("terminal-shell-1")
-    summary = policy.summary(None, "owner", "terminal_write", {
-        "data": "echo sample", "user_id": "private-owner", "_terminal_authority": "private-proof",
-    })
-    assert "terminal_write" in summary and "sample" in summary
-    assert "private-owner" not in summary and "private-proof" not in summary
-    assert policy.machine_label(None, "owner", None) == "terminal session"
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize("revoked", [False, True])
-async def test_gate_binds_fresh_host_authority_after_normal_permission_checks(orch, monkeypatch, revoked):
+async def test_gate_binds_fresh_host_authority_after_normal_permission_checks(orch, monkeypatch, tmp_path, revoked):
     from agents.terminal_shell.terminal_shell_agent import TerminalShellAgent
 
     monkeypatch.setitem(flags._flags, "terminal_shell", True)
     monkeypatch.setenv("FF_TERMINAL_SHELL", "true")
-    monkeypatch.setenv("DELEGATION_REQUIRED", "false")
+    monkeypatch.setenv("AGENT_API_KEY", "test-terminal-host")
+    monkeypatch.setenv("ASTRAL_NODE_PROFILE", "personal")
+    monkeypatch.setenv("ASTRAL_NODE_DATA_DIR", str(tmp_path))
     monkeypatch.setattr(TerminalShellAgent, "_init_crypto",
                         lambda self: setattr(self, "_public_key_jwk", {"test": "ephemeral"}))
     agent = TerminalShellAgent(orchestrator=orch)
-    await orch.register_agent(None, RegisterAgent(agent_card=agent.card))
+    await orch.register_agent(None, RegisterAgent(agent_card=agent.card, api_key="test-terminal-host"))
+    assert orch.agent_cards[agent.agent_id] is agent.card
     orch.local_agents[agent.agent_id] = agent
     socket = object()
     orch.ui_sessions[socket] = {"sub": "u1", "exp": time.time() + 600,
@@ -117,8 +110,9 @@ async def test_gate_binds_fresh_host_authority_after_normal_permission_checks(or
                                                  arguments, user_id="u1", auto_subscribe_stream=False)
     if revoked:
         assert isinstance(prepared, GateRefusal)
-        assert prepared.response.error["code"] == "terminal_permission_denied"
+        assert prepared.response.error.get("code") == "terminal_permission_denied", prepared.response.error
     else:
+        assert not isinstance(prepared, GateRefusal), prepared.response.error
         authority = prepared.args["_terminal_authority"]
         assert type(authority) is TerminalAuthority
         assert authority.owner_id == prepared.args["user_id"] == "u1"
@@ -129,9 +123,8 @@ async def test_gate_binds_fresh_host_authority_after_normal_permission_checks(or
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("loss,code", [("profile", "terminal_profile_invalid"),
-                                       ("target", "terminal_target_unavailable")])
-async def test_real_gate_types_terminal_loss_between_permission_and_confirmation(orch, isolated, loss, code):
+@pytest.mark.parametrize("loss", ["profile", "target"])
+async def test_terminal_change_during_permission_check_cannot_start_an_attended_action(orch, isolated, loss):
     from dataclasses import replace
 
     from agents.terminal_shell.mcp_tools import TOOL_REGISTRY as _TERMINAL_TOOLS
@@ -155,9 +148,9 @@ async def test_real_gate_types_terminal_loss_between_permission_and_confirmation
     orch.tool_permissions.is_tool_allowed = permission
     result = await orch._run_gate_stack(socket, "terminal-shell-1", "start_terminal", {}, user_id="owner")
     assert isinstance(result, GateRefusal)
-    assert result.response.error == {"code": code, "message": code, "retryable": False,
-                                     "data": {"terminal_code": code, "http_status": 503}}
-    assert result.render_components[0]["message"] == code
+    message = "This remote operation requires attended authorization, which this node does not provide."
+    assert result.response.error == {"message": message, "retryable": False}
+    assert result.render_components[0]["message"] == message
     assert isolated.state.connects == [] and orch.terminal_sessions._sessions == {}
 
 

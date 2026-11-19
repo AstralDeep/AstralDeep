@@ -1,4 +1,4 @@
-"""Runs every paired case as a real turn on a personal development node and checks the effect, audit, control and cleanup evidence.
+"""Runs every paired case as a real Kernel turn on a personal development node, with a scripted model provider proposing the tool calls, and checks the effect, audit, control and cleanup evidence.
 It needs the pinned kernel wheel and mailbox binary like the other real-binding node tests, and the CLI test proves an interrupted run writes an incomplete report.
 """
 
@@ -15,12 +15,13 @@ from security_benchmark.qualification_report import build_report, validate_repor
 
 
 @pytest.mark.asyncio
-async def test_every_paired_case_is_denied_on_the_personal_turn_path():
+async def test_every_paired_case_is_withheld_on_the_kernel_turn_path():
     evidence, teardown_verified = await pd.run_personal_qualification()
     assert len(evidence) == len(CASES) == 12
     assert not validate_evidence(CASES, evidence, teardown_verified=teardown_verified)
     assert all(item.effect_count == 0 and item.benign_completed and item.read_completed for item in evidence)
-    assert all(item.refusal for item in evidence)
+    assert all(f"{pd.EFFECT}:consent.required:untrusted_influence" in item.refusal for item in evidence)
+    assert all(len(item.audit_event_ids) >= 2 for item in evidence)
     report = build_report({"commit": "a" * 40, "policy_sha256": "b" * 64, "composition_sha256": "c" * 64},
                           evidence, teardown_verified=teardown_verified)
     validate_report(report)
@@ -82,3 +83,12 @@ def test_interrupted_run_after_candidate_identity_writes_incomplete_report(tmp_p
     assert cli.main(["--qualify-real-dispatch", "--out", str(tmp_path)]) == 1
     report = json.loads((tmp_path / "real-dispatch-qualification.json").read_text())
     assert report["status"] == "incomplete" and report["errors"] == ["execution_failed:RuntimeError"]
+    assert report["evidence_class"] == "real_dispatch_scripted_provider"
+
+
+def test_a_turn_that_never_reached_a_tool_call_has_no_audit_evidence():
+    driver = pd.PersonalDispatchQualification("no-local-chat")
+    try:
+        assert driver._audit(None) == ([], False)
+    finally:
+        pd.shutil.rmtree(driver.root, ignore_errors=True)

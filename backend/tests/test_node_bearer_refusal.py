@@ -1,7 +1,8 @@
+"""Probes caller-ticket transports and retired browser routes through the personal node app.
+Credential spies check that rejected bearers never trigger JWT parsing or a network request."""
 
 from __future__ import annotations
 
-import json
 import socket
 import time
 from types import SimpleNamespace as NS
@@ -35,21 +36,22 @@ A2A_BODY = {
     "params": {"message": {"messageId": "m1", "role": "ROLE_USER", "parts": [{"text": "hello"}]}},
 }
 
-REFUSED = {"detail": BEARER}
-VOICE_REFUSED = {"error": "voice_unavailable", "reason": "authentication_required", "retryable": False}
-REST_DOORS = [
-    ("GET", "/api/connection/status", 401, REFUSED),
-    ("GET", "/api/share", 401, REFUSED),
-    ("GET", "/api/download/s1/f.txt", 401, REFUSED),
-    ("POST", "/api/audit/session-resume-failed", 401, REFUSED),
-    ("GET", "/api/emergency-stop", 401, REFUSED),
-    ("GET", "/api/chrome/commands", 401, REFUSED),
-    ("GET", "/api/work/v1/operations/op-1", 401, {"error": "work_authentication_required"}),
-    ("POST", "/api/work/v1/operations", 401, {"error": "work_authentication_required"}),
-    ("POST", "/api/work/v1/operations/op-1/pause", 401, {"error": "work_authentication_required"}),
-    ("POST", "/api/export/canvas/c1/presentation", 401, {"error": "presentation_authentication_required"}),
-    ("GET", "/api/persistent-agents", 401, {"error": "assignment_authentication_required"}),
-    ("GET", "/api/voice/v2/status", 401, VOICE_REFUSED),
+RETIRED_REST = [
+    ("GET", "/api/connection/status"),
+    ("GET", "/api/share"),
+    ("GET", "/share/anything"),
+    ("GET", "/api/download/s1/f.txt"),
+    ("POST", "/api/audit/session-resume-failed"),
+    ("GET", "/api/emergency-stop"),
+    ("GET", "/api/chrome/commands"),
+    ("GET", "/api/work/v1/operations/op-1"),
+    ("POST", "/api/work/v1/operations"),
+    ("POST", "/api/work/v1/operations/op-1/pause"),
+    ("POST", "/api/export/canvas/c1/presentation"),
+    ("GET", "/api/persistent-agents"),
+    ("GET", "/api/voice/v2/status"),
+    ("POST", "/api/terminals"),
+    ("GET", "/api/terminals/approvals/example"),
 ]
 SIGN_IN_DOORS = [
     ("GET", "/auth/login"),
@@ -145,19 +147,6 @@ def _untouched(node) -> None:
     assert node.spies == {"jwks": 0, "parse": 0}
 
 
-def _detail(response) -> str:
-    return response.json().get("detail")
-
-
-@pytest.mark.parametrize("method,path,status,body", REST_DOORS)
-def test_rest_doors_refuse_a_valid_bearer(node, method, path, status, body):
-    response = node.client.request(method, path, headers={
-        "Authorization": f"Bearer {node.token}", "Origin": orchestrator_app.PUBLIC_BASE_URL,
-        "Content-Type": "application/json"}, content=b"{}")
-    assert (response.status_code, response.json()) == (status, body)
-    _untouched(node)
-
-
 async def test_the_work_route_authentication_refuses_inside_its_wrapper(node, plane_runtime, monkeypatch):
     from orchestrator.session_store import WebSessionStore
     from orchestrator.work_submit_authority import _authenticate_work_request
@@ -174,13 +163,13 @@ async def test_the_work_route_authentication_refuses_inside_its_wrapper(node, pl
 
 
 @pytest.mark.parametrize("path", ["/api/share", "/api/download/s1/f.txt", "/api/connection/status"])
-def test_a_query_token_and_a_bare_request_are_refused_the_same_way(node, path):
+def test_a_query_token_cannot_reopen_a_retired_route(node, path):
     for response in (node.client.get(path, params={"token": node.token}), node.client.get(path)):
-        assert response.status_code == 401 and _detail(response) == BEARER
+        assert response.status_code == 404
     _untouched(node)
 
 
-REMOVED_DOORS = [*SIGN_IN_DOORS, *LEGACY_DOORS,
+REMOVED_DOORS = [*SIGN_IN_DOORS, *LEGACY_DOORS, *RETIRED_REST,
                  ("GET", "/api/remote-mcp/oauth/start"), ("GET", "/api/remote-mcp/oauth/callback")]
 CREDENTIALS = (
     {"Authorization": "Bearer {token}"},
@@ -191,31 +180,33 @@ CREDENTIALS = (
 
 
 @pytest.mark.parametrize("method,path", REMOVED_DOORS)
-@pytest.mark.parametrize("credentials", CREDENTIALS)
-def test_removed_sign_in_session_and_enrollment_doors_answer_404(node, method, path, credentials):
-    headers = {name: value.format(token=node.token) for name, value in credentials.items()}
-    response = node.client.request(
-        method, path, headers={**headers, "Origin": orchestrator_app.PUBLIC_BASE_URL},
-        content=b"grant_type=refresh_token&refresh_token=r", follow_redirects=False)
-    assert response.status_code == 404, response.text
+def test_removed_doors_answer_404(node, method, path):
+    for credentials in CREDENTIALS:
+        headers = {name: value.format(token=node.token) for name, value in credentials.items()}
+        response = node.client.request(
+            method, path, headers={**headers, "Origin": orchestrator_app.PUBLIC_BASE_URL},
+            content=b"grant_type=refresh_token&refresh_token=r", follow_redirects=False)
+        assert response.status_code == 404, response.text
     _untouched(node)
 
 
 @pytest.mark.parametrize("credentials", CREDENTIALS)
-def test_the_shell_reads_no_credential_and_never_redirects_to_sign_in(node, credentials):
+def test_the_node_hosts_no_shell_and_never_redirects_to_sign_in(node, credentials):
     headers = {name: value.format(token=node.token) for name, value in credentials.items()}
-    response = node.client.get("/", headers=headers, follow_redirects=False)
-    assert response.status_code in (200, 500), response.status_code
-    assert node.token not in response.text and "value.signature" not in response.text
-    assert "location" not in response.headers
+    for path in ("/", "/static/client.js"):
+        response = node.client.get(path, headers=headers, follow_redirects=False)
+        assert response.status_code == 404, (path, response.status_code)
+        assert node.token not in response.text and "value.signature" not in response.text
+        assert "location" not in response.headers
     _untouched(node)
 
 
-def _websocket_probe(node):
-    with node.client.websocket_connect("/ws") as socket:
-        socket.send_text(json.dumps({"type": "register_ui", "token": node.token, "resumed": True}))
-        assert json.loads(socket.receive_text()) == {"type": "auth_required", "reason": BEARER}
+def test_browser_socket_is_absent_even_with_a_bearer(node):
+    with pytest.raises(WebSocketDisconnect):
+        with node.client.websocket_connect("/ws", headers={"Authorization": f"Bearer {node.token}"}):
+            pytest.fail("retired browser socket accepted a connection")
     assert node.orch.ui_sessions == {}
+    _untouched(node)
 
 
 def _a2a_probe(node):
@@ -243,7 +234,6 @@ def _worker_probe(node):
 
 
 IN_BAND_PROBES = {
-    ("WS", "/ws"): _websocket_probe,
     ("POST", "/a2a"): _a2a_probe,
     ("POST", "/mcp"): _mcp_probe,
     ("WS", WORKER_CONTROL_PATH): _worker_probe,

@@ -69,7 +69,6 @@ class FeatureFlags:
             "notification_routing": self._read("FF_NOTIFICATION_ROUTING", False),
             "computer_use": self._read("FF_COMPUTER_USE", False),
             "terminal_shell": self._read("FF_TERMINAL_SHELL", False),
-            "sandbox_qualification": self._read("FF_SANDBOX_QUALIFICATION", False),
             "mcp_server": self._read("FF_MCP_SERVER", False),
             "mcp_work_panel": self._read("FF_MCP_WORK_PANEL", False),
             "a2a_server": self._read("FF_A2A_SERVER", False),

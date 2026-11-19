@@ -1,24 +1,19 @@
-"""Binds the one allowlisted task prompt: extracts the frozen planning prompt from its
-product source seam via AST (no product import), splits it into the frozen head and the
-single mutable instruction field, and validates candidate instruction text as untrusted
-bounded data.
-"""
+"""Loads the archived planning fixture for the offline scripted benchmark in optimizer.py.
+Only its bounded rules field can vary during a run."""
 
 from __future__ import annotations
 
-import ast
 import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Tuple
 
-SOURCE_PATH = Path("backend/orchestrator/coordinator.py")
-TARGET_CLASS = "Coordinator"
-TARGET_ATTRIBUTE = "PLANNING_PROMPT"
+SOURCE_PATH = Path("backend/prompt_optimization/synthetic_planning_prompt.txt")
 INSTRUCTION_MARKER = "\nRules:\n"
 ALLOWED_FIELDS = ("rules",)
 MAX_INSTRUCTION_CHARS = 2000
-TASK_ID = "coordinator_planning"
+RETIRED_TASK_ID = "coordinator_planning"
+SYNTHETIC_TASK_ID = "synthetic_coordinator_planning"
 
 
 class TaskSeamError(RuntimeError):
@@ -31,10 +26,6 @@ class InstructionRejected(ValueError):
 
 def digest_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
-def _digest(text: str) -> str:
-    return digest_text(text)
 
 
 @dataclass(frozen=True)
@@ -72,40 +63,16 @@ def validate_instruction(text: object) -> str:
     return stripped
 
 
-def _extract_prompt(source: str) -> str:
+def load_task_prompt(root: Path, task_id: str = RETIRED_TASK_ID) -> TaskPrompt:
+    if task_id == RETIRED_TASK_ID:
+        raise TaskSeamError(f"task {task_id} retired with the Python coordinator")
+    if task_id != SYNTHETIC_TASK_ID:
+        raise TaskSeamError("unknown planning task")
     try:
-        tree = ast.parse(source)
-    except SyntaxError as error:
-        raise TaskSeamError(f"source seam does not parse: {error}") from error
-    for node in tree.body:
-        if not isinstance(node, ast.ClassDef) or node.name != TARGET_CLASS:
-            continue
-        for statement in node.body:
-            if not isinstance(statement, ast.Assign):
-                continue
-            names = [
-                target.id
-                for target in statement.targets
-                if isinstance(target, ast.Name)
-            ]
-            if TARGET_ATTRIBUTE not in names:
-                continue
-            value = statement.value
-            if isinstance(value, ast.Constant) and type(value.value) is str:
-                return value.value
-            raise TaskSeamError("prompt seam is not a plain string literal")
-    raise TaskSeamError(
-        f"prompt seam {TARGET_CLASS}.{TARGET_ATTRIBUTE} not found in {SOURCE_PATH}"
-    )
-
-
-def load_task_prompt(root: Path) -> TaskPrompt:
-    path = root / SOURCE_PATH
-    try:
-        raw = path.read_bytes()
-    except OSError as error:
-        raise TaskSeamError(f"source seam unreadable: {SOURCE_PATH}") from error
-    prompt = _extract_prompt(raw.decode("utf-8"))
+        raw = (root / SOURCE_PATH).read_bytes()
+        prompt = raw.decode("utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        raise TaskSeamError(f"planning fixture unreadable: {SOURCE_PATH}") from error
     parts = prompt.split(INSTRUCTION_MARKER)
     if len(parts) != 2:
         raise TaskSeamError(
@@ -115,14 +82,14 @@ def load_task_prompt(root: Path) -> TaskPrompt:
     if not head.strip() or not rules.strip():
         raise TaskSeamError("prompt seam head and instruction must be non-empty")
     return TaskPrompt(
-        task_id=TASK_ID,
+        task_id=task_id,
         source_path=SOURCE_PATH.as_posix(),
         source_digest=hashlib.sha256(raw).hexdigest(),
-        prompt_digest=_digest(prompt),
+        prompt_digest=digest_text(prompt),
         head=head,
-        head_digest=_digest(head),
+        head_digest=digest_text(head),
         rules=rules,
-        rules_digest=_digest(rules),
+        rules_digest=digest_text(rules),
     )
 
 

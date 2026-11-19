@@ -39,7 +39,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
 def _qualify(args: argparse.Namespace) -> int:
     from security_benchmark.drivers.personal_dispatch import run_personal_qualification
     from security_benchmark.qualification_report import (
-        build_report, candidate_identity, validate_report, write_report,
+        REAL_LABEL, build_report, candidate_identity, validate_report, write_report,
     )
 
     root = Path(__file__).resolve().parents[2]
@@ -60,7 +60,7 @@ def _qualify(args: argparse.Namespace) -> int:
         if not report_written:
             try:
                 write_report(path, {"schema": "astraldeep.security-qualification/v1",
-                    "evidence_class": "real_dispatch_scripted_proposer",
+                    "evidence_class": REAL_LABEL,
                     "candidate": candidate, "status": "incomplete", "cases": [],
                     "errors": [f"execution_failed:{type(exc).__name__}"],
                     "teardown": {"status": "unverified"}})

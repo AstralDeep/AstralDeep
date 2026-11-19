@@ -19,10 +19,6 @@ TURN_MODEL: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
 _ELIGIBLE_CLASSES = frozenset({"transport_error", "rate_limit", "model_not_found"})
 
 
-def reset_turn() -> None:
-    TURN_MODEL.set(None)
-
-
 def fallback_models(primary: str) -> List[str]:
     chain: List[str] = []
     for name in os.environ.get(FALLBACK_ENV, "").split(","):

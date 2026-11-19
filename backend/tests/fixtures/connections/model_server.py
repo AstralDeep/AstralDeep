@@ -1,5 +1,5 @@
 """An OpenAI-compatible chat server that answers with scripted tool calls and then a text reply, recording every request body and authorization header.
-It generalises the fake model in `test_node_mesh_peer_tools.py` so connection and peer tests can share one implementation.
+It generalises the fake model in `test_node_mesh_peer_tools.py` so connection and peer tests can share one implementation, and each user message restarts its script so a later turn in the same chat replays it from the top.
 """
 
 from __future__ import annotations
@@ -44,7 +44,12 @@ class ModelServer:
         self.stop()
 
     def _turn(self, request: dict) -> ScriptedTurn:
-        answered = sum(1 for message in request.get("messages", []) if message.get("role") == "tool")
+        answered = 0
+        for message in request.get("messages", []):
+            if message.get("role") == "user":
+                answered = 0
+            elif message.get("role") == "tool":
+                answered += 1
         return self.script[min(answered, len(self.script) - 1)]
 
     def _handle(self, req: Request) -> Response:

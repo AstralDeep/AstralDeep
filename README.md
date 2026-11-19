@@ -4,8 +4,9 @@
 
 AstralDeep is a clinical-AI, multi-agent platform. A single FastAPI orchestrator with a
 PostgreSQL backend coordinates first-party, user-authored, and remote agents. It serves the REST
-API, the WebSocket/A2A agent transport, the web client, and static assets on one port (8001). The
-same server-owned user interface is rendered for the web, Windows, Android, and Apple clients.
+API and the WebSocket/A2A agent transport on one port (8001). The Kernel engine is the only turn engine. The
+Apple clients embed it, and the node answers mesh requests on it. A web client is a later
+application and the node hosts none.
 
 The design rule throughout is **"LLM proposes, code decides"**. Models may draft layouts,
 plans, or artifacts, but deterministic code validates, authorizes, bounds, and renders them.
@@ -150,7 +151,7 @@ Docker build must supply it with `--build-context kernel-artifacts=build/kernel-
 Missing bindings or a digest mismatch fail the build; the real-Kernel tests require both the
 native binding and mailbox.
 
-When the container reports healthy, open <http://localhost:8001>. Useful endpoints:
+When the container reports healthy, the node answers on <http://localhost:8001>. It serves no page at `/`. Useful endpoints:
 
 | Endpoint | Purpose |
 |---|---|

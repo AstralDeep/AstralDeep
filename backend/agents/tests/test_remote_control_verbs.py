@@ -456,15 +456,18 @@ def _gate_orch():
     )
 
 
-def test_upload_file_overwriting_an_existing_path_takes_the_proposal_path():
+def test_upload_file_overwriting_an_existing_path_is_refused_without_a_proposal():
     from orchestrator import remote_confirmation as rc
     orch = _gate_orch()
     t = _fake(files={"/dest/exists.bin": b"old"})
-    out = rc.evaluate(orch, object(), "remote-compute-1", "upload_file",
+    socket = object()
+    orch.ui_sessions[socket] = {"sub": USER}
+    out = rc.evaluate(orch, socket, "remote-compute-1", "upload_file",
                       {"machine_id": "m1", "attachment_id": "a1",
                        "remote_path": "/dest/exists.bin"}, "chat-1", USER)
-    assert out is not None and "confirmation_required" in out[0]
-    assert len(orch.history.db.rows) == 1
+    assert out is not None and "attended authorization" in out[0]
+    assert not orch.history.db.rows
+    assert all(component["type"] == "alert" for component in out[1])
     assert [c["op"] for c in t.calls] == ["stat"]
 
 
@@ -472,7 +475,9 @@ def test_upload_file_to_a_new_path_passes_the_gate_without_a_proposal():
     from orchestrator import remote_confirmation as rc
     orch = _gate_orch()
     t = _fake(files={})
-    out = rc.evaluate(orch, object(), "remote-compute-1", "upload_file",
+    socket = object()
+    orch.ui_sessions[socket] = {"sub": USER}
+    out = rc.evaluate(orch, socket, "remote-compute-1", "upload_file",
                       {"machine_id": "m1", "attachment_id": "a1",
                        "remote_path": "/dest/new.bin"}, "chat-1", USER)
     assert out is None

@@ -1,6 +1,6 @@
 """Bounded async wrapper over the composition-owned assignment repository; translates
 driver/timeout failures into data-free AssignmentError at the HTTP boundary. Used by
-AssignmentService, AssignmentRunner and AssignmentApprovalBridge.
+AssignmentService and AssignmentRunner.
 """
 
 from __future__ import annotations

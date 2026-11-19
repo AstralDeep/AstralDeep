@@ -1,5 +1,5 @@
-"""Shows the identity-server removal through the real app and boot path: other profiles exit 78 and leave a database byte-identical, every route refuses a signed bearer and a session cookie with no outbound connection, agent tokens keep their golden bytes, a placeholder secret exits 78 with ASTRAL_ENV unset, and the search check fails on a planted file.
-It reuses the route census and golden-vector suites so one run reports the whole exit criteria."""
+"""Checks personal node boot posture, loopback route authorization and agent token compatibility.
+The route census fixture mounts the running app's endpoints, and the repository scan checks for retired identity-server dependencies."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
 
-from orchestrator import boot_posture, orchestrator as orchestrator_module
+from orchestrator import boot_posture, node_api, orchestrator as orchestrator_module
 from shared import node_identity
 from tests import test_node_route_census as census_suite
 from tests.helpers import orchestrator_app
@@ -73,7 +73,7 @@ def test_a_non_personal_boot_exits_78_and_leaves_the_database_byte_identical(
     assert not (tmp_path / "node").exists()
 
 
-def test_every_route_names_a_door_and_refuses_a_signed_bearer_and_a_session_cookie(app, monkeypatch):  # noqa: F811
+def test_every_local_gate_refuses_a_signed_bearer_and_a_session_cookie(app, monkeypatch):  # noqa: F811
     findings, seen = census_suite.census(app)
     assert findings == []
     attempts = []
@@ -85,21 +85,17 @@ def test_every_route_names_a_door_and_refuses_a_signed_bearer_and_a_session_cook
     monkeypatch.setattr(socket.socket, "connect", refuse_outbound)
     monkeypatch.setenv(node_identity.PROFILE_ENV, node_identity.PERSONAL)
     token = _signed_jwt()
-    client = TestClient(app, base_url=orchestrator_app.PUBLIC_BASE_URL, raise_server_exceptions=False)
-    gated = [(method, path) for method, path in seen
-             if method not in ("WS", "MOUNT") and "{" not in path
-             and (method, path) not in census_suite.PUBLIC and (method, path) not in census_suite.PERSONAL_REFUSED
-             and (method, path) not in census_suite.IN_BAND]
-    assert len(gated) > 80
-    for method, path in sorted(gated):
-        for verb in method.split(","):
-            if verb in ("HEAD", "OPTIONS"):
-                continue
-            response = client.request(
-                verb, path, headers={"Authorization": f"Bearer {token}", "Cookie": "astral_session=v.s"},
-                follow_redirects=False)
-            assert response.status_code in (401, 403, 404, 405, 422), (verb, path, response.status_code)
-            assert token not in response.text
+    client = TestClient(app, base_url=orchestrator_app.PUBLIC_BASE_URL, client=("127.0.0.1", 50000))
+    assert set(census_suite.LOCAL_GATES) <= seen
+    for (verb, path), gate in census_suite.LOCAL_GATES.items():
+        route = path.replace("{flow}", "fixture").replace("{connection}", "a" * 32)
+        response = client.request(
+            verb, route, headers={"Authorization": f"Bearer {token}", "Cookie": "astral_session=v.s"},
+            follow_redirects=False)
+        expected = ("node.pairing_secret_required" if gate is node_api.pairing_gate
+                    else "node.operator_secret_required")
+        assert (response.status_code, response.json()["detail"]) == (401, expected), (verb, route)
+        assert token not in response.text
     assert attempts == []
 
 

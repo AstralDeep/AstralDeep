@@ -662,57 +662,25 @@ def test_human_target_preview_is_exact_binding_and_contains_no_credential_identi
     assert env.state.connects == []
 
 
-def test_original_request_check_cannot_expire_during_blocking_ssh_open(isolated, monkeypatch):
-    env = isolated
-    alive = {"current": True}
-
-    def current():
-        if not alive["current"]:
-            raise TerminalError("terminal_authority_expired", 401)
-
-    authority = replace(env.authority("start_terminal"), _request_check=current)
+def test_owner_expiry_during_connect_closes_before_pty(isolated, monkeypatch):
     original = ssh.ParamikoTransport._connect
 
     def connect(*args):
         result = original(*args)
-        alive["current"] = False
+        isolated.claims["exp"] = 0
         return result
 
     monkeypatch.setattr(ssh.ParamikoTransport, "_connect", connect)
     with pytest.raises(TerminalError, match="terminal_authority_expired"):
-        env.manager.create("owner", authority=authority, runtime_binding=env.manager.runtime_binding("owner"))
-    assert env.state.clients[0].closed and env.state.channels[0].effects == []
+        isolated.create()
+    assert isolated.state.clients[0].closed and isolated.state.channels[0].effects == []
 
 
-def test_session_lifetime_does_not_reuse_completed_request_callback(isolated):
-    env = isolated
-    alive = {"current": True}
-
-    def current():
-        if not alive["current"]:
-            raise TerminalError("terminal_authority_expired", 401)
-
-    authority = replace(env.authority("start_terminal"), _request_check=current)
-    info = env.manager.create("owner", authority=authority, runtime_binding=env.manager.runtime_binding("owner"))
-    alive["current"] = False
-    env.manager.sweep()
-    assert not env.state.clients[0].closed
-    env.manager.write("owner", info["session_id"], "eAo=", authority=env.authority("terminal_write"),
-                       runtime_binding=env.manager.runtime_binding("owner"))
-    assert env.state.channels[0].effects[-1] == ("send", b"x\n")
-
-
-def test_original_request_is_rechecked_after_permission_storage(isolated):
-    alive = {"current": True}
-
-    def current():
-        if not alive["current"]:
-            raise TerminalError("terminal_authority_expired", 401)
-
-    authority = replace(isolated.authority("start_terminal"), _request_check=current)
+def test_owner_expiry_is_rechecked_after_permission_storage(isolated):
+    authority = isolated.authority("start_terminal")
 
     def permissions(*args):
-        alive["current"] = False
+        isolated.claims["exp"] = 0
         return True
 
     isolated.orch.tool_permissions.is_tool_allowed = permissions

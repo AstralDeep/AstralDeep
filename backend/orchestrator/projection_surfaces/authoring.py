@@ -163,16 +163,6 @@ class DeclarativeAgentRequest(StrictModel):
         return None if value is None else validate_id(value)
 
 
-@dataclass(frozen=True, slots=True, repr=False)
-class _DeclarativeActivation:
-    config: object
-    selection: object
-    key: object
-    assignments: object
-    sessions: object
-    runner: object
-
-
 class DeclarativeAgentService:
     def __init__(self, orchestrator):
         from audit.repository import AuditRepository
@@ -289,7 +279,6 @@ class DeclarativeAgentService:
         command = self._request(caller, body)
         prepared = await self._transaction(caller, lambda tx, repository: self._plane(
             repository.prepare_declarative_command, tx, command=command))
-        activation = None
         if not prepared.replayed:
             try:
                 if command.command in {"create", "revise"}:
@@ -301,7 +290,7 @@ class DeclarativeAgentService:
                 if definition is not None:
                     await self._privacy(definition, command.display_name)
                 if command.command == "activate":
-                    activation = await self._prepare_activation(caller, definition)
+                    raise DeclarativeAgentError("declarative_profile_unavailable", 503)
             except AssignmentError:
                 latest = await self._transaction(caller, lambda tx, repository: self._plane(
                     repository.prepare_declarative_command, tx, command=command))
@@ -317,13 +306,10 @@ class DeclarativeAgentService:
                     and current.revision != prepared.revision):
                 raise DeclarativeAgentError("declarative_conflict", 409)
             if command.command == "activate":
-                self._lock_activation(tx, caller, activation)
+                raise DeclarativeAgentError("declarative_profile_unavailable", 503)
             result = self._plane(repository.apply_declarative_command, tx, preparation=current)
             if not result.replayed:
                 self._audit(tx, caller, result)
-            if command.command == "activate":
-                self._activation_policy(tx, caller)
-                self._activation_current(caller, activation)
             return result
 
         result = await self._transaction(caller, accept)
@@ -352,99 +338,6 @@ class DeclarativeAgentService:
         except Exception:
             raise DeclarativeAgentError("declarative_audit_unavailable", 503) from None
         self._current(caller)
-
-    def _activation_composition(self, caller, prepared):
-        from llm_config.user_store import UserLLMConfigStore
-        from orchestrator.session_store import WebSessionStore
-        from persistent_agents.runner import AssignmentRunner
-        from persistent_agents.service import AssignmentService
-        self._current(caller)
-        if (type(prepared) is not _DeclarativeActivation
-                or type(prepared.config) is not UserLLMConfigStore
-                or getattr(self.orch, "_llm_store", None) is not prepared.config
-                or prepared.config._repository.plane_runtime is not self.runtime
-                or prepared.config._repository.repository is not self.repositories.encrypted_llm_config
-                or type(prepared.assignments) is not AssignmentService
-                or getattr(self.orch, "persistent_assignments", None) is not prepared.assignments
-                or prepared.assignments.orch is not self.orch
-                or type(prepared.sessions) is not WebSessionStore
-                or getattr(self.orch, "web_sessions", None) is not prepared.sessions
-                or type(prepared.runner) is not AssignmentRunner
-                or getattr(self.orch, "persistent_assignment_runner", None) is not prepared.runner
-                or not prepared.runner.fixed_research_ready(
-                    service=prepared.assignments, sessions=prepared.sessions)):
-            raise DeclarativeAgentError("declarative_profile_unavailable", 503)
-        prepared.assignments._owner(caller.owner_id, caller.claims)
-        loop = prepared.runner._loop
-        if not isinstance(loop, asyncio.Task) or loop.done() or loop.cancelling():
-            raise DeclarativeAgentError("declarative_profile_unavailable", 503)
-
-    async def _prepare_activation(self, caller, definition):
-        from audit.pii import private_binding_key
-        from llm_config import research_profile as profile
-        if not definition.fixed_research_shape:
-            raise DeclarativeAgentError("declarative_profile_unavailable", 503)
-        initial = _DeclarativeActivation(getattr(self.orch, "_llm_store", None), None, None,
-            getattr(self.orch, "persistent_assignments", None),
-            getattr(self.orch, "web_sessions", None),
-            getattr(self.orch, "persistent_assignment_runner", None))
-        self._activation_composition(caller, initial)
-        limits = definition.to_dict()["limits"]
-        minimum = initial.assignments.tool_bound("web-research-1:fetch_page")
-        minimum = {**minimum, "model_calls": minimum["model_calls"] + 1,
-                   "tokens": minimum["tokens"] + profile.RESERVED_TOKENS,
-                   "elapsed_ms": minimum["elapsed_ms"] + profile.RESERVED_MILLISECONDS}
-        if any(limits[period][name] < amount
-               for period in ("daily", "lifetime") for name, amount in minimum.items()):
-            raise DeclarativeAgentError("declarative_budget_insufficient", 422)
-        if limits["step_timeout_ms"] < profile.RESERVED_MILLISECONDS:
-            raise DeclarativeAgentError("declarative_budget_insufficient", 422)
-        if any(limits[period]["spend_micro_units"] is not None for period in ("daily", "lifetime")):
-            raise DeclarativeAgentError("declarative_cost_bound_unavailable", 422)
-        try:
-            key = private_binding_key()
-            selection = profile.select_config(await initial.config.capture_user(caller.owner_id),
-                                              store=initial.config, binding_key=key)
-        except Exception:
-            raise DeclarativeAgentError("declarative_profile_unavailable", 503) from None
-        prepared = _DeclarativeActivation(initial.config, selection, key,
-                                         initial.assignments, initial.sessions, initial.runner)
-        self._activation_current(caller, prepared)
-        return prepared
-
-    def _activation_current(self, caller, prepared):
-        from audit.pii import private_binding_key
-        self._activation_composition(caller, prepared)
-        try:
-            if prepared.selection.owner_id != caller.owner_id:
-                raise ValueError
-            current = private_binding_key(prepared.key.key_id)
-            marker = b"declarative-agent-activation/v1"
-            if not prepared.key.verify("config", marker, current.sign("config", marker)):
-                raise ValueError
-        except Exception:
-            raise DeclarativeAgentError("declarative_profile_unavailable", 503) from None
-
-    def _lock_activation(self, tx, caller, prepared):
-        self._activation_current(caller, prepared)
-        try:
-            row = self.repositories.encrypted_llm_config.get_user_for_update(
-                tx, owner_id=caller.owner_id)
-            if not prepared.selection.matches(row):
-                raise ValueError
-        except Exception:
-            raise DeclarativeAgentError("declarative_profile_unavailable", 503) from None
-        self._activation_current(caller, prepared)
-
-    def _activation_policy(self, tx, caller):
-        from orchestrator.tool_permissions import FixedReaderPolicyError
-        try:
-            self.orch.tool_permissions.assert_fixed_reader_current(tx,
-                owner_id=caller.owner_id, plane_runtime=self.runtime,
-                orchestrator=self.orch, identity_claims=caller.claims)
-        except FixedReaderPolicyError as error:
-            raise DeclarativeAgentError("declarative_permission_refused",
-                403 if error.code == "assignment_scope_revoked" else 503) from None
 
     async def list_heads(self, *, caller, limit=50):
         if type(limit) is not int or not 1 <= limit <= 50:

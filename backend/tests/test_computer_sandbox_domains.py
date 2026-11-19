@@ -1,7 +1,4 @@
-"""Tests for the run_command sandbox and allowed_domains contract: bounded domain validation,
-the host capability gate, exact review for escalation and unseen domains, the egress-seeded
-per-job proxy policy, tainted violation output and the sandbox audit artifacts.
-"""
+"""Checks command domain validation, host capabilities, egress policy, audit records and refusal of commands without current authority."""
 
 from __future__ import annotations
 
@@ -16,13 +13,9 @@ import pytest
 
 from agents.computer_use import mcp_tools
 from orchestrator import computer_use_policy as policy
-from orchestrator import hitl_confirmation as hc
-from orchestrator import remote_confirmation as rc
 from orchestrator import taint
 from shared.protocol import COMPUTER_HOST_VERBS, ComputerHostDescriptor, ProtocolValidationError
-from tests.test_computer_grant_flow_102 import (
-    CHAT, OWNER, ROOT, _buttons, _call, _mac, _payload, _texts,
-)
+from tests.test_computer_grant_flow_102 import CHAT, OWNER, ROOT, _call, _mac
 from tests.test_computer_use_076 import OTHER, _AgentOrch, _FakeHostSocket, _FakeOrch, _WS, _descriptor
 from tests.test_computer_use_tools_102 import _World
 from tests.test_hitl_public_research import runtime as runtime  # noqa: F401
@@ -140,22 +133,6 @@ def test_denied_cidrs_keep_the_server_egress_classifications_denied(addr):
     assert _is_private_address(addr) is True
     address = ipaddress.ip_address(addr)
     assert any(address in ipaddress.ip_network(cidr) for cidr in policy.EGRESS_DENIED_CIDRS)
-
-
-def test_escalation_lines_name_the_notice_and_the_destinations():
-    lines = policy.escalation_lines({"sandbox": "escalated", "allowed_domains": [DOM, NEW_DOM]})
-    assert any("OUTSIDE" in line for line in lines)
-    assert any(DOM in line and NEW_DOM in line for line in lines)
-    assert policy.escalation_lines({}) == []
-    assert policy.escalation_lines({"allowed_domains": [DOM]})[-1].startswith("Allowed network destinations:")
-
-
-def test_the_command_summary_carries_the_sandbox_notice():
-    summary = policy._command_summary({"command": "ls", "cwd": ROOT, "sandbox": "escalated",
-                                       "allowed_domains": [DOM]}, "Mac")
-    assert "OUTSIDE" in summary and DOM in summary
-    plain = policy._command_summary({"command": "ls", "cwd": ROOT}, "Mac")
-    assert "OUTSIDE" not in plain and DOM not in plain
 
 
 def test_the_bypass_floor_refuses_sandbox_runs_and_allows_seen_domains():
@@ -484,18 +461,6 @@ async def test_note_sandbox_result_schedules_the_audit_from_async_and_sync(monke
     assert len([event for event in events if event.action_type == "command.sandbox_result"]) == 2
 
 
-def test_sandbox_audit_metadata_is_carried_on_the_remote_op_events():
-    sandbox = rc._sandbox_meta("run_command", {"sandbox": "escalated", "allowed_domains": [DOM]})
-    assert sandbox == {"mode": "escalated", "allowed_domains": [DOM]}
-    assert rc._sandbox_meta("run_command", {"command": "ls"}) is None
-    assert rc._sandbox_meta("read_output", {"sandbox": "escalated"}) is None
-    event = rc._audit_event(OWNER, "remote_op.proposed", "proposed run_command", verb="run_command",
-                            sandbox=sandbox)
-    assert event.inputs_meta["sandbox"] == {"mode": "escalated", "allowed_domains": [DOM]}
-    plain = rc._audit_event(OWNER, "remote_op.proposed", "proposed run_command", verb="run_command")
-    assert "sandbox" not in plain.inputs_meta
-
-
 def test_session_approved_domains_are_bounded_and_normalized():
     from orchestrator.computer_sessions import ComputerSession
 
@@ -508,68 +473,6 @@ def test_session_approved_domains_are_bounded_and_normalized():
 
 
 # ---------------------------------------------------------------- exact review through the gate
-
-
-async def test_escalated_runs_and_new_domains_are_never_covered_by_bypass(task_runtime):
-    orch, ws, effects, *_ = task_runtime
-    session, host = await _mac(task_runtime)
-    await orch.computer_sessions.set_bypass(host, True)
-    escalated = {"argv": ["curl", f"https://{DOM}"], "cwd": ROOT, "sandbox": "escalated"}
-    assert hc.bypass_covers(orch, ws, OWNER, CHAT, "computer-use-1", "run_command", escalated, ()) is False
-    unseen = {"argv": ["curl", f"https://{NEW_DOM}"], "cwd": ROOT, "allowed_domains": [NEW_DOM]}
-    assert hc.bypass_covers(orch, ws, OWNER, CHAT, "computer-use-1", "run_command", unseen, ()) is False
-    assert hc.consent_decision(orch, ws, OWNER, CHAT, "computer-use-1", "run_command", escalated, ()) == \
-        ("review", None)
-    # once the domains are seen in this session, standing consent applies again
-    session.note_approved_domains([NEW_DOM])
-    assert hc.bypass_covers(orch, ws, OWNER, CHAT, "computer-use-1", "run_command", unseen, ()) is True
-    assert not effects
-
-
-async def test_an_escalated_run_still_raises_the_exact_review_card(task_runtime):
-    orch, ws, effects, *_ = task_runtime
-    _session_obj, host = await _mac(task_runtime, remote=True)
-    await orch.computer_sessions.set_bypass(host, True)
-    response = await _call(task_runtime, "run_command", argv=["curl", f"https://{DOM}"], cwd=ROOT,
-                           sandbox="escalated")
-    assert response.result["_data"]["status"] == "confirmation_required" and not effects
-    assert [b["label"] for b in _buttons(response)] == ["Approve", "Decline"]
-    texts = _texts(response)
-    assert "OUTSIDE the operating-system sandbox" in texts and DOM in texts
-    await rc.handle_decision(orch, ws, OWNER, _payload(response, "decline"))
-
-
-async def test_a_task_grant_does_not_cover_a_sandbox_run_and_the_card_offers_no_grant(task_runtime):
-    orch, ws, effects, *_ = task_runtime
-    session, host = await _mac(task_runtime, remote=True)
-    store = orch.computer_sessions.grants
-    store.create(OWNER, host.host_id, session.session_id, CHAT, "t", {"kind": "command"}, ("command",),
-                 {"argv0": "curl", "root": ROOT}, now=__import__("time").time())
-    domain_args = {"argv": ["curl", f"https://{DOM}"], "cwd": ROOT, "allowed_domains": [DOM]}
-    assert await hc.granted_dispatch(orch, ws, OWNER, CHAT, "computer-use-1", "run_command",
-                                     domain_args, ()) is None
-    escalated = {"argv": ["curl", f"https://{DOM}"], "cwd": ROOT, "sandbox": "escalated"}
-    assert await hc.granted_dispatch(orch, ws, OWNER, CHAT, "computer-use-1", "run_command",
-                                     escalated, ()) is None
-    response = await _call(task_runtime, "run_command", **domain_args)
-    assert response.result["_data"]["status"] == "confirmation_required"
-    assert [b["label"] for b in _buttons(response)] == ["Approve", "Decline"]
-    assert DOM in _texts(response) and "Allowed network destinations" in _texts(response)
-    assert not effects
-
-
-async def test_seen_domains_keep_the_task_grant_working(task_runtime):
-    orch, ws, effects, *_ = task_runtime
-    session, host = await _mac(task_runtime, remote=True)
-    store = orch.computer_sessions.grants
-    store.create(OWNER, host.host_id, session.session_id, CHAT, "t", {"kind": "command"}, ("command",),
-                 {"argv0": "curl", "root": ROOT}, now=__import__("time").time())
-    session.note_approved_domains([DOM])
-    seen = {"argv": ["curl", f"https://{DOM}"], "cwd": ROOT, "allowed_domains": [DOM]}
-    response = await _call(task_runtime, "run_command", **seen)
-    # a seen domain stays covered by the task grant, so it runs without a card
-    assert response.error is None and response.result["_data"]["ok"]
-    assert len(effects) == 1
 
 
 def test_violation_summaries_cope_with_raw_and_non_dict_rows():
@@ -628,3 +531,13 @@ async def test_the_host_event_stream_records_sandbox_violations(monkeypatch):
 
     await Orchestrator._handle_computer_event(orch, host.websocket, SimpleNamespace(payload=payload))
     assert [event.action_type for event in events if event.action_type == "command.sandbox_violation"]
+
+
+@pytest.mark.parametrize("args", [{"sandbox": "escalated"}, {"allowed_domains": [DOM]}])
+async def test_host_bypass_with_a_known_domain_cannot_authorize_a_command(task_runtime, args):
+    orch, _, effects, *_ = task_runtime
+    session, host = await _mac(task_runtime)
+    session.note_approved_domains([DOM])
+    await orch.computer_sessions.set_bypass(host, True)
+    response = await _call(task_runtime, "run_command", argv=["pwd"], cwd=ROOT, **args)
+    assert response.error and not response.ui_components and not effects

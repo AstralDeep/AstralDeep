@@ -1,164 +1,113 @@
-"""Exercises source-bound approval transitions against real Plane audit storage.
-Physical effects remain observable independently of durable success or refusal.
+"""Checks the source-bound effect and audit boundaries on paired Kernel runtimes.
+The node runs a benign first-party tool registered with an effectful scope through ordinary mesh dispatch.
 """
 
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
-from uuid import UUID
+import asyncio
+import hashlib
 
 import pytest
 
 from audit.recorder import Recorder
 from audit.repository import AuditRepository
-from orchestrator import hitl_confirmation as hc
-from orchestrator.workspace import WorkspaceManager
-from shared.protocol import MCPResponse
+from orchestrator.node_mesh_calls import OrchestratorCalls, grant_name, skill_definition
 from tests.helpers.voice_plane_runtime import isolated_plane_runtime
-from tests.test_lets_gate_ordering import gate_orchestrator  # noqa: F401
-from tests.test_source_bound_dispatch import runtime  # noqa: F401
+from tests.test_node_mesh_kernel_integration import paired, until
+from tests.test_node_mesh_peer_tools import (
+    AGENT, TOOL, model_server, node_host, provide_model,  # noqa: F401
+)
+
+
+@pytest.fixture(scope="module")
+def audit_repository():
+    with isolated_plane_runtime("ad_source_bound_audit") as plane:
+        yield AuditRepository(plane_runtime=plane, plane_repositories=plane.repositories)
 
 
 @pytest.fixture
-async def durable_approval(runtime, monkeypatch, tmp_path):  # noqa: F811
-    orch, ws = runtime
-    monkeypatch.setenv("AUDIT_HMAC_SECRET", "source-bound-audit-regression-32-characters")
-    monkeypatch.setenv("AUDIT_HMAC_KEY_ID", "source_bound_regression")
-    monkeypatch.setattr("audit.recorder.get_recorder", lambda: None)
-    with isolated_plane_runtime("ad_source_bound_audit") as plane:
-        repository = AuditRepository(plane_runtime=plane, plane_repositories=plane.repositories)
-        recorder = Recorder(repository, retry_queue=tmp_path / "audit-retry.jsonl")
-        orch.audit_recorder = recorder
-        orch.history = SimpleNamespace(get_chat=MagicMock(return_value={"id": "chat-a"}))
-        orch.workspace = SimpleNamespace(aupsert=AsyncMock(return_value=[]),
-            resolve_identity=WorkspaceManager.__new__(WorkspaceManager).resolve_identity)
-        orch.send_ui_render = AsyncMock()
-
-        async def mutation(**kwargs):
-            return await kwargs["mutation"]()
-
-        orch.run_detached_conversation_mutation = mutation
-        effects = []
-        results = []
-        outcome = SimpleNamespace(error=None)
-
-        class Adapter:
-            mode = "off"
-
-            async def execute(self, **kwargs):
-                return await kwargs["invoke"](None)
-
-        orch.governed_final_dispatch = Adapter()
-
-        async def dispatch(websocket, agent, tool, args, **kwargs):
-            async def physical(_capabilities):
-                effects.append(dict(args))
-                return (MCPResponse(error=outcome.error) if outcome.error
-                        else MCPResponse(result={"ok": True}))
-
-            response = await orch._execute_governed_attempt(
-                websocket, agent, tool, args, user_id="owner-a", channel="web",
-                audit_correlation_id=None, actor_user_id="owner-a", auth_principal="owner-a",
-                conversation_id="chat-a", invoke=physical)
-            results.append(response)
-            return response
-
-        orch._execute_with_retry = dispatch
-        try:
-            yield orch, ws, repository, recorder, effects, results, outcome
-        finally:
-            await recorder.close()
+async def durable_audit(audit_repository, tmp_path):
+    recorder = Recorder(audit_repository, retry_queue=tmp_path / "audit-retry.jsonl")
+    try:
+        yield recorder
+    finally:
+        await recorder.close()
 
 
-async def _propose(orch, ws):
-    import json
+@pytest.mark.parametrize("failed_record,expected_effects", [
+    (None, 1),
+    ("mesh.kernel_effect_started", 0),
+    ("mesh.kernel_effect_response_success", 1),
+])
+async def test_signed_effect_requires_a_durable_audit(
+    node_host, model_server, audit_repository, durable_audit, tmp_path, monkeypatch, failed_record, expected_effects,  # noqa: F811
+):
+    host = node_host
+    monkeypatch.setattr(host.orch, "audit_recorder", durable_audit)
+    permissions = host.orch.tool_permissions
+    permissions.register_tool_scopes(AGENT, {TOOL: "tools:write"})
+    permissions.set_agent_scopes(host.owner, AGENT, {"tools:write": True})
+    calls = OrchestratorCalls(host.orch)
+    effects = []
+    outcomes = []
+    retries = []
+    handler = host.agent.handle_mcp_request
+    run = calls.run
+    record = host.orch.audit_recorder.record
 
-    call = SimpleNamespace(id="propose", function=SimpleNamespace(
-        name="send_email", arguments=json.dumps({"to": "test@example.org", "body": "bounded note"})))
-    return await orch.execute_single_tool(ws, call, {"send_email": "agent-a"}, "chat-a", user_id="owner-a")
+    async def observe_handler(*args, **kwargs):
+        effects.append(TOOL)
+        return await handler(*args, **kwargs)
 
+    async def observe_outcome(*args):
+        outcome = await run(*args)
+        outcomes.append(outcome)
+        if failed_record is None:
+            retries.append(await run(*args))
+        return outcome
 
-def _decision(response):
-    assert response.error is None
-    return next(node["payload"] for node in response.ui_components[0]["content"]
-                if node.get("type") == "button" and node.get("label") == "Approve")
-
-
-@pytest.mark.asyncio
-async def test_real_audit_approval_sequence_executes_once(durable_approval):
-    orch, ws, repository, _, effects, results, _ = durable_approval
-    payload = _decision(await _propose(orch, ws))
-    request_id = payload["hitl_request_id"]
-    assert str(UUID(request_id, version=4)) == request_id
-    await hc.handle_decision(orch, ws, "owner-a", payload)
-    await hc.handle_decision(orch, ws, "owner-a", payload)
-    assert len(effects) == len(results) == 1 and results[0].error is None
-    rows, _ = repository.list_for_user("owner-a")
-    assert sorted(row.action_type for row in rows) == sorted([
-        "hitl.proposed", "hitl.approved", "hitl.consumed", "hitl.effect_started",
-        "hitl.effect_response_success"])
-    assert {row.correlation_id for row in rows} == {request_id}
-    assert len({row.inputs_meta["arguments_sha256"] for row in rows}) == 1
-    assert repository.verify_chain("owner-a") is None
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("phase", ["proposed", "approved", "consumed", "effect_started", "effect_response_success"])
-async def test_real_audit_failure_never_authorizes_or_replays(durable_approval, phase):
-    orch, ws, repository, recorder, effects, results, _ = durable_approval
-    record = recorder.record
-
-    async def refuse(event):
-        if event.action_type == "hitl." + phase:
-            raise RuntimeError("audit unavailable")
+    async def write_audit(event):
+        if event.action_type == failed_record:
+            return None
         return await record(event)
 
-    recorder.record = refuse
-    response = await _propose(orch, ws)
-    if phase == "proposed":
-        assert response.error and not orch._hitl_pending_calls
-    else:
-        payload = _decision(response)
-        await hc.handle_decision(orch, ws, "owner-a", payload)
-        await hc.handle_decision(orch, ws, "owner-a", payload)
-        assert not orch._hitl_pending_calls
-    assert len(effects) == (1 if phase == "effect_response_success" else 0)
-    if phase == "effect_response_success":
-        assert results[0].error["code"] == "outcome_uncertain"
-    assert repository.verify_chain("owner-a") is None
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("denial", ["owner", "chat", "expired", "permission"])
-async def test_real_audit_pending_decision_denials_have_no_effect(durable_approval, denial):
-    from dataclasses import replace
-
-    orch, ws, repository, _, effects, _, _ = durable_approval
-    payload = _decision(await _propose(orch, ws))
-    owner = "owner-a"
-    if denial == "owner":
-        owner = "other-owner"
-    elif denial == "chat":
-        orch._ws_active_chat[id(ws)] = "other-chat"
-    elif denial == "expired":
-        key = payload["hitl_request_id"]
-        orch._hitl_pending_calls[key] = replace(orch._hitl_pending_calls[key], expires=0)
-    else:
-        orch.tool_permissions.is_tool_allowed.return_value = False
-    await hc.handle_decision(orch, ws, owner, payload)
-    assert not effects
-    assert repository.verify_chain("owner-a") is None
-
-
-@pytest.mark.asyncio
-async def test_real_audit_records_uncertain_physical_outcome(durable_approval):
-    orch, ws, repository, _, effects, results, outcome = durable_approval
-    outcome.error = {"message": "effect outcome unavailable", "retryable": False}
-    payload = _decision(await _propose(orch, ws))
-    await hc.handle_decision(orch, ws, "owner-a", payload)
-    await hc.handle_decision(orch, ws, "owner-a", payload)
-    assert len(effects) == len(results) == 1 and results[0].error == outcome.error
-    rows, _ = repository.list_for_user("owner-a")
-    uncertain = [row for row in rows if row.action_type == "hitl.effect_uncertain"]
-    assert len(uncertain) == 1 and uncertain[0].outcome == "interrupted"
-    assert not any(row.action_type == "hitl.effect_response_success" for row in rows)
-    assert repository.verify_chain("owner-a") is None
+    monkeypatch.setattr(host.agent, "handle_mcp_request", observe_handler)
+    monkeypatch.setattr(calls, "run", observe_outcome)
+    monkeypatch.setattr(host.orch.audit_recorder, "record", write_audit)
+    async with paired(
+        tmp_path, monkeypatch, creator=host.mesh_creator, calls=calls,
+        history=host.orch.history,
+    ) as (node, owner, node_device, bridge):
+        provide_model(owner, model_server)
+        chat = owner.create_chat("effect audit")
+        owner.send_message(chat, "roll the dice", None)
+        await until(lambda: any(c.chat_id == chat for c in node.kernel.list_chats()), "chat sync")
+        await until(lambda: any(entry.device == node_device and entry.tool.name == TOOL
+                                for entry in owner.peer_tool_catalog()), "the owner to see the published tool")
+        name = grant_name(TOOL, skill_definition(host.skill))
+        owner.grant_tool(name, "outside_effect")
+        await until(lambda: any(g.tool == name and g.consented for g in node.kernel.grants()), "grant sync")
+        await asyncio.wait_for(owner.run_turn(chat), 50)
+        request, = [req for req in owner.chat_requests(chat) if req.call is not None]
+        outcome, = outcomes
+        expected_code = {None: None, "mesh.kernel_effect_started": "node.effect_audit_unavailable",
+                         "mesh.kernel_effect_response_success": "node.outcome_uncertain"}[failed_record]
+        assert outcome.code == expected_code
+        assert effects == [TOOL] * expected_effects
+        if failed_record is None:
+            replay, = retries
+            assert replay.code == "node.ticket_used"
+        events, _ = audit_repository.list_for_user(host.owner, conversation_id=bridge.state.local_for(chat))
+        transitions = {event.action_type: event for event in events if event.action_type.startswith("mesh.kernel_")}
+        expected = {"mesh.kernel_effect_started", "mesh.kernel_effect_response_success"}
+        if failed_record == "mesh.kernel_effect_started":
+            expected.clear()
+        elif failed_record:
+            expected.remove(failed_record)
+        assert set(transitions) == expected
+        for event in transitions.values():
+            assert event.inputs_meta["request_id"] == request.id
+            assert event.inputs_meta["approval_source"] == "kernel_ticket"
+            assert event.inputs_meta["ticket_sha256"] == "sha256:" + hashlib.sha256(
+                request.call.ticket_json.encode()).hexdigest()
+            assert event.inputs_meta["arguments_sha256"] == "sha256:" + hashlib.sha256(
+                request.call.arguments_json.encode()).hexdigest()
+        assert audit_repository.verify_chain(host.owner) is None

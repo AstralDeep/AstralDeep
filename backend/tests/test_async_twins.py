@@ -158,7 +158,7 @@ async def test_message_attachment_repo_async_twins(attachment_env):
         plane_repositories=db.repositories,
     )
 
-    link_id = await repo.ainsert(
+    link_id = repo.insert(
         chat_id=chat_id,
         attachment_id=att_id,
         user_id=user_id,

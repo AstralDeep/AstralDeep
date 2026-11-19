@@ -1,5 +1,5 @@
-"""Defines current owner authority and truthful execution capability for terminal entry points.
-The terminal API, agent tools and orchestrator share these fail-closed guards.
+"""Checks current owner authority and execution capability for terminal agent tools.
+The orchestrator binds these checks to the connection and the execution lease.
 """
 
 from dataclasses import dataclass, field
@@ -162,14 +162,6 @@ def _assert_current_permission(orchestrator, user_id: str, tool_name: str,
         raise TerminalError("terminal_permission_denied", 403)
 
 
-def assert_terminal_delivery(orchestrator, claims: dict, user_id: str, tool_name: str) -> None:
-    def current_identity():
-        require_terminal_enabled()
-        assert_human_owner(claims, user_id)
-
-    _assert_current_permission(orchestrator, user_id, tool_name, current_identity)
-
-
 @dataclass(frozen=True)
 class TerminalAuthority:
     owner_id: str
@@ -179,12 +171,9 @@ class TerminalAuthority:
     _execution_fence: Any = field(default=None, repr=False)
     _admission: Any = field(default=None, repr=False)
     _runtime: Any = field(default=None, repr=False)
-    _request_check: Callable[[], None] | None = field(default=None, repr=False)
     _connection: Any = field(default=None, repr=False)
 
     def assert_session_current(self, tool_name: str) -> None:
-        if self._request_check is not None:
-            self._request_check()
         if tool_name != self.tool_name:
             raise TerminalError("terminal_authority_invalid", 403)
 
@@ -196,8 +185,6 @@ class TerminalAuthority:
         _assert_current_permission(
             self._orchestrator, self.owner_id, tool_name,
             current_identity)
-        if self._request_check is not None:
-            self._request_check()
         current_identity()
 
     def assert_current(self, tool_name: str) -> None:
@@ -223,7 +210,6 @@ def bind_terminal_authority(orchestrator, websocket, user_id: str, tool_name: st
     from orchestrator.connection_context import _CONNECTION_OPERATION_CONTEXT
     from orchestrator.plane_repository_context import plane_source_from_orchestrator
     from orchestrator.work_admission import ExecutionFence
-    from orchestrator.terminal_approvals import current_effect_check
 
     context = _CONNECTION_OPERATION_CONTEXT.get()
     fence = context.get("execution_fence") if isinstance(context, dict) else None
@@ -236,7 +222,6 @@ def bind_terminal_authority(orchestrator, websocket, user_id: str, tool_name: st
     elif tool_name in EXECUTION_TOOLS and admission is not None:
         raise TerminalError("terminal_execution_authority_required", 403)
     connection = terminal_connection_context(orchestrator, websocket) if tool_name in EXECUTION_TOOLS else None
-    authority = TerminalAuthority(user_id, tool_name, orchestrator, websocket, fence, admission, runtime,
-                                  current_effect_check(orchestrator, user_id, tool_name), connection)
+    authority = TerminalAuthority(user_id, tool_name, orchestrator, websocket, fence, admission, runtime, connection)
     authority.assert_current(tool_name)
     return authority

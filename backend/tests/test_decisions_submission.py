@@ -1,4 +1,4 @@
-"""Keeps optional decisions providers on the selected endpoint for chat routing and Work submission screening."""
+"""Keeps optional decisions providers on the selected endpoint for Work submission screening."""
 
 from __future__ import annotations
 
@@ -121,32 +121,3 @@ async def test_keyless_security_screen_reaches_custom_provider(monkeypatch, endp
         client=CustomDecisionClient(BASE, MODEL), circuit=UserCircuit(), flags=Enabled)
     assert len(endpoint) == 1
     assert endpoint[0][2]["api_key"] == ""
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("api_key", ["", "custom-key-never-for-typesafe"])
-async def test_orchestrator_selects_custom_provider_before_real_routing(monkeypatch, endpoint, api_key):
-    from orchestrator.harness import execution_binding
-    from orchestrator.orchestrator import Orchestrator
-
-    monkeypatch.setattr(execution_binding, "prepare_model_binding", AsyncMock(return_value=None))
-    monkeypatch.setattr(runner, "default_adapter_client", _never_hosted)
-    monkeypatch.setattr(runner, "routing_enabled", lambda flags=None: True)
-    stored = SimpleNamespace(provider="custom", base_url=BASE, model=MODEL,
-        api_key=api_key, fingerprint="custom-orchestrator")
-    orch = object.__new__(Orchestrator)
-    orch._typesafe_store = SimpleNamespace(get_key=AsyncMock(return_value=stored))
-    orch.agent_cards = {"weather": SimpleNamespace(name="Weather", description="Weather forecasts")}
-    orch._tool_to_agent_lookup = lambda name, eligible: "weather"
-    tools = [{"type": "function", "function": {"name": "weather__current", "description": "Current weather"}}]
-    task, fingerprint = await orch._typesafe_start_routing(websocket=None, user_id=USER,
-        chat_id="decisions-chat", message="What is the weather?", eligible=["weather"],
-        tools_desc=tools, selected_tools=[])
-    outcome = await runner.await_decision(task)
-    assert fingerprint == "custom-orchestrator"
-    assert outcome.outcome is Outcome.SUCCESS
-    assert outcome.decision.tier is Tier.HIGH
-    assert outcome.decision.tool_name == "weather__current"
-    assert len(endpoint) == 1
-    assert endpoint[0][1] == BASE + "/systemone"
-    assert endpoint[0][2]["api_key"] == api_key

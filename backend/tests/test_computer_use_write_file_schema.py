@@ -2,7 +2,6 @@
 
 from agents.computer_use.mcp_tools import TOOL_REGISTRY
 from orchestrator.computer_use_policy import MAX_WRITE_BYTES
-from orchestrator.goal_verification import PLANNING_GUIDANCE
 
 
 def test_write_file_schema_explains_existing_file_behavior():
@@ -19,4 +18,3 @@ def test_write_file_schema_explains_existing_file_behavior():
     assert "64 KiB" in content["description"]
     assert "256 KiB" in content["description"]
     assert "262144 characters" in content["description"]
-    assert "Split larger source files into smaller modules" in PLANNING_GUIDANCE

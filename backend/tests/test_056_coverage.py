@@ -253,10 +253,6 @@ def orch():
         Orchestrator._deliver_hop_response,
         fake,
     )
-    fake.execute_parallel_tools = MethodType(
-        Orchestrator.execute_parallel_tools,
-        fake,
-    )
     fake._guard_machine_meta_tool = MethodType(
         Orchestrator._guard_machine_meta_tool,
         fake,
@@ -301,31 +297,3 @@ async def test_deliver_hop_response_send_failure_swallowed(orch):
             raise RuntimeError("socket dead")
 
     await orch._deliver_hop_response(_BadWS(), "hop-1", MCPResponse(result="x"))
-
-
-@pytest.mark.asyncio
-async def test_subtasks_dispatch_from_parallel_batch(orch, monkeypatch):
-    import json
-
-    from shared.feature_flags import flags
-    from shared.protocol import MCPResponse
-    monkeypatch.setitem(flags._flags, "recursive_delegation", True)
-
-    from orchestrator import subtasks as _st
-    seen = {}
-
-    async def _meta(o, tool, args, *, user_id, chat_id, websocket):
-        seen["parent_tools"] = args.get("_parent_tools")
-        return MCPResponse(result="subtasks-ok")
-
-    monkeypatch.setattr(_st, "handle_meta_tool", _meta)
-    tc = SimpleNamespace(function=SimpleNamespace(
-        name="delegate_subtasks", arguments=json.dumps({"subtasks": []})))
-    websocket = MagicMock()
-    orch.ui_sessions[websocket] = {"sub": "u1"}
-    results = await orch.execute_parallel_tools(
-        websocket, [tc],
-        {"delegate_subtasks": "__subtasks__", "web_search": "web-research-1"},
-        "c1", user_id="u1")
-    assert results[0].result == "subtasks-ok"
-    assert "web_search" in seen["parent_tools"]

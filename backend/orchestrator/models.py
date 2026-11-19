@@ -1,7 +1,4 @@
-"""Pydantic request and response models for AstralDeep's REST API, powering the
-auto-generated OpenAPI docs. Covers chat, saved components, agents, permissions,
-credentials, draft agents, and the dashboard; consumed by orchestrator/api.py.
-"""
+"""Defines the request and response models used by orchestrator/api.py."""
 
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
@@ -13,19 +10,6 @@ class ChatStatusEnum(str, Enum):
     thinking = "thinking"
     executing = "executing"
     done = "done"
-
-
-class ChatMessageRequest(BaseModel):
-    message: str = Field(..., description="The user's message text")
-    display_message: Optional[str] = Field(None, description="Optional formatted version of the message to display in the UI")
-
-    model_config = {"json_schema_extra": {"examples": [{"message": "What is the weather in Lexington, KY?"}]}}
-
-
-class ChatMessageResponse(BaseModel):
-    chat_id: str = Field(..., description="The chat session ID")
-    status: str = Field("accepted", description="Message acceptance status")
-    message: str = Field("Message received. Results will stream via WebSocket.", description="Info message")
 
 
 class ChatSummary(BaseModel):
@@ -327,84 +311,6 @@ class UploadResponse(BaseModel):
 class ErrorResponse(BaseModel):
     error: str
     detail: Optional[str] = None
-
-
-WS_PROTOCOL_DOCS = """
-## WebSocket Protocol
-
-Connect to `ws://<host>:<port>/ws` for real-time communication.
-
-### Authentication
-
-After connecting, send a `register_ui` message with your JWT token:
-
-```json
-{
-    "type": "register_ui",
-    "token": "<JWT_TOKEN>",
-    "capabilities": ["render", "stream"],
-    "session_id": "ui-<timestamp>"
-}
-```
-
-### Client → Server Messages
-
-All client messages use the `ui_event` type with an `action` field:
-
-| Action | Payload | Description |
-|--------|---------|-------------|
-| `chat_message` | `{message, chat_id?, display_message?}` | Send a chat message |
-| `get_history` | `{}` | Request list of recent chats |
-| `load_chat` | `{chat_id}` | Load a specific chat with messages |
-| `new_chat` | `{}` | Create a new chat session |
-| `get_dashboard` | `{}` | Request system config/dashboard |
-| `discover_agents` | `{}` | Request list of connected agents |
-| `save_component` | `{chat_id, component_data, component_type, title?}` | Save a UI component |
-| `get_saved_components` | `{chat_id?}` | Get saved components |
-| `delete_saved_component` | `{component_id}` | Delete a saved component |
-| `combine_components` | `{source_id, target_id}` | Combine two components via LLM |
-| `condense_components` | `{component_ids[]}` | Condense multiple components via LLM |
-
-**Message format:**
-```json
-{
-    "type": "ui_event",
-    "action": "<action_name>",
-    "session_id": "<optional_chat_id>",
-    "payload": { ... }
-}
-```
-
-### Server → Client Messages
-
-| Type | Fields | Description |
-|------|--------|-------------|
-| `system_config` | `{config: {agents[], total_tools}}` | Dashboard/system info |
-| `agent_registered` | `{agent_id, name, tools[]}` | New agent connected |
-| `agent_list` | `{agents[]}` | Full agent list |
-| `chat_status` | `{status, message}` | Processing status (thinking/executing/done) |
-| `chat_created` | `{payload: {chat_id, from_message}}` | New chat created |
-| `chat_loaded` | `{chat: {id, title, messages[]}}` | Chat data loaded |
-| `history_list` | `{chats[]}` | List of recent chats |
-| `ui_render` | `{components[]}` | Render UI components (new message) |
-| `ui_update` | `{components[]}` | Update current UI components |
-| `ui_append` | `{components[]}` | Append to current UI components |
-| `saved_components_list` | `{components[]}` | Saved components data |
-| `component_saved` | `{component: {...}}` | Component save confirmation |
-| `component_deleted` | `{component_id}` | Component delete confirmation |
-| `combine_status` | `{status, message}` | Component combine in progress |
-| `components_combined` | `{removed_ids[], new_components[]}` | Combine result |
-| `components_condensed` | `{removed_ids[], new_components[]}` | Condense result |
-| `combine_error` | `{error}` | Combine/condense failed |
-
-### UI Component Types
-
-Components are JSON objects with a `type` field:
-
-`text`, `card`, `metric`, `table`, `grid`, `container`, `list`, `alert`,
-`progress`, `bar_chart`, `line_chart`, `pie_chart`, `plotly_chart`,
-`code`, `divider`, `collapsible`, `image`, `tabs`, `button`, `input`
-"""
 
 
 class ProjectCreateRequest(BaseModel):

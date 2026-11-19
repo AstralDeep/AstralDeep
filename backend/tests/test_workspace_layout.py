@@ -19,13 +19,16 @@ if str(BACKEND_DIR) not in sys.path:
 from orchestrator.workspace import (  # noqa: E402
     WorkspaceManager,
     iter_layout_refs,
-    layout_key_for,
     prune_layout_refs,
 )
 from tests.helpers.voice_plane_runtime import (  # noqa: E402
     history_manager,
     isolated_voice_plane_runtime,
 )
+
+
+def layout_key_for(chat_id: str, marker: str) -> str:
+    return f"ly_{chat_id}_{marker}"
 
 
 @pytest.fixture(scope="module")
@@ -83,12 +86,6 @@ def test_chat_delete_cascades_layouts(history, ws):
     assert ws.live_layouts(chat_id, user_id)
     history.delete_chat(chat_id, user_id)
     assert ws.live_layouts(chat_id, user_id) == []
-
-
-def test_layout_key_deterministic():
-    assert layout_key_for("c1", "42") == layout_key_for("c1", "42")
-    assert layout_key_for("c1", "42") != layout_key_for("c1", "43")
-    assert layout_key_for("c1", "42").startswith("ly_")
 
 
 def test_upsert_layout_roundtrip_and_update_in_place(ws, chat):

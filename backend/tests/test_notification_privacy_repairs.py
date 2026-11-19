@@ -7,7 +7,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from orchestrator import hitl_confirmation as hc
 from orchestrator.orchestrator import Orchestrator
 from orchestrator.push_delivery import minimal_payload
 from shared.feature_flags import flags
@@ -53,20 +52,3 @@ def test_lock_screen_payload_contains_only_generic_content_and_opaque_identity()
                                "chat_id": "patient-record", "job_id": "confidential"}, "opaque-entry")
     assert payload == {"notification_id": "opaque-entry", "title": "AstralDeep",
                        "body": "You have a new notification."}
-
-
-@pytest.mark.parametrize("value", ["abcdef123-45-6789", "abcd4111111111111111",
-                                   "a1b2c3d4-e5f6-a7b8-c9d0-e1f2a3b4c5d6"])
-def test_identifier_shapes_are_still_screened_as_argument_content(monkeypatch, value):
-    observed = []
-
-    def contains_phi(text):
-        observed.append(text)
-        return value in text
-
-    monkeypatch.setattr("personalization.phi_gate.get_phi_gate",
-                        lambda: SimpleNamespace(contains_phi=contains_phi))
-    preview, allowed = hc._review_arguments({"note": value})
-    assert not allowed
-    assert value not in preview
-    assert value in observed[0]

@@ -228,84 +228,6 @@ class TurnGuidanceBinding:
         self.local(orch)
 
 
-def bind_background_guidance(origin, *, expected_orchestrator, websocket):
-    from orchestrator.async_tasks import BackgroundTask, BackgroundTaskManager, VirtualWebSocket
-    if type(origin) is not _GuidanceOrigin or type(websocket) is not VirtualWebSocket:
-        _refuse()
-    manager = getattr(expected_orchestrator, "async_task_manager", None)
-    task = websocket.task
-    if type(manager) is not BackgroundTaskManager or type(task) is not BackgroundTask:
-        _refuse()
-    operation = _OperationBinding.capture(expected_orchestrator, origin,
-                                         task._operation, task._execution_fence)
-    value = TurnGuidanceBinding(origin, websocket, task.chat_id, (operation,),
-                               (manager, task, task._execution_fence))
-    value.local(expected_orchestrator)
-    return value
-
-
-@dataclass(frozen=True, slots=True, repr=False)
-class _VoiceBinding:
-    services: object
-    store: object
-    adapter: object
-    repository: object
-    turn: object
-    operation_id: str
-    connection_generation: str
-
-    def current(self, tx, orch, origin):
-        if (getattr(orch, "voice_services", None) is not self.services
-                or self.services.repository is not self.store
-                or self.store._plane is not self.adapter
-                or self.adapter.plane_runtime is not origin.binding.runtime
-                or self.adapter.repository is not self.repository
-                or self.store._voice is not self.repository
-                or origin.binding.repositories.voice is not self.repository):
-            _refuse()
-        # NOWAIT lock; sample DB time after, never the host clock
-        observation = self.repository.assert_current_guidance_turn(tx,
-            owner_id=origin.owner_id, session_id=self.turn.session_id, turn_id=self.turn.turn_id,
-            expected_session_generation=self.turn.session_generation,
-            expected_media_grant_revision=self.turn.media_grant_revision,
-            operation_id=self.operation_id)
-        session, current = observation.session, observation.turn
-        if session["owner_connection_generation"] != self.connection_generation:
-            _refuse()
-        for name in ("turn_id", "client_turn_id", "session_id", "session_generation",
-                     "media_grant_revision", "user_id", "chat_id", "chat_context_revision",
-                     "execution_base_render_revision", "submission_id", "request_generation"):
-            if str(current.get(name)) != str(getattr(self.turn, name)):
-                _refuse()
-
-
-def bind_voice_guidance(origin, *, expected_orchestrator, websocket, voice_dispatch,
-                        operation_context, chat_id):
-    from orchestrator.orchestrator import _VoiceDispatchContext
-    from orchestrator.voice_sessions import TranscriptAdmission, VoiceSessionRepository
-    if (type(origin) is not _GuidanceOrigin or type(voice_dispatch) is not _VoiceDispatchContext
-            or type(voice_dispatch.admission) is not TranscriptAdmission
-            or type(operation_context) is not dict
-            or operation_context.get("operation_kind") != "voice_chat_message"):
-        _refuse()
-    turn = voice_dispatch.admission.turn
-    operation = _OperationBinding.capture(expected_orchestrator, origin,
-        operation_context.get("operation"), operation_context.get("execution_fence"))
-    if (str(operation.record.chat_id) != chat_id or turn.chat_id != chat_id
-            or turn.user_id != origin.owner_id
-            or str(operation.record.request_generation) != turn.request_generation
-            or str(operation.record.connection_generation) != voice_dispatch.connection_generation
-            or voice_dispatch.connection_generation != origin.connection_generation):
-        _refuse()
-    services = getattr(expected_orchestrator, "voice_services", None)
-    store = getattr(services, "repository", None)
-    if type(store) is not VoiceSessionRepository:
-        _refuse()
-    voice = _VoiceBinding(services, store, store._plane, origin.binding.repositories.voice,
-                           turn, str(operation.record.operation_id), voice_dispatch.connection_generation)
-    return TurnGuidanceBinding(origin, websocket, chat_id, (operation,), voice=voice)
-
-
 def bind_foreground_guidance(origin, *, expected_orchestrator, websocket, operation_context, chat_id):
     if type(origin) is not _GuidanceOrigin or type(operation_context) is not dict:
         _refuse()
@@ -321,42 +243,6 @@ def bind_foreground_guidance(origin, *, expected_orchestrator, websocket, operat
         pending.registration, deepcopy(pending.captured), pending.connection_generation)
     foreground.current(expected_orchestrator)
     return TurnGuidanceBinding(origin, websocket, chat_id, (operation,), foreground=foreground)
-
-
-def bind_http_guidance(origin, *, expected_orchestrator, websocket, chat_id):
-    if type(origin) is not _GuidanceOrigin or not isinstance(chat_id, str) or not chat_id:
-        _refuse()
-    origin.current(expected_orchestrator)
-    return TurnGuidanceBinding(origin, websocket, chat_id)
-
-
-def inherit_turn_guidance(parent, *, expected_orchestrator, websocket, chat_id, budget):
-    from orchestrator.chain_authority import ChainBudget
-    if (type(parent) is not TurnGuidanceBinding or type(budget) is not ChainBudget
-            or budget.parent is None or not isinstance(chat_id, str) or not chat_id):
-        _refuse()
-    parent.local(expected_orchestrator)
-    if getattr(expected_orchestrator, "_chain_budgets", {}).get(parent.chat_id) is not budget.parent:
-        _refuse()
-    limits, current = [], budget
-    while current is not None:
-        if type(current) is not ChainBudget or len(limits) >= 32 or any(row[0] is current for row in limits):
-            _refuse()
-        limits.append((current, current.max_hops, current.max_depth, current.wall_clock_s,
-                       current.started_at, current.parent))
-        current = current.parent
-    return TurnGuidanceBinding(parent.origin, websocket, chat_id, parent=parent,
-                               budget=budget, budget_limits=tuple(limits))
-
-
-@dataclass(frozen=True, slots=True, repr=False)
-class TurnSelectionBinding:
-    agent: object = None
-    skills: tuple = ()
-    notes: tuple = ()
-
-    def recheck(self, tx, repositories, owner_id):
-        _selection_current(tx, repositories, owner_id, self.agent, self.skills, self.notes)
 
 
 def _selection_current(tx, repositories, owner_id, agent, skills, notes):
@@ -385,36 +271,6 @@ def _selection_current(tx, repositories, owner_id, agent, skills, notes):
         if (type(note) is not ExplicitNoteRecord or note.owner_id != owner_id
                 or note.note_id != note_id or note.revision != revision):
             _refuse()
-
-
-def _selection_identifiers(value):
-    from orchestrator.work_submit import _selected_ids
-    try:
-        _selected_ids(value)
-    except AssignmentError:
-        _refuse()
-    agent = None if value["agent"] is None else (value["agent"]["agent_id"], value["agent"]["revision_id"])
-    skills = tuple(sorted((entry["skill_id"], entry["revision"]) for entry in value["skills"]))
-    notes = tuple(sorted((entry["note_id"], entry["revision"]) for entry in value["notes"]))
-    return agent, skills, notes
-
-
-async def bind_turn_selection(binding, *, expected_orchestrator, selection):
-    from dataclasses import replace
-    if type(binding) is not TurnGuidanceBinding:
-        _refuse()
-    binding.local(expected_orchestrator)
-    agent, skills, notes = _selection_identifiers(selection)
-    reader = TurnGuidanceReader(binding, expected_orchestrator=expected_orchestrator)
-    try:
-        def check(tx, repositories):
-            _selection_current(tx, repositories, binding.origin.owner_id, agent, skills, notes)
-            return TurnSelectionBinding(agent, skills, notes)
-        resolved = await reader.transaction(check, expected_orchestrator=expected_orchestrator)
-        await reader.verify_delivery()
-    finally:
-        reader.close()
-    return replace(binding, selection=resolved)
 
 
 @contextmanager
@@ -564,15 +420,3 @@ class TurnGuidanceReader:
             raise
         except Exception as exc:
             _refuse(cause=exc)
-
-
-async def acquire_turn_guidance_reader(*, expected_orchestrator, websocket, chat_id):
-    binding = current_turn_guidance(expected_orchestrator=expected_orchestrator,
-                                    websocket=websocket, chat_id=chat_id)
-    reader = TurnGuidanceReader(binding, expected_orchestrator=expected_orchestrator)
-    try:
-        await reader.verify_delivery()
-        return reader
-    except BaseException:
-        reader.close()
-        raise

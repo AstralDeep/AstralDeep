@@ -99,15 +99,6 @@ def adopt_margin() -> float:
         return 0.5
 
 
-def should_design(round_components: Sequence[Dict[str, Any]], *, timeline_mode: bool = False,
-                  frame: bool = False) -> bool:
-    if timeline_mode or not (designer_enabled() or frame):
-        return False
-    rich = [c for c in artifact_frame.designable(round_components)
-            if isinstance(c, dict) and c.get("type")]
-    return len(rich) >= MIN_DESIGN_COMPONENTS
-
-
 _LAYOUT_OUTPUT_RULE = '7. Output ONLY JSON: {"layout": [ ...nodes... ]}. No markdown fences, no commentary.'
 
 _FRAME_OUTPUT_RULE = (

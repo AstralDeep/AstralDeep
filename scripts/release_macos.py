@@ -1020,9 +1020,11 @@ class Release:
         if self.channel == "preview":
             create.append("--prerelease")
         run([*create, *assets], remote_write=True)
-        edit = ["gh", "release", "edit", self.tag, "--repo", RELEASE_REPO, "--draft=false", "--latest=false"]
+        edit = ["gh", "release", "edit", self.tag, "--repo", RELEASE_REPO, "--draft=false"]
         if self.channel == "preview":
-            edit.append("--prerelease")
+            edit.extend(["--prerelease", "--latest=false"])
+        else:
+            edit.append("--latest")
         run(edit, remote_write=True)
         info = run(["gh", "api", f"repos/{RELEASE_REPO}/releases/tags/{self.tag}"],
                    preview=json.dumps({"immutable": True, "draft": False, "prerelease": self.channel == "preview", "assets": []}))
@@ -1031,8 +1033,11 @@ class Release:
             return
         if latest.returncode and "HTTP 404" not in latest.stderr:
             raise ReleaseError(f"Could not confirm the Latest release: {latest.stderr.strip()[-300:]}")
-        if not latest.returncode and latest.stdout.strip() == self.tag:
-            raise ReleaseError(f"{self.tag} became the repository's Latest release; mark the newest Windows release Latest again")
+        is_latest = latest.returncode == 0 and latest.stdout.strip() == self.tag
+        if self.channel == "stable" and not is_latest:
+            raise ReleaseError(f"GitHub did not mark stable release {self.tag} as Latest")
+        if self.channel == "preview" and is_latest:
+            raise ReleaseError(f"GitHub marked preview release {self.tag} as Latest")
         published = json.loads(info.stdout)
         if published.get("immutable") is not True or published.get("draft") is not False \
                 or published.get("prerelease") is not (self.channel == "preview"):

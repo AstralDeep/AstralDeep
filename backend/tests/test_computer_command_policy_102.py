@@ -1,6 +1,4 @@
-"""Tests for the command half of orchestrator/computer_use_policy.py: the shell-aware destructive
-matcher, command grantability with its folder root, the run_command card summary and grant labels.
-"""
+"""Tests command classification and the workspace bounds enforced by the computer-use policy."""
 
 from __future__ import annotations
 
@@ -143,30 +141,6 @@ def test_read_only_git_and_bounded_tools_stay_grantable(argv):
 def test_git_outside_the_read_only_allowlist_and_exec_style_options_stay_on_exact_review(argv):
     assert policy.command_grant(_argv(argv), ROOTS) is None
     assert policy.command_grant(_cmd(" ".join(argv)), ROOTS) is None
-
-
-def test_run_command_card_shows_every_reviewed_field_exactly():
-    text = policy.summary_for("run_command", _cmd("wc -l 'my notes.md'", env={"FOO": "bar", "LANG": "C"},
-                                                    timeout_s=5, background=True, stdin="abc"), "Sam's Mac")
-    assert "Sam's Mac" in text
-    assert "wc -l 'my notes.md'" in text
-    assert ROOT in text and "5 s" in text and "FOO=bar" in text and "LANG=C" in text
-    assert "Background: yes" in text and "3 characters" in text
-    argv = policy.summary_for("run_command", _argv(["wc", "-l", "a b.md"]), "Mac")
-    assert '["wc", "-l", "a b.md"]' in argv and "60 s" in argv and "Environment: none" in argv
-    assert "Background: no" in argv
-
-
-def test_grant_labels_name_the_application_window_or_program_and_folder():
-    assert policy.input_grant_label("TextEdit") == "Allow for this task in TextEdit"
-    assert policy.input_grant_label("TextEdit", "Notes\x07 draft") == 'Allow for this task in window "Notes draft"'
-    assert len(policy.input_grant_label("TextEdit", "x" * 300)) < 120
-    assert policy.command_grant_label("wc", "x") == "Allow wc in x for this task"
-    assert policy.window_grant_label("TextEdit", "Untitled") == 'Allow for this task in window "Untitled"'
-    assert policy.window_grant_label("TextEdit", "\x07") == "Allow for this task in this TextEdit window"
-    assert policy.window_grant_label("TextEdit", None) == "Allow for this task in this TextEdit window"
-    assert policy.application_name("com.apple.TextEdit") == "TextEdit"
-    assert policy.application_name("TextEdit") == "TextEdit"
 
 
 @pytest.mark.parametrize("tool,sink", [("run_command", True), ("browser_click", True), ("browser_fill", True),

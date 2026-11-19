@@ -1,5 +1,5 @@
 """CLI entry point for `python -m verification`; an operator or CI job runs the harness
-(backend/verification/runner.py, drivers/in_process.py, report.py) and exits with a
+(backend/verification/checks/authority.py, drivers/in_process.py, report.py) and exits with a
 code distinguishing pass, fail, and near-exposure.
 """
 
@@ -18,9 +18,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="verification", description="AstralDeep SDUI & "
                                 "delegated-authority verification harness")
     p.add_argument("--mode", default="in-process",
-                   help="in-process (scripted LLM, CI gate) or external (live)")
-    p.add_argument("--persona", action="append", default=[], dest="personas",
-                   help="restrict to a persona key (repeatable)")
+                   help="in-process (CI gate) or external (live)")
     p.add_argument("--base-url", default=None, help="external-mode target base URL")
     p.add_argument("--out", default=None, help="gitignored artifacts root")
     p.add_argument("--run-id", default=None, help="namespace for principals + artifacts")
@@ -36,7 +34,6 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
     kwargs: Dict[str, Any] = {
         "mode": args.mode,
         "run_id": run_id,
-        "personas": list(args.personas or []),
         "base_url": args.base_url,
         "strict": bool(args.strict),
         "llm_judge": bool(args.llm_judge),
@@ -46,16 +43,13 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
     return RunConfig(**kwargs)
 
 
-def _verdict_for(check, ev, inputs, scenario) -> Verdict:
+def _verdict_for(check, ev, inputs) -> Verdict:
     res = check.run(ev, inputs)
     refuted = check.counter_refutes(ev, inputs) if res.outcome == Outcome.PASS else False
     outcome, confidence, adversarial = reconcile(res.outcome, refuted, None)
     refs = {"check": check.check_id, "property": check.property,
-            "counter_check": f"{check.check_id}.counter"}
-    if scenario is not None:
-        refs.update({"persona": scenario.persona.key, "scenario": scenario.scenario_id})
-    else:
-        refs.update({"persona": ev.scenario_id.split(":")[0], "scenario": ev.scenario_id})
+            "counter_check": f"{check.check_id}.counter",
+            "persona": ev.scenario_id.split(":")[0], "scenario": ev.scenario_id}
     return Verdict(
         verdict_id=f"{refs['scenario']}:{check.check_id}", scope="check",
         outcome=outcome, run_mode=ev.run_mode, confidence=confidence,
@@ -65,49 +59,37 @@ def _verdict_for(check, ev, inputs, scenario) -> Verdict:
 
 async def run_in_process(config: RunConfig) -> Dict[str, Any]:
     from verification.checks import authority as A
-    from verification.checks.tangible_ui import build_us1_checks
-    from verification.checks.thin_client import build_us3_checks
+    from verification.checks.thin_client import NO_CLIENT_CONSTRUCTION, inspect_client_surface
     from verification.drivers.in_process import InProcessDriver
+    from verification.evidence import CapturedEvidence
     from verification.report import build_record
-    from verification.scenarios import build_scenarios
 
     driver = InProcessDriver(config)
     await driver.setup()
     verdicts: List[Verdict] = []
     evidence: Dict[str, Any] = {}
-    persona_keys: List[str] = []
     try:
-        scenarios = build_scenarios(config.run_id, "mock_inprocess",
-                                    config.personas or None)
-        persona_keys = sorted({s.persona.key for s in scenarios})
-        us1, us3 = build_us1_checks(), build_us3_checks()
-        for scenario in scenarios:
-            ev = await driver.run_scenario(scenario)
-            ev = driver.enrich_thin_client(ev)
-            ev = ev.redacted(config.secret_values())
-            evidence[scenario.scenario_id] = ev
-            inputs = {"warrants_ui": scenario.warrants_ui,
-                      "known_markers": list(scenario.persona.fixture.known_markers),
-                      "query": scenario.query}
-            for check in us1 + us3:
-                verdicts.append(_verdict_for(check, ev, inputs, scenario))
         probes = {
             "xuser": await driver.probe_cross_user(config.run_id),
             "scope": await driver.probe_scope_withheld(config.run_id),
             "deleg": driver.probe_delegation(config.run_id),
             "appr": await driver.probe_admin_approval(config.run_id),
+            "client": CapturedEvidence(
+                evidence_id="client:surface:ev", scenario_id="client:surface",
+                run_mode="mock_inprocess", client_inspection=inspect_client_surface(),
+            ),
         }
         for check, key in [
-            (A.CROSS_USER, "xuser"), (A.DENIALS, "xuser"), (A.CHAIN, "xuser"),
+            (A.CROSS_USER, "xuser"), (A.DENIALS, "scope"), (A.CHAIN, "xuser"),
             (A.SCOPE, "scope"), (A.DELEGATION, "deleg"), (A.APPROVAL, "appr"),
+            (NO_CLIENT_CONSTRUCTION, "client"),
         ]:
             ev = probes[key].redacted(config.secret_values())
             evidence[ev.scenario_id] = ev
-            verdicts.append(_verdict_for(check, ev, {}, None))
+            verdicts.append(_verdict_for(check, ev, {}))
     finally:
         await driver.teardown()
-    return build_record(config, verdicts, evidence, auth_mode="mock_inprocess",
-                        personas=persona_keys)
+    return build_record(config, verdicts, evidence, auth_mode="mock_inprocess")
 
 
 def exit_code_for(record: Dict[str, Any], strict: bool) -> int:

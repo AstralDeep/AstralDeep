@@ -1,17 +1,12 @@
-"""Exercises preview composition through real project leases, approvals, and host dispatch."""
+"""Exercises preview composition through real project leases, ordered child operations and host dispatch."""
 
 import asyncio
 import json
-import time
-from dataclasses import replace
 
 import pytest
 
 from agents.computer_use import mcp_tools
-from orchestrator import hitl_confirmation as hc
 from orchestrator.computer_sessions import ComputerSessionManager
-from orchestrator.preview_authority import preview_authority_scope
-from orchestrator.remote_confirmation import capture_computer_approval
 from tests.test_project_host_authority import OWNER, manifest, setup
 
 JOB = "11111111-1111-4111-8111-111111111111"
@@ -60,18 +55,10 @@ async def preview_runtime(monkeypatch):
     return api, orch, ws, host, session, sent
 
 
-def approval(orch, ws, authority, request):
-    call = hc.PendingCall("preview", OWNER, "chat", "computer-use-1", "project_preview",
-                          hc._arguments(request), (), time.monotonic() + 600,
-                          computer_authority=authority, websocket=ws,
-                          cancellation=hc.cancellation_witness(orch, ws, OWNER, "chat", create=True))
-    return hc.Approval(orch, call, consumed=True, effect_started=True)
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize("action", ["start", "status", "stop"])
 @pytest.mark.parametrize("restart", [False, True])
-async def test_preview_runs_only_its_children_under_real_approval_and_project_lease(preview_runtime, action, restart):
+async def test_preview_runs_only_its_children_under_the_bound_project_lease(preview_runtime, action, restart):
     api, orch, ws, host, session, sent = preview_runtime
     request = {"action": action, "cwd": ROOT, "package_manager": "npm", "script": "dev"}
     if restart and action == "start":
@@ -82,13 +69,7 @@ async def test_preview_runs_only_its_children_under_real_approval_and_project_le
         request["job_id"] = JOB
         session.command_jobs[JOB] = {"state": "running"}
     async with api.project_dispatch_scope(orch, ws, OWNER, "chat", "computer-use-1", "project_preview", request):
-        authority = capture_computer_approval(orch, ws, OWNER, "chat", request)
-        assert authority is not None
-        token = hc._APPROVAL.set(approval(orch, ws, authority, request))
-        try:
-            result = await asyncio.to_thread(mcp_tools.project_preview, user_id=OWNER, session_id="chat", **request)
-        finally:
-            hc._APPROVAL.reset(token)
+        result = await asyncio.to_thread(mcp_tools.project_preview, user_id=OWNER, session_id="chat", **request)
     assert "code" not in result["_data"], result
     assert result["_data"]["job_id"] == JOB
     expected = ["read_file", "run_command", "read_output", "run_command", "read_output"] if action == "start" else ["read_output" if action == "status" else "interrupt_command"]
@@ -97,41 +78,31 @@ async def test_preview_runs_only_its_children_under_real_approval_and_project_le
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("change", ["path", "verb", "session", "stale", "approval", "args", "outside_scope", "grant"])
+@pytest.mark.parametrize("change", ["path", "verb", "generation", "stale", "args", "changed_request", "grant"])
 async def test_composite_scope_does_not_authorize_unrelated_or_stale_effects(preview_runtime, change):
     api, orch, ws, host, session, sent = preview_runtime
     request = {"action": "start", "cwd": ROOT, "package_manager": "npm", "script": "dev"}
     async with api.project_dispatch_scope(orch, ws, OWNER, "chat", "computer-use-1", "project_preview", request):
-        authority = capture_computer_approval(orch, ws, OWNER, "chat", request)
-        granted = approval(orch, ws, authority, request)
-        token = hc._APPROVAL.set(granted)
-        try:
-            def attempt():
-                with preview_authority_scope(granted, session):
-                    verb, args = "read_file", {"path": ROOT + "/package.json", "max_bytes": 32768}
-                    if change == "path":
-                        args["path"] = ROOT + "/other.json"
-                    elif change == "verb":
-                        verb = "delete_path"
-                    elif change == "args":
-                        args["max_bytes"] = 65536
-                    elif change == "stale":
-                        orch.cancelled_sessions[id(ws)] = True
-                    elif change == "session":
-                        granted.call = replace(granted.call, computer_authority=replace(authority, session=object()))
-                    elif change == "approval":
-                        granted.consumed = False
-                    elif change == "grant":
-                        host.project_manifest = manifest(generation=2, revision=2)
-                    return mcp_tools._run(host, session, verb, args)
-            if change == "outside_scope":
-                result, error = await asyncio.to_thread(mcp_tools._run, host, session, "read_file", {"path": ROOT + "/package.json", "max_bytes": 32768})
-            else:
-                result, error = await asyncio.to_thread(attempt)
-            assert result is None and error["_data"]["code"] in {"confirmation_required", "no_session", "stale_project_grant"}
-            assert not sent
-        finally:
-            hc._APPROVAL.reset(token)
+        def attempt():
+            verb, args = "read_file", {"path": ROOT + "/package.json", "max_bytes": 32768}
+            if change == "path":
+                args["path"] = ROOT + "/other.json"
+            elif change == "verb":
+                verb = "list_dir"
+            elif change == "args":
+                args["max_bytes"] = 65536
+            elif change == "stale":
+                orch.cancelled_sessions[id(ws)] = True
+            elif change == "generation":
+                session.authority_generation += 1
+            elif change == "grant":
+                host.project_manifest = manifest(generation=2, revision=2)
+            elif change == "changed_request":
+                return None, mcp_tools.project_preview(user_id=OWNER, session_id="chat", **{**request, "script": "preview"})
+            return mcp_tools._run(host, session, verb, args)
+        result, error = await asyncio.to_thread(attempt)
+        assert result is None and error["_data"]["code"] in {"confirmation_required", "no_session", "stale_project_grant"}
+        assert not sent
 
 
 @pytest.mark.asyncio
@@ -142,36 +113,45 @@ async def test_ordered_children_cannot_widen_commands_jobs_or_outlive_scope(prev
     api, orch, ws, host, session, sent = preview_runtime
     request = {"action": "start", "cwd": ROOT, "package_manager": "npm", "script": "dev"}
     async with api.project_dispatch_scope(orch, ws, OWNER, "chat", "computer-use-1", "project_preview", request):
-        authority = capture_computer_approval(orch, ws, OWNER, "chat", request)
-        granted = approval(orch, ws, authority, request)
-        token = hc._APPROVAL.set(granted)
-        try:
-            def attempt():
-                with preview_authority_scope(granted, session):
-                    assert not hc.computer_effect_current(orch, session, "run_command")
-                    read = {"path": ROOT + "/package.json", "max_bytes": 32768}
-                    assert mcp_tools._run(host, session, "read_file", read)[1] is None
-                    if mutation == "expired_scope":
-                        captured = contextvars.copy_context()
-                    else:
-                        command = {"argv": mcp_tools._preview_argv("npm", "dev"), "cwd": ROOT,
-                                   "timeout_s": 3600, "background": True}
-                        if mutation == "cwd":
-                            command["cwd"] = ROOT + "/subfolder"
-                        elif mutation == "argv":
-                            command["argv"] = ["sh", "-c", "echo arbitrary"]
-                        elif mutation == "replay":
-                            return mcp_tools._run(host, session, "read_file", read)
-                        elif mutation == "job":
-                            assert mcp_tools._run(host, session, "run_command", command)[1] is None
-                            return mcp_tools._run(host, session, "read_output", {
-                                "job_id": "22222222-2222-4222-8222-222222222222", "stream": "both", "offset": 0,
-                                "max_bytes": 4096, "wait_s": 2})
-                        if mutation != "expired_scope":
-                            return mcp_tools._run(host, session, "run_command", command)
-                return captured.run(mcp_tools._run, host, session, "read_file", read)
-            result, error = await asyncio.to_thread(attempt)
-            assert result is None and error["_data"]["code"] == "confirmation_required"
-            assert len(sent) == (2 if mutation == "job" else 1)
-        finally:
-            hc._APPROVAL.reset(token)
+        def attempt():
+            read = {"path": ROOT + "/package.json", "max_bytes": 32768}
+            assert mcp_tools._run(host, session, "read_file", read)[1] is None
+            if mutation == "expired_scope":
+                return contextvars.copy_context()
+            command = {"argv": mcp_tools._preview_argv("npm", "dev"), "cwd": ROOT,
+                       "timeout_s": 3600, "background": True}
+            if mutation == "cwd":
+                command["cwd"] = ROOT + "/subfolder"
+            elif mutation == "argv":
+                command["argv"] = ["sh", "-c", "echo arbitrary"]
+            elif mutation == "replay":
+                return mcp_tools._run(host, session, "read_file", read)
+            elif mutation == "job":
+                assert mcp_tools._run(host, session, "run_command", command)[1] is None
+                return mcp_tools._run(host, session, "read_output", {
+                    "job_id": "22222222-2222-4222-8222-222222222222", "stream": "both", "offset": 0,
+                    "max_bytes": 4096, "wait_s": 2})
+            return mcp_tools._run(host, session, "run_command", command)
+
+        value = await asyncio.to_thread(attempt)
+    if mutation == "expired_scope":
+        result, error = await asyncio.to_thread(value.run, mcp_tools._run, host, session, "read_file",
+                                               {"path": ROOT + "/package.json", "max_bytes": 32768})
+    else:
+        result, error = value
+    assert result is None and error["_data"]["code"] in {"confirmation_required", "stale_project_grant"}
+    assert len(sent) == (2 if mutation == "job" else 1)
+
+
+@pytest.mark.asyncio
+async def test_one_preview_step_runs_once_across_concurrent_calls(preview_runtime):
+    api, orch, ws, host, session, sent = preview_runtime
+    session.command_jobs[JOB] = {"state": "running"}
+    request = {"action": "status", "cwd": ROOT, "job_id": JOB}
+    async with api.project_dispatch_scope(orch, ws, OWNER, "chat", "computer-use-1", "project_preview", request):
+        async def status():
+            return await asyncio.to_thread(mcp_tools.project_preview, user_id=OWNER, session_id="chat", **request)
+
+        responses = await asyncio.gather(status(), status())
+    assert len(sent) == 1 and sent[0]["verb"] == "read_output"
+    assert sorted(item["_data"].get("code", "ok") for item in responses) == ["confirmation_required", "ok"]

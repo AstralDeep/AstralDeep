@@ -38,6 +38,37 @@ Unfinished work:
 - Docs: the downloads page on the site and the `AGENTS.md` diff for owner review.
 - The Android and Windows clients stay paused (O9).
 
+## One turn engine and caller contracts, 2026-11-19
+
+Owner rulings. The Kernel engine is the only turn engine. A web shell is no longer a core component: it is one possible application-layer client, built later on the Kernel engine, and the node hosts none. No caller turn door is built yet. A feature that existed only by running a Python turn is retired, not ported.
+
+Landed in Deep:
+
+- The Python turn loop is deleted. `Orchestrator.handle_chat_message` and everything only it used are gone, with the REST chat route, the `chat_message` socket action, the bridge's Python-runner mode, the node's own-turn ticket minting, the post-approval turn continuation, sub-tasks, goals and plan steering, message compaction, the designer round delivery and scheduled chat turns. A scheduled chat job now ends with `turn_engine_retired`.
+- A node answers a mesh text request only with `kernel.answer_request`. `backend/tests/test_single_turn_engine.py` lists every module that may start a turn, call a model or enter protected dispatch.
+- The security benchmark runs its 12 cases as real Kernel turns on the node with a scripted model provider. All 12 are refused with `consent.required` and no effect runs.
+- That benchmark found a gap that was on `main`: the node recorded an outward read's result as `tool_trusted`, so injected content could trigger an effect in a Kernel-run node turn. The node now records it `untrusted`, as the Kernel's own `answer_call.rs` does.
+- Three gate refusals wrote no audit row: tool permission, agent identity, and a destructive tool over the unattended MCP channel. Each now writes a denial row.
+- The verification harness no longer uses the loop. The eight checks that only a Python turn could feed are retired, and the authority checks are driven through the tool dispatch with no model.
+- The node no longer serves the browser shell at `/` or the `/static` mount.
+- [contracts/caller-events.md](contracts/caller-events.md) commits the caller refusal codes, the request lifecycle with no notifications, and consent visibility per principal class.
+- [contracts/assembly.md](contracts/assembly.md) is the activation manifest. The node validates `config/astral-assembly.json` at boot and stops with exit 78, and the contract tests check its pinned contract digests.
+
+Coverage given up, in code that survives:
+
+- Voice chat deletion fencing, and emergency-stop gating on new chat turns and scheduled turns. Their entry points are gone.
+- Parallel-batch dispatch. Only the single tool entry remains.
+
+Still open:
+
+- The attended approval cards in `hitl_confirmation.py` and `remote_confirmation.py`. Nothing in production can bind an approval task now, and with no person attached they already refuse, so a ticketed call runs a reviewed action only on the Kernel ticket's approval. The card code and its tests remain and should go.
+- The bearer REST routes and the UI socket door stay registered behind their refusals. This is the OD3 cleanup above.
+- Persistent agents, off by default, still run bounded Python episodes that call a model.
+- The Kernel trusts the labels a node records for a call result. A Kernel-side floor from the tool definition would not depend on the node. That is a Kernel change.
+- A node turn that needs consent waits on the node's own Kernel, and the node never signs an owner consent. Whether an owner device is shown that pending consent is not verified. If it is not, the turn ends at the bridge's turn timeout with the effect not run. Before the label fix such a turn ran the effect with no consent.
+- `config/astral-assembly.json` records these open items as exceptions.
+- The bridge still carries the code that mirrored thin-client turns into the mesh. Nothing produces such turns now.
+
 Earlier status (2026-11-15): phase 0 was in progress. Spec 105 was complete, and part of phase 1
 landed early with its closure. See [Progress](#progress-2026-11-15).
 Read [spec.md](spec.md) for intent and [plan.md](plan.md) for order and exit criteria. Evidence for

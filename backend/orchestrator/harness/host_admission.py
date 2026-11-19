@@ -38,7 +38,7 @@ class ConnectionOrigin:
 
 def submit_connection(orchestrator, context, frame, request):
     coordinator = orchestrator.work_admission
-    if frame.read_only or frame.operation_kind == "llm_credential_save" or frame.foreground:
+    if frame.read_only or frame.operation_kind == "llm_credential_save":
         return coordinator.submit(request)
     service = getattr(orchestrator, "harness_selection", None)
     if type(service) is not HarnessSelectionService:

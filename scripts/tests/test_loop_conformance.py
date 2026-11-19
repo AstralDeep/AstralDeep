@@ -1,5 +1,5 @@
-"""Runs shared loop fixtures against the node's production argument pipeline and repeat guard.
-The Rust engine consumes the same hand-expected fixtures, including malformed inputs that must never bypass dispatch limits.
+"""Runs the shared argument fixtures against the node's production argument pipeline, which every dispatched tool call still passes through.
+The Rust engine consumes the same hand-expected fixtures and is the only consumer of the repeat cases, since it is the only turn engine.
 """
 
 from __future__ import annotations
@@ -13,7 +13,6 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "backend"))
 
-from orchestrator.repeat_guard import RepeatGuard  # noqa: E402
 from orchestrator.tool_arguments import prepare_arguments  # noqa: E402
 
 FIXTURE = ROOT / "specs/105-decentralized-personal-mesh/contracts/conformance/loop.json"
@@ -28,11 +27,3 @@ def test_arguments_match_the_shared_loop_contract(case: dict) -> None:
         "repaired": result.repaired,
         "code": result.error.code if result.error else None,
     } == case["expect"]
-
-
-@pytest.mark.parametrize("case", CASES["repeats"], ids=lambda c: c["name"])
-def test_repeats_match_the_shared_loop_contract(case: dict) -> None:
-    guard = RepeatGuard()
-    for step in case["steps"]:
-        verdict = guard.observe(step["tool"], step["raw"], step["failed"])
-        assert {"verdict": verdict, "blocked": guard.blocked(step["tool"], step["raw"])} == step["expect"]

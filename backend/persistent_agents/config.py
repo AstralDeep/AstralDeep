@@ -1,6 +1,4 @@
-"""Finite, operator-configured concurrency/timing bounds for AssignmentRunner, read from
-environment via _bounded(); consumed by persistent_agents/runner.py.
-"""
+"""Bounds the polling interval for the Plane assignment recovery worker."""
 
 from __future__ import annotations
 
@@ -22,13 +20,7 @@ def _bounded(name: str, default: int, lower: int, upper: int) -> int:
 @dataclass(frozen=True, slots=True)
 class RunnerConfig:
     tick_seconds: int = 15
-    concurrency: int = 4
-    lease_seconds: int = 30
 
     @classmethod
     def from_environment(cls) -> RunnerConfig:
-        return cls(
-            tick_seconds=_bounded("PERSISTENT_AGENTS_TICK_SECONDS", 15, 1, 30),
-            concurrency=_bounded("PERSISTENT_AGENTS_CONCURRENCY", 4, 1, 25),
-            lease_seconds=_bounded("PERSISTENT_AGENTS_LEASE_SECONDS", 30, 15, 60),
-        )
+        return cls(tick_seconds=_bounded("PERSISTENT_AGENTS_TICK_SECONDS", 15, 1, 30))

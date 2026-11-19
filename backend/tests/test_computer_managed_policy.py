@@ -369,17 +369,10 @@ async def test_a_malformed_announce_is_refused_and_audited(monkeypatch):
 # --- dispatch gate --------------------------------------------------------------------------
 
 
-class _FakeDB:
-    rows = {}
-
-    def upsert(self, *a, **k):
-        return None
-
-
 def _gate_world(policy=None, roles=None):
     from tests.test_computer_use_076 import _gate_orch, _Hashable
 
-    orch = _gate_orch(_FakeDB())
+    orch = _gate_orch()
     ws = _Hashable()
     orch.ui_sessions[ws] = {"sub": OWNER}
     if roles is not None:
@@ -433,21 +426,27 @@ async def test_a_computer_use_ceiling_refuses_host_verbs_but_keeps_inventory_and
 
 
 async def test_a_role_ceiling_refuses_without_a_descriptor_block(monkeypatch):
-    _recording(monkeypatch)
+    audits = _recording(monkeypatch)
     orch, ws, host = _gate_world(roles=["browser-pane-denied"])
     out = rc.evaluate(orch, ws, "computer-use-1", "browser_snapshot", {"computer": "Mac"}, "chat", OWNER)
     assert out is not None and "organization roles" in out[0]
     orch.ui_sessions = {}
-    cached = rc.evaluate(orch, ws, "computer-use-1", "browser_snapshot", {"computer": "Mac"}, "chat", OWNER)
-    assert cached is not None and "organization roles" in cached[0]
+    cached = rc.managed_policy_refusal(orch, OWNER, "chat", "browser_snapshot", {"computer": "Mac"})
+    assert cached is not None and "organization roles" in cached
+    disconnected = rc.evaluate(orch, ws, "computer-use-1", "browser_snapshot", {"computer": "Mac"}, "chat", OWNER)
+    assert disconnected is not None and disconnected[0].startswith("unattended_refused:")
+    assert audits[-1].action_type == "remote_op.refused_unattended"
 
 
 async def test_unverified_role_state_refuses_host_verbs(monkeypatch):
-    _recording(monkeypatch)
+    audits = _recording(monkeypatch)
     orch, ws, host = _gate_world()
     orch.ui_sessions = {}
+    policy = rc.managed_policy_refusal(orch, OWNER, "chat", "screenshot", {"computer": "Mac"})
+    assert policy is not None and "could not be verified" in policy
     out = rc.evaluate(orch, ws, "computer-use-1", "screenshot", {"computer": "Mac"}, "chat", OWNER)
-    assert out is not None and "could not be verified" in out[0]
+    assert out is not None and out[0].startswith("unattended_refused:")
+    assert audits[-1].action_type == "remote_op.refused_unattended"
 
 
 async def test_verbs_stay_allowed_when_the_ceiling_permits_them(monkeypatch):
@@ -466,26 +465,6 @@ async def test_a_stale_bypass_switch_cannot_authorize_while_the_ceiling_forbids_
     out = rc.evaluate(orch, ws, "computer-use-1", "set_clipboard",
                       {"text": "x", "computer": "Mac"}, "chat", OWNER)
     assert out is not None and "bypass" in out[0]
-    from orchestrator import hitl_confirmation as hc
-
-    decision, reason = hc.consent_decision(orch, ws, OWNER, "chat", "computer-use-1", "set_clipboard",
-                                           {"text": "x", "computer": "Mac"}, ())
-    assert decision == "refuse" and "bypass" in reason
-
-
-async def test_stale_bypass_still_stands_when_the_ceiling_permits(monkeypatch):
-    _recording(monkeypatch)
-    orch, ws, host = _gate_world(policy=_policy())
-    sessions = orch.computer_sessions
-    sessions._bypass[(OWNER, host.host_id)] = host
-    from orchestrator import hitl_confirmation as hc
-
-    decision, _reason = hc.consent_decision(orch, ws, OWNER, "chat", "computer-use-1", "set_clipboard",
-                                            {"text": "x", "computer": "Mac"}, ())
-    assert decision == "standing"
-
-
-# --- typed host failures --------------------------------------------------------------------
 
 
 def test_a_permission_cause_becomes_a_typed_permission_missing_error():

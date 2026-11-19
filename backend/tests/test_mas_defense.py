@@ -23,13 +23,6 @@ def key(monkeypatch):
     monkeypatch.delenv("MEMORY_HMAC_KEY", raising=False)
 
 
-def test_flag_default_off(monkeypatch):
-    monkeypatch.delenv("FF_MAS_DEFENSE", raising=False)
-    assert mas.mas_defense_enabled() is False
-    monkeypatch.setenv("FF_MAS_DEFENSE", "on")
-    assert mas.mas_defense_enabled() is True
-
-
 def test_sign_verify_round_trip(key):
     sig = mas.sign_message("a", "b", {"x": 1})
     assert mas.verify_message("a", "b", {"x": 1}, sig) == (True, "ok")

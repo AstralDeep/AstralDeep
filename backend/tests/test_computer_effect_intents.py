@@ -226,6 +226,10 @@ def _retained(job_id, state="running", exit_code=None):
             "output_bytes": 12}
 
 
+def _unknown_for(ledger, owner_id, chat_id):
+    return tuple(ledger._unknown.get((owner_id, chat_id), {}).values())
+
+
 # --- ledger state machine ---------------------------------------------------------------
 
 
@@ -247,7 +251,7 @@ async def test_unknown_outcomes_block_new_effects_until_resolved():
         await ledger.begin_request(owner_id=OWNER, host=_host(), session_id="s-1", chat_id=CHAT,
                                    verb="click", args={}, operation_id="creq_" + "3" * 32)
     assert blocked.value.code == "chat_blocked_for_acknowledgment"
-    assert ledger.unknown_for(OWNER, CHAT)
+    assert _unknown_for(ledger, OWNER, CHAT)
 
 
 async def test_commit_outcome_finishes_the_row_and_audits_both_sides():
@@ -278,7 +282,7 @@ async def test_commit_failure_surfaces_unknown_rather_than_hiding_it():
     steps.fail_writes = True
     assert await ledger.commit_outcome(operation, ok=True) is False
     assert steps.rows[operation].status.value == "in_progress"
-    assert ledger.unknown_for(OWNER, CHAT)
+    assert _unknown_for(ledger, OWNER, CHAT)
     assert recorder.actions().count("effect.unknown") == 1
 
 
@@ -301,7 +305,7 @@ async def test_reconcile_chat_marks_orphan_intents_unknown_and_keeps_rows_open()
     steps.rows[orphan.step_id] = orphan
     recovered = await ledger.reconcile_chat(OWNER, CHAT)
     assert [item.operation_id for item in recovered] == [orphan.step_id]
-    assert ledger.unknown_for(OWNER, CHAT)[0].verb == "click"
+    assert _unknown_for(ledger, OWNER, CHAT)[0].verb == "click"
     assert steps.rows[orphan.step_id].status.value == "in_progress"
     assert recorder.actions().count("effect.unknown") == 1
     assert await ledger.reconcile_chat(OWNER, CHAT) == ()
@@ -314,7 +318,7 @@ async def test_reconcile_chat_skips_live_in_flight_intents():
                                verb="click", args={}, operation_id=operation)
     assert await ledger.reconcile_chat(OWNER, CHAT) == ()
     assert steps.rows[operation].status.value == "in_progress"
-    assert ledger.unknown_for(OWNER, CHAT) == ()
+    assert _unknown_for(ledger, OWNER, CHAT) == ()
 
 
 async def test_reconcile_owner_scans_the_owners_recent_chats():
@@ -341,7 +345,7 @@ async def test_acknowledge_resolves_rows_once_and_gates_one_resume_input():
                for item in resolved[CHAT])
     for row in (first, second):
         assert steps.rows[row.step_id].status.value == "interrupted"
-    assert ledger.unknown_for(OWNER, CHAT) == ()
+    assert _unknown_for(ledger, OWNER, CHAT) == ()
     assert recorder.actions().count("effect.acknowledged") == 2
     assert ledger.grant_resume_input(OWNER, CHAT, INCARNATION) is True
     assert ledger.grant_resume_input(OWNER, CHAT, INCARNATION) is False
@@ -367,7 +371,7 @@ async def test_resolution_is_scoped_to_the_named_host():
     other = _host()
     other.descriptor["host_id"] = "host-" + "f" * 8
     assert await ledger.resolve_owner_unknowns(OWNER, other.host_id, decision="acknowledge") == {}
-    assert ledger.unknown_for(OWNER, CHAT)
+    assert _unknown_for(ledger, OWNER, CHAT)
 
 
 async def test_lost_approval_cards_are_reported_once_the_card_is_gone():
@@ -467,7 +471,7 @@ async def test_timeout_marks_the_intent_unknown():
     with pytest.raises(ComputerHostError) as lost:
         await orch.computer_hosts.request(host, session.session_id, "click", {"x": 1, "hwnd": 7}, 0.05)
     assert lost.value.code == "outcome_uncertain"
-    assert orch.computer_effect_intents.unknown_for(OWNER, CHAT)
+    assert _unknown_for(orch.computer_effect_intents, OWNER, CHAT)
 
 
 async def test_blocked_chat_refuses_effects_but_allows_observation():
@@ -517,25 +521,6 @@ async def test_resolve_outcome_unknowns_appends_exactly_one_resume_input():
     assert len(appended) == 1
 
 
-async def test_dispatch_gate_blocks_unresolved_chats_and_reports_the_actions(monkeypatch):
-    from orchestrator.orchestrator import Orchestrator
-    from shared.feature_flags import flags
-
-    monkeypatch.setitem(flags._flags, "computer_use", True)
-    steps = _FakeStepRepository()
-    orch = _wired_orch(steps)
-    orch._effect_acknowledgment_gate = Orchestrator._effect_acknowledgment_gate.__get__(orch)
-    host = _host()
-    orphan = _effect_row(verb="run_command", host_id=host.host_id)
-    steps.rows[orphan.step_id] = orphan
-    blocked = await orch._effect_acknowledgment_gate(OWNER, CHAT)
-    assert blocked is not None and "run_command" in blocked
-    assert await orch._effect_acknowledgment_gate(OWNER, "chat-unknown") is None
-    await orch.computer_effect_intents.resolve_owner_unknowns(
-        OWNER, host.host_id, decision="acknowledge")
-    assert await orch._effect_acknowledgment_gate(OWNER, CHAT) is None
-
-
 async def test_host_registration_reconciles_open_intents_through_the_real_flow(monkeypatch):
     from orchestrator.orchestrator import Orchestrator
 
@@ -547,45 +532,8 @@ async def test_host_registration_reconciles_open_intents_through_the_real_flow(m
     descriptor = ComputerHostDescriptor.from_dict(_descriptor(platform="macos", incarnation_id=INCARNATION))
     ws = orch.add(_WS(user=OWNER))
     await orch._register_computer_host(ws, OWNER, descriptor)
-    assert orch.computer_effect_intents.unknown_for(OWNER, CHAT)
+    assert _unknown_for(orch.computer_effect_intents, OWNER, CHAT)
     assert orch.audit_recorder.actions().count("effect.unknown") == 1
-
-
-async def test_chat_message_dispatch_refuses_when_the_chat_is_blocked(monkeypatch):
-    from orchestrator.orchestrator import Orchestrator
-    from shared.feature_flags import flags
-
-    monkeypatch.setitem(flags._flags, "computer_use", True)
-    steps = _FakeStepRepository()
-    orch = _wired_orch(steps)
-    host = _host()
-    orphan = _effect_row(verb="run_command", host_id=host.host_id)
-    steps.rows[orphan.step_id] = orphan
-    orch._handle_chat_message_impl = Orchestrator._handle_chat_message_impl.__get__(orch)
-    orch._effect_acknowledgment_gate = Orchestrator._effect_acknowledgment_gate.__get__(orch)
-    rendered = []
-
-    async def send_ui_render(ws, components, target=None, speak=True):
-        rendered.append(components)
-
-    orch.send_ui_render = send_ui_render
-    ws = orch.add(_WS(chat=CHAT))
-    await orch._handle_chat_message_impl(ws, "hello", CHAT, user_id=OWNER)
-    assert rendered and "run_command" in json.dumps(rendered[0])
-    assert ws.frames("chat_status")[-1]["status"] == "done"
-
-
-async def test_dispatch_gate_ignores_other_owners(monkeypatch):
-    from orchestrator.orchestrator import Orchestrator
-    from shared.feature_flags import flags
-
-    monkeypatch.setitem(flags._flags, "computer_use", True)
-    steps = _FakeStepRepository()
-    orch = _wired_orch(steps)
-    orch._effect_acknowledgment_gate = Orchestrator._effect_acknowledgment_gate.__get__(orch)
-    foreign = _effect_row(owner="someone-else")
-    steps.rows[foreign.step_id] = foreign
-    assert await orch._effect_acknowledgment_gate(OWNER, CHAT) is None
 
 
 # --- command job reconciliation against the host's own list -----------------------------
@@ -678,80 +626,6 @@ class _FakeRuntime:
     @contextmanager
     def transaction():
         yield None
-
-
-async def test_computer_approval_cards_leave_an_open_marker_and_decisions_close_it():
-    from orchestrator import remote_confirmation
-
-    steps = _FakeStepRepository()
-    orch = _wired_orch(steps)
-    host, _controller, _session = await _mac_session(orch)
-    orch.runtime_composition = SimpleNamespace(
-        plane=SimpleNamespace(runtime=_FakeRuntime(),
-                              repositories=SimpleNamespace(
-                                  remote_operation_proposals=_FakeProposalRepository())))
-    proposal_id, card = remote_confirmation._create_proposal(
-        orch, OWNER, CHAT, "computer-use-1", "run_command",
-        {"argv": ["wc", "-l"], "cwd": "/Users/sam/Projects/x", "timeout_s": 30,
-         "computer": host.host_id}, websocket=host.websocket)
-    marker_id = f"apr_{proposal_id}"
-    assert marker_id in steps.rows and steps.rows[marker_id].kind == APPROVAL_KIND
-    assert orch.computer_effect_intents._approval_markers[marker_id][0] == OWNER
-    orch.computer_effect_intents.approval_resolved(proposal_id, note="approved")
-    assert steps.rows[marker_id].status.value == "completed"
-
-
-def test_create_proposal_without_a_chat_writes_no_marker():
-    from orchestrator import remote_confirmation
-
-    steps = _FakeStepRepository()
-    orch = _wired_orch(steps)
-    remote_confirmation._open_computer_approval_marker(
-        orch, "a" * 32, OWNER, None, "run_command", "summary")
-    assert steps.rows == {}
-
-
-def test_marker_write_failures_never_break_the_card(monkeypatch):
-    from orchestrator import remote_confirmation
-
-    steps = _FakeStepRepository()
-    orch = _wired_orch(steps)
-
-    def _explode(**kwargs):
-        raise RuntimeError("plane down")
-
-    monkeypatch.setattr(orch.computer_effect_intents, "approval_opened", _explode)
-    remote_confirmation._open_computer_approval_marker(
-        orch, "a" * 32, OWNER, CHAT, "run_command", "summary")
-    assert steps.rows == {}
-
-
-async def test_handle_decision_closes_the_marker_before_validating_the_proposal():
-    from orchestrator import remote_confirmation
-
-    steps = _FakeStepRepository()
-    orch = _wired_orch(steps)
-    ledger = orch.computer_effect_intents
-    ledger.approval_opened(proposal_id="d" * 32, owner_id=OWNER, chat_id=CHAT,
-                           tool_name="run_command", summary="text")
-    orch.runtime_composition = SimpleNamespace(
-        plane=SimpleNamespace(runtime=_FakeRuntime(),
-                              repositories=SimpleNamespace(
-                                  remote_operation_proposals=_FakeProposalRepository())))
-
-    async def send_ui_render(ws, components, target=None, speak=True):
-        pass
-
-    orch.send_ui_render = send_ui_render
-    ws = orch.add(_WS(chat=CHAT))
-
-    def _explode(proposal_id, *, note=""):
-        raise RuntimeError("plane down")
-
-    ledger.approval_resolved = _explode
-    await remote_confirmation.handle_decision(orch, ws, OWNER,
-                                              {"proposal_id": "d" * 32, "decision": "approve"})
-    assert "apr_" + "d" * 32 in ledger._approval_markers
 
 
 # --- restart posture -------------------------------------------------------------------
@@ -859,24 +733,6 @@ async def test_outcome_commit_failures_do_not_break_the_response(monkeypatch):
     assert err is None
 
 
-async def test_gate_tolerates_a_broken_reconciliation(monkeypatch):
-    from orchestrator.orchestrator import Orchestrator
-    from shared.feature_flags import flags
-
-    monkeypatch.setitem(flags._flags, "computer_use", True)
-    steps = _FakeStepRepository()
-    orch = _wired_orch(steps)
-    orch._effect_acknowledgment_gate = Orchestrator._effect_acknowledgment_gate.__get__(orch)
-
-    async def _explode(owner_id, chat_id):
-        raise RuntimeError("plane down")
-
-    monkeypatch.setattr(orch.computer_effect_intents, "reconcile_chat", _explode)
-    assert await orch._effect_acknowledgment_gate(OWNER, CHAT) is None
-    assert await orch._effect_acknowledgment_gate(None, CHAT) is None
-    assert await orch._effect_acknowledgment_gate(OWNER, None) is None
-
-
 async def test_resolution_and_resume_input_failures_are_contained():
     from orchestrator.orchestrator import Orchestrator
 
@@ -965,7 +821,7 @@ async def test_reconcile_skips_rows_it_cannot_interpret():
     for row in (garbage, wrong, sequence, terminal, foreign_kind, unreported):
         steps.rows[row.step_id] = row
     assert await ledger.reconcile_chat(OWNER, CHAT) == ()
-    assert ledger.unknown_for(OWNER, CHAT) == ()
+    assert _unknown_for(ledger, OWNER, CHAT) == ()
     assert ledger.lost_approvals(OWNER, CHAT) == ("run_command",)
 
 
@@ -1005,7 +861,7 @@ async def test_resolution_skips_rows_it_cannot_close_and_other_owners():
     steps.fail_writes = True
     resolved = await ledger.resolve_owner_unknowns(OWNER, host.host_id, decision="acknowledge")
     assert resolved == {}
-    assert ledger.unknown_for(OWNER, CHAT)
+    assert _unknown_for(ledger, OWNER, CHAT)
     steps.fail_writes = False
     resolved = await ledger.resolve_owner_unknowns(OWNER, host.host_id, decision="acknowledge")
     assert sorted(resolved) == [CHAT]
@@ -1045,7 +901,7 @@ async def test_audit_failures_never_break_the_ledger(monkeypatch):
     intent = await ledger.begin_request(owner_id=OWNER, host=_host(), session_id="s-1", chat_id=CHAT,
                                         verb="click", args={}, operation_id="creq_" + "b" * 32)
     await ledger.outcome_lost(intent, reason="host left")
-    assert ledger.unknown_for(OWNER, CHAT)
+    assert _unknown_for(ledger, OWNER, CHAT)
 
     orch.audit_recorder = None
     from audit import recorder as audit_module

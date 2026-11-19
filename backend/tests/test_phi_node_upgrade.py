@@ -24,7 +24,6 @@ from tests.helpers.excluded_node import stand_in_mesh
 from tests.helpers.dev_mesh import until as wait_until
 from tests.test_node_mesh_kernel_integration import paired, until  # noqa: F401
 from tests.test_node_mesh_peer_tools import FakeModel, model_server, node_host  # noqa: F401
-from tests.test_node_mesh_turn_tools import dice_grant, grant, turn_host  # noqa: F401
 
 CONTRACT = Path(__file__).resolve().parents[2] / "specs/106-sign-in-free-clients/contracts/vectors/exec-policy-v1.json"
 

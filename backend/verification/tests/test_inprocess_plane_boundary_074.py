@@ -14,7 +14,6 @@ from types import SimpleNamespace
 import pytest
 import verification.drivers.in_process as in_process_module
 from verification.drivers.in_process import InProcessDriver
-from verification.isolation import Principal
 
 
 _AUTHORITY = "https://verification.invalid/realms/plane-boundary"
@@ -105,106 +104,6 @@ def test_driver_initializes_empty_blob_owner_inventory(tmp_path) -> None:
 
     assert driver._uploaded_blob_owners == set()
     assert driver._execution_principals == {}
-
-
-def test_run_scenario_uses_one_execution_identity_at_every_boundary(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    from verification.personas import Fixture
-    from verification.scenarios import Scenario
-
-    driver = InProcessDriver(
-        SimpleNamespace(
-            run_dir=str(tmp_path),
-            run_id="__verif__plane-boundary",
-        )
-    )
-    driver._fixture_identity = _fixture_identity()
-    logical = Principal("__verif__plane-boundary_everyday_primary")
-    observed: list[str] = []
-
-    class ToolPermissions:
-        def set_agent_scopes(self, owner_id, _agent_id, _scopes):
-            observed.append(owner_id)
-
-    class History:
-        def create_chat(self, *, user_id):
-            observed.append(user_id)
-            return "chat-identity"
-
-    class Workspace:
-        def live_components(self, _chat_id, owner_id):
-            observed.append(owner_id)
-            return []
-
-    async def handle_chat_message(
-        websocket,
-        _query,
-        _chat_id,
-        *,
-        user_id,
-        attachments,
-    ):
-        observed.extend([user_id, websocket.label, websocket.client[1]])
-        observed.append(driver.orch.ui_sessions[websocket]["sub"])
-        assert attachments[0]["attachment_id"] == "attachment-identity"
-
-    driver.orch = SimpleNamespace(
-        tool_permissions=ToolPermissions(),
-        history=History(),
-        workspace=Workspace(),
-        ui_sessions={},
-        ui_clients=[],
-        _ws_active_chat={},
-        _connection_contexts={},
-        _llm_store=None,
-        handle_chat_message=handle_chat_message,
-    )
-
-    async def upload_as(principal, _fixture):
-        observed.append(principal.user_id)
-        return {
-            "attachment_id": "attachment-identity",
-            "filename": "cohort.csv",
-            "category": "spreadsheet",
-            "path": str(tmp_path / "cohort.csv"),
-        }
-
-    driver.upload_as = upload_as  # type: ignore[method-assign]
-
-    async def register_session(principal, chat_id):
-        from verification.drivers.in_process import CaptureSocket
-
-        ws = CaptureSocket(label=principal.user_id)
-        driver.orch.ui_sessions[ws] = principal.claims()
-        driver.orch.ui_clients.append(ws)
-        return ws
-
-    driver._register_session = register_session
-    driver._send_registered_turn = handle_chat_message
-    driver._read_audit = lambda owner_id: (observed.append(owner_id) or [], True)
-    monkeypatch.setattr(in_process_module, "scripted_llm_for", lambda *_args: object())
-    scenario = Scenario(
-        scenario_id="everyday:primary",
-        persona=SimpleNamespace(
-            query="summarize",
-            fixture=Fixture(
-                category="spreadsheet",
-                extension="csv",
-                filename="cohort.csv",
-                writer=lambda path: Path(path).write_bytes(b"id,value\n1,2\n"),
-            ),
-        ),
-        principal=logical,
-        auth_mode="mock_inprocess",
-    )
-
-    asyncio.run(driver.run_scenario(scenario))
-
-    execution_id = driver._execution_principal(logical).user_id
-    assert observed
-    assert set(observed) == {execution_id}
 
 
 def test_driver_teardown_injects_the_application_plane(monkeypatch) -> None:

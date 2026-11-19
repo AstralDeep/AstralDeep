@@ -386,22 +386,3 @@ def test_the_catalog_keys_each_published_tool_by_agent_and_name_with_its_definit
     assert nmcalls.current_definition(orch, "dice-roller-1", "roll_dice") == nmcalls.skill_definition(dice)
     assert nmcalls.current_definition(orch, "dice-roller-1", "absent") is None
     assert nmcalls.current_definition(orch, "absent", "roll_dice") is None
-
-
-def test_turn_tools_need_a_grant_for_the_current_hash_and_the_owners_enablement(monkeypatch):
-    disabled = {"flip_coin"}
-    orch, dice, coin = turn_orchestrator(monkeypatch, allowed=lambda owner, agent, tool: tool not in disabled)
-    calls = nmcalls.OrchestratorCalls(orch)
-    dice_grant = grant(nmcalls.grant_name("roll_dice", nmcalls.skill_definition(dice)), "outward_read")
-    coin_grant = grant(nmcalls.grant_name("flip_coin", nmcalls.skill_definition(coin)))
-    assert calls.turn_tools(OWNER, []) == []
-    assert calls.turn_tools(OWNER, [dice_grant, coin_grant]) == [
-        nmcalls.TurnTool("dice-roller-1", "roll_dice", nmcalls.skill_definition(dice), "tools:read"),
-    ]
-    disabled.clear()
-    assert [tool.tool for tool in calls.turn_tools(OWNER, [dice_grant, coin_grant])] == ["roll_dice", "flip_coin"]
-    stale = calls.catalog
-    monkeypatch.setattr(calls, "catalog", lambda owner: {
-        key: nmcalls.CatalogTool("sha256:" + "0" * 64, entry.effect) for key, entry in stale(owner).items()
-    })
-    assert calls.turn_tools(OWNER, [dice_grant, coin_grant]) == []

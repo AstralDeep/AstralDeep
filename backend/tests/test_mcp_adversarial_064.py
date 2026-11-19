@@ -16,7 +16,7 @@ from orchestrator.mcp_server_endpoint import _tool_result
 from orchestrator.mcp_projection import project_tools, resolve_projected_tool
 from orchestrator.orchestrator import GateRefusal, Orchestrator
 from orchestrator.tool_visibility import eligible_tool_pairs
-from shared.protocol import AgentCard, AgentSkill, MCPResponse, ProtocolValidationError
+from shared.protocol import AgentCard, AgentSkill, MCPResponse
 from webrender.registry import TARGET_RENDERERS
 from webrender.targets.mcp_renderer import install, render_mcp
 
@@ -297,11 +297,3 @@ async def test_execute_mcp_tool_uses_gate_dispatch_and_cap_cleanup_without_token
         tool_name="read",
         arguments={},
     ) is completed
-
-
-def test_model_schema_adapter_only_removes_dialect_after_validation():
-    schema = {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}
-    assert Orchestrator._adapt_tool_schema_for_model(schema) == {"type": "object"}
-    assert "$schema" in schema
-    with pytest.raises(ProtocolValidationError, match="must be an object"):
-        Orchestrator._adapt_tool_schema_for_model([])

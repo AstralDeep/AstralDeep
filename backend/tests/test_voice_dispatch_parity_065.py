@@ -6,8 +6,6 @@ async_tasks.py), gaining no separate authorization path.
 from __future__ import annotations
 
 import asyncio
-import copy
-import uuid
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -209,7 +207,8 @@ async def test_tool_denial_and_egress_confirmation_have_identical_verdicts(
     chat_id = "voice-parity-chat" if chat_bound else None
     runtime._ws_active_chat = {id(socket): chat_id for socket in (typed, voice)}
     runtime._map_file_paths = lambda chat, args, **kwargs: args
-    runtime.audit_recorder = SimpleNamespace(record=AsyncMock())
+    recorder = SimpleNamespace(record=AsyncMock())
+    monkeypatch.setattr("audit.recorder.get_recorder", lambda: recorder)
     confirmed = [
         await Orchestrator._run_gate_stack(
             runtime,
@@ -224,37 +223,13 @@ async def test_tool_denial_and_egress_confirmation_have_identical_verdicts(
     ]
     assert all(isinstance(outcome, GateRefusal) for outcome in confirmed)
     assert confirmed[0].response.error == confirmed[1].response.error
-    if chat_bound:
-        assert confirmed[0].response.error is None
-        assert confirmed[0].response.result == confirmed[1].response.result
-        assert confirmed[0].response.result["_data"]["status"] == "confirmation_required"
-        assert len(runtime._hitl_pending_calls) == 2
-        cards = []
-        request_ids = []
-        for socket, outcome in zip((typed, voice), confirmed, strict=True):
-            card = copy.deepcopy(outcome.response.ui_components[0])
-            request_id = card.pop("id").removeprefix("hitl_")
-            assert str(uuid.UUID(request_id)) == request_id
-            request_ids.append(request_id)
-            pending = runtime._hitl_pending_calls[request_id]
-            assert pending.websocket is socket
-            assert (pending.owner, pending.chat, pending.agent, pending.tool) == (
-                USER_ID, chat_id, AGENT_ID, "send_email")
-            assert pending.risks == ("egress",)
-            assert card["title"] == "Review action"
-            for component in card["content"]:
-                if component.get("action") == "authorize_action":
-                    assert component["payload"].pop("hitl_request_id") == request_id
-            cards.append(card)
-        assert request_ids[0] != request_ids[1]
-        assert cards[0] == cards[1]
-    else:
-        assert confirmed[0].response.error == {
-            "message": "Confirmation requires an interactive signed-in conversation. "
-                       "Reissue the action there.",
-            "retryable": False,
-        }
-        assert not getattr(runtime, "_hitl_pending_calls", {})
+    assert confirmed[0].response.error["code"] == "confirmation_required"
+    assert confirmed[0].response.error["retryable"] is False
+    assert all(not outcome.response.ui_components for outcome in confirmed)
+    events = [call.args[0] for call in recorder.record.await_args_list]
+    assert len(events) == 2
+    assert all(event.action_type == "tool.send_email.denied" and event.inputs_meta["gate"] == "hitl"
+               and event.conversation_id == chat_id for event in events)
     assert delegation.calls == []
 
 

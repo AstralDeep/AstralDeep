@@ -1,4 +1,4 @@
-"""Tests that tool arguments are repaired or regenerated before recording and refused identically on both dispatch paths."""
+"""Tests that tool arguments are repaired or regenerated before recording and refused before single-tool dispatch."""
 
 import json
 from types import SimpleNamespace
@@ -106,20 +106,18 @@ def orch(orchestrator_factory, monkeypatch):
     return built
 
 
-async def test_a_marked_call_is_refused_the_same_way_on_both_paths(orch):
+async def test_a_marked_call_is_refused(orch):
     error = ArgumentError("schema_mismatch", "city", "missing required field 'city'.", {"city": "<string>"})
     marked = call("t1", "{}")
     object.__setattr__(marked, "_astral_argument_error", error)
-    single = await orch.execute_single_tool(MagicMock(), marked, {"t1": "a1"}, "c1", user_id="u1")
-    parallel = (await orch.execute_parallel_tools(MagicMock(), [marked], {"t1": "a1"}, "c1", user_id="u1"))[0]
-    for response in (single, parallel):
-        assert response.error["code"] == "invalid_tool_arguments"
-        assert response.error["message"] == model_error_text("t1", error)
-        assert response.error["effect_state"] == "not_started"
-        assert response.error["data"] == {"field": "city", "reason": "schema_mismatch"}
+    response = await orch.execute_single_tool(MagicMock(), marked, {"t1": "a1"}, "c1", user_id="u1")
+    assert response.error["code"] == "invalid_tool_arguments"
+    assert response.error["message"] == model_error_text("t1", error)
+    assert response.error["effect_state"] == "not_started"
+    assert response.error["data"] == {"field": "city", "reason": "schema_mismatch"}
 
 
-async def test_unresolvable_schema_is_refused_before_single_and_parallel_dispatch(orch, monkeypatch):
+async def test_unresolvable_schema_is_refused_before_dispatch(orch, monkeypatch):
     retrieved = []
 
     def retrieve(request, *args, **kwargs):
@@ -134,22 +132,14 @@ async def test_unresolvable_schema_is_refused_before_single_and_parallel_dispatc
     marked = call("t1", "{}")
 
     await orch._prepare_tool_calls(None, [marked], {"t1": "a1"}, None)
-    single = await orch.execute_single_tool(MagicMock(), marked, {"t1": "a1"}, "c1", user_id="u1")
-    parallel = (await orch.execute_parallel_tools(MagicMock(), [marked], {"t1": "a1"}, "c1", user_id="u1"))[0]
+    response = await orch.execute_single_tool(MagicMock(), marked, {"t1": "a1"}, "c1", user_id="u1")
 
     assert retrieved == []
-    for response in (single, parallel):
-        assert response.error["code"] == "invalid_tool_arguments"
-        assert response.error["effect_state"] == "not_started"
-        assert response.error["data"] == {"field": "", "reason": "schema_reference_unresolvable"}
-        assert "private-schema" not in response.error["message"]
+    assert response.error["code"] == "invalid_tool_arguments"
+    assert response.error["effect_state"] == "not_started"
+    assert response.error["data"] == {"field": "", "reason": "schema_reference_unresolvable"}
+    assert "private-schema" not in response.error["message"]
     assert orch.local_agents["a1"].mock_calls == []
-
-
-async def test_parallel_path_accepts_raw_control_characters(orch):
-    results = await orch.execute_parallel_tools(
-        MagicMock(), [call("t1", '{"q": "a\nb"}')], {"t1": "ghost"}, "c1", user_id="u1")
-    assert "not valid JSON" not in ((results[0].error or {}).get("message", "") if results[0] else "")
 
 
 async def test_a_failing_regeneration_call_leaves_the_call_marked():

@@ -1,6 +1,5 @@
 
 from pathlib import Path
-from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -61,20 +60,6 @@ async def test_collected_form_identity_cannot_conflict_with_rendered_payload():
     payload = {'skill_id':str(uuid4()),'command_id':str(uuid4()),'expected_revision':1}
     with pytest.raises(AssignmentError, match='skill_invalid'):
         authoring._skill_request_identity(payload, {'skill_id':str(uuid4())})
-
-
-async def test_serialized_chat_safe_cleanup_preserves_required_read_refusal():
-    from unittest.mock import AsyncMock
-    from orchestrator.orchestrator import Orchestrator
-    from orchestrator.user_skill_catalog import SkillCatalogError
-    error = SkillCatalogError('skill_lookup_unavailable', 503)
-    orch = SimpleNamespace(_chat_locks={}, _workspace_locks={}, _chat_recorders={},
-        handle_chat_message=AsyncMock(side_effect=error), _safe_send=AsyncMock(), send_ui_render=AsyncMock())
-    with pytest.raises(SkillCatalogError) as caught:
-        await Orchestrator._serialized_chat(orch, object(), 'synthetic', 'synthetic-chat', None,
-                                            user_id='synthetic-owner')
-    assert caught.value is error and orch._safe_send.await_count == orch.send_ui_render.await_count == 1
-    assert orch._chat_recorders == {}
 
 
 async def test_capture_requires_existing_root_and_missing_parent_remains_stable(tmp_path):

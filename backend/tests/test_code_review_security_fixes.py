@@ -66,8 +66,6 @@ def test_no_required_scope_falls_back_to_tool_level():
     assert dg.is_tool_in_scope("y", ["tool:x"], "") is False
 
 
-
-
 def test_normalize_hop_parent_synthesizes_missing_actor():
     keycloak_like = {"sub": "human-1", "scope": "tools:read", "exp": 9999999999}
     out = dg.normalize_hop_parent(keycloak_like, "summarizer-1")

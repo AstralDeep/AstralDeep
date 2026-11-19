@@ -1,0 +1,144 @@
+{
+  "format": "astral.assembly/v0",
+  "assembly": "astraldeep.personal-node",
+  "ports": {
+    "identity": {
+      "adapters": [
+        "mesh-caller"
+      ],
+      "contracts": [
+        {
+          "format": "astral.roster/v2",
+          "path": "specs/106-sign-in-free-clients/contracts/roster-v2.md",
+          "sha256": "b4853cfe94cccdb40e0ab70b80b0da8d2f70c9dac63e3df3c4f8831094b37916"
+        },
+        {
+          "format": "astral.caller/v1",
+          "path": "specs/106-sign-in-free-clients/contracts/caller-ticket.md",
+          "sha256": "0bf1b6695e15b9badf4a5328409b3fb6acd8e89ea3d6786db92eb06009ebc951"
+        },
+        {
+          "format": "astral.caller-events/v1",
+          "path": "specs/106-sign-in-free-clients/contracts/caller-events.md",
+          "sha256": "95d67488ac9d7bf794a534fe0748dfa6b423de27dbb43056c5abec3c91a66119"
+        }
+      ]
+    },
+    "authority": {
+      "adapters": [
+        "kernel-authz"
+      ],
+      "contracts": [
+        {
+          "format": "astral.labels/v2",
+          "path": "specs/106-sign-in-free-clients/contracts/labels-v2.md",
+          "sha256": "a931110d812a7a02d1ea332b322437b01805530e8ce6dff1014de4aa9d024327"
+        },
+        {
+          "format": "astral.exec-policy/v1",
+          "path": "specs/106-sign-in-free-clients/contracts/exec-policy.md",
+          "sha256": "a80285301efed379b7b565a838c5c899ee117934ef4656b3d933b007cd232a49"
+        },
+        {
+          "format": "astral.phi-destination/v1",
+          "path": "specs/106-sign-in-free-clients/contracts/phi-destinations.md",
+          "sha256": "a1873ce48b30f4578b3ef2167524fff87cd3e94bdd2cf71b3c5edf7688959b4b"
+        }
+      ]
+    },
+    "persistence": {
+      "adapters": [
+        "plane"
+      ],
+      "contracts": []
+    },
+    "tool-provider": {
+      "adapters": [
+        "executor",
+        "mcp-servers"
+      ],
+      "contracts": [
+        {
+          "format": "astral.connection/v1",
+          "path": "specs/106-sign-in-free-clients/contracts/connection.md",
+          "sha256": "659943149b96f8c1042b06b64fd056cbfed64515ed21056942bcc43a9802ff0a"
+        },
+        {
+          "format": "astral.credential-items/v1",
+          "path": "specs/106-sign-in-free-clients/contracts/credential-items.md",
+          "sha256": "4ebd4a219cf69fbf00fce035a50f800158185fc2b27ea234c50323766e0fab4b"
+        }
+      ]
+    },
+    "ui-adaptation": {
+      "adapters": [
+        "rote"
+      ],
+      "contracts": []
+    }
+  },
+  "capabilities": {
+    "offered": [
+      "chat",
+      "delegation-eddsa",
+      "emergency-stop",
+      "mesh-mailbox",
+      "mesh-pairing",
+      "mesh-peer",
+      "tool-dispatch"
+    ],
+    "required_controls": [
+      "consent-gate",
+      "egress-allowlist",
+      "emergency-stop",
+      "phi-gate",
+      "ticket-verification"
+    ]
+  },
+  "doors": {
+    "mesh": {
+      "principal": "owner-device",
+      "turns": true,
+      "notification_types": [],
+      "consent": "full"
+    },
+    "/mcp": {
+      "principal": "caller-ticket",
+      "turns": false,
+      "notification_types": [],
+      "consent": "none"
+    },
+    "/a2a": {
+      "principal": "caller-ticket",
+      "turns": false,
+      "notification_types": [],
+      "consent": "none"
+    }
+  },
+  "exceptions": [
+    {
+      "id": "attended-approval-cards",
+      "date": "2026-11-19",
+      "review": "AstralDeep PR 700",
+      "summary": "The attended approval cards in hitl_confirmation.py and remote_confirmation.py remain. No production path can bind an approval task, and with no person attached they refuse, so a reviewed action runs only on the Kernel ticket's approval."
+    },
+    {
+      "id": "node-result-labels",
+      "date": "2026-11-19",
+      "review": "AstralDeep PR 700",
+      "summary": "The Kernel accepts the labels a node records for a call result. The node records an outward read untrusted, and a Kernel-side floor from the tool definition is not built."
+    },
+    {
+      "id": "persistent-agent-episodes",
+      "date": "2026-11-19",
+      "review": "AstralDeep PR 700",
+      "summary": "Persistent agents, off by default behind FF_PERSISTENT_AGENTS, run bounded Python episodes that call a model."
+    },
+    {
+      "id": "refused-bearer-surface",
+      "date": "2026-11-19",
+      "review": "AstralDeep PR 700",
+      "summary": "The bearer REST routes and the UI socket door stay registered and refuse every request on a personal node."
+    }
+  ]
+}

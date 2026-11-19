@@ -1,7 +1,4 @@
-"""Tests for backend/agents/computer_use/browser_tools.py: the ten browser_* tools, their
-registry entries, host error surfacing, the consequential-control handshake, and the origin
-helpers the grant gate uses.
-"""
+"""Tests browser tool registration, host error handling, snapshot-bound controls and origin validation."""
 
 from __future__ import annotations
 
@@ -13,9 +10,7 @@ import pytest
 
 from agents.computer_use import browser_tools, mcp_tools
 from orchestrator import computer_use_policy as policy
-from orchestrator import datamarking
 from orchestrator.computer_grants import GrantStore
-from orchestrator.orchestrator import Orchestrator
 from shared.protocol import MCPRequest
 from tests.test_computer_use_076 import (
     OWNER,
@@ -135,13 +130,6 @@ def test_canonical_browser_url_preserves_ipv6_literals():
 def test_canonical_browser_url_rejects_every_parser_differential(raw):
     assert policy.canonical_browser_url(raw) is None
     assert browser_tools.origin_of(raw) is None
-
-
-def test_the_card_origin_label_comes_from_the_canonical_url_and_is_empty_when_rejected():
-    assert policy._origin_label("HTTPS://Example.org:443/x") == "https://example.org"
-    assert policy._origin_label("http://[::1]:8080/") == "http://[::1]:8080"
-    for raw in ("https://good.example\\@evil.example/", "https://u:p@example.org/", "https://exаmple.org/", None):
-        assert policy._origin_label(raw) == ""
 
 
 def test_origin_of_derives_from_the_canonical_url_only():
@@ -278,7 +266,7 @@ def test_descriptions_state_the_pane_contract():
     assert "snapshot_id" in registry["browser_click"]["description"]
     assert "snapshot_id" in registry["browser_fill"]["description"]
     assert "password" in registry["browser_fill"]["description"].lower()
-    assert "confirm_element" in registry["browser_click"]["description"]
+    assert "directly on the computer" in registry["browser_click"]["description"]
     assert registry["browser_click"]["input_schema"]["properties"]["confirm_element"]["type"] == "string"
     assert registry["browser_fill"]["input_schema"]["properties"]["confirm_element"]["type"] == "string"
 
@@ -288,53 +276,6 @@ def test_the_agent_registry_carries_the_browser_tools_with_strict_policy_equalit
     for name in BROWSER_TOOLS:
         assert mcp_tools.TOOL_REGISTRY[name]["scope"] == policy.SCOPES[name]
     assert set(mcp_tools.TOOL_REGISTRY) == policy.ALL_VERBS
-
-
-def test_summary_for_names_the_canonical_origin():
-    card = policy.summary_for("browser_navigate", {"url": "https://Example.org:443/login?next=/a"}, "RYZENROLL")
-    assert "https://example.org/login" in card and "RYZENROLL" in card and "browser pane" in card
-    assert "next=" not in card and "?…" in card and ":443" not in card
-    custom = policy.summary_for("browser_navigate", {"url": "http://localhost:8080/app"}, "Mac")
-    assert "http://localhost:8080" in custom
-
-
-@pytest.mark.parametrize("raw", [
-    "https://user:hunter2@example.org/", "https://good.example\\@evil.example/", "https://good.example:80@evil.example/",
-    "https://good.example/\tx@evil.example", "https://good\n.example/", "https://example.org/\u202e/gpj.exe",
-    "https://exаmple.org/", "javascript:alert(1)", "file:///etc/passwd",
-])
-def test_summary_for_a_rejected_address_says_it_will_be_refused_and_shows_no_host(raw):
-    card = policy.summary_for("browser_navigate", {"url": raw}, "Mac")
-    assert "refused" in card and "nothing will load" in card
-    for leaked in ("good", "evil", "example", "hunter2", "gpj", "localhost", "etc/passwd", "alert"):
-        assert leaked not in card
-
-
-def test_summary_for_navigation_actions_and_refused_addresses():
-    for action in ("back", "forward", "reload"):
-        assert action in policy.summary_for("browser_navigate", {"action": action}, "Mac").lower()
-    assert "Navigate" in policy.summary_for("browser_navigate", {"action": ["x"]}, "Mac")
-    bad = policy.summary_for("browser_navigate", {"url": "javascript:alert(1)\n\x00"}, "Mac")
-    note, shown = bad.split("\n")
-    assert note == policy.HIDDEN_CHARACTERS_NOTE and "refused" in shown and "\x00" not in bad
-    assert "browser pane on your computer" in policy.summary_for("browser_navigate", {}, "")
-    assert "your computer" in policy.summary_for("browser_navigate", {"url": ORIGIN}, "")
-
-
-def test_summary_for_the_consequential_browser_card():
-    click = policy.summary_for("browser_click", {"ref": "e3", "confirm_element": '[e3] button "Pay now"'}, "Mac")
-    assert '[e3] button "Pay now"' in click and "Mac" in click and "can't undo" in click
-    fill = policy.summary_for("browser_fill", {"confirm_element": '[e2] textbox "Total"'}, "Mac")
-    assert '[e2] textbox "Total"' in fill and "Mac" in fill
-    assert policy.summary_for("browser_click", {"ref": "e3"}, "Mac") == "browser_click on Mac"
-    assert policy.summary_for("browser_click", {"confirm_element": 7}, "Mac") == "browser_click on Mac"
-    long = policy.summary_for("browser_click", {"confirm_element": "x" * 900}, "Mac")
-    assert len(long) < 500
-    spoofed = policy.summary_for("browser_click", {"confirm_element": f'[e3] button "{_BIDI}Pay\x07 now"\n'}, "Mac")
-    note, shown = spoofed.split("\n")
-    assert note == policy.HIDDEN_CHARACTERS_NOTE and '[e3] button "' in shown and "Pay\\u{7} now" in shown
-    assert not any(ch in spoofed for ch in _BIDI) and "\x07" not in spoofed
-    assert all(f"\\u{{{ord(ch):X}}}" in shown for ch in _BIDI)
 
 
 async def test_snapshot_forwards_the_bounded_request_and_returns_untrusted_lines_without_a_digest(world):
@@ -348,12 +289,6 @@ async def test_snapshot_forwards_the_bounded_request_and_returns_untrusted_lines
     assert data["computer"] == "RYZENROLL" and data["trust"] == "untrusted page content"
     assert "_model_digest" not in out and "_model_digest" not in data and out["_ui_components"] == []
     assert browser_tools.page_url(world.session.session_id, {"snapshot_id": "s9"}) == PAGE
-
-    res = SimpleNamespace(error=None, result=out)
-    assert Orchestrator._result_has_model_digest(res) is False
-    content = Orchestrator._tool_result_to_llm_content(res, "browser_snapshot")
-    marked = datamarking.spotlight(content, "SENTINEL")
-    assert marked.startswith("<<UNTRUSTED SENTINEL>>") and '[e3] button \\"Submit\\"' in marked
 
 
 async def test_snapshot_modes_scope_and_limits(world):
@@ -539,8 +474,6 @@ async def test_a_stale_reference_tells_the_model_to_take_a_new_snapshot(world):
     assert data["status"] == "refused" and data["code"] == "stale_ref" and data["computer"] == "RYZENROLL"
     assert "browser_snapshot" in data["next_action"] and "snapshot_id" in data["next_action"]
     assert out["_ui_components"] == []
-    res = SimpleNamespace(error=None, result=out)
-    assert "browser_snapshot" in Orchestrator._tool_result_to_llm_content(res, "browser_click")
 
 
 async def test_actionable_refusals_survive_the_mcp_server_as_results_not_errors(world):
@@ -643,7 +576,7 @@ async def test_a_consequential_control_is_recorded_and_returned_for_exact_review
     out = await world.call("browser_click", ref="e3", snapshot_id="s9")
     data = out["_data"]
     assert data["status"] == "refused" and data["code"] == "confirmation_required" and data["element"] == line
-    assert "confirm_element" in data["next_action"] and line in data["next_action"]
+    assert "directly on the computer" in data["next_action"]
     page = browser_tools._PAGES[world.session.session_id]
     assert page.held[("s9", "e3")] == line
 
@@ -652,7 +585,7 @@ async def test_a_consequential_control_without_a_parseable_line_is_still_actiona
     world.replies["browser_click"] = _error("confirmation_required", "\x07\x07")
     out = await world.call("browser_click", ref="e3", snapshot_id="s9")
     assert out["_data"]["code"] == "confirmation_required" and out["_data"]["element"] == ""
-    assert "browser_snapshot" in out["_data"]["next_action"]
+    assert "directly on the computer" in out["_data"]["next_action"]
     page = browser_tools._PAGES.get(world.session.session_id)
     assert page is None or not page.held
 
@@ -662,7 +595,7 @@ async def test_a_consequential_message_without_an_element_token_is_held_for_the_
     out = await world.call("browser_click", ref="e3", snapshot_id="s9")
     assert out["_data"]["element"] == "submit control in a payment form"
     assert browser_tools._PAGES[world.session.session_id].held[("s9", "e3")] == "submit control in a payment form"
-    assert "submit control in a payment form" in out["_data"]["next_action"]
+    assert "directly on the computer" in out["_data"]["next_action"]
 
 
 async def test_a_consequential_fill_records_the_field_the_host_named(world):
@@ -676,19 +609,6 @@ async def test_a_consequential_fill_records_the_field_the_host_named(world):
     assert out["_data"]["element"] == "needs review" and held[("s10", "e2")] == "needs review"
 
 
-def _approve(monkeypatch, approved=True):
-    from orchestrator import hitl_confirmation
-
-    calls = []
-
-    def approved_call(orch, owner, chat, agent, tool):
-        calls.append((owner, chat, agent, tool))
-        return approved
-
-    monkeypatch.setattr(hitl_confirmation, "approved_call", approved_call)
-    return calls
-
-
 async def _hold_consequential(world, ref="e3"):
     line = f'[{ref}] button "Pay now"'
     world.replies["browser_snapshot"] = _snapshot_reply()
@@ -698,26 +618,11 @@ async def _hold_consequential(world, ref="e3"):
     return line
 
 
-async def test_an_approved_exact_review_issues_a_one_shot_permit_bound_to_ref_origin_and_snapshot(world, monkeypatch):
-    line = await _hold_consequential(world)
-    calls = _approve(monkeypatch)
-    world.replies["browser_click"] = {"ok": True, "result": {"url": PAGE}}
-    out = await world.call("browser_click", ref="e3", snapshot_id="s9", confirm_element=line)
-    args = world.requests("browser_click")[-1]["args"]
-    assert args["permit"] == {"ref": "e3", "origin": ORIGIN, "snapshot_id": "s9"}
-    assert args["ref"] == "e3" and "confirm_element" not in args
-    assert calls == [(OWNER, CHAT, "computer-use-1", "browser_click")]
-    assert out["_data"]["clicked"] == "e3"
-    assert not browser_tools._PAGES[world.session.session_id].held
-    again = await world.call("browser_click", ref="e3", snapshot_id="s9", confirm_element=line)
-    assert again["_data"]["code"] == "confirm_element_mismatch"
-
-
 async def test_without_an_approved_review_the_retry_carries_no_permit(world, monkeypatch):
     line = await _hold_consequential(world)
-    _approve(monkeypatch, approved=False)
     world.replies["browser_click"] = _error("confirmation_required", line)
     out = await world.call("browser_click", ref="e3", snapshot_id="s9", confirm_element=line)
+    assert len(world.requests("browser_click")) == 1
     assert "permit" not in world.requests("browser_click")[-1]["args"]
     assert out["_data"]["code"] == "confirmation_required"
     assert browser_tools._PAGES[world.session.session_id].held[("s9", "e3")] == line
@@ -725,11 +630,10 @@ async def test_without_an_approved_review_the_retry_carries_no_permit(world, mon
 
 async def test_a_confirm_element_the_host_never_reported_is_refused_before_any_request(world, monkeypatch):
     await _hold_consequential(world)
-    _approve(monkeypatch)
     before = len(world.requests("browser_click"))
     for claimed in ('[e3] button "Next"', '[e3] button "Pay now" and more', "unrelated"):
         out = await world.call("browser_click", ref="e3", snapshot_id="s9", confirm_element=claimed)
-        assert out["_data"]["code"] == "confirm_element_mismatch" and "browser_snapshot" in out["_data"]["next_action"]
+        assert out["_data"]["code"] == "confirm_element_mismatch"
     out = await world.call("browser_click", ref="e3", snapshot_id="s404", confirm_element='[e3] button "Pay now"')
     assert out["_data"]["code"] == "confirm_element_mismatch"
     assert len(world.requests("browser_click")) == before
@@ -738,28 +642,24 @@ async def test_a_confirm_element_the_host_never_reported_is_refused_before_any_r
 async def test_a_permit_needs_a_known_page_origin(world, monkeypatch):
     line = '[e3] button "Pay now"'
     browser_tools._hold(world.session.session_id, "s9", ["e3"], line)
-    _approve(monkeypatch)
     out = await world.call("browser_click", ref="e3", snapshot_id="s9", confirm_element=line)
     assert out["_data"]["code"] == "confirm_element_mismatch"
     assert len(world.requests("browser_click")) == 0
 
 
-async def test_an_approved_consequential_fill_carries_a_permit_for_the_matching_fields(world, monkeypatch):
+async def test_a_matching_consequential_fill_requires_owner_consent(world, monkeypatch):
     world.replies["browser_snapshot"] = _snapshot_reply()
     await world.call("browser_snapshot")
     line = '[e4] textbox "Amount"'
     browser_tools._hold(world.session.session_id, "s9", ["e4"], line)
-    _approve(monkeypatch)
     world.replies["browser_fill"] = {"ok": True, "result": {}}
     fields = [{"ref": "e2", "value": "a"}, {"ref": "e4", "value": "5"}]
-    await world.call("browser_fill", snapshot_id="s9", fields=fields, confirm_element=line)
-    args = world.requests("browser_fill")[-1]["args"]
-    assert args["permit"] == {"refs": ["e4"], "origin": ORIGIN, "snapshot_id": "s9"}
-    assert args["fields"] == fields
+    out = await world.call("browser_fill", snapshot_id="s9", fields=fields, confirm_element=line)
+    assert out["_data"]["code"] == "confirmation_required"
+    assert not world.requests("browser_fill")
 
 
 async def test_a_fill_with_a_line_the_host_never_reported_is_refused_before_any_request(world, monkeypatch):
-    _approve(monkeypatch)
     out = await world.call("browser_fill", snapshot_id="s9", fields=[{"ref": "e2", "value": "a"}],
                            confirm_element='[e2] textbox "Total"')
     assert out["_data"]["code"] == "confirm_element_mismatch" and world.requests("browser_fill") == []
@@ -768,6 +668,7 @@ async def test_a_fill_with_a_line_the_host_never_reported_is_refused_before_any_
 async def test_model_supplied_permits_never_reach_the_host(world):
     world.replies["browser_click"] = {"ok": True, "result": {}}
     await world.call("browser_click", ref="e3", snapshot_id="s9", permit={"ref": "e3"})
+    assert len(world.requests("browser_click")) == 1
     assert "permit" not in world.requests("browser_click")[-1]["args"]
     world.replies["browser_fill"] = {"ok": True, "result": {}}
     await world.call("browser_fill", snapshot_id="s9", fields=[{"ref": "e2", "value": "a"}], permit=True)
@@ -776,7 +677,6 @@ async def test_model_supplied_permits_never_reach_the_host(world):
 
 async def test_state_is_per_session_so_another_sessions_hold_is_never_used(world, monkeypatch):
     line = await _hold_consequential(world)
-    _approve(monkeypatch)
     browser_tools.forget(world.session.session_id)
     out = await world.call("browser_click", ref="e3", snapshot_id="s9", confirm_element=line)
     assert out["_data"]["code"] == "confirm_element_mismatch"

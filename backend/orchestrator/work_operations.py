@@ -1,21 +1,10 @@
-"""Work facade for FrameworkCaller credentials reaching the same Plane state as
-work_api.py's cookie-fenced router, without its session machinery. Wraps
-work_service.py, work_submit.py, and work_controls.py for mcp_projection.py.
-"""
+"""Checks credential-scoped Work reads, controls and historical submission replays for MCP."""
 
 from __future__ import annotations
 
 import asyncio
-import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from typing import Optional
-
-from astralplane.repositories.assignment_models import (
-    AssignmentDefinition,
-    AssignmentOperationAuthority,
-    AssignmentOperationSpec,
-    AssignmentRecord,
-)
 
 from orchestrator.framework_credentials import FrameworkCaller
 from orchestrator.framework_work_reads import FrameworkWorkReader
@@ -31,10 +20,6 @@ _DEFAULT_LIMITS = {
 }
 _DEFAULT_DEADLINE_SECONDS = 3600
 _MAX_DEADLINE = timedelta(days=1)
-
-
-def _now() -> datetime:
-    return datetime.now(UTC)
 
 
 def _framework_claims(owner_id: str) -> dict:
@@ -119,12 +104,6 @@ class FrameworkWorkOperations:
             if owned is None:
                 raise AssignmentError("assignment_destination_not_found", 404)
 
-        definition = AssignmentDefinition(
-            name=bounded_name, instructions=bounded_instructions, source={}, allowed_tools=(),
-            consented_scopes=(), offline_grant_id=None, limits=limit_map,
-            completion_condition=None, conversation_id=conversation, cost_quote_coverage=None,
-        )
-        identity = str(uuid.uuid4())
         signature = digest({"api_version": 1, "namespace": _ORIGIN_NAMESPACE, "caller_key": caller_key,
                             "name": bounded_name, "instructions": bounded_instructions,
                             "conversation_id": conversation, "limits": limit_map})
@@ -132,46 +111,20 @@ class FrameworkWorkOperations:
         observation = await asyncio.to_thread(self.credentials.fresh_observation, caller)
         if observation is None:
             raise AssignmentError("framework_credential_authority_unavailable", 409)
-        deadline = min(
-            _now() + timedelta(seconds=deadline_seconds),
-            datetime.fromtimestamp(observation.credential.expires_at, UTC),
-        )
-        operation = AssignmentOperationSpec(
-            "chat",
-            AssignmentOperationAuthority(owner_id, "framework", "credential",
-                                         caller.credential_id, deadline),
-            deadline, "operation",
-        )
 
         def _submit(transaction, repository):
+            self.credentials.assert_execution(transaction, observation)
             replay = repository.get_operation_receipt(
                 transaction, owner_id=owner_id, origin_namespace=_ORIGIN_NAMESPACE,
                 caller_key=caller_key, command_digest=signature, credential_id=caller.credential_id,
             )
             if replay is not None:
-                read = repository.get_operation(transaction, owner_id=owner_id,
+                return repository.get_operation(transaction, owner_id=owner_id,
                                                 assignment_id=replay.assignment_id)
-                return read, False
-            self.credentials.assert_execution(transaction, observation)
-            self.credentials.consume_admission(
-                transaction, owner_id=owner_id, credential_id=caller.credential_id,
-            )
-            record = repository.create_operation(
-                transaction, owner_id=owner_id, assignment_id=identity,
-                origin_namespace=_ORIGIN_NAMESPACE, caller_key=caller_key, command_digest=signature,
-                definition=definition, operation=operation, credential_id=caller.credential_id,
-                authority=observation,
-            )
-            if (not isinstance(record, AssignmentRecord) or record.assignment_id != identity
-                    or record.owner_id != owner_id or record.execution_profile != "one_shot"):
-                raise AssignmentError("work_repository_unavailable", 503)
-            read = repository.get_operation(transaction, owner_id=owner_id, assignment_id=identity)
-            if read is None:
-                raise AssignmentError("work_repository_unavailable", 503)
-            return read, True
+            raise AssignmentError("turn_engine_retired", 410)
 
-        read, created = await self.store.transaction(_submit, bound_session_waits=True)
-        return {**_public(read, owner_id), "created": created}
+        read = await self.store.transaction(_submit, bound_session_waits=True)
+        return {**_public(read, owner_id), "created": False}
 
     async def cancel(self, caller: FrameworkCaller, operation_id: str, *,
                      submission_id: str, expected_revision: int) -> dict:

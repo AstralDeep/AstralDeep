@@ -312,20 +312,6 @@ class TestChatEndpoints:
         assert resp.status_code == 200
         assert resp.json()["success"] is True
 
-    def test_send_message(self, client, user_skills_disabled):
-        resp = client.post("/api/chats", headers=AUTH_HEADER)
-        chat_id = resp.json()["chat_id"]
-
-        resp = client.post(
-            f"/api/chats/{chat_id}/messages",
-            headers=AUTH_HEADER,
-            json={"message": "Hello, world!"},
-        )
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["chat_id"] == chat_id
-        assert data["status"] == "accepted"
-
 
 class TestComponentEndpoints:
     def test_save_and_list_components(self, client):
@@ -395,21 +381,6 @@ class TestAgentEndpoints:
                 }
             }
         }
-
-
-class TestSendMessageCreatesChat:
-    def test_send_message_to_unknown_chat_creates_it(self, client, orch, user_skills_disabled):
-        import uuid
-        chat_id = f"rest-auto-{uuid.uuid4()}"
-        resp = client.post(
-            f"/api/chats/{chat_id}/messages",
-            headers=AUTH_HEADER,
-            json={"message": "hello there"},
-        )
-        assert resp.status_code == 200
-        assert resp.json()["status"] == "accepted"
-        assert orch.history.get_chat(chat_id, user_id=OWNER) is not None
-        orch.history.delete_chat(chat_id, user_id=OWNER)
 
 
 class TestAgentPermissionEndpoints:

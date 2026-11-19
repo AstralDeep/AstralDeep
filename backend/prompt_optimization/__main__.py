@@ -33,6 +33,8 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         prog="prompt_optimization",
         description="Bounded scripted offline prompt-optimization pilot; inert review artifacts only",
     )
+    parser.add_argument("--task", choices=(task_module.RETIRED_TASK_ID, task_module.SYNTHETIC_TASK_ID),
+                        default=task_module.RETIRED_TASK_ID, help="select the historical synthetic planning benchmark")
     parser.add_argument("--out", default=None, help="artifact output directory")
     parser.add_argument("--rounds", type=int, default=4, help="maximum search rounds")
     parser.add_argument("--holdout", default=None, help="explicit new synthetic final-holdout JSON file")
@@ -72,7 +74,7 @@ def configured_holdout_seals(root: Path):
 def run(args: argparse.Namespace) -> int:
     root = repo_root()
     try:
-        task_prompt = task_module.load_task_prompt(root)
+        task_prompt = task_module.load_task_prompt(root, args.task)
         fixture = load_holdout(args.holdout) if args.holdout else build_fixture()
         limits = build_limits(args.rounds)
         variants = proposals_module.scripted_variants(task_prompt.rules)
@@ -92,7 +94,7 @@ def run(args: argparse.Namespace) -> int:
             result = run.execute()
         out_dir = Path(args.out) if args.out else root / "backend" / "prompt_optimization" / "_artifacts" / result.run_id
         paths = report_module.export_artifacts(result, out_dir)
-    except (FixtureError, HoldoutReuseError) as error:
+    except (FixtureError, HoldoutReuseError, task_module.TaskSeamError) as error:
         print(str(error), file=sys.stderr)
         return 2
     except Exception as error:

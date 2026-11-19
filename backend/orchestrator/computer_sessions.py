@@ -1,7 +1,5 @@
-"""Manages consent-gated remote-control sessions between an owner's client and a
-computer host, with idle/duration caps, heartbeat watchdog, task grants from computer_grants.py,
-the in-memory per-host bypass permissions switch, and audit logging; built on computer_hosts.py
-and used by orchestrator.py and the agent tools.
+"""Manages consent-gated computer sessions with host and controller authority, timeouts and audit logging.
+The orchestrator and agent tools use this manager with computer_hosts.py and computer_grants.py.
 """
 
 from __future__ import annotations
@@ -94,7 +92,6 @@ class ComputerSession:
     read_digests: Dict[str, Tuple[str, int, int]] = field(default_factory=dict)
     terminal_ok_until: float = 0.0
     authority_generation: int = 0
-    approval_pause_authority: Any = field(default=None, repr=False, compare=False)
     project_origin: Any = field(default=None, repr=False, compare=False)
     acked: asyncio.Event = field(default_factory=asyncio.Event)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -251,7 +248,6 @@ class ComputerSessionManager:
         self._sweeper: Optional[asyncio.Task] = None
         self._audit_tasks: set = set()
         self._push_pending: set = set()
-        self.review_generations: dict[tuple[str, str], int] = {}
         self._bypass: Dict[Tuple[str, str], ComputerHost] = {}
         self._role_ceilings: Dict[str, PolicyCeilings] = {}
         self.grants = GrantStore(events=self._grant_event)
@@ -305,11 +301,6 @@ class ComputerSessionManager:
         return True
 
     async def _bypass_changed(self, owner_sub: str, host_id: str, name: str, enabled: bool, reason: str) -> None:
-        if enabled:
-            from orchestrator.approval_receipts import withdraw_computer_reviews
-            key = (owner_sub, host_id)
-            self.review_generations[key] = self.review_generations.get(key, 0) + 1
-            await withdraw_computer_reviews(self._orch, owner_sub, host_id)
         try:
             from datetime import datetime, timezone
 
@@ -492,7 +483,6 @@ class ComputerSessionManager:
     async def pause(self, session: ComputerSession, reason: str, *, push: bool = True) -> None:
         if session.state == ENDED or session.state == PAUSED and session.pause_reason == reason:
             return
-        session.approval_pause_authority = None
         session.state = PAUSED
         session.terminal_ok_until = 0.0
         session.authority_generation += 1
@@ -514,7 +504,6 @@ class ComputerSessionManager:
                               outcome="failure", meta={"reason": refusal, "pause_reason": session.pause_reason})
             raise ComputerHostError(refusal, f"{session.host_name} was paused at the computer; only its own Resume "
                                              "control can continue the session")
-        session.approval_pause_authority = None
         session.state = ACTIVE
         session.authority_generation += 1
         session.pause_reason = None
@@ -528,7 +517,6 @@ class ComputerSessionManager:
             return
         if reason not in END_REASONS:
             reason = "user_stop"
-        session.approval_pause_authority = None
         session.state = ENDED
         session.terminal_ok_until = 0.0
         session.authority_generation += 1

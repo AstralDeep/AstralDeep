@@ -723,7 +723,6 @@ def test_report_accepts_valid_dicts_and_refuses_invalid_ones(encryption_key):
         })
 
 
-
 def test_prune_removes_every_row_of_a_purged_operation(encryption_key):
     clock = _FakeClock()
     coordinator = _coordinator(clock, active_limit=100, queue_limit=0)

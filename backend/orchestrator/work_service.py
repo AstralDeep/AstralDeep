@@ -16,7 +16,7 @@ _SAFE_ERRORS = frozenset({
     "assignment_owner_retired", "assignment_deadline_exceeded",
     "assignment_retry_exhausted", "assignment_budget_exhausted",
     "assignment_interrupted", "assignment_failed", "assignment_result_quarantined",
-    "assignment_precondition_changed",
+    "assignment_precondition_changed", "turn_engine_retired",
 })
 _DISPOSITIONS = frozenset({
     "queued", "active", "awaiting_approval", "awaiting_authority", "budget_blocked",
