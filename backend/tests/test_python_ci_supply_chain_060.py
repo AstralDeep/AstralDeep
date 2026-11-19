@@ -421,12 +421,33 @@ def test_android_canary_suite_runs_without_projection_checkout(tmp_path: Path) -
     assert completed.returncode == 0, completed.stdout
 
 
-def test_lint_job_requires_actual_fence_and_merged_helper_bytes() -> None:
-    from scripts.ci_fence_egress_pilot import REVIEWED_HELPERS, evaluate_workflow
+def test_lint_job_carries_no_fence_step_and_the_pilot_is_recorded_unqualified() -> None:
+    from scripts.ci_fence_egress_pilot import STATE_ABSENT, evaluate_workflow
 
     workflow = CI_WORKFLOW.read_text(encoding="utf-8")
-    evaluation = evaluate_workflow(workflow)
-    assert evaluation.state == "conforming", evaluation.reasons
+    assert evaluate_workflow(workflow).state == STATE_ABSENT
+    lint = _workflow_job(workflow, "lint")
+    for marker in ("openai/fence", "fence_peer", "ci_network_fixture", "remount", "/run/astral-ci-peer"):
+        assert marker not in lint
+    assert "openai/fence" not in workflow
+    assert re.findall(r"(?m)^      - (?:name: ([^\n]+)|uses: (\S+))", lint) == [
+        ("", "actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd"),
+        ("", "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1"),
+        ("Install hash-locked CI-only Python tooling", ""),
+        ("Lint Deep-owned Python", ""),
+    ]
+    assert "timeout-minutes: 10" in lint
+    assert "permissions:" not in lint
+
+    record = (REPO_ROOT / "docs" / "ci-egress-fence-pilot.md").read_text(encoding="utf-8")
+    assert "rolled back" in record
+    assert "unqualified" in record
+    assert "no egress firewall" in record
+
+
+def test_reviewed_fence_helpers_stay_pinned_to_merged_default_branch_bytes() -> None:
+    from scripts.ci_fence_egress_pilot import REVIEWED_HELPERS
+
     assert REVIEWED_HELPERS is not None
     merged = subprocess.run(
         ["git", "merge-base", "--is-ancestor", REVIEWED_HELPERS.commit, "origin/main"],
