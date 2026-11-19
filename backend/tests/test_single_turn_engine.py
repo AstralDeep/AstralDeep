@@ -27,6 +27,7 @@ RETIRED = (
     "execute_parallel_tools",
     "orchestrator_runner",
     "continue_after_approval",
+    "mint_action_token",
 )
 RETIRED_ADMISSION = ("turn", "Turn", "current_turn", "TURN_MARK")
 TURN_STARTERS = {
