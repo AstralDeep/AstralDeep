@@ -21,6 +21,8 @@ RETIRED = (
     "_serialized_chat",
     "_dispatch_async_chat",
     "_handle_voice_local_final",
+    "_typesafe_set_turn_verdict",
+    "_typesafe_turn_requires_confirmation",
     "run_scheduled_turn",
     "execute_parallel_tools",
     "orchestrator_runner",

@@ -1,7 +1,4 @@
-"""Tests for companion wiring (backend/orchestrator/model_router.py,
-transaction_token.py): voice/aom render-target dispatch, the transaction-token
-mint-verify round trip, and the on-device model-router lane.
-"""
+"""Checks voice and accessibility render targets alongside the on-device model router."""
 
 from __future__ import annotations
 
@@ -47,25 +44,6 @@ def test_voice_target_renders_ssml():
     assert isinstance(out, str) and out
     aom = render_for_target("aom", [{"type": "text", "content": "Hi"}], None)
     assert aom is not None
-
-
-def test_mint_action_token_round_trip(monkeypatch):
-    monkeypatch.setenv("TXN_TOKEN_KEY", "test-signing-key-123")
-    from orchestrator.orchestrator import Orchestrator
-    from orchestrator import transaction_token as txn
-
-    o = Orchestrator.__new__(Orchestrator)
-    agent, user, tool = "a-1", "u-1", "send_email"
-    args = {"to": "bob@example.com", "body": "hi"}
-
-    token = o.mint_action_token(agent, user, tool, args)
-    assert token, "mint must issue a token when a signing key is configured"
-
-    store = txn.default_store()
-    ok, _ = txn.verify_and_consume(store, token, agent, user, tool, args)
-    assert ok is True
-    ok2, why = txn.verify_and_consume(store, token, agent, user, tool, args)
-    assert ok2 is False
 
 
 @pytest.mark.asyncio

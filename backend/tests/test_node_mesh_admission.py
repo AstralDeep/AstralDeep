@@ -19,13 +19,13 @@ from orchestrator.node_mesh_calls import ResolvedTool, skill_definition
 
 
 @pytest.fixture
-def runtime():
+def runtime(request):
     events = []
     owners = ["owner"]
     permission = [True]
     skill = SimpleNamespace(id="lookup", description="read", input_schema={}, metadata={})
     resolved = ResolvedTool("agent", "lookup", "tools:read", skill_definition(skill))
-    original = {"q": "café", "_owner_value": True}
+    original = {"q": "café", "_owner_value": True, **getattr(request, "param", {})}
     raw = _arguments(original)
     action = _arguments({"args_digest": "sha256:" + hashlib.sha256(raw.encode()).hexdigest()})
     ticket = vessel_executor.CallTicket("{}", action, raw)
@@ -105,6 +105,16 @@ async def test_server_metadata_preserves_the_exact_owner_arguments(runtime):
     assert runtime.mesh.calls == 2
 
 
+@pytest.mark.parametrize("runtime", [{"_txn_token": "policy-credential"}], indirect=True)
+async def test_consuming_a_credential_cannot_change_the_arguments_covered_by_a_ticket(runtime):
+    prepared = dict(runtime.original)
+    prepared.pop("_txn_token")
+    with runtime.bound():
+        assert await runtime.check() is None
+        refused = await runtime.check(args=prepared)
+    assert refused.error["code"] == "request.call_mismatch"
+
+
 @pytest.mark.parametrize("change,code", [
     ("owner", "node.owner_mismatch"), ("chat", "request.call_mismatch"),
     ("agent", "request.call_mismatch"), ("tool", "request.call_mismatch"),
@@ -120,6 +130,7 @@ async def test_the_binding_cannot_be_reused_for_another_target(runtime, change, 
 @pytest.mark.parametrize("args", [
     {"q": "café", "_owner_value": 1},
     {"q": "café", "_owner_value": True, "_unreviewed": "added"},
+    {"q": "café", "_owner_value": True, "_txn_token": "policy-credential"},
     {"q": "café", "_owner_value": True, "user_id": "foreign"},
 ])
 async def test_owner_underscore_values_and_unknown_metadata_are_not_ignored(runtime, args):

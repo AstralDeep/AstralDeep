@@ -38,17 +38,33 @@ async def test_actual_ui_sender_reports_dispatch_suppression_without_sending(mon
 
 
 @pytest.mark.asyncio
-async def test_actual_ui_sender_preserves_chat_fanout_and_original_delivery_outcome(monkeypatch):
+@pytest.mark.parametrize(("continuity", "owner", "chat", "delivered"), [
+    (True, "owner", "chat", True),
+    (True, "owner", "", False),
+    (True, "", "chat", False),
+    (False, "owner", "chat", False),
+])
+async def test_chat_fanout_stays_with_the_task_owner_and_chat(monkeypatch, continuity, owner, chat, delivered):
     import webrender
     from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
+    from shared.feature_flags import flags
 
     monkeypatch.setattr(webrender, "target_for_profile", lambda profile: "web")
     monkeypatch.setattr(webrender, "render_for_target", lambda *a: "<p>bounded</p>")
-    socket = VirtualWebSocket(BackgroundTask(task_id="owned", chat_id="", user_id="owner"))
-    target = object()
+    monkeypatch.setitem(flags._flags, "bg_continuity", continuity)
+    socket = VirtualWebSocket(BackgroundTask(task_id="owned", chat_id=chat, user_id=owner))
+    target, other_chat, other_owner = object(), object(), object()
     components = [{"type": "alert", "message": "bounded"}]
-    orch = SimpleNamespace(rote=SimpleNamespace(adapt=lambda *a: components, get_profile=lambda *a: {}),
-                           _safe_send=AsyncMock(return_value=False), _vws_fan_targets=lambda ws: [target],
-                           send_ui_render=AsyncMock(return_value=True))
+    orch = Orchestrator.__new__(Orchestrator)
+    orch.ui_clients = [socket, target, other_chat, other_owner]
+    orch.ui_sessions = {ws: {"sub": "owner" if ws is not other_owner else "other"} for ws in orch.ui_clients}
+    orch._ws_active_chat = {id(ws): "chat" if ws is not other_chat else "other-chat" for ws in orch.ui_clients}
+    orch.rote = SimpleNamespace(adapt=lambda *a: components, get_profile=lambda *a: {})
+    orch._safe_send = AsyncMock(return_value=False)
+    orch.send_ui_render = AsyncMock(return_value=True)
+
     assert await Orchestrator.send_ui_render(orch, socket, components, target="chat", speak=False) is False
-    orch.send_ui_render.assert_awaited_once_with(target, components, target="chat", speak=False)
+    if delivered:
+        orch.send_ui_render.assert_awaited_once_with(target, components, target="chat", speak=False)
+    else:
+        orch.send_ui_render.assert_not_awaited()
