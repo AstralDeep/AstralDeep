@@ -20,6 +20,7 @@ from orchestrator import node_api, node_mesh, phi_node_policy, sandbox
 from orchestrator.agent_lifecycle import AgentLifecycleManager
 from orchestrator.local_agents import FIRST_PARTY_AGENT_DIRS
 from tests.helpers.dev_mesh import dev_node
+from tests.helpers.excluded_node import stand_in_mesh
 from tests.helpers.dev_mesh import until as wait_until
 from tests.test_node_mesh_kernel_integration import paired, until  # noqa: F401
 from tests.test_node_mesh_peer_tools import FakeModel, model_server, node_host  # noqa: F401
@@ -338,3 +339,56 @@ async def test_the_lifecycle_relaunches_live_agents_that_are_not_running_and_rep
     manager.draft_store = LiveStore(rows, broken=True)
     assert await manager.relaunch_live_agents() == []
     assert "could not list live generated agents" in caplog.text
+
+
+async def test_the_guard_treats_an_unreadable_policy_as_a_refusal_and_stops_running_drafts(caplog):
+    async def broken_status():
+        raise RuntimeError("status exploded")
+
+    mesh = stand_in_mesh()
+    mesh.status = broken_status
+    node_mesh.install(mesh)
+    try:
+        lifecycle = Lifecycle()
+        guard = phi_node_policy.DraftGuard(mesh, lifecycle)
+        guard._allowed = True
+        await guard.enforce()
+        assert lifecycle.stopped == 1 and guard._allowed is False
+        assert "phi_node_guard_policy_unreadable" in caplog.text
+    finally:
+        node_mesh.install(None)
+
+
+async def test_one_draft_that_will_not_stop_does_not_spare_the_others(caplog):
+    manager = object.__new__(AgentLifecycleManager)
+    manager._draft_processes = {"a": object(), "b": object(), "c": object()}
+    tried = []
+
+    async def stop(draft_id):
+        tried.append(draft_id)
+        if draft_id == "b":
+            raise RuntimeError("stuck")
+
+    manager.stop_draft_agent = stop
+    assert await manager.stop_running_drafts() == ["a", "c"]
+    assert tried == ["a", "b", "c"]
+    assert "stop_running_drafts: b could not be stopped" in caplog.text
+
+
+async def test_the_guard_timer_notices_a_mesh_that_stopped_without_a_change_event():
+    mesh = stand_in_mesh()
+    mesh.subscribe = lambda callback: None
+    node_mesh.install(mesh)
+    lifecycle = Lifecycle()
+    guard = phi_node_policy.DraftGuard(mesh, lifecycle, recheck_s=0.01)
+    try:
+        guard.start()
+        await settled(lambda: lifecycle.relaunched == 1, "the first answer to relaunch live agents")
+        assert lifecycle.stopped == 0
+        mesh.started = False
+        await settled(lambda: lifecycle.stopped >= 1, "the timer to stop the drafts on a stopped mesh")
+        assert lifecycle.relaunched == 1
+    finally:
+        await guard.stop()
+        node_mesh.install(None)
+    assert guard._allowed is False and guard._ticker is None

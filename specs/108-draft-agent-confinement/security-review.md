@@ -199,11 +199,11 @@ before the change, and the named tests ran against it.
 | Finding | Status | Change | Test |
 |---|---|---|---|
 | F1 | Fixed | `start.py` launches a generated agent through `sandbox.agent_launch`, the helper the draft launch uses. The agent gets the limits, the scrub, a private temp directory and `HOST=127.0.0.1`. An agent whose limits cannot be set up is refused and not retried | `test_a_generated_agent_gets_the_draft_launch_with_limits_a_scrubbed_environment_and_loopback`, `test_main_launches_a_generated_agent_on_loopback_with_limits_when_the_node_allows_it`, `test_a_generated_agent_whose_limits_cannot_be_set_up_is_refused_and_never_retried` |
-| F2 | Fixed | `start.py` counts only an explicit `"allowed": true` as allowed. A 404, an error, a bad body or no answer holds the agent and stops a running one. The policy refuses a node whose mesh has not started. The orchestrator no longer relaunches live agents on a five second timer. `DraftGuard` relaunches them when the node first answers allowed | `test_start_py_launches_generated_agents_only_after_the_node_answers_allowed`, `test_main_holds_a_generated_agent_while_the_node_refuses_agent_servers`, `test_the_guard_relaunches_live_agents_only_once_the_owner_excludes_the_node_and_stops_them_when_it_rejoins` |
+| F2 | Fixed | `start.py` counts only an explicit `"allowed": true` as allowed. A 404, an error, a bad body or no answer holds the agent and stops a running one. The policy refuses a node whose mesh has not started. The orchestrator no longer relaunches live agents on a five second timer. `DraftGuard` relaunches them when the node first answers allowed. It re-checks on every mesh change and every 30 seconds, and treats a policy it cannot read as a refusal. `start_draft_agent` checks again just before the spawn and once more after it registers the process, so a node that joins the group during a launch leaves nothing running. One draft that will not stop does not spare the others | `test_start_py_launches_generated_agents_only_after_the_node_answers_allowed`, `test_main_holds_a_generated_agent_while_the_node_refuses_agent_servers`, `test_the_guard_relaunches_live_agents_only_once_the_owner_excludes_the_node_and_stops_them_when_it_rejoins`, `test_the_guard_treats_an_unreadable_policy_as_a_refusal_and_stops_running_drafts`, `test_the_guard_timer_notices_a_mesh_that_stopped_without_a_change_event`, `test_one_draft_that_will_not_stop_does_not_spare_the_others`, `test_a_node_that_joins_the_group_before_the_spawn_never_starts_the_draft`, `test_a_node_that_joins_the_group_during_the_spawn_stops_the_draft_it_just_started` |
 | F3 | Fixed | The launch sets `HOST` to `127.0.0.1`, also when a development node turns the limits off | `test_a_real_agent_server_launched_this_way_listens_on_loopback_only` starts a real `BaseA2AAgent` and finds its port closed on the host's outward address |
 | F4 | Partly | `DB_PASSWORD` is scrubbed. `AGENT_API_KEY` stays, for the reason below. The rest of F4 is the exception itself | `test_sandbox_env_scrubs_secret_shaped_names_including_the_database_password` |
 | F5 | Fixed | A test posts to the real start route on a real dev mesh member. The route calls the real `start_draft_agent` and the real policy | `test_the_start_route_refuses_a_draft_on_a_real_phi_member_before_any_process_or_directory_exists` sees 409, no spawn, no LETS admission and no temp directory |
-| F6 | Fixed, with a caveat below | An agent starts only when the node's own row in the PHI group reads `excluded`. The Kernel refuses a node that tries to exclude itself. No mesh, a stopped mesh, no enrollment and a node never excluded are refused with the new reason `not_excluded` | `test_the_start_route_refuses_a_draft_on_a_real_node_the_owner_never_excluded`, `test_the_node_cannot_exclude_itself_so_its_own_kernel_never_opens_the_draft_launch`, `test_a_node_with_no_mesh_a_stopped_mesh_or_no_enrollment_is_refused_as_not_excluded`, `test_a_draft_agent_starts_on_loopback_only_after_the_owner_excludes_the_real_node_and_is_refused_again_when_it_rejoins` |
+| F6 | Partly. The residual is below | An agent starts only when the node's own row in the PHI group reads `excluded`. The Kernel refuses a node that tries to exclude itself. No mesh, a stopped mesh, no enrollment and a node never excluded are refused with the new reason `not_excluded` | `test_the_start_route_refuses_a_draft_on_a_real_node_the_owner_never_excluded`, `test_the_node_cannot_exclude_itself_so_its_own_kernel_never_opens_the_draft_launch`, `test_a_node_with_no_mesh_a_stopped_mesh_or_no_enrollment_is_refused_as_not_excluded`, `test_a_draft_agent_starts_on_loopback_only_after_the_owner_excludes_the_real_node_and_is_refused_again_when_it_rejoins` |
 | F7 | Fixed | `FF_SANDBOX_CODEGEN` is read only when `ASTRAL_ENV` is a development value | `test_the_kill_switch_is_ignored_outside_development`, `test_a_production_draft_agent_keeps_its_limits_and_scrub_with_the_sandbox_flag_off` |
 | F8 | Partly | `exec-policy.md`, the spec 106 `spec.md` and the Vessel isolation page now state the exception and its end. The spec 106 plan and the sandbox qualification manifest are unchanged | None |
 
@@ -214,11 +214,17 @@ reuses a record that exists today and needs no schema change. A node never inclu
 cannot opt in directly. The owner adds it to the group and then excludes it. The `not_excluded`
 message says so.
 
-The state is weaker than a dedicated opt-in in three ways.
+The state is weaker than a dedicated opt-in, so F6 is only partly closed.
 
-- A row reads `excluded` when the device once held a PHI grant and holds no current one. An owner
-  revoke does that. So does a grant that passed its `not_after_s`, and an approver the owner removed.
-  The last two are owner-side events, but not a choice about this node.
+- In the Kernel a row reads `excluded` whenever the device is in `history` and not in
+  `phi_members` (`group_rows` in `crates/astral-mesh/src/phi_group.rs`, `phi_members` in
+  `roster.rs`). A grant adds its subject to `history`. When the fold is given a time,
+  `phi_members` drops a device whose grant passed its `not_after_s`. So a lapsed grant, or an
+  approver the owner removed, reads `excluded` with no owner revoke. Deep cannot tell these apart
+  from a revoke today. Closing this needs the Kernel to expose whether the exclusion came from an
+  owner revoke entry. Issue 682 tracks it. The check is unchanged until then.
+- A node the owner did exclude keeps the PHI it already synced, because nothing purges it. An agent
+  running as the node's user can read it.
 - The roster fold accepts a PHI revoke signed with presence by any member key. The Kernel API
   refuses a node that excludes itself (`plan_exclude`). A process that already holds the node's own
   keys could still forge one. Such a process already runs as the node's user.

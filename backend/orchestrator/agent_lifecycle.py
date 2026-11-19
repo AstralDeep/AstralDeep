@@ -5220,6 +5220,7 @@ class AgentLifecycleManager:
         if lets_env is not None:
             sandbox_kwargs["env"] = lets_env
         try:
+            await refuse_on_phi_node()
             proc = self.process_supervisor.spawn(
                 process_id=process_id,
                 owner=ProcessOwner(owner_kind="draft_agent", owner_id=draft_id),
@@ -5231,6 +5232,11 @@ class AgentLifecycleManager:
             await self._close_dynamic_runtime(draft)
             raise
         self._draft_processes[draft_id] = proc
+        try:
+            await refuse_on_phi_node()
+        except Exception:
+            await self.stop_draft_agent(draft_id)
+            raise
 
         await asyncio.to_thread(self.db.update_draft_agent, draft_id, status=TESTING, port=port)
 
@@ -5331,10 +5337,15 @@ class AgentLifecycleManager:
             logger.info(f"Stopped draft agent process for {draft_id}")
 
     async def stop_running_drafts(self) -> List[str]:
-        running = list(self._draft_processes)
-        for draft_id in running:
-            await self.stop_draft_agent(draft_id)
-        return running
+        stopped = []
+        for draft_id in list(self._draft_processes):
+            try:
+                await self.stop_draft_agent(draft_id)
+            except Exception:
+                logger.exception("stop_running_drafts: %s could not be stopped", draft_id)
+                continue
+            stopped.append(draft_id)
+        return stopped
 
     async def relaunch_live_agents(self) -> List[str]:
         try:
