@@ -249,6 +249,25 @@ def test_export_enforces_size_bound(result, tmp_path, monkeypatch):
     assert not (tmp_path / "small" / "candidate_prompt.json").exists()
 
 
+def test_export_bounds_final_digest_bound_report(result, tmp_path, monkeypatch):
+    unbound = report_module._serialize(report_module.build_report(result))
+    monkeypatch.setattr(report_module, "MAX_ARTIFACT_BYTES", len(unbound))
+    out_dir = tmp_path / "bounded"
+    with pytest.raises(report_module.ArtifactError, match="optimization_report.json exceeds"):
+        report_module.export_artifacts(result, out_dir)
+    assert not out_dir.exists()
+
+
+def test_export_accepts_exact_final_report_bound(result, tmp_path, monkeypatch):
+    candidate = report_module._serialize(report_module.candidate_artifact(result))
+    report = report_module.build_report(result)
+    report["candidate_artifact_sha256"] = hashlib.sha256(candidate).hexdigest()
+    encoded = report_module._serialize(report)
+    monkeypatch.setattr(report_module, "MAX_ARTIFACT_BYTES", len(encoded))
+    paths = report_module.export_artifacts(result, tmp_path / "exact")
+    assert paths["report"].read_bytes() == encoded
+
+
 def test_export_fails_closed_on_invalid_result(result, tmp_path):
     result.recommendation = "unheard-of"
     with pytest.raises(report_module.ArtifactError):
