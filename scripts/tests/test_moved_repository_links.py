@@ -19,7 +19,6 @@ HISTORY_FILES = frozenset({".gitleaksignore", "vessel/docs/changelog.md"})
 ARCHIVE_BY_FILE = {
     "plane/tests/test_provenance.py": "asserts the recorded origin of the Plane import",
     ".github/workflows/backend-web-qualification-protected.yml": "protected baseline checkout reads the archive",
-    "backend/persistent_agents/framework_execution.md": "links to pull requests that exist only in the archive",
     "contracts/component-ownership.json": "ownership record keeps the canonical origin of Plane",
     "contracts/extraction-provenance.schema.json": "schema admits the recorded Plane origin",
     "migration/checkpoint-074.json": "checkpoint of the original extraction",
