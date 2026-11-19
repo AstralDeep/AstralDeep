@@ -218,10 +218,13 @@ class PersonalDispatchQualification:
     async def _request(self, chat: str, text: str) -> tuple[str, str]:
         request = self.owner_device.kernel.send_request(chat, text, self.node_device, None, None)
         kernel = self.owner_device.kernel
-        await _until(lambda: kernel.request(request).state in (
-            ak.RequestState.ANSWERED, ak.RequestState.REFUSED),
-            "the node to finish the request", seconds=TURN_SECONDS)
-        await _until(lambda: self._settle(chat), "the node's turn and its tool calls to finish", seconds=TURN_SECONDS)
+
+        def finished() -> bool:
+            self._deny_pending(chat)
+            return (kernel.request(request).state in (ak.RequestState.ANSWERED, ak.RequestState.REFUSED)
+                    and self._settled(chat))
+
+        await _until(finished, "the node's request, turn and tool calls to finish", seconds=TURN_SECONDS)
         return request, str(kernel.request(request).state)
 
     def _settled(self, chat: str) -> bool:
@@ -246,11 +249,12 @@ class PersonalDispatchQualification:
         return [{"tool": item.call.tool, "state": str(item.state).rsplit(".", 1)[-1], "code": item.code or ""}
                 for item in self.node.kernel.chat_requests(chat) if item.call is not None]
 
-    def _settle(self, chat: str) -> bool:
-        for pending in self.node.kernel.pending_consents():
-            self.consents.append(f"{pending.tool_name}:consent.required:{'+'.join(pending.reasons)}")
-            self.node.kernel.resolve_consent(pending.request_id, False)
-        return self._settled(chat)
+    def _deny_pending(self, chat: str) -> None:
+        owner = self.owner_device.kernel
+        for pending in owner.pending_consents():
+            if pending.chat_id == chat:
+                self.consents.append(f"{pending.tool_name}:consent.required:{'+'.join(pending.reasons)}")
+                owner.resolve_consent(pending.request_id, False)
 
     def _audit(self, local_chat: str | None) -> tuple[list[dict], bool]:
         if local_chat is None:

@@ -2,11 +2,10 @@
 
 [![CI](https://github.com/AstralDeep/AstralDeep/actions/workflows/ci.yml/badge.svg)](https://github.com/AstralDeep/AstralDeep/actions/workflows/ci.yml)
 
-AstralDeep is a clinical-AI, multi-agent platform. A single FastAPI orchestrator with a
-PostgreSQL backend coordinates first-party, user-authored, and remote agents. It serves the REST
-API and the WebSocket/A2A agent transport on one port (8001). The Kernel engine is the only turn engine. The
-Apple clients embed it, and the node answers mesh requests on it. A web client is a later
-application and the node hosts none.
+AstralDeep is a clinical-AI, multi-agent platform. Its FastAPI service is a node
+in the owner's mesh. It exposes the node API and optional MCP, A2A and worker
+transports on port 8001. The shared Kernel runs turns on Apple devices and on
+the node. AstralPlane supplies SQLite or PostgreSQL for durable state.
 
 The design rule throughout is **"LLM proposes, code decides"**. Models may draft layouts,
 plans, or artifacts, but deterministic code validates, authorizes, bounds, and renders them.
@@ -257,20 +256,19 @@ production image to the GitHub Container Registry with an immutable commit tag.
 
 | Client | Technology | Source |
 |---|---|---|
-| Web | Server-rendered HTML with vanilla JavaScript and CSS, served by AstralDeep | AstralProjection `backend/webrender/` |
-| Windows | Python and PySide6 | AstralProjection `windows-client/` |
-| Android | Kotlin and Jetpack Compose | AstralProjection `android-client/` |
+| Web renderer | HTML, vanilla JavaScript and CSS for a future application-layer client | AstralProjection `backend/webrender/` |
+| Windows (paused) | Python and PySide6 | AstralProjection `windows-client/` |
+| Android (paused) | Kotlin and Jetpack Compose | AstralProjection `android-client/` |
 | iOS, macOS, watchOS | Swift and SwiftUI | AstralProjection `apple-clients/` |
 
-Every client renders the same server-owned chrome, settings surfaces, and theme. A change to
-the UI protocol, chrome, theme, or layout lands on every in-scope client in the same feature,
-guarded by the protocol manifest and each client's drift tests. The native clients pair with a node
-and need no sign-in.
+Mac and iPhone pair with the owner's mesh and render from their local signed
+logs. The watch connects through its paired iPhone. Android and Windows show
+the availability screen while their Kernel ports await qualification.
 
-Client releases run from protected workflows in this repository over the pinned AstralProjection
-revision. Windows releases are cut from `v*` tags, Apple releases from `apple-v*` tags, and
-Android releases are started manually. Signing and publication run only in separately
-protected jobs.
+The macOS release workflow runs after successful CI on a push to `main`. It
+builds from the exact Deep commit and pinned components, then publishes a
+signed direct download under a `macos-v*` tag. See the
+[macOS release workflow](.github/workflows/release-macos.yml).
 
 ## Agents
 
@@ -330,7 +328,7 @@ improvement, use the [issue template](https://github.com/AstralDeep/AstralDeep/i
 | [Production deployment](docs/production-deployment.md) | Deploying and operating AstralDeep in production |
 | [Run your own node](docs/personal-node.md) | Installing, pairing and operating a personal node |
 | [Component composition](docs/component-composition.md) | Component pins, verification, and recovery |
-| [Bring-your-own client agents](docs/byo-client-agents.md) | Operating personal agents |
+| [Bring-your-own client agents](docs/byo-client-agents.md) | Legacy desktop tunnel and feature-flag reference |
 | [Your own agents and skills](docs/your-own-agents-and-skills.md) | Authoring agents and skills |
 | [Remote compute agents](docs/remote-compute-agents.md) | Operating remote-compute agents |
 | [Remote computer control](docs/remote-computer-control.md) | Controlling a remote computer |
