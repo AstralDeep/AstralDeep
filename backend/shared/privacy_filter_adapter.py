@@ -1,5 +1,6 @@
 import logging
-from typing import Any, List, Tuple, Dict
+import os
+from typing import Any, List, Tuple, Dict, Optional
 
 logger = logging.getLogger("PrivacyFilterAdapter")
 
@@ -23,12 +24,18 @@ TOKENIZER_PATH = "models/privacy-filter/tokenizer.json"
 
 # ---------------------------------------------------------------------------
 # Internal helper to lazily load the filter.  The function raises a clear
-# RuntimeError if the optional dependency is missing – the public wrapper
-# catches this and falls back to a no‑op.
+# RuntimeError if the optional dependency is missing or assets are not found.
 # ---------------------------------------------------------------------------
-def _load_filter() -> PrivacyFilter:
+def _load_filter() -> Any:
     if not _HAS_OPF:
         raise RuntimeError("OpenAI privacy‑filter package not installed")
+    
+    # Check if model assets exist before attempting to load
+    if not os.path.exists(MODEL_CHECKPOINT) or not os.path.exists(TOKENIZER_PATH):
+        raise RuntimeError(
+            f"Privacy filter model assets not found. Expected files at: {MODEL_CHECKPOINT} and {TOKENIZER_PATH}"
+        )
+
     # The PrivacyFilter constructor expects the model and tokenizer files to be
     # present on disk.  ``device='cpu'`` guarantees offline execution on any host.
     return PrivacyFilter(
@@ -37,9 +44,9 @@ def _load_filter() -> PrivacyFilter:
         device="cpu",
     )
 
-_filter_instance: Any = None
+_filter_instance: Optional[Any] = None
 
-def _get_filter() -> PrivacyFilter:
+def _get_filter() -> Any:
     global _filter_instance
     if _filter_instance is None:
         _filter_instance = _load_filter()
@@ -61,33 +68,28 @@ def filter_text(text: str, *, max_tokens: int = 2048) -> Tuple[str, List[Dict[st
     """
     try:
         pf = _get_filter()
-        result: RedactionResult = pf.redact(text, max_tokens=max_tokens)
+        result: Any = pf.redact(text, max_tokens=max_tokens)
         # ``result.redacted_text`` already contains the replacements.
-        # ``result.spans`` is a list of ``(start, end, category, replacement)``.
-        detections = [
-            {
-                "start": start,
-                "end": end,
-                "category": category,
-                "replacement": replacement,
-            }
-            for start, end, category, replacement in result.spans
-        ]
+        # ``result.spans`` is a list of tuples (start, end, category, replacement)
+        detections: List[Dict[str, Any]] = []
+        if hasattr(result, 'spans') and result.spans:
+            for span in result.spans:
+                if isinstance(span, (list, tuple)) and len(span) >= 4:
+                    detections.append({
+                        "start": int(span[0]),
+                        "end": int(span[1]),
+                        "category": str(span[2]),
+                        "replacement": str(span[3]),
+                    })
         return result.redacted_text, detections
-    except Exception as exc:  # pragma: no cover – exercised via mock in tests
-        logger.warning("Privacy filter failed, falling back to original text: %s", exc)
+    except Exception as exc:
+        logger.warning("Privacy filter failed: %s", exc)
         return text, []
 
-
 def redact_with_fallback(text: str) -> str:
-    """Convenient helper used by the tool dispatcher.
-
-    It attempts to redact *text* with the OpenAI model; if the model cannot be
-    loaded or raises an error, the original text is returned unchanged.  The
-    caller can decide whether to block the output based on the detection list
-    returned by :func:`filter_text`.
+    """Convenience wrapper that returns only the redacted text.
+    
+    If the filter fails, returns the original text unchanged.
     """
     redacted, _ = filter_text(text)
     return redacted
-
-__all__ = ["filter_text", "redact_with_fallback"]

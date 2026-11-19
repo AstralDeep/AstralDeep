@@ -66,17 +66,19 @@ def test_redact_with_fallback_uses_filter(monkeypatch):
     assert pfa.redact_with_fallback("any text") == "[REDACTED]"
 
 # ---------------------------------------------------------------------------
-# Ensure that the module does not import the heavy dependency when it is missing
+# Test that missing model assets raise a clear error
 # ---------------------------------------------------------------------------
-def test_optional_import(monkeypatch):
-    # Simulate ImportError for the opf package
-    with mock.patch.dict("sys.modules", {"opf": None}):
-        # Reload the module to trigger the import block
-        import importlib
-        mod = importlib.reload(pfa)
-        # The flag should be False and the module must still be importable
-        assert getattr(mod, "_HAS_OPF") is False
-        # Calling filter_text should fall back safely
-        text, det = mod.filter_text("test")
-        assert text == "test"
-        assert det == []
+def test_missing_model_assets(monkeypatch, caplog):
+    # Mock os.path.exists to return False for model files
+    monkeypatch.setattr(pfa.os.path, "exists", lambda x: False)
+    
+    # Reset the filter instance to force reload
+    pfa._filter_instance = None
+    
+    caplog.set_level(logging.WARNING)
+    original = "Test text"
+    out_text, detections = pfa.filter_text(original)
+    
+    assert out_text == original
+    assert detections == []
+    assert any("Privacy filter failed" in rec.message for rec in caplog.records)
