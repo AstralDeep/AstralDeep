@@ -32,7 +32,10 @@ async def _shared_with_phone(a, b):
     chat = a.owner.kernel.create_chat("Plan")
     a.owner.kernel.send_message(chat, "first note", None)
     grant = a.owner.grant_view(chat, b.owner.mesh_id)
-    await until(lambda: [x for x in b.phone.kernel.contacts()], "the contact to reach the second phone")
+    await until(
+        lambda: any(c.mesh == a.owner.mesh_id and c.state == "verified" for c in b.phone.kernel.contacts()),
+        "the verified contact to reach the second phone",
+    )
     await until(lambda: a.node.kernel.shares(), "the share to reach the node")
     await until(lambda: _node_holds(a.node.kernel, chat, "first note"), "the shared chat's message to reach the node")
     return chat, grant

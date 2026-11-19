@@ -296,6 +296,43 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  node-pack-linux-aarch64:
+    name: Build and check the linux-aarch64 node pack
+    needs: [decide]
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && (inputs.framework_only != true && needs.decide.outputs.skip != 'true') }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ needs.decide.outputs.head }}
+          submodules: recursive
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+      - name: Build the pinned Kernel artifacts and the node pack
+        env:
+          DECIDED_HEAD: ${{ needs.decide.outputs.head }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$DECIDED_HEAD"
+          python scripts/build_kernel_binding.py --root . --output "$RUNNER_TEMP/kernel-binding" --platform linux-aarch64
+          python scripts/install_kernel_binding.py verify --artifacts "$RUNNER_TEMP/kernel-binding" --platform linux-aarch64
+          mkdir -p "$RUNNER_TEMP/bundle"
+          python scripts/node_bundle/linux/build_linux.py --platform linux-aarch64 --kernel-dir "$RUNNER_TEMP/kernel-binding" \
+            --out "$RUNNER_TEMP/bundle/linux-aarch64"
+          tar -czf "$RUNNER_TEMP/node-pack.tar.gz" -C "$RUNNER_TEMP/bundle" linux-aarch64
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: linux-aarch64-node-pack-${{ needs.decide.outputs.head }}
+          path: ${{ runner.temp }}/node-pack.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
   node-pack-linux-x86-64:
     name: Build and check the linux-x86_64 node pack
     needs: [decide]
@@ -335,7 +372,7 @@ jobs:
 
   release:
     name: Build, notarize and publish the Mac DMG
-    needs: [decide, native-check, apple-artifacts, node-pack, node-pack-linux-x86-64]
+    needs: [decide, native-check, apple-artifacts, node-pack, node-pack-linux-aarch64, node-pack-linux-x86-64]
     if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && (inputs.framework_only != true && needs.decide.outputs.skip != 'true' && needs.native-check.result == 'success' && (github.event_name == 'workflow_dispatch' || (vars.RELEASE_MACOS_HOLD != 'true' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.head_repository.full_name == github.repository))) }}
     runs-on: macos-26
     timeout-minutes: 30
@@ -371,6 +408,10 @@ jobs:
           path: ${{ runner.temp }}/node-pack-input
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
+          name: linux-aarch64-node-pack-${{ needs.decide.outputs.head }}
+          path: ${{ runner.temp }}/node-pack-input-linux-aarch64
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
           name: linux-x86_64-node-pack-${{ needs.decide.outputs.head }}
           path: ${{ runner.temp }}/node-pack-input-linux-x86_64
       - name: Restore and verify source-bound release inputs
@@ -379,6 +420,7 @@ jobs:
           tar -xzf "$RUNNER_TEMP/apple-input/apple-artifacts.tar.gz" -C components/AstralProjection/apple-clients/AstralKernel
           mkdir -p "$RUNNER_TEMP/bundle-unsigned" "$RUNNER_TEMP/bundle"
           tar -xzf "$RUNNER_TEMP/node-pack-input/node-pack.tar.gz" -C "$RUNNER_TEMP/bundle-unsigned"
+          tar -xzf "$RUNNER_TEMP/node-pack-input-linux-aarch64/node-pack.tar.gz" -C "$RUNNER_TEMP/bundle"
           tar -xzf "$RUNNER_TEMP/node-pack-input-linux-x86_64/node-pack.tar.gz" -C "$RUNNER_TEMP/bundle"
           python3 components/AstralKernel/scripts/artifact_manifest.py verify \
             --root components/AstralProjection/apple-clients/AstralKernel/Artifacts \

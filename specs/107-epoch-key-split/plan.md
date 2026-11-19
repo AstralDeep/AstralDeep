@@ -1,10 +1,11 @@
 # Plan for spec 107: split the epoch key
 
-**Date:** 2026-11-18. **Status:** planned. Nothing here is built. **Tracking:** issue 681.
+**Date:** 2026-11-18. **Status:** planned, with the owner's rulings in section 6. Nothing here is built.
+**Tracking:** issue 681.
 
 This is the plan for "Design A", which the owner ruled on 2026-11-16. It covers the design, the
-questions the owner still has to answer, the phases, and how to tell each phase is finished. A
-`spec.md` and `tasks.md` follow once the questions in section 6 are answered.
+owner's rulings on the open questions, the phases, and how to tell each phase is finished. A
+`spec.md` and `tasks.md` are the next step.
 
 Paths under "105" are `specs/105-decentralized-personal-mesh/contracts/`. Paths under "106" are
 `specs/106-sign-in-free-clients/contracts/`. Kernel paths are in the AstralKernel repository at
@@ -202,7 +203,7 @@ Each item ends with a written result in this folder.
    the envelope aside, keep the feed, and open it after an update.
 2. What a 2.1.0 kernel does with a roster entry it rejects during sync. Its store must stay intact.
 3. An inventory of `mesh` scope: every event kind, what its body holds, and whether a limited joiner
-   needs it to work. This feeds question 1 in section 6.
+   needs it to work. This feeds ruling 1 in section 6.
 4. The cost of sealing headers again at serve time, measured on a log of realistic size.
 5. A check that no code path treats `header_ct` bytes as identity. Stores, relays, the mailbox and the
    share session are in scope.
@@ -249,21 +250,23 @@ after the old device updates *(live)*.
 
 Then the Kernel release, the Deep pin and the apps, in that order.
 
-## 6. Questions for the owner
+## 6. Owner rulings
 
-1. **Does a limited joiner read `mesh` scope history?** Settings, connections and agent records live
-   there, and a device cannot work without the current ones. Recommended: yes. The approver
-   introduces the mesh content key again under the join epoch. Chat content stays closed. Phase 0
-   item 3 lists exactly what this exposes.
-2. **Where does a header-only grant live?** Recommended: in the roster, as a wrap with its own
-   purpose. Every peer can then decide what to serve from the roster alone, and the grant survives the
-   approver going offline. The cost is a roster format step, which is safe only after activation.
-3. **Is activation a signed statement or an implied rule?** Recommended: a signed statement, written
-   once. An implied rule depends on each device's view of who has announced, and views can differ.
-4. **Does the personal current-key rule ship even if limited history slips?** Recommended: yes. It
-   closes the removal gap in section 2 by itself.
-5. **Should `current` ship at all?** `all` and `from_now` cover the cases with clear meaning. `current`
-   has the limit in section 3.8. Recommended: ship `from_now` first and decide after.
+The owner answered these on 2026-11-18. Each ruling matches the recommendation the plan made.
+
+1. **A limited joiner reads `mesh` scope history.** Settings, connections and agent records live
+   there, and a device cannot work without the current ones. The approver introduces the mesh content
+   key again under the join epoch. Chat content stays closed. Phase 0 item 3 lists exactly what this
+   exposes.
+2. **A header-only grant lives in the roster**, as a wrap with its own purpose. Every peer can then
+   decide what to serve from the roster alone, and the grant survives the approver going offline. The
+   cost is a roster format step, which is safe only after activation.
+3. **Activation is a signed statement, written once.** An implied rule would depend on each device's
+   view of who has announced, and views can differ.
+4. **The personal current-key rule ships even if limited history slips.** It closes the removal gap
+   in section 2 by itself.
+5. **`from_now` ships first.** `all` and `from_now` cover the cases with clear meaning. `current` has
+   the limit in section 3.8, and whether it ships is decided after `from_now` is out.
 
 ## 7. Risks
 
