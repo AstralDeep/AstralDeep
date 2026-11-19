@@ -26321,29 +26321,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 "security review (030 FR-004/FR-005; 025 T057)"
             )
 
-        async def _relaunch_generated_agents():
-            await asyncio.sleep(5)
-            try:
-                rows = await asyncio.to_thread(
-                    self.lifecycle_manager.draft_store.list_relaunchable_drafts
-                )
-            except Exception:
-                logger.exception("relaunch: could not list live generated agents")
-                return
-            for row in rows:
-                try:
-                    await self.lifecycle_manager.start_draft_agent(
-                        row["id"], align_scopes=False)
-                    logger.info("relaunch: %s (%s) restarted", row["agent_name"], row["id"])
-                except Exception as exc:
-                    logger.warning("relaunch: %s (%s) failed: %s",
-                                   row["agent_name"], row["id"], exc)
-
-        self._track_startup_background_task(
-            _relaunch_generated_agents(),
-            name="generated-agent-relaunch",
-        )
-
         app = self.build_http_app()
 
         external_agents = os.getenv("A2A_EXTERNAL_AGENTS", "")

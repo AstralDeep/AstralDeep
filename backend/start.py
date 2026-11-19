@@ -1,13 +1,13 @@
 """Boots the backend under process_supervision: waits for the orchestrator's health
 check, then discovers and spawns each agents/ subdirectory as its own supervised
 child, or runs it in-process/remote-compute per feature flags.
+A generated agent gets the draft launch from orchestrator/sandbox.py and runs only while node_api answers that the node allows agent servers.
 """
 
 import json
 import time
 import sys
 import os
-import urllib.error
 import urllib.request
 import uuid
 
@@ -16,6 +16,7 @@ from shared.process_supervision import (
     ProcessSupervisor,
     TerminationReason,
 )
+from orchestrator.sandbox import agent_launch, draft_confinement
 
 try:
     from dotenv import load_dotenv
@@ -111,11 +112,9 @@ POLICY_TICKS = 5
 def _agent_servers_refused(port: int) -> bool:
     try:
         with urllib.request.urlopen(f"http://localhost:{port}/api/node/agent-servers", timeout=5) as resp:
-            return json.load(resp).get("allowed") is False
-    except urllib.error.HTTPError as exc:
-        return exc.code != 404
+            return json.load(resp).get("allowed") is not True
     except Exception:
-        return False
+        return True
 
 
 class GeneratedAgents:
@@ -125,6 +124,7 @@ class GeneratedAgents:
         self._specs = {}
         self._procs = {}
         self._held = set()
+        self._refused = set()
 
     def register(self, item, script, path, port):
         self._specs[item] = (script, path, port)
@@ -135,12 +135,20 @@ class GeneratedAgents:
     def launch(self, item):
         self._held.discard(item)
         script, path, port = self._specs[item]
+        try:
+            launch = agent_launch(path)
+        except Exception as exc:
+            print(f"Refusing {item}: its resource limits could not be set up ({type(exc).__name__})")
+            self._refused.add(item)
+            return
         print(f"Starting {item} agent on port {port}...")
+        print(f" {item}: {draft_confinement(launch.limits_applied)['notice']}")
         self._procs[item] = self._supervisor.spawn(
             process_id=uuid.uuid4(),
             owner=ProcessOwner(owner_kind="server_agent", owner_id=item),
             argv=(self._python, script, "--port", str(port)),
             cwd=path,
+            **launch.popen,
         )
 
     def reconcile(self, refused):
@@ -148,11 +156,11 @@ class GeneratedAgents:
             proc = self._procs.get(item)
             running = proc is not None and proc.poll() is None
             if refused and running:
-                print(f"Stopping {item}: exec.agent_server_unsupported (phi_node)")
+                print(f"Stopping {item}: the node no longer allows agent servers")
                 proc.terminate(reason=TerminationReason.STOP)
                 self._procs.pop(item, None)
                 self._held.add(item)
-            elif not refused and item in self._held:
+            elif not refused and item in self._held and item not in self._refused:
                 self.launch(item)
 
 
@@ -220,7 +228,7 @@ def main(process_supervisor=None):
             _REMOTE_COMPUTE_AGENT_DIRS = ("remote_compute",)
         remote_compute_enabled = _remote_compute_enabled()
 
-        phi_node = _agent_servers_refused(orch_port)
+        refused = _agent_servers_refused(orch_port)
         generated = GeneratedAgents(process_supervisor, python_exe)
         next_port = int(os.environ.get("AGENT_PORT", 8003))
         for item in os.listdir(agents_dir):
@@ -237,9 +245,9 @@ def main(process_supervisor=None):
             if item not in FIRST_PARTY_AGENT_DIRS:
                 generated.register(item, custom_agent_script, item_path, next_port)
                 next_port += 1
-                if phi_node:
+                if refused:
                     generated.hold(item)
-                    print(f"Skipping {item}: exec.agent_server_unsupported (phi_node)")
+                    print(f"Holding {item}: the node has not allowed agent servers")
                 else:
                     generated.launch(item)
                 continue

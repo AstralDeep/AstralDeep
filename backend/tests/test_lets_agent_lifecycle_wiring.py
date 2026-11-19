@@ -58,9 +58,11 @@ class Process:
 class Supervisor:
     def __init__(self, events: list[str]) -> None:
         self.events = events
+        self.calls: list[dict[str, object]] = []
 
-    def spawn(self, **_values: object) -> Process:
+    def spawn(self, **values: object) -> Process:
         self.events.append("process_spawn")
+        self.calls.append(values)
         return Process(self.events)
 
 
@@ -112,7 +114,7 @@ def _manager(tmp_path: Path, events: list[str]) -> AgentLifecycleManager:
 
 
 @pytest.mark.asyncio
-async def test_dynamic_admission_commits_before_physical_process_spawn(
+async def test_dynamic_admission_commits_before_physical_process_spawn(excluded_node,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -1,7 +1,8 @@
 {
   "constants": {
     "agent_server_reasons": [
-      "phi_node"
+      "phi_node",
+      "not_excluded"
     ],
     "backend_reasons": [
       "landlock_abi",
@@ -120,6 +121,7 @@
       "exec.shadow_refused": "Shadow mode never runs untrusted code.",
       "exec.time_limit": "The tool ran past its time limit and was stopped.",
       "landlock_abi": "This Linux kernel offers Landlock ABI {observed} and untrusted tools need ABI {required} or newer.",
+      "not_excluded": "Agents you create run unconfined, so they start only on a node you excluded from your PHI group. To run them here, add this node to the group and then exclude it.",
       "phi_node": "This node is in your PHI group, so agents you create cannot run on it. Exclude the node from the PHI group to run them here.",
       "platform_unsupported": "No confinement backend exists for {platform}.",
       "root_node": "This node runs as root, and bubblewrap would map root to root inside the sandbox. Run the node as an unprivileged user.",

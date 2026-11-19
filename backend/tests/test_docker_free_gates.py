@@ -52,7 +52,7 @@ def quick(monkeypatch):
     monkeypatch.setattr("orchestrator.agent_lifecycle.asyncio.sleep", no_sleep)
 
 
-async def test_a_draft_agent_on_the_personal_profile_is_never_reported_confined_or_published(tmp_path, monkeypatch, caplog):
+async def test_a_draft_agent_on_the_personal_profile_is_never_reported_confined_or_published(excluded_node, tmp_path, monkeypatch, caplog):
     monkeypatch.setenv(ni.PROFILE_ENV, ni.PERSONAL)
     events: list[str] = []
     with caplog.at_level(logging.WARNING):

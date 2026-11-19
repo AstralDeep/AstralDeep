@@ -2,7 +2,7 @@
 
 One policy describes everything an untrusted node tool may touch. A macOS Seatbelt backend and a Linux backend (bubblewrap, Landlock and seccomp) both render it. The node, the Vessel command line and the Apple clients refuse to run untrusted code when no backend can enforce the policy.
 
-Untrusted code means Vessel `bash` and declared tools, draft agents, stdio MCP servers and Mac governed commands. Existing roster v2 stores and node data are untouched. This contract adds no event type, no roster field and no stored data.
+Untrusted code means Vessel `bash` and declared tools, draft agents, stdio MCP servers and Mac governed commands. Draft and generated agent servers are the one exception to the refusal. This version has no `listen` right, so they run without a backend, with resource limits, a scrubbed environment and a loopback address, and only on a node the owner excluded from the PHI group (section 7). The exception ends when `astral.exec-policy/v2` ships with listen, state roots and a service lifetime. `specs/108-draft-agent-confinement/security-review.md` records it. Existing roster v2 stores and node data are untouched. This contract adds no event type, no roster field and no stored data.
 
 Reference code: `reference/exec_policy.py`. Generator: `reference/generate_exec_vectors.py`. Vectors: `vectors/exec-policy-v1.json`. LETS-CJ/1 comes from the preserved mesh reference.
 
@@ -199,7 +199,7 @@ Validation codes: `policy.malformed`, `policy.unknown_field`, `policy.path_inval
 
 Run codes: `exec.backend_unavailable`, `exec.agent_server_unsupported`, `exec.shadow_refused`, `exec.policy_overlaps_data`, `exec.time_limit`, `exec.memory_limit`, `exec.process_limit`, `exec.file_limit` and `exec.launch_failed`.
 
-`exec.agent_server_unsupported` carries a reason too. The only reason in this version is `phi_node`: the node is a member of the owner's PHI group, so agents the owner creates cannot start on it, and one already running is stopped when the node joins or rejoins the group. Excluding the node from the PHI group lifts the refusal. The node reports it with `{code, reason, message}` and a client shows the message.
+`exec.agent_server_unsupported` carries a reason too. The reasons in this version are `phi_node` and `not_excluded`. `phi_node` means the node is a member of the owner's PHI group, or its roster cannot be read. `not_excluded` means the node has no mesh, is not enrolled, or the owner never excluded it from the PHI group. Agents the owner creates start only on a node whose own row in the PHI group reads `excluded`. The Kernel refuses a node that tries to exclude itself. One already running is stopped when the node joins or rejoins the group. The node reports it with `{code, reason, message}` and a client shows the message.
 
 Every message names the missing piece in plain words. The exact texts, including the per-reason texts with `{observed}`, `{required}` and `{platform}` slots, are in `constants.messages` of the vectors. A client shows the message and never the code alone.
 
@@ -217,5 +217,7 @@ Every message names the missing piece in plain words. The exact texts, including
 ## 9. Versioning
 
 This document was amended before release without a version change, because `astral.exec-policy/v1` has no consumer outside this program. The amendment replaced the socket type and domain denial lists with the `socket_allow` allowlist, denied the io_uring calls and added the `euid` fact with the `root_node` refusal.
+
+After release the `not_excluded` reason was added to `exec.agent_server_unsupported`. It is a node refusal with its message, not a policy rule, so the format version stays 1.
 
 A change to a rule, a base root, a limit range or the profile text raises the format version. This document, the vectors and the reference module change together, and `generate_exec_vectors.py --check` and the reference tests pass before a change merges.

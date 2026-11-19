@@ -1,5 +1,5 @@
-"""Proves the node's PHI gates on the real kernel binding through the seeded dev mesh: group adoption, destination approval by name, uncertain and oversized input, an excluded node, and the draft agent refusal on a PHI member node.
-Only the model and MCP servers are loopback fixtures, and every refusal comes from the Kernel or from orchestrator/phi_node_policy.py through the normal request and lifecycle paths."""
+"""Proves the node's PHI gates on the real kernel binding through the seeded dev mesh: group adoption, destination approval by name, uncertain and oversized input, an excluded node, and the draft agent refusal everywhere except a node the owner excluded.
+Only the model and MCP servers are loopback fixtures, and every refusal comes from the Kernel or from orchestrator/phi_node_policy.py through the normal request, route and lifecycle paths."""
 
 from __future__ import annotations
 
@@ -7,14 +7,19 @@ import asyncio
 from types import SimpleNamespace
 
 import astral_kernel as ak
+import httpx
 import pytest
+from fastapi import FastAPI
 
-from orchestrator import api, node_mesh, phi_node_policy
+from astral_exec.constants import MESSAGES
+from orchestrator import api, node_mesh, phi_node_policy, sandbox
 from orchestrator.agent_lifecycle import AgentLifecycleManager
 from orchestrator.boot_posture import assert_production_posture
 from tests.fixtures.connections import FixtureAuth, FixtureConfig, ModelServer
 from tests.helpers.dev_mesh import connection_reached, dev_node
 from tests.helpers.dev_mesh import until as wait_until
+from tests.helpers.excluded_node import StandInKernelError, stand_in_mesh
+from tests.test_lets_agent_lifecycle_wiring import Coordinator, LifecycleStore, Supervisor
 from tests.test_fail_closed_boot import _configure_production_secrets
 
 CLEAR = "Patient SSN 900-12-3456 was verified"
@@ -22,6 +27,8 @@ UNCERTAIN = "Appointment on 2024-03-15 was moved"
 PLAIN = "Please summarise the weekly report"
 REMOTE = "https://model.invalid/v1"
 OVER_CAP = 1_048_577
+PHI_REFUSAL = {"code": "exec.agent_server_unsupported", "reason": "phi_node", "message": MESSAGES["phi_node"]}
+NOT_EXCLUDED = {"code": "exec.agent_server_unsupported", "reason": "not_excluded", "message": MESSAGES["not_excluded"]}
 
 
 async def until(condition, what):
@@ -156,56 +163,171 @@ async def test_an_excluded_node_gets_no_phi_body_and_regains_access_when_include
         assert mesh.node.kernel.phi_group().local_code is None
 
 
-async def test_a_draft_agent_is_refused_on_a_phi_member_node_and_runs_where_the_owner_excluded_it(tmp_path, monkeypatch):
-    async with dev_node(tmp_path, monkeypatch) as mesh:
+class OwnedStore(LifecycleStore):
+    def get_owned_draft_agent(self, user_id, draft_id):
+        draft = self.get_draft_agent(draft_id)
+        return draft if draft and draft["user_id"] == user_id else None
+
+
+def draft_lifecycle(tmp_path, events):
+    draft = {"id": "draft-a", "user_id": "owner-a", "agent_name": "Agent A", "agent_slug": "agent_a", "origin": "server", "status": "generated", "port": None}
+    manager = AgentLifecycleManager(OwnedStore(events, draft), orchestrator=None, process_supervisor=Supervisor(events))
+    manager._agents_dir = str(tmp_path)
+    manager.governed_lifecycle = Coordinator(events)
+    agent_dir = tmp_path / "agent_a"
+    agent_dir.mkdir(parents=True)
+    (agent_dir / "agent_a_agent.py").write_text("print('ready')\n", encoding="utf-8")
+    (agent_dir / "mcp_tools.py").write_text("TOOL_REGISTRY = {'read': {'scope': 'tools:read'}}\n", encoding="utf-8")
+    return manager
+
+
+async def post_start(manager):
+    app = FastAPI()
+    app.include_router(api.draft_router)
+    app.state.orchestrator = SimpleNamespace(lifecycle_manager=manager, ui_sessions={})
+    app.dependency_overrides[api.require_user_id] = lambda: "owner-a"
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://node.test") as client:
+        return await client.post("/api/agents/drafts/draft-a/test")
+
+
+async def test_the_start_route_refuses_a_draft_on_a_real_phi_member_before_any_process_or_directory_exists(tmp_path, monkeypatch):
+    async with dev_node(tmp_path / "mesh", monkeypatch) as mesh:
         node_mesh.install(mesh.node)
         try:
-            with pytest.raises(phi_node_policy.AgentServerUnsupported) as refused:
-                await phi_node_policy.refuse_on_phi_node()
-            assert refused.value.detail() == {"code": "exec.agent_server_unsupported", "reason": "phi_node", "message": phi_node_policy.MESSAGE}
-            mesh.owner.exclude_phi_device(mesh.node_device)
-            await until(lambda: mesh.node.kernel.phi_group().local_code == "phi.device_excluded", "the exclusion to reach the node")
-            await phi_node_policy.refuse_on_phi_node()
-            mesh.owner.include_phi_device(mesh.node_device)
-            await until(mesh.node.phi_member, "the node to rejoin the PHI group")
-            with pytest.raises(phi_node_policy.AgentServerUnsupported):
-                await phi_node_policy.refuse_on_phi_node()
+            assert await mesh.node.phi_member() is True
+            events: list[str] = []
+            manager = draft_lifecycle(tmp_path / "agents", events)
+            response = await post_start(manager)
+            assert response.status_code == 409
+            assert response.json()["detail"] == PHI_REFUSAL
+            assert events == [] and manager._draft_processes == {}
+            assert not (tmp_path / "agents" / "agent_a" / "_sandbox_tmp").exists()
+            assert manager.db.draft["status"] == "generated"
         finally:
             node_mesh.install(None)
 
 
-async def test_the_draft_agent_policy_allows_a_node_with_no_mesh_and_one_that_is_not_enrolled(tmp_path, monkeypatch):
-    node_mesh.install(None)
-    await phi_node_policy.refuse_on_phi_node()
-    stopped = SimpleNamespace(started=False)
-    node_mesh.install(stopped)
-    try:
-        await phi_node_policy.refuse_on_phi_node()
-        async def status():
-            return {"enrolled": False}
+async def test_the_start_route_refuses_a_draft_on_a_real_node_the_owner_never_excluded(tmp_path, monkeypatch):
+    async with dev_node(tmp_path / "mesh", monkeypatch, adopt=False) as mesh:
+        node_mesh.install(mesh.node)
+        try:
+            assert await mesh.node.phi_member() is False and await mesh.node.phi_excluded() is False
+            events: list[str] = []
+            response = await post_start(draft_lifecycle(tmp_path / "agents", events))
+            assert response.status_code == 409
+            assert response.json()["detail"] == NOT_EXCLUDED
+            assert "process_spawn" not in events
+        finally:
+            node_mesh.install(None)
 
-        node_mesh.install(SimpleNamespace(started=True, status=status))
+
+async def test_a_draft_agent_starts_on_loopback_only_after_the_owner_excludes_the_real_node_and_is_refused_again_when_it_rejoins(tmp_path, monkeypatch):
+    async with dev_node(tmp_path / "mesh", monkeypatch) as mesh:
+        node_mesh.install(mesh.node)
+        try:
+            with pytest.raises(phi_node_policy.AgentServerUnsupported) as refused:
+                await phi_node_policy.refuse_on_phi_node()
+            assert refused.value.detail() == PHI_REFUSAL
+            mesh.owner.exclude_phi_device(mesh.node_device)
+            await until(lambda: mesh.node.kernel.phi_group().local_code == "phi.device_excluded", "the exclusion to reach the node")
+            assert await mesh.node.phi_excluded() is True
+            events: list[str] = []
+            manager = draft_lifecycle(tmp_path / "agents", events)
+            started = await manager.start_draft_agent("draft-a")
+            assert events.count("process_spawn") == 1 and started["confinement"]["confined"] is False
+            assert manager.process_supervisor.calls[0]["env"]["HOST"] == sandbox.LOOPBACK_HOST
+            mesh.owner.include_phi_device(mesh.node_device)
+            await until(mesh.node.phi_member, "the node to rejoin the PHI group")
+            with pytest.raises(phi_node_policy.AgentServerUnsupported) as again:
+                await phi_node_policy.refuse_on_phi_node()
+            assert again.value.detail() == PHI_REFUSAL
+        finally:
+            node_mesh.install(None)
+
+
+async def test_the_node_cannot_exclude_itself_so_its_own_kernel_never_opens_the_draft_launch(tmp_path, monkeypatch):
+    async with dev_node(tmp_path, monkeypatch) as mesh:
+        node_mesh.install(mesh.node)
+        try:
+            with pytest.raises(ak.KernelError) as refused:
+                mesh.node.kernel.exclude_phi_device(mesh.node_device)
+            assert "phi_group.node_device" in str(refused.value)
+            assert await mesh.node.phi_excluded() is False
+            with pytest.raises(phi_node_policy.AgentServerUnsupported) as still:
+                await phi_node_policy.refuse_on_phi_node()
+            assert still.value.detail() == PHI_REFUSAL
+        finally:
+            node_mesh.install(None)
+
+
+async def test_a_node_with_no_mesh_a_stopped_mesh_or_no_enrollment_is_refused_as_not_excluded():
+    async def not_enrolled():
+        return {"enrolled": False}
+
+    for mesh in (None, SimpleNamespace(started=False), SimpleNamespace(started=True, status=not_enrolled)):
+        node_mesh.install(mesh)
+        try:
+            with pytest.raises(phi_node_policy.AgentServerUnsupported) as refused:
+                await phi_node_policy.refuse_on_phi_node()
+            assert refused.value.detail() == NOT_EXCLUDED
+        finally:
+            node_mesh.install(None)
+
+
+async def test_a_node_outside_the_group_that_was_never_excluded_is_refused_and_an_excluded_one_is_allowed():
+    node_mesh.install(stand_in_mesh(excluded=False))
+    try:
+        with pytest.raises(phi_node_policy.AgentServerUnsupported) as refused:
+            await phi_node_policy.refuse_on_phi_node()
+        assert refused.value.reason == "not_excluded"
+        node_mesh.install(stand_in_mesh())
         await phi_node_policy.refuse_on_phi_node()
     finally:
         node_mesh.install(None)
 
 
 async def test_the_draft_agent_policy_fails_closed_when_membership_cannot_be_read():
-    class Broken(Exception):
-        pass
-
     async def status():
         return {"enrolled": True}
 
     async def member():
-        raise Broken("roster unreadable")
+        raise StandInKernelError("roster unreadable")
 
-    node_mesh.install(SimpleNamespace(started=True, status=status, phi_member=member, binding=SimpleNamespace(KernelError=Broken)))
+    node_mesh.install(SimpleNamespace(started=True, status=status, phi_member=member, binding=SimpleNamespace(KernelError=StandInKernelError)))
     try:
-        with pytest.raises(phi_node_policy.AgentServerUnsupported):
+        with pytest.raises(phi_node_policy.AgentServerUnsupported) as refused:
             await phi_node_policy.refuse_on_phi_node()
+        assert refused.value.reason == "phi_node"
     finally:
         node_mesh.install(None)
+
+
+async def test_the_draft_agent_policy_fails_closed_when_the_mesh_status_or_the_group_cannot_be_read():
+    async def broken_status():
+        raise node_mesh.NodeMeshError("engine.sink")
+
+    async def enrolled():
+        return {"enrolled": True}
+
+    async def outside():
+        return False
+
+    async def broken_group():
+        raise StandInKernelError("group unreadable")
+
+    binding = SimpleNamespace(KernelError=StandInKernelError)
+    meshes = (
+        SimpleNamespace(started=True, status=broken_status, binding=binding),
+        SimpleNamespace(started=True, status=enrolled, phi_member=outside, phi_excluded=broken_group, binding=binding),
+    )
+    for mesh in meshes:
+        node_mesh.install(mesh)
+        try:
+            with pytest.raises(phi_node_policy.AgentServerUnsupported) as refused:
+                await phi_node_policy.refuse_on_phi_node()
+            assert refused.value.reason == "phi_node"
+        finally:
+            node_mesh.install(None)
 
 
 async def test_start_draft_agent_stops_before_any_process_on_a_phi_node(monkeypatch):
@@ -220,10 +342,11 @@ async def test_start_draft_agent_stops_before_any_process_on_a_phi_node(monkeypa
         await manager.start_draft_agent("draft-1")
 
 
-async def test_the_start_route_reports_the_refusal_with_its_code_and_reason(monkeypatch):
+@pytest.mark.parametrize("reason", ["phi_node", "not_excluded"])
+async def test_the_start_route_reports_the_refusal_with_its_code_and_reason(monkeypatch, reason):
     class Lifecycle:
         async def start_draft_agent(self, draft_id, websocket=None):
-            raise phi_node_policy.AgentServerUnsupported()
+            raise phi_node_policy.AgentServerUnsupported(reason)
 
     orch = SimpleNamespace()
     monkeypatch.setattr(api, "_get_orchestrator", lambda request: orch)
@@ -234,7 +357,7 @@ async def test_the_start_route_reports_the_refusal_with_its_code_and_reason(monk
     with pytest.raises(api.HTTPException) as caught:
         await start(SimpleNamespace(), "draft-1", user_id="owner")
     assert caught.value.status_code == 409
-    assert caught.value.detail == {"code": "exec.agent_server_unsupported", "reason": "phi_node", "message": phi_node_policy.MESSAGE}
+    assert caught.value.detail == {"code": "exec.agent_server_unsupported", "reason": reason, "message": MESSAGES[reason]}
 
 
 @pytest.mark.parametrize("name,value", [("AUDIT_HMAC_SECRET", "change-me"), ("AUDIT_HMAC_SECRET", "dev-audit-hmac-secret-change-me-in-prod")])
