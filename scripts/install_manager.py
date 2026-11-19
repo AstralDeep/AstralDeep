@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -94,66 +93,53 @@ def cmd_resume(args: argparse.Namespace) -> int:
 def cmd_upgrade(args: argparse.Namespace) -> int:
     state = load_state()
     if state.get("status") != "ready":
-        print("Installation not in a ready state; cannot upgrade.")
+        print("Cannot upgrade: installation is not in 'ready' state.")
         return 1
-    print("Upgrading AstralDeep deployment...")
+    print("Upgrading AstralDeep...")
     ensure_keystore_exists()
     # Pull latest images
     run_cmd([ASTRALVESSEL_CMD, "pull"])
-    # Recreate containers while preserving volumes
+    # Restart services with force-recreate to apply changes
     run_cmd([ASTRALVESSEL_CMD, "up", "--no-build", "--force-recreate"])
-    print("Upgrade completed. Data and mesh keys preserved.")
+    print("Upgrade completed successfully.")
     return 0
 
 
 def cmd_remove(args: argparse.Namespace) -> int:
-    preserve = args.preserve_data
+    state = load_state()
+    if state.get("status") != "ready":
+        print("Cannot remove: installation is not in 'ready' state.")
+        return 1
     print("Removing AstralDeep node pack...")
-    cmd = [ASTRALVESSEL_CMD, "down"]
-    if not preserve:
-        cmd.append("--volumes")
-    run_cmd(cmd)
-    # Clean up state file
+    # Stop and remove containers
+    run_cmd([ASTRALVESSEL_CMD, "down"])
+    # Remove state file
     if STATE_FILE.is_file():
         STATE_FILE.unlink()
-    print("Removal completed. " + ("Data volumes preserved." if preserve else "All data removed."))
+    print("Removal completed successfully.")
     return 0
 
-# ---------------------------------------------------------------------------
-# CLI entry point
-# ---------------------------------------------------------------------------
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="AstralDeep installation manager")
-    subparsers = parser.add_subparsers(dest="command", required=True)
+def main() -> int:
+    parser = argparse.ArgumentParser(description="AstralDeep Installation Manager")
+    subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
-    resume_parser = subparsers.add_parser("resume", help="Resume an interrupted install")
-    resume_parser.set_defaults(func=cmd_resume)
+    subparsers.add_parser("resume", help="Resume an interrupted installation")
+    subparsers.add_parser("upgrade", help="Upgrade an existing installation")
+    subparsers.add_parser("remove", help="Safely remove the node pack")
 
-    upgrade_parser = subparsers.add_parser("upgrade", help="Upgrade an existing installation")
-    upgrade_parser.set_defaults(func=cmd_upgrade)
-
-    remove_parser = subparsers.add_parser("remove", help="Safely remove the node pack")
-    remove_parser.add_argument(
-        "--preserve-data",
-        action="store_true",
-        help="Do not delete Docker volumes (keystore and DB) during removal",
-    )
-    remove_parser.set_defaults(func=cmd_remove)
-
-    return parser
-
-
-def main() -> None:
-    parser = build_parser()
     args = parser.parse_args()
-    try:
-        exit_code = args.func(args)
-    except RuntimeError as exc:
-        sys.stderr.write(f"Error: {exc}\n")
-        sys.exit(1)
-    sys.exit(exit_code)
+
+    if args.command == "resume":
+        return cmd_resume(args)
+    elif args.command == "upgrade":
+        return cmd_upgrade(args)
+    elif args.command == "remove":
+        return cmd_remove(args)
+    else:
+        parser.print_help()
+        return 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
