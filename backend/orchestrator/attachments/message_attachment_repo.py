@@ -97,19 +97,6 @@ class MessageAttachmentRepository:
         )
         return [_to_dict(record) for record in records]
 
-    async def ainsert(
-        self,
-        *,
-        chat_id: str,
-        attachment_id: str,
-        user_id: str,
-        message_id: Optional[str] = None,
-    ) -> str:
-        return await asyncio.to_thread(
-            self.insert, chat_id=chat_id, attachment_id=attachment_id,
-            user_id=user_id, message_id=message_id,
-        )
-
     async def alist_for_chat(self, chat_id: str, user_id: str) -> List[dict]:
         return await asyncio.to_thread(self.list_for_chat, chat_id, user_id)
 

@@ -42,26 +42,6 @@ def test_budget_wall_clock_exhaustion():
     assert b.exhausted() == "wall_clock_exhausted"
 
 
-def test_subtree_slice_debits_parent():
-    parent = ChainBudget(turn_id="t1", max_hops=4, wall_clock_s=999)
-    child = parent.slice(max_hops=3)
-    for _ in range(3):
-        assert child.charge(1) is None
-    assert child.charge(1) == "hop_budget_exhausted"
-    assert parent.spent_hops == 3
-    assert parent.charge(1) is None
-    assert parent.charge(1) == "hop_budget_exhausted"
-
-
-def test_subtree_slice_cannot_exceed_parent_ceiling():
-    parent = ChainBudget(turn_id="t1", max_hops=2, wall_clock_s=999)
-    child = parent.slice(max_hops=10)
-    assert child.max_hops == 2
-    assert child.charge(1) is None
-    assert child.charge(1) is None
-    assert child.charge(1) == "hop_budget_exhausted"
-
-
 def _mta(*, grant_valid=True, latest=None, mint="fresh-token",
          current_scopes=None):
     orch = MagicMock()

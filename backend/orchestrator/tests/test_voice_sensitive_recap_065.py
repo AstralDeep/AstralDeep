@@ -1,6 +1,5 @@
-"""Tests for orchestrator/voice_recap.py's sensitive-result disclosure gate: fail-closed
-PHI detection, owner-and-result-bound one-time consent, and expiry of the memory-only
-sensitive registry.
+"""Tests for orchestrator/voice_recap.py's sensitive-result consent: owner-and-result-bound
+one-time consent, strict spoken control, and expiry of the memory-only sensitive registry.
 """
 
 from __future__ import annotations
@@ -10,13 +9,10 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from orchestrator.voice_recap import (
-    SENSITIVE_NOTICE,
     SensitiveRecapRegistry,
     SensitiveResultConsent,
     SpokenControlContext,
     VoiceRecapError,
-    apply_sensitivity_policy,
-    build_spoken_recap,
     resolve_spoken_control,
 )
 
@@ -26,45 +22,10 @@ RESULT_A = "00000000-0000-4000-8000-000000000011"
 RESULT_B = "00000000-0000-4000-8000-000000000012"
 
 
-def _recap():
-    return build_spoken_recap(
-        authoritative_summary="The patient result is available.",
-        committed_components=None,
-        detected_language="en",
-    )
 
 
-@pytest.mark.parametrize("classification", ["sensitive", "phi", "unknown", ""])
-def test_unknown_or_sensitive_classification_speaks_only_generic_notice(
-    classification: str,
-) -> None:
-    gated = apply_sensitivity_policy(
-        _recap(),
-        confidentiality=classification,
-        contains_phi=lambda _text: False,
-    )
-    assert gated.text == SENSITIVE_NOTICE
-    assert gated.output_reason == "sensitive_consent_required"
-    assert "patient" not in gated.text.lower()
 
 
-def test_phi_detector_positive_or_failure_fails_closed() -> None:
-    detected = apply_sensitivity_policy(
-        _recap(),
-        confidentiality="non_sensitive",
-        contains_phi=lambda _text: True,
-    )
-
-    def unavailable(_text: str) -> bool:
-        raise TimeoutError
-
-    failed = apply_sensitivity_policy(
-        _recap(),
-        confidentiality="non_sensitive",
-        contains_phi=unavailable,
-    )
-    assert detected.text == SENSITIVE_NOTICE
-    assert failed.text == SENSITIVE_NOTICE
 
 
 @pytest.mark.parametrize("method", ["tap", "strict_spoken_control"])
@@ -124,31 +85,6 @@ def test_only_exact_unambiguous_spoken_read_control_can_create_consent_intent() 
     assert resolve_spoken_control("read it", SpokenControlContext()) is None
 
 
-def test_details_are_released_only_after_the_bound_consent_is_consumed() -> None:
-    gated = apply_sensitivity_policy(
-        _recap(),
-        confidentiality="sensitive",
-        contains_phi=lambda _text: True,
-    )
-    consent = SensitiveResultConsent.issue(
-        user_id="owner",
-        result_id=RESULT_A,
-        method="strict_spoken_control",
-        now=NOW,
-    ).consume(
-        user_id="owner",
-        result_id=RESULT_A,
-        now=NOW + timedelta(seconds=1),
-    )
-    released = apply_sensitivity_policy(
-        _recap(),
-        confidentiality="sensitive",
-        contains_phi=lambda _text: True,
-        consent_granted=consent.consumed_at is not None,
-    )
-    assert gated.text == SENSITIVE_NOTICE
-    assert released.text == "The patient result is available"
-    assert released.sensitivity == "sensitive"
 
 
 @pytest.mark.asyncio

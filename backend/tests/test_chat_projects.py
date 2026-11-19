@@ -220,7 +220,6 @@ def socket_runtime(history, monkeypatch):
     orch.send_ui_render = AsyncMock()
     orch._broadcast_user_history = AsyncMock()
     orch._retire_welcome_canvas = AsyncMock()
-    orch._serialized_chat = AsyncMock()
     orch._adopt_operation_chat = AsyncMock()
     orch.cancelled_sessions = {}
     frames = []
@@ -238,9 +237,6 @@ def socket_runtime(history, monkeypatch):
     "action,payload",
     [
         ("new_chat", {}),
-        ("chat_message", {"message": "first message"}),
-        ("chat_message", {"message": "component action", "component_id": "button"}),
-        ("chat_message", {"message": "scenario", "scenario_id": "example"}),
     ],
 )
 async def test_negotiated_creation_requires_project_without_creating_legacy_chat(
@@ -260,7 +256,6 @@ async def test_negotiated_creation_requires_project_without_creating_legacy_chat
         ),
     )
     assert runtime.frames[-1]["code"] == "project_selection_required"
-    runtime.orch._serialized_chat.assert_not_awaited()
     with runtime.orch.history.plane_runtime.transaction() as transaction:
         page = runtime.orch.history.plane_repositories.projects.list_owner_chats_before(
             transaction, owner_id="owner", cutoff=2**53 - 1
@@ -269,7 +264,7 @@ async def test_negotiated_creation_requires_project_without_creating_legacy_chat
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("action", ["new_chat", "chat_message"])
+@pytest.mark.parametrize("action", ["new_chat"])
 async def test_negotiated_socket_create_replays_and_reports_stored_project(
     socket_runtime, action
 ):
@@ -507,37 +502,6 @@ def test_concurrent_project_chat_retry_has_one_empty_conversation(history):
 
 
 @pytest.mark.asyncio
-async def test_dispatch_ignores_claimed_project_and_loads_actual_membership(
-    socket_runtime,
-):
-    import json
-    from orchestrator.projects import ProjectService
-
-    runtime = socket_runtime
-    service = ProjectService(runtime.orch.history)
-    project_id, chat_id = identity(), identity()
-    service.create("owner", project_id, "Research")
-    service.create_chat("owner", project_id, chat_id)
-    await runtime.orch.handle_ui_message(
-        runtime.socket,
-        json.dumps(
-            {
-                "type": "ui_event",
-                "action": "chat_message",
-                "payload": {
-                    "chat_id": chat_id,
-                    "project_id": identity(),
-                    "message": "hello",
-                },
-            }
-        ),
-    )
-    runtime.orch._serialized_chat.assert_awaited_once()
-    assert service.project_for_chat("owner", chat_id) == project_id
-    assert "project_id" not in runtime.orch._serialized_chat.call_args.kwargs
-
-
-@pytest.mark.asyncio
 async def test_hydration_and_direct_dispatch_refuse_legacy_chat(socket_runtime):
     from orchestrator.projects import ProjectError
 
@@ -550,10 +514,6 @@ async def test_hydration_and_direct_dispatch_refuse_legacy_chat(socket_runtime):
             user_id="owner",
             connection_generation=identity(),
             request_generation=identity(),
-        )
-    with pytest.raises(ProjectError, match="project_selection_required"):
-        await runtime.orch.handle_chat_message(
-            runtime.socket, "hello", chat_id, user_id="owner"
         )
 
 

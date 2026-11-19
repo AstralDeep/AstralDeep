@@ -205,28 +205,19 @@ async def test_refused_native_tool_response_still_charges_one_reported_attempt(s
     assert fake_recorder.record.await_args.args[0].outputs_meta["total_tokens"] == 63
 
 
-async def test_native_persistent_model_call_retains_permit_output_cap_and_denial(store, enabled, fake_recorder, monkeypatch):
+async def test_retired_assignment_cannot_invoke_a_native_provider(store, enabled, fake_recorder, monkeypatch):
     from persistent_agents.tests.test_dispatch_integration import context
     from persistent_agents.dispatch_context import DispatchDenied, bind_dispatch
     from shared import external_http
-    calls = []
 
-    async def wire(*_, **kwargs):
-        calls.append(json.loads(kwargs["body"]))
-        yield json.dumps(response(content=[{"type": "text", "text": "bounded task"}], stop_reason="end_turn")).encode()
-
+    wire = AsyncMock()
     monkeypatch.setattr(external_http, "async_post", wire)
     orch = await orchestrator(store, monkeypatch, fake_recorder)
     ctx = context("model", owner_id="alice")
-    with bind_dispatch(ctx):
-        message, _ = await orch._call_llm(object(), [{"role": "user", "content": "task"}], allow_stream=True)
-    assert message.content == "bounded task" and len(calls) == 1
-    assert calls[0]["max_tokens"] == 256 and calls[0]["stream"] is False
-    assert ctx.start.await_count == 1 and ctx.observe.await_count == 1
-    denied = context("model", owner_id="alice", authorize=AsyncMock(side_effect=DispatchDenied("denied")))
-    with bind_dispatch(denied), pytest.raises(DispatchDenied):
-        await orch._call_llm(None, [{"role": "user", "content": "denied task"}])
-    assert len(calls) == 1 and denied.start.await_count == 0
+    with bind_dispatch(ctx), pytest.raises(DispatchDenied, match="turn_engine_retired"):
+        await orch._call_llm(object(), [{"role": "user", "content": "Check release."}])
+    ctx.start.assert_not_awaited()
+    wire.assert_not_called()
 
 
 @pytest.mark.parametrize("kind", ["structured", "images"])

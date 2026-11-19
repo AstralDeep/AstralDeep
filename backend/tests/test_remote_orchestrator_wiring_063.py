@@ -1,7 +1,4 @@
-"""Tests for orchestrator-side remote-compute wiring (orchestrator/orchestrator.py): the
-job poll loop's failure survival and cancel propagation, the remote_op_decision
-route, boot's flag-gated poller launch, and the marker-gated trace tee.
-"""
+"""Checks remote-compute poller startup, cancellation, failure recovery and the marker-gated trace tee."""
 
 from __future__ import annotations
 
@@ -14,7 +11,6 @@ from types import SimpleNamespace
 import pytest
 
 from orchestrator import orchestrator as oo
-from orchestrator import remote_confirmation as rc
 from orchestrator import remote_jobs as rj
 from orchestrator.orchestrator import Orchestrator
 from tests.helpers.remote_plane_runtime import make_remote_plane_source
@@ -81,75 +77,6 @@ class _WS:
 
     async def send(self, data):
         self.sent.append(data)
-
-
-def _ui_host(monkeypatch, ws, user_id="u-1"):
-    async def _record_ws_action(**kwargs):
-        return None
-
-    import audit.hooks
-    monkeypatch.setattr(audit.hooks, "record_ws_action", _record_ws_action)
-
-    fake = SimpleNamespace(
-        ui_sessions={ws: {"sub": user_id, "preferred_username": "tester"}},
-        _parsed_ui_frame=Orchestrator._parsed_ui_frame,
-        _get_user_id=lambda _ws: user_id,
-    )
-    fake.handle_ui_message = types.MethodType(Orchestrator.handle_ui_message, fake)
-    return fake
-
-
-async def test_remote_op_decision_routes_to_the_confirmation_handler(monkeypatch):
-    seen: list = []
-
-    async def _handle_decision(orch, websocket, user_id, payload):
-        seen.append((orch, websocket, user_id, payload))
-
-    monkeypatch.setattr(rc, "handle_decision", _handle_decision)
-    ws = _WS()
-    fake = _ui_host(monkeypatch, ws)
-
-    await fake.handle_ui_message(ws, json.dumps({
-        "type": "ui_event",
-        "action": "remote_op_decision",
-        "payload": {"proposal_id": "p-1", "decision": "approve"},
-    }))
-
-    assert len(seen) == 1
-    orch, sock, user_id, payload = seen[0]
-    assert orch is fake and sock is ws
-    assert user_id == "u-1"
-    assert payload == {"proposal_id": "p-1", "decision": "approve"}
-
-
-async def test_remote_op_decision_tolerates_an_empty_payload(monkeypatch):
-    seen: list = []
-
-    async def _handle_decision(orch, websocket, user_id, payload):
-        seen.append(payload)
-
-    monkeypatch.setattr(rc, "handle_decision", _handle_decision)
-    ws = _WS()
-    fake = _ui_host(monkeypatch, ws)
-
-    await fake.handle_ui_message(ws, json.dumps({
-        "type": "ui_event", "action": "remote_op_decision", "payload": {}}))
-    assert seen == [{}]
-
-
-async def test_other_actions_do_not_reach_the_confirmation_handler(monkeypatch):
-    called: list = []
-
-    async def _handle_decision(*a, **k):
-        called.append(a)
-
-    monkeypatch.setattr(rc, "handle_decision", _handle_decision)
-    ws = _WS()
-    fake = _ui_host(monkeypatch, ws)
-
-    await fake.handle_ui_message(ws, json.dumps({
-        "type": "ui_event", "action": "schedule_decision", "payload": {}}))
-    assert called == []
 
 
 class _Stop(Exception):

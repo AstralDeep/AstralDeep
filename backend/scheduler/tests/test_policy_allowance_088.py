@@ -5,7 +5,6 @@ admission gate in JobRunner.run_occurrence.
 
 from __future__ import annotations
 
-import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any, Iterator
 
@@ -16,7 +15,6 @@ from orchestrator.work_admission import (
     AdmissionClassConfig,
     WorkAdmissionCoordinator,
 )
-from scheduler.runner import default_monitoring_dispatcher
 from scheduler.store import ScheduleActionError
 from scheduler.tests.plane_runtime import (
     ensure_plane_runtime,
@@ -103,49 +101,11 @@ def _job(
     )
 
 
-def _assignment(db: PlaneTestRuntime, *, owner: str, lifecycle: str = "active") -> str:
-    assignment_id = str(uuid.uuid4())
-    db.execute(
-        """
-        INSERT INTO persistent_assignment (
-            id, owner_user_id, submission_id, submission_digest, lifecycle,
-            state_version, data
-        ) VALUES (?, ?, ?, ?, ?, 1, ?::jsonb)
-        """,
-        (
-            assignment_id,
-            owner,
-            str(uuid.uuid4()),
-            "a" * 64,
-            lifecycle,
-            f'{{"lifecycle": "{lifecycle}", "state_version": 1}}',
-        ),
-    )
-    return assignment_id
-
-
-def _set_lifecycle(db: PlaneTestRuntime, assignment_id: str, lifecycle: str) -> None:
-    db.execute(
-        "UPDATE persistent_assignment SET lifecycle = ?, "
-        "data = jsonb_set(data, '{lifecycle}', to_jsonb(?::text)) WHERE id = ?",
-        (lifecycle, lifecycle, assignment_id),
-    )
-
-
 def _claim_one(store: ScheduledJobStore, instance: str, *, job_id: str):
     claims = store.materialize_and_claim_due(instance, limit=10)
     matches = [claim for claim in claims if str(claim.job["id"]) == job_id]
     assert len(matches) == 1, f"expected exactly one claim for {job_id}, got {claims}"
     return matches[0]
-
-
-def _run_now(store: ScheduledJobStore, *, owner: str, job_id: str) -> None:
-    store.materialize_run_now(
-        user_id=owner,
-        job_id=job_id,
-        submission_id=uuid.uuid4(),
-        eligibility=lambda _job: True,
-    )
 
 
 def test_get_job_policy_is_none_for_a_legacy_job(clean_database: PlaneTestRuntime) -> None:
@@ -215,116 +175,6 @@ def test_set_job_policy_validates_bounds_before_any_sql(
     assert store.get_job_policy("owner-policy-bounds", str(job["id"])) is None
 
 
-def test_admit_episode_admits_then_replays_idempotently(
-    clean_database: PlaneTestRuntime,
-) -> None:
-    store = ScheduledJobStore(clean_database)
-    owner = "owner-admit-replay"
-    job = _job(store, owner=owner, label="admit-replay")
-    job_id = str(job["id"])
-    store.set_job_policy(owner, job_id, max_runs=None, monitor_changes=False, expected_version=0)
-    assignment_id = _assignment(clean_database, owner=owner)
-    claim = _claim_one(store, "admit-replay", job_id=job_id)
-
-    admitted = store.admit_episode(claim, assignment_id=assignment_id)
-    assert admitted.admitted is True
-    assert admitted.created is True
-    assert admitted.reason == "admitted"
-    assert str(admitted.assignment_id) == assignment_id
-    assert admitted.policy["admitted_runs"] == 1
-
-    replay = store.admit_episode(claim, assignment_id=assignment_id)
-    assert replay.admitted is True
-    assert replay.created is False
-    assert replay.reason == "replayed"
-    assert replay.policy["admitted_runs"] == 1
-
-    binding = clean_database.fetch_one(
-        "SELECT assignment_id FROM scheduled_occurrence_assignment WHERE occurrence_id = ?",
-        (str(claim.occurrence_id),),
-    )
-    assert str(binding["assignment_id"]) == assignment_id
-
-
-def test_admit_episode_refuses_a_second_outstanding_episode_and_charges_nothing(
-    clean_database: PlaneTestRuntime,
-) -> None:
-    store = ScheduledJobStore(clean_database)
-    owner = "owner-outstanding"
-    job = _job(store, owner=owner, label="outstanding", due=False)
-    job_id = str(job["id"])
-    store.set_job_policy(owner, job_id, max_runs=None, monitor_changes=False, expected_version=0)
-    assignment_a = _assignment(clean_database, owner=owner)
-    assignment_b = _assignment(clean_database, owner=owner)
-
-    _run_now(store, owner=owner, job_id=job_id)
-    _run_now(store, owner=owner, job_id=job_id)
-    claims = store.materialize_and_claim_due("outstanding", limit=10)
-    assert len(claims) == 2
-    claim_one, claim_two = claims
-
-    first = store.admit_episode(claim_one, assignment_id=assignment_a)
-    assert first.admitted is True
-
-    refused = store.admit_episode(claim_two, assignment_id=assignment_b)
-    assert refused.admitted is False
-    assert refused.reason == "episode_outstanding"
-    assert refused.policy["admitted_runs"] == 1
-
-    _set_lifecycle(clean_database, assignment_a, "completed")
-    second = store.admit_episode(claim_two, assignment_id=assignment_b)
-    assert second.admitted is True
-    assert second.reason == "admitted"
-    assert second.policy["admitted_runs"] == 2
-
-
-def test_admit_episode_refuses_when_allowance_is_exhausted(
-    clean_database: PlaneTestRuntime,
-) -> None:
-    store = ScheduledJobStore(clean_database)
-    owner = "owner-exhausted"
-    job = _job(store, owner=owner, label="exhausted", due=False)
-    job_id = str(job["id"])
-    store.set_job_policy(owner, job_id, max_runs=1, monitor_changes=False, expected_version=0)
-    assignment_a = _assignment(clean_database, owner=owner)
-    assignment_b = _assignment(clean_database, owner=owner)
-
-    _run_now(store, owner=owner, job_id=job_id)
-    claim_one = _claim_one(store, "exhausted-1", job_id=job_id)
-    admitted = store.admit_episode(claim_one, assignment_id=assignment_a)
-    assert admitted.admitted is True
-    _set_lifecycle(clean_database, assignment_a, "completed")
-
-    _run_now(store, owner=owner, job_id=job_id)
-    claim_two = _claim_one(store, "exhausted-2", job_id=job_id)
-    refused = store.admit_episode(claim_two, assignment_id=assignment_b)
-    assert refused.admitted is False
-    assert refused.reason == "allowance_exhausted"
-    assert refused.policy["admitted_runs"] == 1
-
-
-def test_admit_episode_refuses_after_terminal_stop_of_a_running_claim(
-    clean_database: PlaneTestRuntime,
-) -> None:
-    coordinator = _coordinator(clean_database)
-    store = ScheduledJobStore(clean_database, coordinator=coordinator)
-    owner = "owner-stop-admit"
-    job = _job(store, owner=owner, label="stop-admit")
-    job_id = str(job["id"])
-    store.set_job_policy(owner, job_id, max_runs=None, monitor_changes=False, expected_version=0)
-    assignment_id = _assignment(clean_database, owner=owner)
-    claim = _claim_one(store, "stop-admit", job_id=job_id)
-    attempt = store.start_attempt(store.allocate_attempt(claim), lease_seconds=15)
-
-    outcome = store.stop_job(owner, job_id, expected_version=1)
-    assert outcome.stopped is True
-
-    refused = store.admit_episode(attempt.claim, assignment_id=assignment_id)
-    assert refused.admitted is False
-    assert refused.reason == "terminal_stop"
-    assert refused.policy["admitted_runs"] == 0
-
-
 def test_stop_job_cancels_unstarted_occurrence_and_blocks_the_next_scan(
     clean_database: PlaneTestRuntime,
 ) -> None:
@@ -348,7 +198,7 @@ def test_stop_job_cancels_unstarted_occurrence_and_blocks_the_next_scan(
     assert store.materialize_and_claim_due("stop-scan-again", limit=50) == ()
 
 
-def test_stop_job_is_idempotent_and_repeats_the_same_outstanding_families(
+def test_stop_job_is_idempotent(
     clean_database: PlaneTestRuntime,
 ) -> None:
     store = ScheduledJobStore(clean_database)
@@ -356,18 +206,13 @@ def test_stop_job_is_idempotent_and_repeats_the_same_outstanding_families(
     job = _job(store, owner=owner, label="stop-idempotent")
     job_id = str(job["id"])
     store.set_job_policy(owner, job_id, max_runs=None, monitor_changes=False, expected_version=0)
-    assignment_id = _assignment(clean_database, owner=owner)
-    claim = _claim_one(store, "stop-idempotent", job_id=job_id)
-    admitted = store.admit_episode(claim, assignment_id=assignment_id)
-
-    first = store.stop_job(owner, job_id, expected_version=admitted.policy["version"])
+    first = store.stop_job(owner, job_id, expected_version=1)
     assert first.stopped is True
-    assert {str(v) for v in first.outstanding_assignment_ids} == {assignment_id}
+    assert first.outstanding_assignment_ids == ()
 
     second = store.stop_job(owner, job_id, expected_version=first.policy["version"])
     assert second.stopped is False
-    assert {str(v) for v in second.outstanding_assignment_ids} == {assignment_id}
-    assert second.policy["admitted_runs"] == 1
+    assert second.outstanding_assignment_ids == ()
 
 
 def test_stop_job_refuses_stale_version_and_missing_policy(
@@ -386,53 +231,3 @@ def test_stop_job_refuses_stale_version_and_missing_policy(
     with pytest.raises(ScheduleActionError) as excinfo:
         store.stop_job(owner, job_id, expected_version=99)
     assert excinfo.value.code == "schedule_policy_version_conflict"
-
-
-def _recording_orchestrator():
-    calls: dict[str, list] = {"turns": [], "notifications": []}
-
-    async def run_scheduled_turn(**kwargs):
-        calls["turns"].append(kwargs)
-        scheduled_store = kwargs.get("scheduled_store")
-        if scheduled_store is not None:
-            scheduled_store.publish_effect(
-                kwargs["scheduled_attempt"],
-                effect_kind=kwargs["effect_kind"],
-                effect_key=kwargs["effect_key"],
-                payload_digest=kwargs["payload_digest"],
-            )
-        return "durable scheduled result"
-
-    async def notify_user(user_id, payload):
-        calls["notifications"].append((user_id, payload))
-
-    async def get_system():
-        return {"provider": "test"}
-
-    from types import SimpleNamespace
-
-    orchestrator = SimpleNamespace(
-        run_scheduled_turn=run_scheduled_turn,
-        notify_user=notify_user,
-        tool_permissions=SimpleNamespace(get_agent_scopes=lambda *_: {}),
-        _llm_store=SimpleNamespace(get_system=get_system),
-    )
-    return orchestrator, calls
-
-
-class _ValidGrants:
-    def latest_valid_for(self, user_id, agent_id):
-        return "grant-policy-088"
-
-    def is_valid(self, grant_id, *, user_id):
-        return True
-
-    async def mint_access_token(self, grant_id, *, user_id):
-        return "test-access-token"
-
-
-def test_default_monitoring_dispatcher_reuses_the_bound_assignment_and_refuses_when_unbound() -> None:
-    assert default_monitoring_dispatcher(object(), {"id": "job-1"}, "assignment-1") == "assignment-1"
-    with pytest.raises(ScheduleActionError) as excinfo:
-        default_monitoring_dispatcher(object(), {"id": "job-1"}, None)
-    assert excinfo.value.code == "monitoring_assignment_unbound"

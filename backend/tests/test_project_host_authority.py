@@ -199,24 +199,6 @@ async def test_sessions_rotate_for_origin_binding_changes_and_requests_are_stamp
 
 
 @pytest.mark.asyncio
-async def test_standing_project_consent_with_bypass_off_and_direct_grant_denials(monkeypatch):
-    api, orch, ws, host, _, _ = setup(monkeypatch)
-    from orchestrator.computer_sessions import ComputerSessionManager
-    from orchestrator.hitl_confirmation import consent_decision
-
-    orch.computer_sessions = ComputerSessionManager(orch, orch.computer_hosts)
-    args = {"computer": HOST, "path": "/tmp/project/a"}
-    assert consent_decision(orch, ws, OWNER, "chat", "computer-use-1", "write_file", args, ())[0] == "refuse"
-    async with api.project_dispatch_scope(orch, ws, OWNER, "chat", "computer-use-1", "write_file", args):
-        for verb in ("write_file", "read_file", "start_session", "end_session"):
-            assert consent_decision(orch, ws, OWNER, "chat", "computer-use-1", verb, args, ())[0] == "standing"
-        assert consent_decision(orch, ws, OWNER, "chat", "computer-use-1", "click", {"computer": HOST}, ())[0] == "review"
-        assert consent_decision(orch, ws, OWNER, "chat", "computer-use-1", "run_command",
-            {"computer": HOST, "command": "sudo whoami", "cwd": "/tmp/project"}, ())[0] == "refuse"
-    async with api.project_dispatch_scope(orch, ws, OWNER, "other-chat", "computer-use-1", "list_computers", args):
-        assert consent_decision(orch, ws, OWNER, "other-chat", "computer-use-1", "write_file", args, ())[0] == "refuse"
-
-@pytest.mark.asyncio
 async def test_deleted_project_invalidates_host_entry_and_live_session(monkeypatch):
     api, orch, ws, host, chats, projects = setup(monkeypatch)
     origin = await api.resolve_project_origin(orch, OWNER, "chat", host)

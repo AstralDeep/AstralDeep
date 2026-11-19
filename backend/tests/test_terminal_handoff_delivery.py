@@ -1,111 +1,12 @@
-"""Checks terminal handoffs retire after failed authentication or card delivery.
-The ordinary ASGI route and UI sender retain current owner registration and delivery outcomes.
-"""
+"""Checks the UI sender reports delivery and dispatch suppression while preserving chat fanout."""
 
-import asyncio
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-import httpx
 import pytest
-from fastapi import FastAPI, HTTPException
 
-from orchestrator import remote_confirmation as rc, terminal_api, terminal_approvals as approvals
 from orchestrator.orchestrator import Orchestrator
-from shared.protocol import MCPResponse
-from tests.test_terminal_approvals import fixture as fixture
-
-
-@pytest.fixture
-def handoff(fixture, monkeypatch):
-    app = FastAPI()
-    app.state.orchestrator = fixture.orch
-    app.dependency_overrides[terminal_api._owner_claims] = lambda: fixture.claims
-    app.include_router(terminal_api.terminal_router)
-    monkeypatch.setattr(terminal_api, "require_terminal_execution", lambda *a: None)
-    monkeypatch.setattr(terminal_api, "get_web_or_bearer_user_payload", AsyncMock(return_value=fixture.claims))
-    fixture.orch.send_ui_render = AsyncMock(return_value=True)
-    fixture.orch.execute_single_tool = AsyncMock(
-        return_value=MCPResponse(result={"session": {"session_id": "must-not-execute"}}))
-    state = {}
-
-    async def dispatch(**kwargs):
-        state["request"] = approvals.current_request(fixture.orch, "owner", "start_terminal")
-        state["arguments"] = dict(kwargs["arguments"])
-        result = rc.evaluate(fixture.orch, None, kwargs["agent_id"], kwargs["tool_name"],
-                             kwargs["arguments"], None, kwargs["user_id"])
-        state["card"] = result[1][0]
-        return MCPResponse(result={"_data": {"status": "confirmation_required"}}, ui_components=result[1])
-
-    fixture.orch.execute_authorized_tool = dispatch
-    return SimpleNamespace(app=app, fixture=fixture, state=state)
-
-
-@pytest.mark.asyncio
-async def test_create_handoff_preserves_explicit_target_and_directory(handoff):
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(handoff.app), base_url="https://terminal.invalid") as client:
-        response = await client.post("/api/terminals", json={
-            "target": "b" * 32, "directory": "/srv/project", "command": "pwd"})
-    assert response.status_code == 202
-    assert handoff.state["arguments"] == {
-        "cols": 80, "rows": 24, "command": "pwd", "target": "b" * 32,
-        "directory": "/srv/project",
-    }
-    assert handoff.state["card"]["content"][-2]["payload"]
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("failure", ["authentication", "verification", "cancel_authentication", "cancel_send"])
-async def test_interrupted_http_request_retires_proposal_before_later_decision(handoff, monkeypatch, failure):
-    cancelled = failure.startswith("cancel_")
-    error = asyncio.CancelledError() if cancelled else HTTPException(401, "Not authenticated")
-    if failure in {"authentication", "cancel_authentication"}:
-        monkeypatch.setattr(terminal_api, "get_web_or_bearer_user_payload", AsyncMock(side_effect=error))
-    elif failure == "verification":
-        monkeypatch.setattr(terminal_api, "verify_user", AsyncMock(side_effect=error))
-    else:
-        handoff.fixture.orch.send_ui_render.side_effect = error
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(handoff.app), base_url="https://terminal.invalid") as client:
-        if cancelled:
-            with pytest.raises(asyncio.CancelledError):
-                await client.post("/api/terminals", json={})
-        else:
-            assert (await client.post("/api/terminals", json={})).status_code == 401
-    request = handoff.state["request"]
-    assert request.status == "failed"
-    assert request.error == "terminal_dispatch_unavailable"
-    fixture = handoff.fixture
-    fixture.orch.send_ui_render = AsyncMock(return_value=True)
-    await rc.handle_decision(fixture.orch, fixture.socket, "owner", handoff.state["card"]["content"][-2]["payload"])
-    fixture.orch.execute_single_tool.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("outcome", ["false", "none", "replaced", "removed", "expired"])
-async def test_card_requires_positive_delivery_and_same_current_owner_registration(handoff, outcome):
-    fixture = handoff.fixture
-
-    async def send(*args, **kwargs):
-        if outcome == "replaced":
-            fixture.orch.ui_sessions[fixture.socket] = dict(fixture.claims)
-        elif outcome == "removed":
-            fixture.orch.ui_sessions.pop(fixture.socket)
-        elif outcome == "expired":
-            fixture.claims["exp"] = 0
-        return False if outcome == "false" else None if outcome == "none" else True
-
-    fixture.orch.send_ui_render.side_effect = send
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(handoff.app), base_url="https://terminal.invalid") as client:
-        response = await client.post("/api/terminals", json={})
-    assert response.status_code == 409
-    expected = ("terminal_review_context_required" if outcome in {"replaced", "removed", "expired"}
-                else "terminal_human_session_required")
-    assert response.json() == {"error": expected}
-    assert handoff.state["request"].status == "failed"
-    fixture.orch.send_ui_render = AsyncMock(return_value=True)
-    await rc.handle_decision(fixture.orch, fixture.socket, "owner", handoff.state["card"]["content"][-2]["payload"])
-    fixture.orch.execute_single_tool.assert_not_awaited()
 
 
 @pytest.mark.asyncio

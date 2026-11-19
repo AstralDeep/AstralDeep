@@ -106,3 +106,31 @@ async def test_store_transaction_contract_and_bounded_errors():
     assert AssignmentStore(orch).repository is repo
 
 
+
+
+@pytest.mark.asyncio
+async def test_retired_create_preserves_owner_receipts_and_refuses_new_work_before_tool_checks():
+    import hashlib
+    from uuid import UUID
+    from persistent_agents.models import CreateAssignmentRequest, digest
+    from persistent_agents.service import AssignmentService
+    from persistent_agents.tests.test_models import create_payload
+
+    request = CreateAssignmentRequest.model_validate(create_payload())
+    store = MemoryStore()
+    service = AssignmentService(object(), store=store, enabled=True, phi_gate=object())
+    claims = {"sub": "owner"}
+    with pytest.raises(AssignmentError, match="turn_engine_retired") as refused:
+        await service.create("owner", claims, request)
+    assert refused.value.status_code == 410
+    assert [call[0] for call in store.calls] == ["get_submission_receipt"]
+
+    assignment_id = str(UUID(bytes=hashlib.sha256(f"owner\0{request.submission_id}".encode()).digest()[:16], version=4))
+    key = ("owner", assignment_id)
+    retained = object()
+    store.receipts[key] = digest(request.model_dump())
+    store.records[key] = retained
+    assert await service.create("owner", claims, request) is retained
+    with pytest.raises(AssignmentError, match="assignment_owner_required"):
+        await service.create("other", claims, request)
+    assert [call[0] for call in store.calls] == ["get_submission_receipt", "get_submission_receipt"]

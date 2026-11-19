@@ -2,7 +2,7 @@
   "tools": [
     {
       "name": "astral_submit_operation",
-      "description": "Submit one chat-kind Work operation for the credential's owner.",
+      "description": "Replay a previously accepted Work submission to retrieve its existing operation.",
       "inputSchema": {
         "type": "object",
         "required": [

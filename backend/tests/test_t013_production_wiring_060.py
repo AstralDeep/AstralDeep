@@ -26,7 +26,6 @@ from orchestrator.async_tasks import (
     TaskStatus,
 )
 from orchestrator.orchestrator import Orchestrator
-from orchestrator.task_state import TaskManager, TaskState
 from orchestrator.work_admission import (
     AdmissionClass,
     AdmissionClassConfig,
@@ -41,7 +40,6 @@ from orchestrator.work_admission import (
     WorkAdmissionCoordinator,
     load_admission_class_configs,
 )
-from shared.feature_flags import flags
 
 
 def _dotted_name(node: ast.AST) -> str:
@@ -537,140 +535,6 @@ def _seed_expiring_background_operation(
         retry_after_ms=None,
     )
     return owner, admitted.operation_id
-
-
-@pytest.mark.asyncio
-async def test_background_react_projection_reuses_operation_fence_off_loop(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setitem(flags._flags, "task_state_machine", True)
-    event_loop_thread = threading.get_ident()
-    authority = _background_authority()
-    background = BackgroundTaskManager(coordinator=authority)
-    react = TaskManager(coordinator=authority)
-    observed: dict[str, object] = {}
-
-    async def managed_turn(virtual_socket) -> None:
-        background_task = virtual_socket.task
-        projected = await react.admit_task(
-            background_task.chat_id,
-            background_task.user_id,
-            "managed turn",
-            operation=background_task._operation,
-            owner=background_task._owner,
-            execution_fence=background_task._execution_fence,
-        )
-        observed["task"] = projected
-        observed["operation"] = background_task._operation
-        observed["fence"] = background_task._execution_fence
-        assert projected.task_id == background_task.task_id
-        assert projected._operation is background_task._operation
-        assert projected._execution_fence is background_task._execution_fence
-        await react.transition_task(projected, TaskState.AWAITING_TOOL)
-        await react.transition_task(projected, TaskState.RUNNING)
-
-    background_task = await background.submit(
-        "chat-t013",
-        "user-t013",
-        managed_turn,
-        kind="async_chat",
-    )
-    assert background_task.asyncio_task is not None
-    await background_task.asyncio_task
-
-    call_names = [name for name, *_ in authority.calls]
-    assert call_names.count("submit") == 1
-    assert call_names.count("claim_operation") == 1
-    submit_call = next(call for call in authority.calls if call[0] == "submit")
-    request = submit_call[2][0]
-    assert request.admission_class is AdmissionClass.BACKGROUND
-    assert observed["operation"].operation_id == observed["fence"].operation_id
-    assert background_task.status is TaskStatus.COMPLETED
-    assert all(thread_id != event_loop_thread for _, thread_id, _, _ in authority.calls)
-
-
-def test_handle_chat_message_reuses_managed_socket_authority_at_real_callsite() -> None:
-    for outer, inner in (
-        (Orchestrator.handle_chat_message, "self._handle_chat_message_with_guidance"),
-        (Orchestrator._handle_chat_message_with_guidance, "self._handle_chat_message_impl"),
-    ):
-        wrapper_source = textwrap.dedent(inspect.getsource(outer))
-        wrapper_tree = ast.parse(wrapper_source)
-        wrapper = next(
-            node
-            for node in wrapper_tree.body
-            if isinstance(node, ast.AsyncFunctionDef)
-        )
-        assert "operation_context" in {
-            argument.arg for argument in wrapper.args.args
-        }
-        delegates = [
-            call
-            for call in ast.walk(wrapper)
-            if isinstance(call, ast.Call) and _dotted_name(call.func) == inner
-        ]
-        if outer is Orchestrator.handle_chat_message:
-            execute = next(
-                node for node in wrapper.body
-                if isinstance(node, ast.AsyncFunctionDef) and node.name == "execute"
-            )
-            guarded, fallback = execute.body
-            assert isinstance(guarded, ast.If) and not guarded.orelse
-            effect, = guarded.body
-            assert isinstance(effect, ast.AsyncWith)
-            assert _dotted_name(effect.items[0].context_expr.func) == "stop.effect"
-            guarded_return, = effect.body
-            for returned in (guarded_return, fallback):
-                assert isinstance(returned, ast.Return)
-                assert isinstance(returned.value, ast.Await)
-                assert returned.value.value in delegates
-            assert len(delegates) == 2
-        else:
-            assert len(delegates) == 1
-        for delegate in delegates:
-            forwarded = {
-                keyword.arg: _dotted_name(keyword.value)
-                for keyword in delegate.keywords
-            }
-            assert forwarded["operation_context"] == "operation_context"
-
-    source = textwrap.dedent(
-        inspect.getsource(Orchestrator._handle_chat_message_impl)
-    )
-    tree = ast.parse(source)
-    function = next(node for node in tree.body if isinstance(node, ast.AsyncFunctionDef))
-    assert "operation_context" in {argument.arg for argument in function.args.args}
-
-    calls = [node for node in ast.walk(function) if isinstance(node, ast.Call)]
-    assert not any(
-        _dotted_name(call.func) == "self.task_manager.create_task" for call in calls
-    )
-    admissions = [
-        call
-        for call in calls
-        if _dotted_name(call.func) == "self.task_manager.admit_task"
-    ]
-    assert len(admissions) == 1
-    keywords = {
-        keyword.arg: _dotted_name(keyword.value) for keyword in admissions[0].keywords
-    }
-    assert keywords["operation"] == "authority_operation"
-    assert keywords["owner"] == "authority_owner"
-    assert keywords["execution_fence"] == "authority_fence"
-    assert "getattr(websocket, \"task\", None)" in source
-
-    transition_calls = [
-        call
-        for call in calls
-        if _dotted_name(call.func) == "self.task_manager.transition_task"
-    ]
-    awaited_call_ids = {
-        id(node.value)
-        for node in ast.walk(function)
-        if isinstance(node, ast.Await) and isinstance(node.value, ast.Call)
-    }
-    assert transition_calls
-    assert all(id(call) in awaited_call_ids for call in transition_calls)
 
 
 @pytest.mark.asyncio

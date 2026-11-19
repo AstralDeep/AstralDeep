@@ -12,7 +12,7 @@ This is the single repository instruction file for all coding agents, including 
 
 ## Mental model
 
-AstralDeep is a clinical-AI, multi-agent platform whose FastAPI orchestrator is a node in an owner's personal mesh. Peers embed the shared Rust AstralKernel for signed event logs, sync, authorization, turns and adaptation; AstralPlane supplies SQLite for personal nodes and PostgreSQL where a node is configured for it, as in development and CI. The orchestrator serves REST and the WebSocket/A2A transport on port 8001. It hosts no web shell, static assets or web chat. Clients run turns on the embedded Kernel engine. Bundled first-party agents retain their runtime authorization and audit gates regardless of transport placement.
+AstralDeep is a clinical-AI, multi-agent platform whose FastAPI orchestrator is a node in an owner's personal mesh. Peers embed the shared Rust AstralKernel for signed event logs, sync, authorization, turns and adaptation; AstralPlane supplies SQLite for personal nodes and PostgreSQL where a node is configured for it, as in development and CI. The orchestrator serves REST and the WebSocket/A2A transport on port 8001. The Kernel engine is the only turn engine: every client runs turns on it, a node answers a mesh request with `kernel.answer_request`, and no Python code runs a model-and-tool turn. A web shell is a possible application-layer client, not part of the node, and the node hosts none. Bundled first-party agents retain their runtime authorization and audit gates regardless of transport placement.
 
 The UI contract is:
 
@@ -23,7 +23,8 @@ The base is AstralKernel, AstralDeep, AstralPlane, LETS and ROTE, distributed as
 The evidence control adapter depends on the orchestrator's private ephemeral archive and stays host-bound. It has no standalone transport process; disabling in-process registration preserves complete source responses and makes its inspection commands unavailable.
 
 - There is no React/Vite SPA. Do not reintroduce a parallel frontend source of truth.
-- Deep hosts no web UI. Projection still owns the web rendering code under `components/AstralProjection/backend/webrender/`, and Deep reads it only through the installed Projection resource accessors.
+- Deep hosts no web UI. Projection owns the web rendering code under `components/AstralProjection/backend/webrender/` for a later web client, and Deep reads it only through the installed Projection resource accessors.
+- The node is an executor for tool calls. A call reaches `Orchestrator.execute_authorized_tool` only with a verified Kernel ticket or caller ticket, and an action that needs approval runs only when the Kernel ticket carries it. `backend/tests/test_single_turn_engine.py` lists every module that may start a turn, call a model or enter protected dispatch, and a new one fails it until it is listed with a reason.
 - Apple clients (Swift/SwiftUI) embed the kernel and render structured UI from their local signed log. Android and Windows are paused until their kernel ports qualify and open to a "not available yet" screen.
 - Voice runs on-device through the same turn and consent gates as typed input; no hosted-voice or system-speech fallback may silently substitute for an unavailable local model.
 - "LLM proposes, code decides" is the default design rule: models may draft layouts or artifacts, but deterministic code validates, authorizes, bounds, and renders them.

@@ -1,6 +1,5 @@
-"""Tests for scheduler/runner.py and orchestrator/chain_authority.py: a scheduled run
-derives authority narrowed to consented-and-current scopes so tools dispatch
-delegated, pausing with one notification when authority can't be derived.
+"""Tests for orchestrator/chain_authority.py: machine turns derive authority narrowed to
+consented-and-current scopes, and unbound or over-broad delegation chains are refused.
 """
 
 from __future__ import annotations
@@ -16,79 +15,7 @@ import pytest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from orchestrator.chain_authority import MachineAuthority  # noqa: E402
-from scheduler.runner import JobRunner  # noqa: E402
 from shared.protocol import MCPResponse  # noqa: E402
-
-
-def _job(**over):
-    j = {
-        "id": "job-1", "user_id": "u1", "name": "arXiv sweep",
-        "instruction": "check arXiv for new SDUI papers",
-        "agent_id": "web-research-1", "consented_scopes": ["tools:read", "tools:search"],
-        "offline_grant_id": "grant-1", "schedule_kind": "cron",
-        "schedule_expr": "0 8 * * *", "timezone": "UTC",
-        "target_chat_id": "c1", "status": "active",
-    }
-    j.update(over)
-    return j
-
-
-def _store():
-    st = MagicMock()
-    st.start_run = MagicMock(return_value="run-1")
-    st.finish_run = MagicMock()
-    st.set_status = MagicMock()
-    st.update_after_run = MagicMock()
-    return st
-
-
-def _orch(current_scopes=None):
-    scopes = ({"tools:read": True, "tools:search": True}
-              if current_scopes is None else current_scopes)
-    o = MagicMock()
-    o.tool_permissions.get_agent_scopes = MagicMock(return_value=dict(scopes))
-    o.tool_permissions.get_enabled_scope_names = MagicMock(
-        return_value=[s for s, on in scopes.items() if on])
-    o.run_scheduled_turn = AsyncMock(return_value="did the thing")
-    o.notify_user = AsyncMock()
-    return o
-
-
-@pytest.mark.asyncio
-async def test_a_scheduled_run_without_durable_consent_dispatches_nothing_and_pauses():
-    orch, store = _orch(), _store()
-    outcome = await JobRunner(orch, store).run_job(_job())
-    assert outcome == "skipped_auth"
-    orch.run_scheduled_turn.assert_not_awaited()
-    assert store.finish_run.call_args.kwargs["outcome"] == "skipped_auth"
-    store.set_status.assert_called_once_with("u1", "job-1", "paused")
-    orch.notify_user.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_a_job_with_no_consent_reference_skips():
-    orch, store = _orch(), _store()
-    outcome = await JobRunner(orch, store).run_job(_job(offline_grant_id=None))
-    assert outcome == "skipped_auth"
-    orch.run_scheduled_turn.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_a_job_whose_scopes_are_all_revoked_skips():
-    orch = _orch(current_scopes={"tools:read": False, "tools:search": False})
-    store = _store()
-    outcome = await JobRunner(orch, store).run_job(_job())
-    assert outcome == "skipped_auth"
-    orch.run_scheduled_turn.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_repeated_skips_pause_with_one_notification():
-    orch, store = _orch(), _store()
-    runner = JobRunner(orch, store)
-    for _ in range(4):
-        assert await runner.run_job(_job()) == "skipped_auth"
-    assert orch.notify_user.await_count == 1
 
 
 @pytest.fixture

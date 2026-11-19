@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -11,7 +10,6 @@ from types import SimpleNamespace
 from cryptography.fernet import Fernet
 
 from astralplane import create_repository_catalog
-from astralplane.repositories.chat_steps import ChatStepRecord, ChatStepStatus
 from astralplane.repositories.agents import AgentOwnershipRecord
 from astralplane.repositories.credentials import (
     CredentialRecord,
@@ -26,7 +24,6 @@ from astralplane.repositories.share_grants import ShareGrantRecord
 from orchestrator import remote_machines
 from orchestrator.api import list_agents, set_agent_visibility
 from orchestrator.artifact_share import ShareGrantStore, hash_token
-from orchestrator.chat_steps import ChatStepRecorder
 from orchestrator.credential_manager import CredentialManager
 from orchestrator.tool_permissions import ToolPermissionManager
 from orchestrator.models import AgentVisibilityRequest
@@ -211,48 +208,6 @@ class _OfflineGrants:
                 )
                 count += 1
         return count
-
-
-class _ChatSteps:
-    def __init__(self) -> None:
-        self.values: dict[str, ChatStepRecord] = {}
-
-    def create_step(self, _transaction, **values):
-        record = ChatStepRecord(
-            step_id=values["step_id"],
-            conversation_id=values["conversation_id"],
-            owner_id=values["owner_id"],
-            turn_message_id=values["turn_message_id"],
-            kind=values["kind"],
-            name=values["name"],
-            status=ChatStepStatus.IN_PROGRESS,
-            args_truncated=values["args_truncated"],
-            args_was_truncated=values["args_was_truncated"],
-            result_summary=None,
-            result_was_truncated=False,
-            error_message=None,
-            started_at=values["started_at"],
-            ended_at=None,
-        )
-        self.values[record.step_id] = record
-        return record
-
-    def get_step(self, _transaction, **values):
-        record = self.values.get(values["step_id"])
-        return record if record is not None and record.owner_id == values["owner_id"] else None
-
-    def finish_step(self, _transaction, **values):
-        record = self.values[values["step_id"]]
-        updated = replace(
-            record,
-            status=ChatStepStatus(values["status"]),
-            result_summary=values["result_summary"],
-            result_was_truncated=values["result_was_truncated"],
-            error_message=values["error_message"],
-            ended_at=values["ended_at"],
-        )
-        self.values[updated.step_id] = updated
-        return updated
 
 
 class _Remote:
@@ -487,31 +442,6 @@ def test_credential_adapter_preserves_owner_scope(monkeypatch) -> None:
     assert manager.get_credential("alice", "agent-a", "TOKEN") == "secret"
     assert manager.get_credential("bob", "agent-a", "TOKEN") is None
     assert manager.list_credential_keys("alice", "agent-a") == ["TOKEN"]
-
-
-def test_chat_step_adapter_emits_canonical_plane_state() -> None:
-    repository = _ChatSteps()
-    sent: list[dict] = []
-
-    async def safe_send(_websocket, payload: str) -> None:
-        sent.append(json.loads(payload))
-
-    recorder = ChatStepRecorder(
-        db=_Database(chat_steps=repository),
-        websocket=object(),
-        safe_send=safe_send,
-        chat_id="chat-a",
-        user_id="alice",
-        plane_repository=repository,
-    )
-    step_id = asyncio.run(recorder.start("tool_call", "lookup", {"q": "safe"}))
-    asyncio.run(recorder.complete(step_id, {"ok": True}))
-
-    assert repository.values[step_id].status is ChatStepStatus.COMPLETED
-    assert [event["step"]["status"] for event in sent] == [
-        "in_progress",
-        "completed",
-    ]
 
 
 def test_remote_machine_adapter_uses_typed_owner_scoped_repository(monkeypatch) -> None:

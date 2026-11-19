@@ -1,4 +1,4 @@
-"""Real PostgreSQL coverage for goal-aware conversation publication and work state."""
+"""Real PostgreSQL coverage for conversation publication and work state."""
 
 from __future__ import annotations
 
@@ -128,39 +128,6 @@ def _operation_state(
     )
 
 
-def _voice_stage(
-    database: PlaneTestRuntime,
-    repository: ConversationCommitRepository,
-    coordinator: WorkAdmissionCoordinator,
-):
-    chat_id = str(uuid.uuid4())
-    _create_chat(database, chat_id)
-    owner, connection_generation, claim = _claim(
-        coordinator,
-        chat_id=chat_id,
-        admission_class=AdmissionClass.VOICE_INTERACTIVE,
-    )
-    result = repository.accept_voice_turn(
-        chat_id=chat_id,
-        owner_user_id=OWNER,
-        request_generation=claim.operation.request_generation,
-        result_request_generation=uuid.uuid4(),
-        connection_generation=connection_generation,
-        user_content="question",
-        operation_fence=claim.fence,
-        operation_owner=owner,
-        accept_turn=lambda **_: None,
-    )
-    repository.append_staged_message(
-        commit_id=result["result"]["commit_id"],
-        owner_user_id=OWNER,
-        role="assistant",
-        content="Useful partial answer",
-        operation_fence=claim.fence,
-    )
-    return chat_id, owner, claim, result["result"]
-
-
 def test_failed_publication_keeps_partial_conversation_and_terminalizes_operation(
     database: PlaneTestRuntime,
 ) -> None:
@@ -204,39 +171,6 @@ def test_failed_publication_keeps_partial_conversation_and_terminalizes_operatio
     assert operation.safe_summary == "Request incomplete; conversation committed"
 
 
-def test_voice_result_publication_can_commit_partial_answer_as_failed(
-    database: PlaneTestRuntime,
-) -> None:
-    coordinator = _coordinator(database)
-    repository = _repository(database, coordinator)
-    chat_id, owner, claim, staged = _voice_stage(database, repository, coordinator)
-
-    committed = repository.publish_voice_result(
-        commit_id=staged["commit_id"],
-        owner_user_id=OWNER,
-        canvas_components=[],
-        canvas_layouts=[],
-        operation_fence=claim.fence,
-        completion_state="failed",
-    )
-
-    assert committed["state"] == "committed"
-    operation = _operation_state(coordinator, owner, claim)
-    assert operation.state is OperationState.FAILED
-    assert operation.terminal_code == "goal_incomplete"
-    snapshot = repository.build_snapshot(
-        chat_id=chat_id,
-        owner_user_id=OWNER,
-        connection_generation=uuid.uuid4(),
-        request_generation=staged["request_generation"],
-        snapshot_purpose="commit",
-    )
-    assert [part["text"] for message in snapshot["transcript"] for part in message["parts"]] == [
-        "question",
-        "Useful partial answer",
-    ]
-
-
 def test_atomic_publication_can_commit_partial_answer_as_cancelled(
     database: PlaneTestRuntime,
 ) -> None:
@@ -278,66 +212,6 @@ def test_atomic_publication_can_commit_partial_answer_as_cancelled(
     assert snapshot["transcript"][0]["parts"] == [
         {"type": "text", "text": "Cancelled after progress"}
     ]
-
-
-def test_voice_result_publication_can_commit_partial_answer_as_cancelled(
-    database: PlaneTestRuntime,
-) -> None:
-    coordinator = _coordinator(database)
-    repository = _repository(database, coordinator)
-    chat_id, owner, claim, staged = _voice_stage(database, repository, coordinator)
-
-    committed = repository.publish_voice_result(
-        commit_id=staged["commit_id"],
-        owner_user_id=OWNER,
-        canvas_components=[],
-        canvas_layouts=[],
-        operation_fence=claim.fence,
-        completion_state="cancelled",
-    )
-
-    assert committed["state"] == "committed"
-    operation = _operation_state(coordinator, owner, claim)
-    assert operation.state is OperationState.CANCELLED
-    assert operation.terminal_code == "goal_cancelled"
-    assert operation.safe_summary == "Request cancelled; conversation committed"
-    snapshot = repository.build_snapshot(
-        chat_id=chat_id,
-        owner_user_id=OWNER,
-        connection_generation=uuid.uuid4(),
-        request_generation=staged["request_generation"],
-        snapshot_purpose="commit",
-    )
-    assert [
-        part["text"]
-        for message in snapshot["transcript"]
-        for part in message["parts"]
-    ] == ["question", "Useful partial answer"]
-
-
-def test_voice_result_invalid_completion_state_has_no_database_effects(
-    database: PlaneTestRuntime,
-) -> None:
-    coordinator = _coordinator(database)
-    repository = _repository(database, coordinator)
-    _, owner, claim, staged = _voice_stage(database, repository, coordinator)
-
-    with pytest.raises(ValueError, match="completion state"):
-        repository.publish_voice_result(
-            commit_id=staged["commit_id"],
-            owner_user_id=OWNER,
-            canvas_components=[],
-            canvas_layouts=[],
-            operation_fence=claim.fence,
-            completion_state="retryable",
-        )
-
-    current = database.fetch_one(
-        "SELECT state FROM conversation_commit WHERE commit_id = ?",
-        (staged["commit_id"],),
-    )
-    assert current["state"] == "staged"
-    assert _operation_state(coordinator, owner, claim).state is OperationState.RUNNING
 
 
 def test_invalid_publication_completion_state_has_no_database_effects(

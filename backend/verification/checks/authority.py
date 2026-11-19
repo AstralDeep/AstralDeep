@@ -1,50 +1,53 @@
 """Delegated-authority conformance checks (backend/verification/checks/base.py,
 evidence.py): cross-user isolation, audit-chain integrity, scope withholding,
-delegation attribution, and admin-only approval, each with an adversarial counter.
+delegation attribution, and admin-only approval over the protected tool dispatch, each
+with an adversarial counter.
 """
 
 from __future__ import annotations
 
 from typing import Any, Dict
 
-from verification.checks.base import Check, CheckResult, no, ok, register, unsure
+from verification.checks.base import Check, CheckResult, no, ok, register
 from verification.evidence import CapturedEvidence
 
-_DENY_ACTION = "attachment_reference_denied"
+_DENY_SUFFIX = ".denied"
+_DENY_GATE = "tool_permission"
 
 
 def _xuser_run(ev: CapturedEvidence, inputs: Dict[str, Any]) -> CheckResult:
     x = ev.extra or {}
     leaked = bool(x.get("leaked_markers"))
-    ws_size = int(x.get("attacker_workspace_size", 0) or 0)
-    if not leaked and ws_size == 0:
+    refused = bool(x.get("refused"))
+    if not x.get("owner_read_ok"):
+        return no("us2.cross_user_refused",
+                  "the owner could not read its own attachment, so a refusal proves nothing")
+    if not leaked and refused:
         return ok("us2.cross_user_refused",
-                  "foreign attachment yielded no data to the other user (no leakage)")
+                  "foreign attachment was refused to the other user (no leakage)")
     return no(
         "us2.cross_user_refused",
-        f"cross-user isolation breach (leaked={leaked}, attacker_workspace={ws_size})",
+        f"cross-user isolation breach (leaked={leaked}, refused={refused})",
     )
 
 
 def _xuser_counter(ev: CapturedEvidence, inputs: Dict[str, Any]) -> CheckResult:
     x = ev.extra or {}
-    if x.get("leaked_markers") or int(x.get("attacker_workspace_size", 0) or 0) > 0:
+    if x.get("leaked_markers") or not x.get("refused"):
         return ok("us2.cross_user_refused.counter", "evidence of leakage found")
     return no("us2.cross_user_refused.counter", "no leakage found")
 
 
 def _denials_run(ev: CapturedEvidence, inputs: Dict[str, Any]) -> CheckResult:
-    rows = [r for r in ev.audit_rows if r.get("action_type") == _DENY_ACTION]
+    rows = [
+        r for r in ev.audit_rows
+        if str(r.get("action_type") or "").endswith(_DENY_SUFFIX)
+        and (r.get("inputs_meta") or {}).get("gate") == _DENY_GATE
+    ]
     if rows and all(r.get("outcome") == "failure" for r in rows):
         return ok("us2.denials_audited", f"{len(rows)} denial(s) recorded as failures",
                   event_class=sorted({r.get("event_class") for r in rows}))
-    if not (ev.extra or {}).get("leaked_markers"):
-        return unsure(
-            "us2.denials_audited",
-            "FINDING: cross-user denial enforced but not recorded in the audit trail "
-            "(product _attach_turn_attachments._audit_drop omits correlation_id/started_at)",
-        )
-    return no("us2.denials_audited", "expected an audited attachment_reference_denied failure")
+    return no("us2.denials_audited", "expected an audited tool_permission denial recorded as a failure")
 
 
 def _chain_run(ev: CapturedEvidence, inputs: Dict[str, Any]) -> CheckResult:
@@ -61,9 +64,10 @@ def _chain_counter(ev: CapturedEvidence, inputs: Dict[str, Any]) -> CheckResult:
 
 def _scope_run(ev: CapturedEvidence, inputs: Dict[str, Any]) -> CheckResult:
     x = ev.extra or {}
-    if x.get("withheld") and not x.get("read_success"):
+    if x.get("withheld") and not x.get("read_success") and x.get("control_read_ok"):
         return ok("us2.scope_withheld", "ungranted-scope tool was not executed on the user's behalf")
-    return no("us2.scope_withheld", "a tool ran despite the scope being revoked")
+    return no("us2.scope_withheld",
+              "a tool ran despite the scope being revoked, or the granted control read failed")
 
 
 def _scope_counter(ev: CapturedEvidence, inputs: Dict[str, Any]) -> CheckResult:

@@ -1,9 +1,8 @@
 """Implements the orchestrator meta-tools create_capability/extend_agent: drafts an
-agent, self-tests it via a VirtualWebSocket turn, and returns an
-approve/refine/discard chat card gated by explicit user approval.
+agent, security-gates it, and returns an approve/refine/discard chat card gated by
+explicit user approval. Also holds the draft decision handlers used by chrome_events.py.
 """
 
-import asyncio
 import hashlib
 import json
 import logging
@@ -16,32 +15,9 @@ from typing import Any, Dict, List, Optional
 from astralprims import Alert, Button, Card, Text
 from orchestrator.bounded_work import run_generation
 from orchestrator.code_security import blocks_execution
-from shared.feature_flags import flags
 from shared.protocol import MCPResponse
 
 logger = logging.getLogger("Orchestrator.AgenticCreation")
-
-META_AGENT_ID = "__orchestrator__"
-
-SELF_TEST_TIMEOUT_S = 120
-SELF_TEST_MAX_AUTO_REFINES = 1
-
-SYSTEM_PROMPT_ADDENDUM = """
-CAPABILITY GAPS (create_capability / extend_agent):
-- If NO available tool can serve the user's request, call `create_capability` to build a new
-  agent for it (the system generates, security-checks, and self-tests a draft; the user approves
-  before anything goes live). Restate the user's request verbatim in `user_request`.
-- This INCLUDES requests for a persistent tool the user wants to UPDATE or maintain over time
-  (e.g. "build me a budget tracker I can update each month") — a one-off static dashboard or
-  sample-data mockup does NOT serve such a request; call `create_capability` instead.
-- To ADD a tool to an agent the user already owns, call `extend_agent` instead.
-- Do NOT call these when a suitable tool exists but is disabled or permission-restricted (you
-  will see a "restricted" tool error if you try it) — in that case tell the user to enable it
-  under Settings → Agents & permissions.
-- Call `create_capability` at most once per distinct missing capability; if a draft already
-  exists for it the system will point at the existing draft.
-"""
-
 
 def _draft_store(orch):
     lifecycle = getattr(orch, "lifecycle_manager", None)
@@ -58,70 +34,6 @@ def _parser_repository(orch):
     return AttachmentParserRepository.from_plane_source(
         plane_source_from_orchestrator(orch)
     )
-
-
-def meta_tool_definitions() -> List[Dict[str, Any]]:
-    return [
-        {
-            "type": "function",
-            "function": {
-                "name": "create_capability",
-                "description": (
-                    "Create a new agent with the tools needed to serve the user's request "
-                    "when NO available tool can — including requests for a persistent tool "
-                    "the user wants to update/maintain over time, which a static dashboard "
-                    "cannot serve. A draft is generated, security-checked and "
-                    "self-tested; the user approves before it goes live. Do NOT use this for "
-                    "capabilities that exist but are disabled/unauthorized."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "agent_name": {"type": "string", "description": "Short human name for the new agent"},
-                        "description": {"type": "string", "description": "What the agent does, in plain language (at least 10 characters)"},
-                        "tools_spec": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "name": {"type": "string"},
-                                    "description": {"type": "string"},
-                                },
-                                "required": ["name", "description"],
-                            },
-                            "description": "1-4 tools the agent needs",
-                        },
-                        "user_request": {"type": "string", "description": "The user's request, verbatim — used to self-test the new capability"},
-                    },
-                    "required": ["agent_name", "description", "tools_spec", "user_request"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "extend_agent",
-                "description": (
-                    "Add or change a tool on a live agent the user OWNS. Prepares a draft "
-                    "revision; nothing changes on the live agent until the user approves and "
-                    "security checks re-pass."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "agent_id": {"type": "string", "description": "Live agent id to extend (must be owned by the user)"},
-                        "instruction": {"type": "string", "description": "What to add or change, in plain language"},
-                        "user_request": {"type": "string", "description": "The user's request, verbatim"},
-                    },
-                    "required": ["agent_id", "instruction"],
-                },
-            },
-        },
-    ]
-
-
-def should_inject(draft_agent_id: Optional[str]) -> bool:
-    return flags.is_enabled("agentic_creation") and not draft_agent_id
 
 
 def gap_fingerprint(agent_name: str, tools_spec: Optional[List[Dict]] = None,
@@ -172,52 +84,6 @@ def _read_draft_code(orch, draft: Dict[str, Any]) -> str:
         return ""
 
 
-_SKIP_SELF_TEST_SCORE = float(os.getenv("DRAFT_ARCHIVE_SKIP_SCORE", "0.85"))
-
-
-def _maybe_skip_self_test(orch, draft: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    try:
-        from orchestrator import draft_archive
-        if not draft_archive.archive_enabled():
-            return None
-        code = _read_draft_code(orch, draft)
-        if not code:
-            return None
-        score = draft_archive.surrogate_score(code)
-        if score >= _SKIP_SELF_TEST_SCORE:
-            logger.info(
-                "archive: skipping self-test for high-confidence draft %s "
-                "(surrogate=%.2f ≥ %.2f)", draft.get("id"), score,
-                _SKIP_SELF_TEST_SCORE)
-            return {
-                "status": "passed",
-                "summary": (f"Self-test skipped — surrogate predictor score "
-                            f"{score:.2f} ≥ {_SKIP_SELF_TEST_SCORE:.2f} "
-                            f"(evolutionary archive)."),
-                "tools_called": [], "errors": [], "evidence": "",
-                "surrogate_score": round(score, 4),
-                "self_test_skipped": True,
-                "tested_at": int(time.time() * 1000),
-            }
-        if draft_archive.should_skip_self_test(code):
-            logger.info(
-                "archive: cheap-rejecting draft %s before self-test "
-                "(surrogate=%.2f predicted failure)", draft.get("id"), score)
-            return {
-                "status": "failed",
-                "summary": (f"Self-test skipped — surrogate predictor score "
-                            f"{score:.2f} predicts failure (evolutionary archive); "
-                            f"refine the tools."),
-                "tools_called": [], "errors": ["surrogate predicted failure"],
-                "evidence": "", "surrogate_score": round(score, 4),
-                "self_test_skipped": True,
-                "tested_at": int(time.time() * 1000),
-            }
-    except Exception:  # pragma: no cover
-        logger.debug("archive: surrogate pre-check failed", exc_info=True)
-    return None
-
-
 def _archive_on_success(orch, draft: Dict[str, Any], self_test: Dict[str, Any]) -> None:
     try:
         from orchestrator import draft_archive
@@ -228,137 +94,16 @@ def _archive_on_success(orch, draft: Dict[str, Any], self_test: Dict[str, Any]) 
         code = _read_draft_code(orch, draft)
         if not code:
             return
-        score = self_test.get("surrogate_score")
-        if not isinstance(score, (int, float)) or score <= 0:
-            score = 1.0
         draft_archive.record_archived_draft(
             draft_archive.draft_fingerprint(draft),
             code,
-            float(score),
+            1.0,
             owner_user_id=str(draft.get("user_id") or ""),
             draft_uuid=str(draft.get("draft_uuid") or draft.get("id") or ""),
             source_state_revision=int(draft.get("state_revision") or 0),
         )
     except Exception:  # pragma: no cover
         logger.debug("archive: record-on-success failed", exc_info=True)
-
-
-def _summarize_outputs(outputs: List[Dict[str, Any]]) -> Dict[str, Any]:
-    tools_called: List[str] = []
-    error_messages: List[str] = []
-    component_count = 0
-    text_preview = ""
-    for frame in outputs:
-        ftype = frame.get("type")
-        if ftype == "chat_step":
-            step = frame.get("step") or {}
-            if step.get("kind") == "tool_call" and step.get("name"):
-                if step["name"] not in tools_called:
-                    tools_called.append(step["name"])
-        elif ftype in ("ui_render", "ui_update"):
-            for comp in frame.get("components") or []:
-                if not isinstance(comp, dict):
-                    continue
-                src_tool = comp.get("_source_tool")
-                if src_tool and src_tool not in tools_called:
-                    tools_called.append(src_tool)
-                if comp.get("type") == "alert" and comp.get("variant") == "error":
-                    error_messages.append(str(comp.get("message", ""))[:200])
-                else:
-                    component_count += 1
-                    if not text_preview and comp.get("type") == "card":
-                        for child in comp.get("content") or []:
-                            if isinstance(child, dict) and child.get("type") == "text":
-                                text_preview = str(child.get("content", ""))[:280]
-                                break
-    passed = component_count > 0 and not error_messages
-    summary = (
-        f"{len(tools_called)} tool(s) exercised, {component_count} component(s) produced"
-        + (f"; errors: {error_messages[0]}" if error_messages else "")
-    )
-    return {
-        "status": "passed" if passed else "failed",
-        "summary": summary,
-        "tools_called": tools_called,
-        "errors": error_messages[:3],
-        "evidence": text_preview,
-        "tested_at": int(time.time() * 1000),
-    }
-
-
-async def _self_test_draft(orch, draft: Dict[str, Any], user_request: str,
-                           user_id: str, attachments=None) -> Dict[str, Any]:
-    from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
-
-    test_chat_id = await run_generation(
-        orch.history.create_chat, user_id=user_id
-    )
-    task = BackgroundTask(task_id=f"selftest-{draft['id'][:8]}", chat_id=test_chat_id,
-                          user_id=user_id)
-    vws = VirtualWebSocket(task)
-    from orchestrator.chain_authority import AuthoritySkip
-    authority = await orch.derive_machine_authority(
-        user_id=user_id, agent_id=None, turn_class="draft_self_test")
-    if not isinstance(authority, AuthoritySkip):
-        orch._bind_machine_turn(vws, authority)
-    try:
-        await asyncio.wait_for(
-            orch.handle_chat_message(
-                vws, user_request, test_chat_id,
-                user_id=user_id, draft_agent_id=draft["id"],
-                attachments=attachments,
-            ),
-            timeout=SELF_TEST_TIMEOUT_S,
-        )
-        return _summarize_outputs(task.outputs)
-    except asyncio.TimeoutError:
-        return {"status": "timeout", "summary": f"Self-test exceeded {SELF_TEST_TIMEOUT_S}s",
-                "tools_called": [], "errors": ["timeout"], "evidence": "",
-                "tested_at": int(time.time() * 1000)}
-    except Exception as exc:
-        logger.exception("agentic: self-test crashed for draft %s", draft["id"])
-        return {"status": "failed", "summary": f"Self-test error: {exc}",
-                "tools_called": [], "errors": [str(exc)[:200]], "evidence": "",
-                "tested_at": int(time.time() * 1000)}
-    finally:
-        orch._unbind_machine_turn(vws)
-
-
-def _redteam_allowed_scopes(draft: Dict[str, Any]) -> List[str]:
-    sc = draft.get("scopes") or draft.get("declared_scopes")
-    if isinstance(sc, (list, tuple)) and sc:
-        return [str(s).lower() for s in sc]
-    return ["tools:read", "tools:files", "tools:search"]
-
-
-async def _run_redteam_gate(orch, draft: Dict[str, Any], user_id: str):
-    try:
-        from orchestrator import redteam
-        results: List[Dict[str, Any]] = []
-        for sc in redteam.scenarios():
-            try:
-                results.append(await _self_test_draft(orch, draft, sc["prompt"], user_id))
-            except Exception:
-                logger.exception("redteam: scenario %s errored", sc.get("id"))
-        agent_id = f"{draft['agent_slug'].replace('_', '-')}-1"
-        tool_scope_map: Dict[str, str] = {}
-        try:
-            tool_scope_map = await run_generation(
-                orch.tool_permissions.get_tool_scope_map, agent_id
-            )
-        except Exception:
-            logger.debug("redteam: no tool scope map for %s", agent_id, exc_info=True)
-        phi_check = None
-        try:
-            from personalization.phi_gate import get_phi_gate
-            phi_check = get_phi_gate().contains_phi
-        except Exception:
-            logger.debug("redteam: PHI gate unavailable", exc_info=True)
-        return redteam.verdict(results, allowed_scopes=_redteam_allowed_scopes(draft),
-                               tool_scope_map=tool_scope_map, phi_check=phi_check)
-    except Exception:
-        logger.exception("redteam: gate failed — proceeding to standard approval")
-        return None
 
 
 def _decision_buttons(draft_id: str, revision: bool = False) -> List[Dict[str, Any]]:
@@ -374,13 +119,10 @@ def _decision_buttons(draft_id: str, revision: bool = False) -> List[Dict[str, A
 
 def creation_card(draft: Dict[str, Any], self_test: Dict[str, Any],
                   revision: bool = False, note: str = "") -> Dict[str, Any]:
-    status = self_test.get("status", "unknown")
-    verdict = {"passed": "✓ Self-test passed", "failed": "✗ Self-test failed",
-               "timeout": "✗ Self-test timed out"}.get(status, "Self-test pending")
-    lines = [
-        Text(content=draft.get("description", ""), variant="caption").to_dict(),
-        Text(content=f"**{verdict}** — {self_test.get('summary', '')}", variant="markdown").to_dict(),
-    ]
+    verdict = {"passed": "✓ Gate checks passed", "failed": "✗ Gate checks failed"}.get(self_test.get("status"))
+    lines = [Text(content=draft.get("description", ""), variant="caption").to_dict()]
+    if verdict:
+        lines.append(Text(content=f"**{verdict}** — {self_test.get('summary', '')}", variant="markdown").to_dict())
     if self_test.get("evidence"):
         lines.append(Text(content=f"Preview: {self_test['evidence']}", variant="caption").to_dict())
     if note:
@@ -425,7 +167,6 @@ async def _create_capability(orch, args: Dict[str, Any], *, user_id: str,
     agent_name = (args.get("agent_name") or "").strip()
     description = (args.get("description") or "").strip()
     tools_spec = args.get("tools_spec") or []
-    user_request = (args.get("user_request") or description).strip()
     if not agent_name or len(description) < 10 or not tools_spec:
         return MCPResponse(error={
             "message": "create_capability needs agent_name, a description (≥10 chars) and tools_spec",
@@ -478,55 +219,18 @@ async def _create_capability(orch, args: Dict[str, Any], *, user_id: str,
 
     draft = await lifecycle.start_draft_agent(draft_id, websocket=websocket)
     launch_notice = (draft.get("confinement") or {}).get("notice", "")
-    self_test = await run_generation(_maybe_skip_self_test, orch, draft) \
-        or await _self_test_draft(orch, draft, user_request, user_id)
-
-    refines = 0
-    while self_test["status"] != "passed" and refines < SELF_TEST_MAX_AUTO_REFINES:
-        refines += 1
-        failure = "; ".join(self_test.get("errors") or [self_test.get("summary", "failed")])
-        logger.info("agentic: self-test failed for %s — auto-refine %d (%s)",
-                    draft_id, refines, failure[:120])
-        draft = await lifecycle.refine_agent(
-            draft_id, f"The self-test failed: {failure}. Fix the tools so this request "
-                      f"succeeds: {user_request}", websocket=websocket)
-        if draft.get("status") == "error":
-            break
-        draft = await lifecycle.start_draft_agent(draft_id, websocket=websocket)
-        launch_notice = (draft.get("confinement") or {}).get("notice", "") or launch_notice
-        self_test = await run_generation(_maybe_skip_self_test, orch, draft) \
-            or await _self_test_draft(orch, draft, user_request, user_id)
-
-    self_test["auto_refines"] = refines
-    await run_generation(
-        draft_store.update_draft_agent,
-        draft_id,
-        self_test=json.dumps(self_test),
-    )
-    stored_draft = await run_generation(
-        draft_store.get_draft_agent, draft_id
-    )
-    await run_generation(
-        _archive_on_success, orch, stored_draft or draft, self_test
-    )
     await _audit(user_id, "lifecycle.auto_created",
                  f"Auto-created draft '{agent_name}' ({draft_id})",
                  correlation_id=draft_id, chat_id=chat_id,
                  inputs_meta={"draft_id": draft_id, "gap_fingerprint": fingerprint})
-    await _audit(user_id, "lifecycle.self_test",
-                 f"Self-test {self_test['status']}: {self_test['summary']}",
-                 correlation_id=draft_id,
-                 outcome="success" if self_test["status"] == "passed" else "failure",
-                 chat_id=chat_id, inputs_meta={"draft_id": draft_id})
 
     card = creation_card(
         await run_generation(draft_store.get_draft_agent, draft_id) or draft,
-        self_test,
+        {},
         note=launch_notice,
     )
     return MCPResponse(
         result={"status": "created", "draft_id": draft_id,
-                "self_test": self_test["status"],
                 "next": "user must approve, refine, or discard via the buttons"},
         ui_components=[card],
     )
@@ -944,24 +648,9 @@ async def _promote_parser_global(orch, draft, agent_id, *, approved_by):
             logger.debug("autoparse: scope grant failed", exc_info=True)
 
         if requested_by:
-            replayed = await attachment_autoparse.auto_continue_after_go_live(
-                orch,
-                requested_by=requested_by,
-                source_chat_id=row.get("source_chat_id") or draft.get("source_chat_id"),
-                source_attachment_id=(row.get("source_attachment_id")
-                                      or draft.get("source_attachment_id")),
-                extension=extension,
-                category=row.get("category"),
-            )
-            if replayed:
-                await attachment_autoparse._notify_user(
-                    orch, requested_by,
-                    f"The .{extension} reader is live — I re-read your file; "
-                    "see the new reply in your chat.")
-            else:
-                await attachment_autoparse._notify_user(
-                    orch, requested_by,
-                    f"The .{extension} reader is live — ask again to read your file.")
+            await attachment_autoparse._notify_user(
+                orch, requested_by,
+                f"The .{extension} reader is live — ask again to read your file.")
     except Exception:
         logger.exception("autoparse: global promotion failed for draft %s", draft.get("id"))
 
@@ -991,29 +680,13 @@ async def _h_draft_approve(orch, websocket, user_id, roles, payload):
 
     from orchestrator import redteam
     if redteam.redteam_enabled():
-        rt = await _run_redteam_gate(orch, draft, user_id)
-        if rt is not None and not rt.passed:
-            reasons = "; ".join(f"{v.kind}: {v.detail}" for v in rt.violations[:5])
-            await _audit(user_id, "lifecycle.rejected",
-                         f"Draft {draft['id']} blocked by red-team gate ({reasons})",
-                         correlation_id=draft["id"], outcome="failure")
-            try:
-                await run_generation(
-                    _draft_store(orch).update_draft_agent,
-                    draft["id"],
-                    status="rejected",
-                    error_message=f"Red-team gate: {reasons}"[:500],
-                )
-            except Exception:
-                logger.debug("redteam: status update failed", exc_info=True)
-            blocked = Card(title=f"{draft['agent_name']}: blocked by safety test", content=[
-                Text(content=(f"The agent failed the adversarial safety test — {reasons}. "
-                              f"The draft stays editable: Refine it or Discard it."),
-                     variant="default").to_dict(),
-            ] + _decision_buttons(draft["id"])).to_dict()
-            await _send_chat_card(orch, websocket, blocked)
-            await _replace_card_state(orch, websocket, user_id, draft["id"], blocked)
-            return None
+        await _audit(user_id, "lifecycle.rejected",
+                     f"Draft {draft['id']} approval refused: {redteam.UNAVAILABLE_CODE}",
+                     correlation_id=draft["id"], outcome="failure")
+        await _send_chat_card(orch, websocket, _error_card(
+            "Approval is unavailable while the red-team gate is enabled, because the gate "
+            f"can no longer run ({redteam.UNAVAILABLE_CODE}). Nothing went live."))
+        return None
 
     result = await orch.lifecycle_manager.approve_agent(draft["id"], websocket=websocket)
     status = (result or {}).get("status")
@@ -1078,7 +751,7 @@ async def _h_draft_refine(orch, websocket, user_id, roles, payload):
     result = await orch.lifecycle_manager.refine_agent(draft["id"], message, websocket=websocket)
     await _audit(user_id, "lifecycle.refined", f"Draft {draft['id']} refined",
                  correlation_id=draft["id"])
-    note = ("Refined. Test it again in chat, then Approve / Discard."
+    note = ("Refined. Review it, then Approve / Discard."
             if result.get("status") != "error"
             else f"Refine failed: {result.get('error_message', 'unknown error')}")
     latest = await run_generation(

@@ -2887,3 +2887,62 @@ def test_revision_cannot_reinterpret_spent_or_outstanding_currency(
         RepositoryConflictError, match=r"prior_cost_unknown|currency_change_invalid"
     ):
         control(repo, tx, record, "revise", replacement=replacement)
+
+
+def test_retirement_cancels_queued_work_and_preserves_existing_read_state(tx, repo):
+    persistent = create(repo, tx)
+    current = claim(repo, tx)
+    task = AssignmentTask("task", "plan", 1, "Read", "Read source", persistent.definition.allowed_tools)
+    repo.put_task_plan(
+        tx, fence=current.fence, expected_state_version=current.assignment.state_version,
+        plan_key="plan", plan_digest=digest([task]), tasks=(task,),
+    )
+    finish(repo, tx, current.fence, phase="waiting_authorization")
+    operation = create_operation(repo, tx)
+    paused = create(repo, tx)
+    control(repo, tx, paused)
+    retired = {}
+    for _ in range(2):
+        (row,) = repo.retire_unleased_assignments(tx, reason="turn_engine_retired", limit=1)
+        assert row.safe_error_code == "turn_engine_retired" and row.next_wake_at is None
+        assert row.phase == "failed" and row.control_epoch == 2
+        retired[row.assignment_id] = row
+    assert retired[persistent.assignment_id].lifecycle == "stopped"
+    cancelled = retired[persistent.assignment_id].tasks[0]
+    assert cancelled["state"] == "cancelled" and cancelled["task_generation"] == 1
+    assert retired[operation.assignment_id].operation["terminal_outcome"] == "failed"
+    assert retired[operation.assignment_id].checkpoint == operation.checkpoint
+    read = repo.get_operation(tx, owner_id="owner", assignment_id=operation.assignment_id)
+    assert read.assignment == retired[operation.assignment_id]
+    paused_read = repo.get_assignment(tx, owner_id="owner", assignment_id=paused.assignment_id)
+    assert paused_read.lifecycle == "paused"
+    assert repo.retire_unleased_assignments(tx, reason="turn_engine_retired") == ()
+
+
+def test_retirement_waits_for_the_live_claim_and_preserves_uncertain_action(tx, repo):
+    record = create(repo, tx)
+    current = claim(repo, tx)
+    binding = bind(repo, tx, current.fence)
+    created = action(repo, tx, current.fence, boundary="unreplayable")
+    start(repo, tx, current.fence, reserve(repo, tx, current.fence, created), binding)
+    assert repo.retire_unleased_assignments(tx, reason="turn_engine_retired") == ()
+    expire_claim(tx, record)
+    recovered = repo.recover_expired_for_administration(tx)
+    assert recovered.uncertain_action_ids == (created.action_id,)
+    assert repo.retire_unleased_assignments(tx, reason="turn_engine_retired") == ()
+    retained = repo.get_assignment(tx, owner_id="owner", assignment_id=record.assignment_id)
+    assert retained.phase == "reconciliation" and retained.usage["outstanding"]["tool_calls"] == 1
+
+
+def test_retirement_does_not_cancel_an_outstanding_effect_after_its_grant_was_revoked(tx, repo):
+    record = create(repo, tx)
+    current = claim(repo, tx)
+    binding = bind(repo, tx, current.fence)
+    created = action(repo, tx, current.fence, boundary="unreplayable")
+    permit = start(repo, tx, current.fence, reserve(repo, tx, current.fence, created), binding)
+    control(repo, tx, current.assignment, "revoke")
+    (held,) = repo.retire_unleased_assignments(tx, reason="turn_engine_retired")
+    assert held.lifecycle == "active" and held.phase == "reconciliation"
+    assert held.safe_error_code == "assignment_action_uncertain"
+    assert repo.retire_unleased_assignments(tx, reason="turn_engine_retired") == ()
+    assert outcome(repo, tx, permit, record.assignment_id).state == "succeeded"

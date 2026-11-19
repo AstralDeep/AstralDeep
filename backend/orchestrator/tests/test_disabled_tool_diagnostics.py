@@ -1,7 +1,6 @@
 """Tests for orchestrator/orchestrator.py's _diagnose_disabled_tool,
-_alert_for_disabled_tool, and leaked tool-name extraction: owner lookup,
-picker/disable priority, machineless remote-verb diagnosis, and DSML/OpenAI/Qwen
-leak-pattern parsing.
+and _alert_for_disabled_tool: owner lookup, picker/disable priority, and
+machineless remote-verb diagnosis.
 """
 
 from contextlib import contextmanager
@@ -14,7 +13,6 @@ from orchestrator.orchestrator import (
     Orchestrator,
     ToolDiagnostic,
     ToolDiagnosticStatus,
-    _tool_names_from_leak,
 )
 from orchestrator.plane_repository_context import ApplicationPlaneSource
 from shared.protocol import AgentCard, AgentSkill
@@ -264,43 +262,3 @@ def test_alert_unknown_tool_does_not_require_agent_label() -> None:
     alert = Orchestrator._alert_for_disabled_tool(diag, "wat_tool")
     assert "wat_tool" in alert.message
     assert alert.variant == "error"
-
-
-def test_tool_names_from_dsml_invoke() -> None:
-    blob = (
-        '<｜DSML｜tool_calls> <｜DSML｜invoke name="read_spreadsheet"> '
-        '<｜DSML｜parameter name="attachment_id">x</｜DSML｜parameter> '
-        '</｜DSML｜invoke> </｜DSML｜tool_calls>'
-    )
-    assert _tool_names_from_leak(blob) == ["read_spreadsheet"]
-
-
-def test_tool_names_from_openai_leak() -> None:
-    blob = '<|tool_call|>{"name":"read_spreadsheet","arguments":{}}</|tool_call|>'
-    assert _tool_names_from_leak(blob) == ["read_spreadsheet"]
-
-
-def test_tool_names_dedupe_across_patterns() -> None:
-    blob = (
-        '<|tool_call|>{"name":"foo"}</|tool_call|> '
-        '<｜DSML｜invoke name="foo"></｜DSML｜invoke>'
-    )
-    assert _tool_names_from_leak(blob) == ["foo"]
-
-
-def test_tool_names_multiple_distinct() -> None:
-    blob = (
-        '<｜DSML｜invoke name="alpha"></｜DSML｜invoke> '
-        '<｜DSML｜invoke name="beta"></｜DSML｜invoke>'
-    )
-    assert _tool_names_from_leak(blob) == ["alpha", "beta"]
-
-
-def test_tool_names_empty_when_no_match() -> None:
-    assert _tool_names_from_leak("just plain text") == []
-    assert _tool_names_from_leak("") == []
-
-
-def test_tool_names_qwen_xml_form() -> None:
-    blob = "<tool_call><name>do_it</name><arguments>{}</arguments></tool_call>"
-    assert _tool_names_from_leak(blob) == ["do_it"]

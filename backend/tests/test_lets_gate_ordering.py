@@ -168,9 +168,8 @@ async def test_egress_hitl_denial_precedes_lets(gate_orchestrator, monkeypatch) 
     monkeypatch.setattr(hitl, "assess_risk", lambda *_args, **_kwargs: ("egress",))
     monkeypatch.setattr(hitl, "requires_confirmation", lambda _risks: True)
     response = (await _deny(orchestrator, websocket)).response
-    assert response.error is None
-    assert response.result["_data"]["status"] == "confirmation_required"
-    assert "send data off this system" in str(response.ui_components)
+    assert response.error["code"] == "confirmation_required"
+    assert not response.ui_components
 
 
 @pytest.mark.asyncio

@@ -144,38 +144,11 @@ class _Completions:
 
 
 @pytest.mark.asyncio
-async def test_model_boundary_applies_hard_output_cap_and_disables_streaming():
+async def test_model_boundary_retires_assignment_before_reserving_a_call():
     completions = _Completions()
     hub = model_hub(completions)
     ctx = context("model")
-    with bind_dispatch(ctx):
-        message, _ = await hub._call_llm(object(), [{"role": "user", "content": "Check release."}], allow_stream=True)
-    assert message.content == "Verified."
-    assert len(completions.calls) == 1
-    assert completions.calls[0]["max_completion_tokens"] == 256
-    hub._call_llm_streamed.assert_not_awaited()
-    ctx.start.assert_awaited_once()
-    ctx.observe.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_model_failure_cannot_probe_or_retry_with_same_reservation():
-    completions = _Completions(RuntimeError("unsupported response_format; try again"))
-    hub = model_hub(completions)
-    ctx = context("model")
-    with bind_dispatch(ctx), pytest.raises(RuntimeError):
-        await hub._call_llm(None, [{"role": "user", "content": "Check release."}], response_format={"type": "json_object"})
-    assert len(completions.calls) == 1
-    ctx.start.assert_awaited_once()
-    assert ctx.observe.call_args.args[1] == "uncertain"
-
-
-@pytest.mark.asyncio
-async def test_stop_at_model_permit_boundary_prevents_provider_call():
-    completions = _Completions()
-    hub = model_hub(completions)
-    ctx = context("model", authorize=AsyncMock(side_effect=DispatchDenied("assignment_stopped")))
-    with bind_dispatch(ctx), pytest.raises(DispatchDenied):
+    with bind_dispatch(ctx), pytest.raises(DispatchDenied, match="turn_engine_retired"):
         await hub._call_llm(None, [{"role": "user", "content": "Check release."}])
-    assert completions.calls == []
+    assert not completions.calls
     ctx.start.assert_not_awaited()

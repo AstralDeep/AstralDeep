@@ -1,147 +1,119 @@
-"""Tests for backend/scheduler/runner.py's runner-side guards against real PostgreSQL:
-bounded retry counting across re-claims, the stale-occurrence backlog skip, and the
-claim-loop ceiling.
+"""Tests for backend/scheduler/runner.py: environment-tunable claim limits and the
+turn_engine_retired refusal of every non-dreaming job in JobRunner.run_occurrence and
+run_job, while dreaming jobs still reach their own execution paths.
 """
 
 from __future__ import annotations
 
-from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+import asyncio
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from scheduler.runner import (
-    JobRunner,
-    claim_loop_ceiling,
-    estimate_missed_runs,
-    max_attempts,
-    occurrence_age_seconds,
-    occurrence_is_stale,
-    stale_grace_seconds,
-)
-from scheduler.tests.plane_runtime import (
-    ensure_plane_runtime,
-)
-from scheduler.tests.test_occurrence_claims_060 import (
-    _recording_orchestrator,
-    _ValidGrants,
-)
-from tests.helpers.voice_plane_runtime import PlaneTestRuntime, isolated_plane_runtime
-
-
-@pytest.fixture(scope="module")
-def postgres_database():
-    with isolated_plane_runtime("scheduler_hardening") as runtime:
-        yield runtime
-
-
-@pytest.fixture
-def clean_database(postgres_database: PlaneTestRuntime) -> PlaneTestRuntime:
-    db = postgres_database
-    ensure_plane_runtime(db)
-    db.execute("DELETE FROM effect_ledger")
-    db.execute("DELETE FROM job_run")
-    db.execute("DELETE FROM scheduled_occurrence")
-    db.execute("DELETE FROM scheduled_job")
-    db.execute("DELETE FROM operation_submission_result")
-    db.execute(
-        "UPDATE operation_admission_slot SET operation_id = NULL, "
-        "lease_token = NULL, lease_expires_at = NULL"
-    )
-    db.execute("DELETE FROM operation_record")
-    return db
+from scheduler.runner import JobRunner, claim_loop_ceiling, max_attempts
+from scheduler.tests.test_occurrence_claims_060 import _dummy_attempt
 
 
 def test_knobs_are_read_per_call_with_floors(monkeypatch):
     monkeypatch.delenv("SCHEDULER_MAX_ATTEMPTS", raising=False)
-    monkeypatch.delenv("SCHEDULER_STALE_GRACE_SECONDS", raising=False)
     assert max_attempts() == 3
-    assert stale_grace_seconds() == 7200
 
     monkeypatch.setenv("SCHEDULER_MAX_ATTEMPTS", "5")
-    monkeypatch.setenv("SCHEDULER_STALE_GRACE_SECONDS", "60")
     assert max_attempts() == 5
-    assert stale_grace_seconds() == 60
 
     monkeypatch.setenv("SCHEDULER_MAX_ATTEMPTS", "0")
-    monkeypatch.setenv("SCHEDULER_STALE_GRACE_SECONDS", "nope")
     assert max_attempts() == 1
-    assert stale_grace_seconds() == 7200
     assert claim_loop_ceiling() == 10
     monkeypatch.setenv("SCHEDULER_MAX_ATTEMPTS", "3")
     assert claim_loop_ceiling() == 30
 
 
-def test_occurrence_is_stale_respects_grace_and_disable(monkeypatch):
-    now = datetime(2026, 8, 23, 12, 0, tzinfo=UTC)
-    monkeypatch.delenv("SCHEDULER_STALE_GRACE_SECONDS", raising=False)
-    assert occurrence_is_stale(now - timedelta(hours=3), now=now) is True
-    assert occurrence_is_stale(now - timedelta(hours=1), now=now) is False
-    assert occurrence_is_stale(now.replace(tzinfo=None), now=now) is False
-    monkeypatch.setenv("SCHEDULER_STALE_GRACE_SECONDS", "0")
-    assert occurrence_is_stale(now - timedelta(days=30), now=now) is False
+def _runner():
+    store = MagicMock()
+    orch = SimpleNamespace(
+        runtime_observability=MagicMock(),
+        notify_user=AsyncMock(),
+        run_scheduled_turn=AsyncMock(),
+    )
+    return JobRunner(orch, store), orch, store
 
 
-def test_occurrence_age_is_aware_for_naive_and_aware_inputs():
-    now = datetime(2026, 8, 23, 12, 0, tzinfo=UTC)
-    aware = now - timedelta(hours=3)
-    naive = aware.replace(tzinfo=None)
-    assert occurrence_age_seconds(aware, now=now) == 3 * 3600
-    assert occurrence_age_seconds(naive, now=now) == 3 * 3600
-    assert occurrence_age_seconds(aware, now=now.replace(tzinfo=None)) == 3 * 3600
+def _job(**over):
+    job = {
+        "id": "job-1",
+        "user_id": "u1",
+        "name": "Digest",
+        "instruction": "summarize recent findings",
+        "agent_id": "web-research-1",
+        "schedule_kind": "interval",
+        "schedule_expr": "1d",
+        "timezone": "UTC",
+        "offline_grant_id": "grant-1",
+        "target_chat_id": "c1",
+        "consented_scopes": ["tools:read"],
+    }
+    job.update(over)
+    return job
 
 
-def test_estimate_missed_runs_walks_the_cadence():
-    now = datetime(2026, 8, 23, 12, 0, tzinfo=UTC)
-    now_ms = int(now.timestamp() * 1000)
-    job = {"schedule_kind": "interval", "schedule_expr": "1h", "timezone": "UTC"}
-    assert estimate_missed_runs(job, now - timedelta(hours=5), now_ms) == 5
-    assert estimate_missed_runs(job, now - timedelta(minutes=30), now_ms) == 1
-    bad = {"schedule_kind": "interval", "schedule_expr": "???", "timezone": "UTC"}
-    assert estimate_missed_runs(bad, now - timedelta(days=2), now_ms) == 1
+@pytest.mark.asyncio
+async def test_run_occurrence_refuses_a_chat_job_without_effects_or_publication():
+    runner, orch, store = _runner()
+    attempt = _dummy_attempt("retired-occurrence")
+
+    result = await runner.run_occurrence(attempt, claim_lost=asyncio.Event())
+
+    assert result.outcome == "failure"
+    assert result.result_code == "turn_engine_retired"
+    assert result.retryable is False
+    assert result.summary == "Scheduled turns are retired. Turns run on the Kernel engine."
+    assert result.auth_ref == str(attempt.operation_id)
+    orch.runtime_observability.record_scheduler.assert_called_once_with(
+        "terminal", job_type="scheduled_chat", result_code="turn_engine_retired"
+    )
+    assert store.method_calls == []
+    orch.notify_user.assert_not_awaited()
+    orch.run_scheduled_turn.assert_not_awaited()
 
 
-def _claim_and_start(store, instance: str):
-    claim = store.materialize_and_claim_due(instance, limit=1, lease_seconds=15)[0]
-    return store.start_attempt(store.allocate_attempt(claim), lease_seconds=15)
+@pytest.mark.asyncio
+async def test_run_occurrence_dispatches_dreaming_jobs_unchanged(monkeypatch):
+    runner, orch, _store = _runner()
+    attempt = _dummy_attempt("dreaming-occurrence")
+    attempt.claim.job["agent_id"] = "__dreaming__"
+    sentinel = object()
+    dreaming = AsyncMock(return_value=sentinel)
+    monkeypatch.setattr(runner, "_run_dreaming_occurrence", dreaming)
+
+    result = await runner.run_occurrence(attempt, claim_lost=asyncio.Event())
+
+    assert result is sentinel
+    dreaming.assert_awaited_once_with(attempt)
+    orch.runtime_observability.record_scheduler.assert_not_called()
 
 
-def _failing_runner(store):
-    async def fail_turn(**kwargs):
-        raise RuntimeError("handler failed")
+@pytest.mark.asyncio
+async def test_run_job_refuses_a_chat_job_without_touching_the_store():
+    runner, orch, store = _runner()
 
-    orchestrator, calls = _recording_orchestrator()
-    orchestrator.run_scheduled_turn = fail_turn
-    return JobRunner(orchestrator, store, _ValidGrants()), calls
+    assert await runner.run_job(_job()) == "failure"
 
-
-class _PauseStore:
-    def __init__(self, *, status="active", next_run_at=None):
-        self.paused = []
-        self.published = []
-        self.status = status
-        self.next_run_at = next_run_at
-
-    def set_status(self, user_id, job_id, status):
-        self.paused.append((user_id, job_id, status))
-        self.status = status
-        return True
-
-    def get_job(self, user_id, job_id):
-        return {"id": job_id, "user_id": user_id, "status": self.status,
-                "next_run_at": self.next_run_at}
-
-    def reserve_effect(self, attempt, **kwargs):
-        return SimpleNamespace(state="reserved", ambiguous=False, created=True)
-
-    def reserve_atomic_chat_effect(self, attempt, **kwargs):
-        return SimpleNamespace(state="reserved", ambiguous=False, created=True)
-
-    def publish_effect(self, attempt, **kwargs):
-        self.published.append(kwargs["effect_key"])
+    orch.runtime_observability.record_scheduler.assert_called_once_with(
+        "terminal", job_type="scheduled_chat", result_code="turn_engine_retired"
+    )
+    assert store.method_calls == []
+    orch.notify_user.assert_not_awaited()
+    orch.run_scheduled_turn.assert_not_awaited()
 
 
-def _attempt_number(attempt, number):
-    return replace(attempt, claim=replace(attempt.claim, attempt_number=number))
+@pytest.mark.asyncio
+async def test_run_job_dispatches_dreaming_jobs_unchanged(monkeypatch):
+    runner, orch, _store = _runner()
+    dreaming = AsyncMock(return_value="success")
+    monkeypatch.setattr(runner, "_run_dreaming", dreaming)
 
+    assert await runner.run_job(_job(agent_id="__dreaming__")) == "success"
+
+    assert dreaming.await_count == 1
+    orch.runtime_observability.record_scheduler.assert_not_called()

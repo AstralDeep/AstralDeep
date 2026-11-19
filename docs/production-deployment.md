@@ -2,7 +2,7 @@
 
 AstralDeep is a **server-driven UI (SDUI) backend service**: one Python
 process serves the REST API and the WebSocket channel on port **8001**. It
-hosts no web shell, static assets or web chat. There is no frontend build step, no
+hosts no web shell or static assets, and it runs turns only on the Kernel engine. There is no frontend build step, no
 Node toolchain, and no separate static server. `astralprims` defines the
 primitives, the orchestrator renders them (`components/AstralProjection/backend/webrender/`), and ROTE
 adapts the output per device.
@@ -44,7 +44,7 @@ Additionally, in production mode:
   only after the peer answers an unauthenticated probe with the
   `AstralAgentKey` challenge, and only to a destination listed under
   `AGENT_KEY_TRUSTED_HOSTS` (see below).
-- The node hosts no browser shell and no web chat.
+- The node hosts no browser shell. A web client is a later application-layer client.
   REST and WebSocket requests without a roster-listed device key and a mesh
   ticket, or an owner-minted caller ticket, are refused. Bearer JWTs are
   refused.
@@ -441,8 +441,10 @@ identity must match them.
 notarizes and staples the app, builds `AstralDeep-<version>-<build>-arm64.dmg`
 (the app plus an Applications shortcut), signs, notarizes and staples the DMG,
 checks Gatekeeper, and re-inspects the app inside the mounted image. The DMG is
-also the Sparkle enclosure. The release is `stable`, never a prerelease and
-never marked Latest (the Windows updater reads `/releases/latest`). Its assets
+also the Sparkle enclosure. Publishing a stable release sets GitHub’s Latest badge
+and verifies the tag at `/releases/latest`. A preview leaves the badge on the
+previous stable release. Older Windows updaters that read this endpoint skip
+macOS tags. The macOS release assets
 are the DMG, `SHA256SUMS`, `release-provenance.json`, the notes `.md`,
 `downloads.json`, `appcast.xml`, `mac-update-policy.json` and
 `mac-update-policy.json.sig`. `scripts/macos_release_notes.py` writes the notes

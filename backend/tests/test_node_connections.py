@@ -14,7 +14,7 @@ import pytest
 
 from orchestrator import node_connection_keystore as keystore
 from orchestrator import node_connections, node_mesh, node_mesh_keys
-from orchestrator.node_mesh_calls import OrchestratorCalls, grant_name
+from orchestrator.node_mesh_calls import OrchestratorCalls
 from shared import node_identity
 from shared.protocol import AgentCard
 from tests.fixtures.connections.oauth_server import FixtureAuth, FixtureConfig
@@ -201,17 +201,6 @@ async def test_a_personal_node_resolves_no_withdrawn_tool(monkeypatch):
     with pytest.raises(CallRefused) as refused:
         await OrchestratorCalls(host).resolve(owner, "call_remote_tool")
     assert refused.value.code == "node.tool_unknown"
-
-
-def test_existing_grants_naming_the_withdrawn_tools_are_unchanged(monkeypatch):
-    host = remote_host()
-    owner = node_identity.owner_id_for_mesh("sha256:" + "0" * 64)
-    grant = NS(agent="kernel", tool=grant_name("call_remote_tool", "sha256:" + "a" * 64), scope="*", consented=True)
-    grants = [grant]
-    monkeypatch.setenv(node_identity.PROFILE_ENV, node_identity.PERSONAL)
-    turn = OrchestratorCalls(host).turn_tools(owner, grants)
-    assert grants == [grant] and grant.consented is True
-    assert not {tool.tool for tool in turn} & set(REMOTE_TOOLS)
 
 
 async def test_a_caller_ticket_naming_the_remote_tool_is_refused_and_so_is_a_call_through_it(tmp_path, monkeypatch):

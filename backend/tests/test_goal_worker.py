@@ -1,6 +1,5 @@
-"""Covers bounded Codex worker command construction and result classification."""
+"""Covers bounded Codex worker command construction."""
 
-from types import SimpleNamespace
 
 import pytest
 
@@ -74,22 +73,6 @@ def test_command_requires_absolute_configured_path(environ):
                                          environ=environ)
 
 
-@pytest.mark.parametrize("result,expected,exit_code", [
-    (SimpleNamespace(error={"code": "permission_denied"}, result=None), "denied", None),
-    ({"_data": {"status": "confirmation_required"}}, "denied", None),
-    (SimpleNamespace(error={"code": "command_not_found"}, result=None), "launch_error", None),
-    ({"_data": {"timed_out": True, "exit_code": None}}, "timeout", None),
-    ({"_data": {"timed_out": False, "exit_code": 7}}, "nonzero", 7),
-    ({"_data": {"timed_out": False, "exit_code": 0}}, "success", 0),
-    ({"_data": {"timed_out": False}}, "launch_error", None),
-])
-def test_result_classifier(result, expected, exit_code):
-    classified = goal_worker.classify_worker_result(result)
-
-    assert classified.status == expected
-    assert classified.exit_code == exit_code
-
-
 def test_prompt_and_timeout_limits_fail_closed():
     with pytest.raises(ValueError):
         goal_worker.build_worker_prompt("x" * 16_385, CATEGORIES, "/work/demo")
@@ -100,13 +83,3 @@ def test_prompt_and_timeout_limits_fail_closed():
             "Make a small game", CATEGORIES, PROJECT,
             environ={"GOAL_CODEX_WORKER_PATH": "/opt/codex"}, timeout_s=601,
         )
-
-
-def test_worker_configured_treats_an_empty_path_as_disabled():
-    from orchestrator.goal_worker import worker_configured
-
-    assert worker_configured(environ={}) is True
-    assert worker_configured(environ={"GOAL_CODEX_WORKER_PATH": "/opt/codex/bin/codex"}) is True
-    assert worker_configured(environ={"GOAL_CODEX_WORKER_PATH": ""}) is False
-    assert worker_configured(environ={"GOAL_CODEX_WORKER_PATH": "codex"}) is False
-    assert worker_configured(environ={"GOAL_CODEX_WORKER_PATH": "/opt/codex\x00"}) is False

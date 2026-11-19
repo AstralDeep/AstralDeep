@@ -535,6 +535,16 @@ def test_model_server_follows_an_explicit_script_and_repeats_its_last_turn():
     assert names == ["a", "b", "end", "end"]
 
 
+def test_model_server_restarts_its_script_at_each_user_message():
+    script = [ScriptedTurn(tool="a"), ScriptedTurn(text="end")]
+    with ModelServer(script=script) as model:
+        earlier = [{"role": "user", "content": "one"}, {"role": "tool", "content": "r"}, {"role": "assistant", "content": "end"}]
+        delta = stream_of(model, earlier + [{"role": "user", "content": "two"}])[0]["choices"][0]["delta"]
+        assert delta["tool_calls"][0]["function"]["name"] == "a"
+        delta = stream_of(model, earlier + [{"role": "user", "content": "two"}, {"role": "tool", "content": "r"}])[0]["choices"][0]["delta"]
+        assert delta == {"content": "end"}
+
+
 def test_model_server_without_a_tool_just_replies():
     with ModelServer(reply="hello") as model:
         assert stream_of(model, [{"role": "user", "content": "x"}])[0]["choices"][0]["delta"] == {"content": "hello"}

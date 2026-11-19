@@ -14,9 +14,6 @@ import pytest
 from orchestrator.projection_surfaces import personalization as surf
 from persistent_agents.models import AssignmentError, AssignmentLimits
 
-TOOL_OPTIONS = surf._assignment_tool_options
-
-
 def run(value):
     return asyncio.run(value)
 
@@ -63,7 +60,6 @@ def host(monkeypatch):
         get_tool_scope=lambda agent, tool: "tools:read")
     orch = SimpleNamespace(persistent_assignments=svc, ui_sessions={socket: claims},
         tool_permissions=permissions, persistent_assignment_runner=SimpleNamespace(notify=lambda *a: None))
-    monkeypatch.setattr(surf, "_assignment_tool_options", lambda *args: (["public_page"], ["web-research-1:fetch_page"]))
     return orch, socket, claims, row
 
 
@@ -301,18 +297,15 @@ def test_shared_schedule_list_and_detail_keep_secrets_out(host, monkeypatch):
     assert "state_version" not in json.dumps(native)
 
 
-def test_snapshot_pagination_form_draft_and_consented_tool_options(host):
+def test_assignment_schedule_lists_existing_work_and_refuses_creation(host):
     orch, socket, _, row = host
-    state = run(surf._assignment_state(orch, socket, "owner", {"assignment_mode": "create", "assignment_draft": {"name": "Draft", "instructions": "Check releases.", "source_url": "https://example.org/new"}, "conversation_id": "chat-2"}))
-    assert state["assignment"]["definition"]["name"] == "Draft"
-    assert state["assignment"]["definition"]["conversation_id"] == "chat-2"
-    assert state["assignment"]["definition"].get("consent") is None
-    assert state["source_options"] == ["public_page"]
-    assert len(state["limit_fields"]) == 16
-    assert state["assignment"]["definition"]["currency_cap_enabled"] is False
+    state = run(surf._assignment_state(orch, socket, "owner", {"assignment_mode": "create"}))
+    assert "retired" in state["error"]
+    assert state["execution_enabled"] is False
     orch.persistent_assignments.list.return_value = [row] * 50
     listed = run(surf._assignment_state(orch, socket, "owner", {}))
     assert listed["next_cursor"] == row["assignment_id"]
+    assert "chrome_assignment_create" not in listed.get("available_actions", [])
 
 
 def test_detail_approval_activity_and_task_mapping(host):
@@ -323,6 +316,7 @@ def test_detail_approval_activity_and_task_mapping(host):
     orch.persistent_assignments.proposals.return_value = [action]
     state = run(surf._assignment_state(orch, socket, "owner", {"assignment_id": row["assignment_id"]}))
     assert state["assignment"]["approvals"][0]["expired"] is True
+    assert set(state["assignment"]["approvals"][0]["submission_ids"]) == {"decline"}
     assert state["assignment"]["activity_cursor"] == "1"
     assert state["assignment"]["tasks"][0]["incorporated"] is True
 
@@ -378,21 +372,6 @@ def test_more_malformed_form_types_are_refused(host, update):
         surf._assignment_form({**form_fields(), **update})
 
 
-def test_tool_options_reuse_effective_permissions_and_require_resource_bound(host, monkeypatch):
-    orch, _, claims, _ = host
-    from orchestrator import tool_visibility
-    pairs = [("web-research-1", SimpleNamespace(id="fetch_page")), ("mail", SimpleNamespace(id="read")), ("mail", SimpleNamespace(id="unbounded"))]
-    monkeypatch.setattr(tool_visibility, "eligible_tool_pairs", lambda *args, **kw: pairs)
-    def bound(identity):
-        if identity.endswith("unbounded"):
-            raise AssignmentError("assignment_tool_bound_unavailable")
-        return {"tool_calls": 1}
-    orch.persistent_assignments.tool_bound = bound
-    sources, tools = TOOL_OPTIONS(orch, orch.persistent_assignments, "owner", claims)
-    assert sources == ["public_page", "mail:read"]
-    assert tools == ["web-research-1:fetch_page", "mail:read"]
-
-
 @pytest.mark.parametrize("operation", [
     {"arguments": {"access_token": "SECRET"}},
     {"arguments": ["https://example.org/?token=SECRET"]},
@@ -428,8 +407,8 @@ def test_invalid_view_selection_and_prefill_are_not_rendered(host, params):
 def test_read_failure_terminal_row_revision_form_and_begun_actions(host):
     orch, socket, _, row = host
     state = run(surf._assignment_state(orch, socket, "owner", {"assignment_mode": "revise", "assignment_id": row["assignment_id"]}))
-    assert state["assignment"]["definition"]["instructions"] == row["definition"]["instructions"]
-    assert state["limit_fields"][6]["value"] == 50
+    assert "retired" in state["error"]
+    orch.persistent_assignments.revise.assert_not_awaited()
     row["lifecycle"] = "stopped"
     assert surf._assignment_row(row)[0]["available_actions"] == []
     orch.persistent_assignments.list.side_effect = RuntimeError("SECRET")
@@ -450,8 +429,6 @@ def test_assignment_error_guidance_matches_lifecycle_and_preserves_safe_history(
     mapped, _ = surf._assignment_row(row)
     mapped["activity"] = [{"title": "Result refused", "summary": "assignment_phi_refused", "created_at": "Earlier"}]
     expected = "assignment_phi_refused"
-    if lifecycle in {"active", "paused"}:
-        expected += ". Review activity and restore authorization or revise the assignment before resuming."
     assert mapped["safe_error"] == expected
     assert row["wake_reason"] == "cadence"
     html = render_html(build_assignments_view({"mode": "detail", "enabled": True,
@@ -465,7 +442,8 @@ def test_assignment_error_guidance_matches_lifecycle_and_preserves_safe_history(
         assert "cadence" not in html
         assert mapped["available_actions"] == []
     else:
-        assert "before resuming" in html
+        assert "before resuming" not in html
+        assert not {"chrome_assignment_resume", "chrome_assignment_revise", "chrome_assignment_run_now"}.intersection(mapped["available_actions"])
         assert mapped["wake_reason"] == "cadence"
         assert "cadence" in html
         assert {"chrome_assignment_stop", "chrome_assignment_revoke"} <= set(mapped["available_actions"])

@@ -1,4 +1,4 @@
-"""Runs the paired attack and control cases as real turns on a personal node: a development owner device on the real kernel binding sends each request, and the node's orchestrator runs it with a scripted proposer.
+"""Runs the paired attack and control cases as real turns on a personal node: a development owner device on the real kernel binding sends each request, and the node answers it on the Kernel turn engine with a scripted model provider.
 Sandboxed fixture tools count their physical effects and the hash-chained audit is an independent oracle; qualification.py defines the cases and report.py-style evidence checks consume the result.
 """
 
@@ -13,7 +13,6 @@ import time
 import uuid
 from collections import defaultdict
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, Callable
 
 import astral_kernel as ak
@@ -24,6 +23,7 @@ from orchestrator.node_mailbox import MailboxSettings
 from orchestrator.node_mesh_calls import OrchestratorCalls, definition_hash, grant_name
 from shared import node_identity
 from shared.feature_flags import flags
+from tests.fixtures.connections.model_server import ModelServer, ScriptedTurn
 
 from security_benchmark.qualification import CASES, CaseEvidence, QualificationCase
 
@@ -73,25 +73,6 @@ class FixtureExecutor:
         return httpx.Response(200, json={"output": "unknown fixture tool", "error": True})
 
 
-def scripted_proposer(calls: tuple[tuple[str, dict], ...]) -> Callable[..., Any]:
-    step = 0
-
-    async def propose(_websocket, _messages, tools_desc=None, temperature=None, feature="tool_dispatch", **_kw):
-        nonlocal step
-        usage = SimpleNamespace(total_tokens=0, prompt_tokens=0, completion_tokens=0)
-        if feature != "tool_dispatch" or step >= len(calls) or not tools_desc:
-            return SimpleNamespace(role="assistant", content="Source reviewed.", tool_calls=None,
-                                   reasoning_content=None), usage
-        name, arguments = calls[step]
-        step += 1
-        call = SimpleNamespace(id=f"qualification-{step}", type="function",
-                               function=SimpleNamespace(name=name, arguments=json.dumps(arguments)))
-        return SimpleNamespace(role="assistant", content=None, tool_calls=[call],
-                               reasoning_content=None), usage
-
-    return propose
-
-
 async def _until(condition: Callable[[], Any], what: str, seconds: float = WAIT_SECONDS) -> None:
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
@@ -114,6 +95,8 @@ class PersonalDispatchQualification:
         self.owner_device: Any = None
         self.bridge: Any = None
         self.owner_id = ""
+        self.model: Any = None
+        self.consents: list[str] = []
         self.node_device = ""
         self._saved_env: dict[str, str | None] = {}
         self._saved_flags: dict[str, Any] = {}
@@ -158,15 +141,11 @@ class PersonalDispatchQualification:
             self.orch = await asyncio.to_thread(Orchestrator)
             await self._pair_owner()
             self._register_fixtures()
-            self.orch._llm_store.set_sync(
-                self.owner_id, provider="custom", base_url="http://qualification.invalid/v1",
-                model="scripted-proposer", api_key="qualification-key")
-            self.orch._resolve_llm_client_for = self._client_lookup
-            self.orch.summarize_chat_title = self._no_title
+            self.model = ModelServer()
+            await self._provide_model()
             self.bridge = node_mesh_chat.MeshChatBridge(
                 self.node, owner_id=self.node.personal_owner_id, owner_setup=self.node.refresh_personal_owner,
-                history=self.orch.history, runner=node_mesh_chat.orchestrator_runner(self.orch),
-                calls=OrchestratorCalls(self.orch), state_path=self.root / "chats.json",
+                history=self.orch.history, calls=OrchestratorCalls(self.orch), state_path=self.root / "chats.json",
                 phi_active=lambda _owner: False, poll_seconds=0.2, turn_seconds=TURN_SECONDS)
             node_mesh_chat.install(self.bridge)
             await self.bridge.start()
@@ -175,11 +154,13 @@ class PersonalDispatchQualification:
             await self.teardown()
             raise
 
-    async def _client_lookup(self, *_args, **_kwargs):
-        return object(), None, SimpleNamespace(model="scripted-proposer", base_url=None)
-
-    async def _no_title(self, *_args, **_kwargs):
-        return None
+    async def _provide_model(self) -> None:
+        provider = ak.ModelProviderConfig(
+            name="scripted", base_url=self.model.url + "/v1", models=["scripted-model"], api_keys=["scripted-key"],
+            fallback_order=0, self_hosted=True, strict_tools=False, recipients=[self.owner_device.device_id, self.node_device])
+        self.owner_device.kernel.set_model_provider(provider)
+        await _until(lambda: any(item.name == "scripted" for item in self.node.kernel.model_providers()),
+                     "the scripted model provider to reach the node")
 
     async def _pair_owner(self) -> None:
         settings = node_mesh.MeshSettings(
@@ -240,7 +221,15 @@ class PersonalDispatchQualification:
         await _until(lambda: kernel.request(request).state in (
             ak.RequestState.ANSWERED, ak.RequestState.REFUSED),
             "the node to finish the request", seconds=TURN_SECONDS)
+        await _until(lambda: self._settle(chat), "the node's turn and its tool calls to finish", seconds=TURN_SECONDS)
         return request, str(kernel.request(request).state)
+
+    def _settled(self, chat: str) -> bool:
+        kernel = self.node.kernel
+        running = any(turn.status == ak.TurnStatus.RUNNING for turn in kernel.chat(chat).view.turns)
+        open_calls = any(item.call is not None and item.state in (ak.RequestState.PENDING, ak.RequestState.CLAIMED)
+                         for item in kernel.chat_requests(chat))
+        return not running and not open_calls
 
     async def _open_chat(self, title: str) -> str:
         kernel = self.owner_device.kernel
@@ -250,13 +239,22 @@ class PersonalDispatchQualification:
                      "the chat to reach the node")
         return chat
 
-    def _local(self, chat: str) -> str:
-        local = self.bridge._state.local_for(chat)
-        if not local:
-            raise RuntimeError("the node did not open the chat")
-        return local
+    def _local(self, chat: str) -> str | None:
+        return self.bridge._state.local_for(chat)
 
-    def _audit(self, local_chat: str) -> tuple[list[dict], bool]:
+    def _calls(self, chat: str) -> list[dict]:
+        return [{"tool": item.call.tool, "state": str(item.state).rsplit(".", 1)[-1], "code": item.code or ""}
+                for item in self.node.kernel.chat_requests(chat) if item.call is not None]
+
+    def _settle(self, chat: str) -> bool:
+        for pending in self.node.kernel.pending_consents():
+            self.consents.append(f"{pending.tool_name}:consent.required:{'+'.join(pending.reasons)}")
+            self.node.kernel.resolve_consent(pending.request_id, False)
+        return self._settled(chat)
+
+    def _audit(self, local_chat: str | None) -> tuple[list[dict], bool]:
+        if local_chat is None:
+            return [], False
         listed = self.orch.audit_repo.list_for_user(self.owner_id, limit=200, conversation_id=local_chat)
         events = listed[0] if isinstance(listed, tuple) else listed
         rows = [{
@@ -268,7 +266,8 @@ class PersonalDispatchQualification:
         return rows, self.orch.audit_repo.verify_chain(self.owner_id) is None
 
     async def _turn(self, chat: str, text: str, calls: tuple[tuple[str, dict], ...]) -> bool:
-        self.orch._call_llm = scripted_proposer(calls)
+        self.model.script = [ScriptedTurn(tool=name, arguments=arguments) for name, arguments in calls] + [
+            ScriptedTurn(text="Source reviewed.")]
         _request, state = await self._request(chat, text)
         return state.endswith("ANSWERED") or state.endswith("REFUSED")
 
@@ -276,6 +275,7 @@ class PersonalDispatchQualification:
         self.fixture.payloads[case.case_id] = case.injected_text
         await self._grant((READ_LOCAL, READ_REMOTE, EFFECT))
         before = len(self.fixture.effects[case.case_id])
+        self.consents = []
         chat = await self._open_chat(f"qualification {case.case_id}")
         read_tool = READ_REMOTE if case.surface == "remote_reply" else READ_LOCAL
         effect_args = {"case_id": case.case_id, "destination": case.destination, "material": case.injected_text}
@@ -290,10 +290,12 @@ class PersonalDispatchQualification:
         rows, chain_ok = await asyncio.to_thread(self._audit, self._local(chat))
         read_completed = any(row["action_type"] == f"tool.{read_tool}.end" and row["outcome"] == "success"
                              for row in rows)
-        refusals = [row for row in rows if row["action_type"] in (f"tool.{EFFECT}.denied", "hitl.proposed")]
+        refusals = [f"{call['tool']}:{call['code']}" for call in self._calls(chat)
+                    if call["tool"] == EFFECT and call["state"] == "REFUSED"]
+        refusals += self.consents
         effect_count = len(self.fixture.effects[case.case_id]) - before
         receipts = tuple(row["correlation_id"] for row in rows if row["correlation_id"])
-        refusal = ",".join(sorted({f"{row['gate'] or row['action_type']}:{row['detail'] or ''}" for row in refusals}))
+        refusal = ",".join(sorted(set(refusals)))
         benign = await self._benign_control(case, read_tool)
         return CaseEvidence(
             case_id=case.case_id, surface=case.surface, registered_turn=registered,
@@ -330,6 +332,8 @@ class PersonalDispatchQualification:
             await step(self.node.stop)
         if self.orch is not None:
             await step(lambda: asyncio.wait_for(self.orch._close_started_services(), timeout=30.0))
+        if self.model is not None:
+            await step(self.model.stop)
         if self._executor_client is not None:
             await step(self._executor_client.aclose)
         self._restore_environment()

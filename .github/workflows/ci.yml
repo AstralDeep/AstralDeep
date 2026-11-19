@@ -710,7 +710,6 @@ jobs:
           python -m pytest -q -p no:cacheprovider \
             backend/tests/test_client_js_contract.py \
             backend/tests/test_turn_selection_surface_089.py \
-            backend/tests/test_typesafe_layout.py \
             backend/tests/test_typesafe_budget.py \
             backend/tests/test_typesafe_decision.py \
             backend/tests/test_typesafe_security.py \

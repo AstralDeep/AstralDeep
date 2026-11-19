@@ -228,7 +228,6 @@ def test_android_instrumented_route_requires_the_workflow_launcher() -> None:
         _assert_android_instrumented_route("", launcher)
 
 
-
 @pytest.mark.parametrize(
     "argument",
     (

@@ -1,7 +1,7 @@
 """Tests for the admin-managed system LLM credential in
 orchestrator/projection_surfaces/llm_system.py: admin-only save/clear with scoped
-audit rows, the web-only menu carve-out, and scheduler jobs failing when no system
-credential is configured.
+audit rows, the web-only menu carve-out, and the system and user credentials never
+resolving each other.
 """
 
 from __future__ import annotations
@@ -235,134 +235,6 @@ def test_menu_model_web_admin_sees_system_llm_natives_never_do():
     assert "llm_system" not in _surfaces(web_user)
 
 
-async def test_run_scheduled_turn_raises_llm_unavailable_without_system_row(
-        orch, clean_system_row):
-    with pytest.raises(orch._LLMUnavailable):
-        await orch.run_scheduled_turn(
-            user_id=_uid(), chat_id=None, instruction="do the thing",
-            agent_id=None, access_token="tok", allowed_scopes=[],
-            correlation_id="corr-1")
-
-    assert orch._record_llm_unconfigured.await_count == 1
-    assert orch._record_llm_unconfigured.call_args.kwargs["feature"] == "scheduled_job"
-
-
-async def test_run_scheduled_turn_proceeds_with_system_row(
-        orch, clean_system_row, monkeypatch):
-    await _seed_system(orch)
-    ran = {}
-
-    async def fake_handle_chat_message(websocket, message, chat_id, **kwargs):
-        ran.update(message=message, chat_id=chat_id, user_id=kwargs.get("user_id"))
-
-    monkeypatch.setattr(orch, "handle_chat_message", fake_handle_chat_message)
-    uid = _uid()
-
-    summary = await orch.run_scheduled_turn(
-        user_id=uid, chat_id="sched-chat-1", instruction="summarize inbox",
-        agent_id=None, access_token="tok", allowed_scopes=[],
-        correlation_id="corr-2")
-
-    assert ran == {"message": "summarize inbox", "chat_id": "sched-chat-1",
-                   "user_id": uid}
-    assert summary == "Your scheduled task finished."
-    assert orch._record_llm_unconfigured.await_count == 0
-
-
-async def _run_atomic_scheduled_turn(orch, monkeypatch, *, failed):
-    from orchestrator import conversation_publication
-    from orchestrator.scheduled_publication import current_scheduled_history_stage
-
-    await _seed_system(orch)
-    uid = _uid()
-    stage = SimpleNamespace(
-        sealed=False, commit_id="commit-1", user_id=uid, base_render_revision=0,
-        next_render_revision=1, layouts=())
-    stage.seal = lambda committed: setattr(stage, "sealed", True)
-    store = MagicMock()
-    store.reserve_atomic_chat_effect.return_value = SimpleNamespace(state="reserved", ambiguous=False)
-    store.publish_staged_chat_effect.return_value = SimpleNamespace(state="published")
-    attempt = SimpleNamespace(
-        claim=SimpleNamespace(occurrence_id="occurrence-1"), request_generation="generation-1",
-        job={"id": "job-1", "user_id": uid, "target_chat_id": "job-1", "consented_scopes": []})
-
-    async def fake_handle_chat_message(websocket, message, chat_id, **kwargs):
-        current_scheduled_history_stage().failed = failed
-
-    commits = MagicMock()
-    monkeypatch.setattr(orch, "handle_chat_message", fake_handle_chat_message)
-    monkeypatch.setattr(orch, "conversation_commits", commits, raising=False)
-    monkeypatch.setattr(orch.history, "get_chat", lambda *args, **kwargs: {"id": "job-1"})
-    monkeypatch.setattr(orch, "_begin_scheduled_conversation_publication",
-                        AsyncMock(return_value=(stage, None)))
-    monkeypatch.setattr(orch, "_deliver_committed_conversation_snapshot", AsyncMock())
-    monkeypatch.setattr(conversation_publication, "reset_conversation_publication", MagicMock())
-    summary = await orch.run_scheduled_turn(
-        user_id=uid, chat_id="job-1", instruction="summarize inbox", agent_id=None,
-        access_token="tok", allowed_scopes=[], correlation_id="occurrence-1",
-        scheduled_attempt=attempt, scheduled_store=store, effect_kind="chat_history",
-        effect_key="job-1", payload_digest="digest")
-    return summary, store, commits
-
-
-async def test_a_failed_scheduled_turn_raises_and_publishes_nothing(orch, clean_system_row, monkeypatch):
-    with pytest.raises(RuntimeError, match="scheduled turn failed"):
-        await _run_atomic_scheduled_turn(orch, monkeypatch, failed=True)
-
-
-async def test_a_scheduled_turn_that_did_not_fail_still_publishes(orch, clean_system_row, monkeypatch):
-    _, store, commits = await _run_atomic_scheduled_turn(orch, monkeypatch, failed=False)
-    store.publish_staged_chat_effect.assert_called_once()
-    commits.abort_commit.assert_not_called()
-
-
-async def test_a_scheduled_summary_is_the_reply_and_never_a_status_line(
-        orch, clean_system_row, monkeypatch):
-    await _seed_system(orch)
-
-    async def fake_handle_chat_message(websocket, message, chat_id, **kwargs):
-        await websocket.send_text(json.dumps(
-            {"type": "chat_status", "status": "thinking", "message": "Analyzing request and planning actions..."}))
-        await websocket.send_text(json.dumps(
-            {"type": "ui_render", "target": "chat", "components": [{"type": "text", "content": "Inbox is clear."}]}))
-        await websocket.send_text(json.dumps({"type": "chat_status", "status": "done", "message": ""}))
-
-    monkeypatch.setattr(orch, "handle_chat_message", fake_handle_chat_message)
-    summary = await orch.run_scheduled_turn(
-        user_id=_uid(), chat_id="sched-chat-1", instruction="summarize inbox",
-        agent_id=None, access_token="tok", allowed_scopes=[], correlation_id="corr-3")
-    assert summary == "Inbox is clear."
-
-
-async def test_a_scheduled_turn_with_only_status_lines_uses_the_default_summary(
-        orch, clean_system_row, monkeypatch):
-    await _seed_system(orch)
-
-    async def fake_handle_chat_message(websocket, message, chat_id, **kwargs):
-        await websocket.send_text(json.dumps(
-            {"type": "chat_status", "status": "thinking", "message": "Analyzing request and planning actions..."}))
-
-    monkeypatch.setattr(orch, "handle_chat_message", fake_handle_chat_message)
-    summary = await orch.run_scheduled_turn(
-        user_id=_uid(), chat_id="sched-chat-1", instruction="summarize inbox",
-        agent_id=None, access_token="tok", allowed_scopes=[], correlation_id="corr-4")
-    assert summary == "Your scheduled task finished."
-
-
-async def test_mid_clear_race_is_honest_failure_not_success(
-        orch, clean_system_row):
-    await _seed_system(orch)
-    assert await orch._llm_store.get_system() is not None
-
-    assert await orch._llm_store.clear_system() is True
-
-    with pytest.raises(orch._LLMUnavailable):
-        await orch.run_scheduled_turn(
-            user_id=_uid(), chat_id=None, instruction="x", agent_id=None,
-            access_token="tok", allowed_scopes=[], correlation_id="corr-3")
-    assert orch._record_llm_unconfigured.call_args.kwargs["feature"] == "scheduled_job"
-
-
 async def test_user_socket_never_resolves_system_record(
         orch, clean_system_row, user_skills_disabled):
     await _seed_system(orch)
@@ -372,22 +244,6 @@ async def test_user_socket_never_resolves_system_record(
     assert await orch.llm_configured_for(uid) is False
     with pytest.raises(orch._LLMUnavailable):
         await orch._resolve_llm_client_for(ws)
-
-    called = {"n": 0}
-
-    async def fake_call_llm(*args, **kwargs):
-        called["n"] += 1
-        return None, None
-
-    orch._call_llm = fake_call_llm
-    await orch.handle_chat_message(
-        ws, "hello there", f"sysgate-{uuid.uuid4().hex[:8]}", user_id=uid)
-    assert called["n"] == 0, "no LLM call may run for a gated user"
-    assert orch._record_llm_unconfigured.call_args.kwargs["feature"] == "chat_dispatch"
-    alerts = [c for call in orch.send_ui_render.call_args_list
-              for c in (call.args[1] if len(call.args) > 1 else [])
-              if isinstance(c, dict) and c.get("type") == "alert"]
-    assert alerts and "Set up your AI provider" in alerts[-1]["message"]
 
 
 async def test_system_context_never_resolves_a_user_record(

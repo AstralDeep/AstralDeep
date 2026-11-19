@@ -1,8 +1,4 @@
-"""Tests for the no-grant permission baseline on remote-compute-1
-(orchestrator/tool_permissions.py, remote_confirmation.py): every read verb passes
-under the safe-seed baseline, and every destructive verb is refused with zero
-effects.
-"""
+"""Checks the safe-agent permission baseline for remote reads and mutations. The independent remote gate denies destructive operations before contacting the transport."""
 
 from __future__ import annotations
 
@@ -152,18 +148,22 @@ def test_every_destructive_verb_is_refused_on_first_reach_with_no_effect(monkeyp
         db = _ProposalDB()
         t = FakeTransport(files={"/exists.txt": b"x"})
         set_transport(t)
-        out = rc.evaluate(_orch(db), object(), AGENT, verb, dict(args), "chat", USER)
-        assert out is not None and "confirmation_required" in out[0], verb
-        assert len(db.rows) == 1
-        assert next(iter(db.rows.values()))["verb"] == verb
+        orch = _orch(db)
+        socket = object()
+        orch.ui_sessions[socket] = {"sub": USER}
+        out = rc.evaluate(orch, socket, AGENT, verb, dict(args), "chat", USER)
+        assert out and "attended authorization" in out[0], verb
+        assert not db.rows
         assert [c["op"] for c in t.calls if c["op"] != "stat"] == [], verb
 
 
 def test_read_and_nondestructive_verbs_pass_the_gate_untouched():
     db = _ProposalDB()
     o = _orch(db)
+    socket = object()
+    o.ui_sessions[socket] = {"sub": USER}
     for verb in READ_VERBS:
-        assert rc.evaluate(o, object(), AGENT, verb, {"machine_id": "m1"}, "chat", USER) is None
+        assert rc.evaluate(o, socket, AGENT, verb, {"machine_id": "m1"}, "chat", USER) is None
     for verb, args in (
         ("make_directory", {"machine_id": "m1", "path": "/tmp/x"}),
         ("submit_job", {"machine_id": "m1", "script_path": "/j.sbatch"}),
@@ -171,5 +171,5 @@ def test_read_and_nondestructive_verbs_pass_the_gate_untouched():
         ("control_service", {"machine_id": "m1", "service_name": "nginx", "action": "start"}),
         ("manage_package", {"machine_id": "m1", "package_name": "vim", "action": "install"}),
     ):
-        assert rc.evaluate(o, object(), AGENT, verb, args, "chat", USER) is None, verb
+        assert rc.evaluate(o, socket, AGENT, verb, args, "chat", USER) is None, verb
     assert db.rows == {}

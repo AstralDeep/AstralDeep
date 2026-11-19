@@ -144,43 +144,6 @@ def _rotate_claim(db: PlaneTestRuntime, occurrence_id: uuid.UUID) -> None:
     )
 
 
-class _ValidGrants:
-    def latest_valid_for(self, user_id, agent_id):
-        return "grant-scheduler-060"
-
-    def is_valid(self, grant_id, *, user_id):
-        return True
-
-    async def mint_access_token(self, grant_id, *, user_id):
-        return "test-access-token"
-
-
-def _recording_orchestrator():
-    calls = {"turns": [], "notifications": []}
-
-    async def run_scheduled_turn(**kwargs):
-        calls["turns"].append(kwargs)
-        scheduled_store = kwargs.get("scheduled_store")
-        if scheduled_store is not None:
-            scheduled_store.publish_effect(
-                kwargs["scheduled_attempt"],
-                effect_kind=kwargs["effect_kind"],
-                effect_key=kwargs["effect_key"],
-                payload_digest=kwargs["payload_digest"],
-            )
-        return "durable scheduled result"
-
-    async def notify_user(user_id, payload):
-        calls["notifications"].append((user_id, payload))
-
-    orchestrator = SimpleNamespace(
-        run_scheduled_turn=run_scheduled_turn,
-        notify_user=notify_user,
-        tool_permissions=SimpleNamespace(get_agent_scopes=lambda *_: {}),
-    )
-    return orchestrator, calls
-
-
 def _dummy_claim(label: str = "dummy", *, attempt_number: int = 1) -> OccurrenceClaim:
     occurrence_id = uuid.uuid5(uuid.NAMESPACE_URL, f"scheduler-test:{label}")
     operation_id = uuid.uuid5(uuid.NAMESPACE_OID, f"scheduler-parent:{label}")
@@ -1288,32 +1251,6 @@ def test_finish_attempt_rolls_back_if_occurrence_cas_loses(clean_database):
         )["outcome"]
         == "running"
     )
-
-
-class _EffectScriptStore:
-    def __init__(self, reservation: EffectReservation):
-        self.reservation = reservation
-        self.published: list[dict] = []
-        self.failed: list[dict] = []
-        self.statuses: list[tuple] = []
-
-    def reserve_effect(self, attempt, **kwargs):
-        return self.reservation
-
-    def reserve_atomic_chat_effect(self, attempt, **kwargs):
-        return self.reservation
-
-    def publish_effect(self, attempt, **kwargs):
-        self.published.append(kwargs)
-        return EffectReservation("published", False, False)
-
-    def fail_effect(self, attempt, **kwargs):
-        self.failed.append(kwargs)
-        return EffectReservation("failed", False, False)
-
-    def set_status(self, *args):
-        self.statuses.append(args)
-        return True
 
 
 @pytest.mark.asyncio

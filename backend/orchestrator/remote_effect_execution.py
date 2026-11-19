@@ -1,5 +1,5 @@
 """Names the SSH mutators that need a durable dispatch reservation and refuses them, because no session authority exists to reserve one.
-orchestrator.py asks it before every tool call, and remote_confirmation.py, remote_effect_ingress.py and the remote-control agent use the same tool list.
+The orchestrator, remote authorization gate and remote-compute agent use the same tool list.
 """
 
 from __future__ import annotations

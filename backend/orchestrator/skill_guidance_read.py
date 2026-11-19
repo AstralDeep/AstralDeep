@@ -19,7 +19,6 @@ logger = logging.getLogger("Orchestrator.SkillGuidanceRead")
 META_AGENT_ID = "__skill_guidance__"
 TOOL_NAME = "read_user_skill"
 
-MAX_CATALOG_ENTRIES = 20
 MAX_READS_PER_TURN = 8
 MAX_BODY_CHARS = 4000
 MAX_TURN_READ_CHARS = 16000
@@ -91,21 +90,6 @@ def should_inject(draft_agent_id: Optional[str], skills=()) -> bool:
 def agents_in_play(tool_to_agent: Optional[Dict[str, str]]) -> set:
     return {agent for agent in (tool_to_agent or {}).values()
             if agent and agent not in _META_AGENT_IDS}
-
-
-def record_turn_catalog(*, expected_orchestrator, websocket, chat_id, user_id, skills) -> None:
-    from orchestrator.turn_guidance_authority import current_turn_guidance
-    from persistent_agents.models import AssignmentError
-    try:
-        binding = current_turn_guidance(expected_orchestrator=expected_orchestrator,
-                                        websocket=websocket, chat_id=chat_id)
-    except AssignmentError:
-        return
-    if binding is None or binding.origin.owner_id != user_id:
-        return
-    pairs = tuple(dict.fromkeys((skill.skill_id, skill.revision) for skill in skills
-                                if getattr(skill, "skill_id", "") and skill.enabled))
-    binding.skill_reads.setdefault("catalog", pairs[:MAX_CATALOG_ENTRIES])
 
 
 def _canonical_uuid(value: str) -> bool:

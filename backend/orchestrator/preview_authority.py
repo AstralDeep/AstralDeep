@@ -1,9 +1,8 @@
-"""Binds preview host effects to an exact, ordered child plan under the original approval."""
+"""Binds preview host effects to an exact, ordered child plan for the active project session."""
 
 from __future__ import annotations
 
 import contextvars
-import json
 from contextlib import contextmanager
 from dataclasses import dataclass
 
@@ -12,8 +11,8 @@ _ACTIVE = contextvars.ContextVar("preview_host_effect", default=None)
 
 @dataclass
 class PreviewAuthority:
-    approval: object
     session: object
+    generation: int | None
     request: dict
     step: int = 0
     job: str | None = None
@@ -51,8 +50,9 @@ class PreviewAuthority:
     def output(job, wait):
         return {"job_id": job, "stream": "both", "offset": 0, "max_bytes": 4096, "wait_s": wait}
 
-    def matches(self, approval, session, verb, arguments):
-        if (not self.active or self.approval is not approval or self.session is not session
+    def matches(self, session, verb, arguments):
+        if (not self.active or session is None or self.session is not session
+                or session.authority_generation != self.generation
                 or type(arguments) is not dict):
             return False
         if (self.request.get("action") == "start" and self.job and 2 <= self.step <= 5
@@ -61,32 +61,31 @@ class PreviewAuthority:
         return self.expected() == (verb, arguments)
 
 
+    def record(self, verb, result):
+        if self.step == 1 and verb == "run_command" and isinstance(result, dict):
+            job = result.get("job_id")
+            self.job = job.lower() if isinstance(job, str) else None
+        self.step = 6 if verb == "interrupt_command" else self.step + 1
+
+
 @contextmanager
-def preview_authority_scope(approval, session):
-    request = json.loads(approval.call.arguments) if approval is not None else None
-    plan = None
-    if (isinstance(request, dict) and approval.call.tool == "project_preview"
-            and isinstance(request.get("cwd"), str) and request["cwd"].startswith("/")):
-        plan = PreviewAuthority(approval, session, request)
+def preview_authority_scope(request, session):
+    plan = PreviewAuthority(session, getattr(session, "authority_generation", None),
+                            {key: request.get(key) for key in ("action", "cwd", "package_manager", "script", "job_id")})
     token = _ACTIVE.set(plan)
     try:
         yield
     finally:
-        if plan is not None:
-            plan.active = False
+        plan.active = False
         _ACTIVE.reset(token)
 
 
-def preview_effect_matches(approval, session, verb, arguments):
+def preview_request_current(session, request):
     plan = _ACTIVE.get()
-    return isinstance(plan, PreviewAuthority) and plan.matches(approval, session, verb, arguments)
+    return (isinstance(plan, PreviewAuthority) and plan.active and session is not None and plan.session is session
+            and session.authority_generation == plan.generation
+            and all(request.get(key) == value for key, value in plan.request.items()))
 
 
-def record_preview_effect(approval, session, verb, arguments, result):
-    plan = _ACTIVE.get()
-    if not isinstance(plan, PreviewAuthority) or not plan.matches(approval, session, verb, arguments):
-        return
-    if plan.step == 1 and verb == "run_command" and isinstance(result, dict):
-        job = result.get("job_id")
-        plan.job = job.lower() if isinstance(job, str) else None
-    plan.step = 6 if verb == "interrupt_command" else plan.step + 1
+def current_preview():
+    return _ACTIVE.get()

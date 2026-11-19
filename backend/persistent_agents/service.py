@@ -8,7 +8,6 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import hashlib
-import inspect
 from collections.abc import Mapping
 from dataclasses import fields, is_dataclass
 from datetime import datetime
@@ -18,7 +17,6 @@ from astralplane.repositories.assignment_models import (
     AssignmentActionDecision,
     AssignmentControl,
     AssignmentControlResult,
-    AssignmentDefinition,
 )
 from orchestrator.tool_permissions import VALID_SCOPES
 from orchestrator.tool_visibility import eligible_tool_pairs
@@ -77,19 +75,10 @@ async def _thread(function, *args, **kwargs):
     return await asyncio.to_thread(contextvars.Context().run, lambda: function(*args, **kwargs))
 
 
-async def _invoke(callback, *args):
-    result = callback(*args)
-    return await result if inspect.isawaitable(result) else result
-
-
 class AssignmentService:
-    def __init__(self, orch, store=None, *, approval_executor=None, enabled=None,
-                 phi_gate=None, execution_validator=None, quote_provider=None):
+    def __init__(self, orch, store=None, *, enabled=None, phi_gate=None):
         self.orch = orch
         self.store = store if store is not None else AssignmentStore(orch)
-        self.approval_executor = approval_executor
-        self.execution_validator = execution_validator
-        self.quote_provider = quote_provider
         self.enabled = enabled
         if phi_gate is None:
             from personalization.phi_gate import get_phi_gate
@@ -247,32 +236,6 @@ class AssignmentService:
                 raise AssignmentError("assignment_destination_not_found", 404)
         return scopes
 
-    async def _definition(self, owner_id, claims, body):
-        if body.consent is not True:
-            raise AssignmentError("assignment_consent_required", 422)
-        scopes = await self._definition_policy(owner_id, claims, name=body.name,
-            instructions=body.instructions, source=body.source, allowed_tools=body.allowed_tools,
-            completion_condition=body.completion_condition, conversation_id=body.conversation_id)
-        source = body.source
-        identities = tuple(tool.identity for tool in body.allowed_tools)
-        limits = body.limits.to_plane()
-        if body.limits.max_depth:
-            from shared.feature_flags import flags
-            if not flags.is_enabled("recursive_delegation"):
-                raise AssignmentError("assignment_delegation_disabled", 422)
-        coverage = None
-        if limits.get("currency"):
-            if self.quote_provider is None:
-                raise AssignmentError("assignment_cost_quote_unavailable", 422)
-            coverage = await _invoke(self.quote_provider, owner_id, claims, body)
-            if not isinstance(coverage, Mapping) or not coverage:
-                raise AssignmentError("assignment_cost_quote_unavailable", 422)
-        return AssignmentDefinition(name=body.name, instructions=body.instructions,
-            source=source.model_dump(), allowed_tools=identities,
-            consented_scopes=tuple(sorted(set(scopes.values()))), offline_grant_id=None,
-            limits=limits, completion_condition=body.completion_condition,
-            conversation_id=body.conversation_id, cost_quote_coverage=coverage)
-
     async def create(self, owner_id, claims, body: CreateAssignmentRequest):
         self._owner(owner_id, claims)
         assignment_id = str(UUID(bytes=hashlib.sha256(
@@ -281,8 +244,7 @@ class AssignmentService:
         receipt = await self._receipt(owner_id, assignment_id, body.submission_id, submission_digest, "create")
         if receipt is not None:
             return receipt
-        await self._definition(owner_id, claims, body)
-        raise AssignmentError("assignment_authorization_required", 422)
+        raise AssignmentError("turn_engine_retired", 410)
 
     async def revise(self, owner_id, claims, assignment_id, body: ReviseAssignmentRequest):
         self._owner(owner_id, claims)
@@ -304,8 +266,7 @@ class AssignmentService:
             if receipt is not None:
                 return AssignmentControlResult(receipt, False)
             raise AssignmentError("assignment_stale_control", 409)
-        await self._definition(owner_id, claims, body)
-        raise AssignmentError("assignment_authorization_required", 422)
+        raise AssignmentError("turn_engine_retired", 410)
 
     async def control(self, owner_id, claims, assignment_id, command, body: ControlRequest):
         record = await self.get(owner_id, claims, assignment_id)
@@ -338,7 +299,7 @@ class AssignmentService:
         self._owner(owner_id, claims, human=False)
         if record.owner_id != owner_id:
             raise AssignmentError("assignment_not_found", 404)
-        raise AssignmentError("assignment_authorization_required", 403)
+        raise AssignmentError("turn_engine_retired", 410)
 
     def _interaction(self, owner_id, interaction):
         if interaction is None or isinstance(interaction, (dict, str)):
@@ -364,13 +325,10 @@ class AssignmentService:
             raise AssignmentError("assignment_proposal_changed", 409)
         retained = action.state in ("succeeded", "completed", "uncertain", "declined", "cancelled", "invalidated")
         if body.decision == "approve" and not retained:
-            claims = self._interaction(owner_id, interaction)
-            if self.approval_executor is None:
-                raise AssignmentError("assignment_approval_executor_unavailable", 503)
-            checked = await self.validate_execution(owner_id, claims, record, action)
-        else:
-            checked = {"permission_digest": action.intent.permission_digest,
-                       "precondition_digest": action.intent.precondition_digest}
+            self._interaction(owner_id, interaction)
+            raise AssignmentError("turn_engine_retired", 410)
+        checked = {"permission_digest": action.intent.permission_digest,
+                   "precondition_digest": action.intent.precondition_digest}
         decision = AssignmentActionDecision(proposal_digest=body.request_digest,
             decision=body.decision, submission_id=body.submission_id,
             submission_digest=digest({"assignment_id": assignment_id, "action_id": action_id,
@@ -380,8 +338,6 @@ class AssignmentService:
             expected_instruction_revision=body.expected_instruction_revision,
             expected_control_epoch=body.expected_control_epoch, decision=decision)
         await self._audit(claims, body.decision, record)
-        if body.decision == "approve" and decided.state == "approved":
-            return await self.approval_executor(owner_id, claims, record, decided, interaction)
         return decided
 
     async def delete(self, owner_id, claims, assignment_id, *, expected_control_epoch):

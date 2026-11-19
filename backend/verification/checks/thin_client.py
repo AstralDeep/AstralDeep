@@ -1,4 +1,4 @@
-"""Backend-only-UI / thin-client checks (backend/verification/checks/base.py, common.py,
+"""Backend-only-UI / thin-client check (backend/verification/checks/base.py,
 astralprojection.resources): asserts client.js has no per-component construction
 logic or rendering framework, only server markup and backend-defined actions.
 """
@@ -6,12 +6,11 @@ logic or rendering framework, only server markup and backend-defined actions.
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 from astralprojection.resources import static_path
 
 from verification.checks.base import Check, CheckResult, no, ok, register, unsure
-from verification.checks.common import vocabulary_check
 from verification.evidence import CapturedEvidence
 
 _CLIENT_JS = str(static_path("client.js"))
@@ -77,76 +76,7 @@ def _no_construction_counter(ev: CapturedEvidence, inputs: Dict[str, Any]) -> Ch
     return no("us3.no_client_construction.counter", "no framework/construction logic found")
 
 
-def _markup_run(ev: CapturedEvidence, inputs: Dict[str, Any]) -> CheckResult:
-    html_ops = 0
-    total_ops = 0
-    for msg in ev.messages:
-        if not isinstance(msg, dict):
-            continue
-        if msg.get("type") == "ui_upsert":
-            for op in msg.get("ops", []) or []:
-                if op.get("op") == "remove":
-                    continue
-                total_ops += 1
-                if op.get("html"):
-                    html_ops += 1
-        elif msg.get("type") == "ui_render" and msg.get("components"):
-            total_ops += 1
-            if msg.get("html"):
-                html_ops += 1
-    if total_ops == 0:
-        return unsure("us3.server_markup_present", "no component-bearing messages to inspect")
-    if html_ops == total_ops:
-        return ok("us3.server_markup_present",
-                  f"all {total_ops} component message(s) carried server-rendered HTML")
-    return no("us3.server_markup_present",
-              f"only {html_ops}/{total_ops} component messages carried server HTML")
-
-
-def _markup_counter(ev: CapturedEvidence, inputs: Dict[str, Any]) -> CheckResult:
-    for msg in ev.messages:
-        if isinstance(msg, dict) and msg.get("type") == "ui_upsert":
-            for op in msg.get("ops", []) or []:
-                if op.get("op") != "remove" and not op.get("html"):
-                    return ok("us3.server_markup_present.counter", "an op lacked server HTML")
-    return no("us3.server_markup_present.counter", "every op carried server HTML")
-
-
-def _action_run(ev: CapturedEvidence, inputs: Dict[str, Any]) -> CheckResult:
-    backed = [
-        c for c in ev.workspace_state
-        if c.get("_source_agent") and c.get("_source_tool")
-    ]
-    insp = ev.client_inspection or inspect_client_surface()
-    if backed and insp.get("forwards_actions"):
-        return ok("us3.action_is_backend_intent",
-                  "components carry backend-defined re-exec intent; client forwards actions")
-    if not backed:
-        return unsure("us3.action_is_backend_intent", "no component with a backend action source")
-    return no("us3.action_is_backend_intent", "client does not forward actions generically")
-
-
-def _device_run(ev: CapturedEvidence, inputs: Dict[str, Any]) -> CheckResult:
-    diff = ev.device_diff or {}
-    if not diff:
-        return unsure("us3.device_diff_is_backend", "no device-diff evidence captured")
-    if diff.get("backend_adapted"):
-        return ok("us3.device_diff_is_backend",
-                  "device differences produced by the backend ROTE adapter",
-                  browser=diff.get("browser_types"), mobile=diff.get("mobile_types"))
-    return ok("us3.device_diff_is_backend",
-              "backend adapter applied (identical here is still backend-decided)")
-
-
-def build_us3_checks() -> List[Check]:
-    checks = [
-        Check("us3.no_client_construction", "backend_only_ui",
-              _no_construction_run, _no_construction_counter),
-        Check("us3.server_markup_present", "backend_only_ui", _markup_run, _markup_counter),
-        Check("us3.action_is_backend_intent", "backend_only_ui", _action_run, None),
-        Check("us3.device_diff_is_backend", "backend_only_ui", _device_run, None),
-        vocabulary_check("backend_only_ui"),
-    ]
-    for c in checks:
-        register(c)
-    return checks
+NO_CLIENT_CONSTRUCTION = register(Check(
+    "us3.no_client_construction", "backend_only_ui",
+    _no_construction_run, _no_construction_counter,
+))

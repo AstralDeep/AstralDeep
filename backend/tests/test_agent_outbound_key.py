@@ -117,7 +117,6 @@ def test_non_ascii_key_is_refused_rather_than_exploding_in_the_transport(monkeyp
     assert agent_auth_headers("http://localhost:8005") == {}
 
 
-
 def test_ws_header_kwarg_matches_the_installed_websockets():
     import inspect
 
@@ -139,7 +138,6 @@ def test_ws_compat_probe_detects_the_legacy_kwarg(monkeypatch):
 
     monkeypatch.setattr(wc.websockets, "connect", _LegacyConnect, raising=False)
     assert wc._probe() == "extra_headers"
-
 
 
 def _code_only(src: str) -> str:
@@ -168,12 +166,6 @@ def test_orchestrator_never_names_a_version_specific_handshake_error():
     assert "exceptions.InvalidStatus " not in code
     assert "exceptions.InvalidStatus(" not in code
     assert "InvalidHandshake" in code
-
-
-
-
-
-
 
 
 def _orch():

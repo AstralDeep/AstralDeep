@@ -1,73 +1,14 @@
-"""Tests for persistent_agents/runner.py's one-shot lifecycle against real
-Plane/Postgres: claim, renewal and completion transactions, recovery of expired
-leases, discovery pagination and shutdown, and the fixed reader's delegation-window
-renewal.
-"""
+"""Verifies retirement and subscription delivery in the assignment recovery worker."""
 
 import asyncio
-from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 import pytest
-from astralplane.repositories.assignment_models import AssignmentEpisodeCompletion
-from orchestrator.work_admission import (
-    InMemoryWorkAdmissionRepository,
-    OperationOwner,
-    OwnerScope,
-    WorkAdmissionCoordinator,
-)
-from persistent_agents.config import RunnerConfig
-from persistent_agents.runner import (
-    AssignmentRunner,
-    OneShotEpisodeResult,
-    OneShotLifecycle,
-)
-from persistent_agents.runtime_values import digest
+from orchestrator.work_admission import InMemoryWorkAdmissionRepository, WorkAdmissionCoordinator, StaleExecutionFenceError
+from persistent_agents import runner as runtime
 from tests.test_work_admission_repository import _classes
-from tests.helpers.database_clock import database_now
-
-
-from tests.test_lets_gate_ordering import gate_orchestrator as gate_orchestrator
-
-
-async def current(op):
-    return (
-        await op.store.call(
-            "get_operation",
-            owner_id=op.record.owner_id,
-            assignment_id=op.record.assignment_id,
-        )
-    ).assignment
-
-
-async def authority(op):
-    return await op.runner._operation_authority(op.record)
-
-
-def completion(record, **changes):
-    values = dict(
-        expected_state_version=record.state_version,
-        checkpoint=record.checkpoint,
-        completion_digest=digest(["repository-contract", str(uuid4())]),
-        phase="waiting",
-        wake_reason="explicit_yield",
-        next_wake_at=datetime.now(UTC) + timedelta(seconds=20),
-    )
-    values.update(changes)
-    return AssignmentEpisodeCompletion(**values)
-
-
-def assert_retry_due(before, after, backoff=timedelta(seconds=5)):
-    assert before.updated_at + backoff <= after.next_wake_at <= after.updated_at + backoff
-
-
-async def admission(op):
-    return await asyncio.to_thread(
-        op.coordinator.query_operation,
-        owner=OperationOwner(OwnerScope.USER, op.record.owner_id, None),
-        operation_id=op.executor.operation_fence.operation_id,
-    )
 
 
 def test_in_memory_renewal_refuses_foreign_transaction():
@@ -78,40 +19,61 @@ def test_in_memory_renewal_refuses_foreign_transaction():
         coordinator.renew_execution_lease(object(), transaction=object())
 
 
-@pytest.mark.parametrize(
-    "value", [object(), {"sessions": object(), "episode": lambda _: None}]
-)
-def test_untyped_capability_refused(value):
-    with pytest.raises(TypeError):
-        AssignmentRunner(object(), SimpleNamespace(store=object()), one_shot=value)
-
-
-@pytest.mark.parametrize("sessions,handler", [(None, lambda _: None), (object(), None)])
-def test_missing_capability_fields_refused(sessions, handler):
-    with pytest.raises(ValueError):
-        OneShotLifecycle(sessions, handler)
-
-
-async def reader_runner(op, handler):
-    executor = op.executor
-    runner = AssignmentRunner(
-        executor.orch,
-        executor.service,
-        config=RunnerConfig(concurrency=2),
-        one_shot=OneShotLifecycle(op.sessions, handler),
+async def test_worker_retries_after_failure_and_stops_cleanly(caplog):
+    runner = runtime.AssignmentRunner(
+        SimpleNamespace(), SimpleNamespace(store=None), config=runtime.RunnerConfig(tick_seconds=0),
     )
-    snapshot = (
-        await executor.store.call(
-            "get_operation",
-            owner_id=op.owner,
-            assignment_id=executor.record.assignment_id,
-        )
-    ).assignment
-    due = await asyncio.to_thread(database_now, executor.store.plane_runtime)
-    await runner._finish_operation(
-        executor,
-        OneShotEpisodeResult(snapshot, completion(snapshot, next_wake_at=due)),
-    )
-    return runner
+    retry = asyncio.Event()
+    attempts = 0
+
+    async def tick():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("failure detail must remain private")
+        retry.set()
+
+    runner.tick = tick
+    runner.start()
+    with pytest.raises(RuntimeError, match="already started"):
+        runner.start()
+    await retry.wait()
+    runner.notify()
+    await runner.stop()
+    assert attempts >= 2 and "persistent_assignment_tick_failed" in caplog.text
+    assert "failure detail" not in caplog.text
 
 
+@pytest.mark.parametrize("stale", [False, True])
+async def test_recovery_never_runs_an_episode_and_delivers_terminal_results(monkeypatch, stale):
+    binding = {"operation_id": str(uuid4()), "execution_generation": 1, "execution_lease_token": str(uuid4())}
+    record = SimpleNamespace(owner_id="a", assignment_id=str(uuid4()), state_version=4,
+                             execution_profile="one_shot", lifecycle="completed",
+                             operation={"terminal_outcome": "failed"})
+    held = SimpleNamespace(execution_profile="one_shot", lifecycle="active")
+    repo = Mock()
+    repo.recover_expired_for_administration.return_value = SimpleNamespace(operation_bindings=(), terminal_assignments=())
+    repo.recover_expired_operations_for_administration.return_value = SimpleNamespace(operation_bindings=(binding,),
+        terminal_assignments=(record,))
+    repo.retire_unleased_assignments.return_value = (held, record)
+    tx = object()
+    async def transaction(callback, **kwargs):
+        assert kwargs == {"bound_session_waits": True}
+        return callback(tx, repo)
+    service = SimpleNamespace(store=SimpleNamespace(transaction=transaction))
+    orch = SimpleNamespace(work_admission=Mock())
+    if stale:
+        orch.work_admission.terminalize.side_effect = StaleExecutionFenceError("expired")
+    runner = runtime.AssignmentRunner(orch, service)
+    fire = Mock()
+    redrive = AsyncMock()
+    monkeypatch.setattr(runtime, "fire_completions", fire)
+    monkeypatch.setattr(runtime, "redrive_pending", redrive)
+    await runner.tick()
+    orch.work_admission.terminalize.assert_called_once()
+    repo.retire_unleased_assignments.assert_called_once_with(tx, reason="turn_engine_retired", limit=100)
+    assert len(fire.call_args_list) == 2
+    for call in fire.call_args_list:
+        assert call.args == (service, tx, repo)
+        assert call.kwargs == dict(owner_id="a", source_id=record.assignment_id, source_revision=4, outcome="failed")
+    redrive.assert_awaited_once_with(service)

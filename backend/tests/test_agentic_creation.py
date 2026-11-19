@@ -144,21 +144,11 @@ class FakeHistory:
 
 
 class FakeOrch:
-    async def derive_machine_authority(self, **kwargs):
-        from orchestrator.chain_authority import AuthoritySkip
-        return AuthoritySkip("missing_consent", "test double")
-
-    def _bind_machine_turn(self, vws, authority):
-        pass
-
-    def _unbind_machine_turn(self, vws):
-        pass
     def __init__(self, agents_dir):
         self.db = FakeDB()
         self.history = FakeHistory(self.db)
         self.lifecycle_manager = FakeLifecycle(self.db, agents_dir)
         self.sent = []
-        self.chat_calls = []
         self.tool_permissions = types.SimpleNamespace(
             get_agent_scopes=lambda u, a: {"tools:read": True},
             set_agent_scopes=lambda u, a, s: None,
@@ -166,15 +156,6 @@ class FakeOrch:
 
     async def send_ui_render(self, websocket, components, target="canvas"):
         self.sent.append((target, components))
-
-    async def handle_chat_message(self, websocket, message, chat_id, display_message=None,
-                                  user_id=None, draft_agent_id=None, selected_tools=None,
-                                  attachments=None):
-        self.chat_calls.append((message, chat_id, draft_agent_id))
-        await websocket.send_json({"type": "chat_step",
-                                   "step": {"kind": "tool_call", "name": "new_tool", "status": "completed"}})
-        await websocket.send_json({"type": "ui_render", "components": [
-            {"type": "card", "title": "Result", "content": [{"type": "text", "content": "it worked"}]}]})
 
 
 def run(coro):
@@ -186,38 +167,6 @@ def test_fingerprint_stable_and_order_insensitive():
     b = ac.gap_fingerprint("stock tracker", [{"name": "report"}, {"name": "track"}])
     assert a == b
     assert a != ac.gap_fingerprint("Stock Tracker", [{"name": "other"}])
-
-
-def test_should_inject_respects_flag_and_draft_session(monkeypatch):
-    from shared.feature_flags import flags
-    monkeypatch.setitem(flags._flags, "agentic_creation", True)
-    assert ac.should_inject(None) is True
-    assert ac.should_inject("draft-123") is False
-    monkeypatch.setitem(flags._flags, "agentic_creation", False)
-    assert ac.should_inject(None) is False
-
-
-def test_meta_tool_definitions_shape():
-    defs = ac.meta_tool_definitions()
-    names = [d["function"]["name"] for d in defs]
-    assert names == ["create_capability", "extend_agent"]
-    cc = defs[0]["function"]["parameters"]
-    assert set(cc["required"]) == {"agent_name", "description", "tools_spec", "user_request"}
-
-
-def test_summarize_outputs_pass_and_fail():
-    ok = ac._summarize_outputs([
-        {"type": "chat_step", "step": {"kind": "tool_call", "name": "t1"}},
-        {"type": "ui_render", "components": [{"type": "card", "title": "x",
-                                              "content": [{"type": "text", "content": "data"}]}]},
-    ])
-    assert ok["status"] == "passed" and ok["tools_called"] == ["t1"]
-    assert "data" in ok["evidence"]
-
-    bad = ac._summarize_outputs([
-        {"type": "ui_render", "components": [{"type": "alert", "variant": "error", "message": "boom"}]},
-    ])
-    assert bad["status"] == "failed" and bad["errors"]
 
 
 def test_create_capability_happy_path(tmp_path, monkeypatch):
@@ -235,13 +184,14 @@ def test_create_capability_happy_path(tmp_path, monkeypatch):
     draft_id = res.result["draft_id"]
     steps = [c[0] for c in orch.lifecycle_manager.calls]
     assert steps[:3] == ["create_draft", "generate_code", "start"]
-    assert orch.chat_calls and orch.chat_calls[0][2] == draft_id
+    assert "self_test" not in res.result
     card = res.ui_components[0]
     actions = [c.get("action") for c in card["content"] if c.get("type") == "button"]
     assert actions == ["draft_approve", "draft_refine", "draft_discard"]
     row = orch.db.drafts[draft_id]
     assert row["origin"] == "auto_chat" and row["gap_fingerprint"]
-    assert json.loads(row["self_test"])["status"] == "passed"
+    assert not row.get("self_test")
+    assert "Self-test" not in json.dumps(card)
 
 
 def test_create_capability_dedups_per_gap(tmp_path, monkeypatch):
@@ -318,6 +268,36 @@ def test_draft_approve_rejection_keeps_draft_editable(tmp_path):
     assert "not promoted" in comps[0]["title"]
     actions = [c.get("action") for c in comps[0]["content"] if c.get("type") == "button"]
     assert "draft_refine" in actions and "draft_discard" in actions
+
+
+def test_draft_approve_refuses_while_the_redteam_gate_is_enabled(tmp_path, monkeypatch):
+    monkeypatch.setenv("FF_REDTEAM_SELFTEST", "true")
+    orch = FakeOrch(str(tmp_path))
+    _seed_draft(orch)
+    run(ac.HANDLERS["draft_approve"](orch, object(), "u1", [], {"draft_id": "d1"}))
+    assert ("approve", "d1") not in orch.lifecycle_manager.calls
+    target, comps = orch.sent[-1]
+    assert comps[0]["type"] == "alert" and "redteam_unavailable" in comps[0]["message"]
+    assert orch.db.drafts["d1"]["status"] == "testing"
+
+
+def test_draft_refine_card_asks_for_review_not_a_chat_test(tmp_path):
+    orch = FakeOrch(str(tmp_path))
+    _seed_draft(orch)
+    run(ac.HANDLERS["draft_refine"](orch, object(), "u1", [], {"draft_id": "d1", "message": "add csv"}))
+    target, comps = orch.sent[-1]
+    assert "Review it" in json.dumps(comps)
+    assert "Test it again in chat" not in json.dumps(comps)
+
+
+def test_creation_card_shows_gate_verdict_only_when_one_exists():
+    draft = {"id": "d1", "agent_name": "T", "description": "d"}
+    assert "Gate checks" not in json.dumps(ac.creation_card(draft, {}))
+    failed = ac.creation_card(draft, {"status": "failed", "summary": "nope"})
+    assert "Gate checks failed" in json.dumps(failed)
+    passed = ac.creation_card(draft, {"status": "passed", "summary": "ok", "evidence": "preview"},
+                              revision=True, note="n")
+    assert "Gate checks passed" in json.dumps(passed) and "Draft revision" in json.dumps(passed)
 
 
 def test_draft_discard_deletes(tmp_path):

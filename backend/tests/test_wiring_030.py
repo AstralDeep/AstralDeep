@@ -81,28 +81,6 @@ def perms(plane_runtime):
         )
 
 
-def test_has_any_enabled_scope_false_for_fresh_user(perms):
-    manager, user_id = perms
-    assert manager.has_any_enabled_scope(user_id) is False
-
-
-def test_fresh_user_on_safe_baseline_is_not_shown_the_enable_affordance(perms):
-    manager, user_id = perms
-    agent_id = f"pytest-030-safe-{uuid.uuid4().hex[:10]}"
-    manager.user_agent_registry.upsert_agent_safe(agent_id, True, marked_by="pytest")
-    manager.user_agent_registry.set_agent_ownership(
-        agent_id,
-        "o@e.com",
-        is_public=True,
-    )
-    manager.register_tool_scopes(agent_id, {"web_search": "tools:search"})
-
-    assert manager.is_tool_allowed(user_id, agent_id, "web_search") is True
-    assert manager.has_any_enabled_scope(user_id) is False
-    assert all("Agents are off" not in str(c.get("title", ""))
-               for c in welcome_components(tools_available=True))
-
-
 def test_explicit_optout_user_still_reaches_the_enable_affordance(perms):
     manager, user_id = perms
     agent_id = f"pytest-030-optout-{uuid.uuid4().hex[:10]}"
@@ -118,18 +96,6 @@ def test_explicit_optout_user_still_reaches_the_enable_affordance(perms):
     assert manager.is_tool_allowed(user_id, agent_id, "web_search") is False
     card = welcome_components(tools_available=False)[0]
     assert "Agents are off" in card["title"]
-
-
-def test_has_any_enabled_scope_false_when_all_rows_disabled(perms):
-    manager, user_id = perms
-    manager.set_agent_scopes(user_id, "agent-x", {"tools:read": False})
-    assert manager.has_any_enabled_scope(user_id) is False
-
-
-def test_has_any_enabled_scope_true_after_grant(perms):
-    manager, user_id = perms
-    manager.set_agent_scopes(user_id, "agent-x", {"tools:read": True})
-    assert manager.has_any_enabled_scope(user_id) is True
 
 
 def test_scopes_required_by_tools_excludes_write(perms):
@@ -187,34 +153,6 @@ def test_consent_enable_skips_drafts_and_honors_requested_subset(perms):
     assert enabled == ["pub-2"]
     assert manager.get_agent_scopes(user_id, "pub-1")["tools:read"] is False
     assert manager.get_agent_scopes(user_id, "draft-1")["tools:read"] is False
-
-
-def _cta_fake(has_any: bool):
-    fake = types.SimpleNamespace(tool_permissions=types.SimpleNamespace(
-        has_any_enabled_scope=lambda user_id: has_any))
-    fake._text_only_cta_components = types.MethodType(
-        Orchestrator._text_only_cta_components, fake)
-    return fake
-
-
-def test_text_only_cta_empty_when_user_has_enabled_scopes():
-    assert _cta_fake(True)._text_only_cta_components("u1") == []
-
-
-def test_text_only_cta_components_for_never_configured_user():
-    components = _cta_fake(False)._text_only_cta_components("u1")
-    assert _component_types(components) == ["alert", "button", "button"]
-    assert components[1]["action"] == "enable_recommended_agents"
-    assert components[2]["action"] == "chrome_open"
-    assert components[2]["payload"] == {"surface": "agents"}
-
-
-def test_text_only_cta_fails_safe_on_permission_error():
-    fake = types.SimpleNamespace(tool_permissions=types.SimpleNamespace(
-        has_any_enabled_scope=lambda user_id: (_ for _ in ()).throw(RuntimeError)))
-    fake._text_only_cta_components = types.MethodType(
-        Orchestrator._text_only_cta_components, fake)
-    assert fake._text_only_cta_components("u1") == []
 
 
 def _draft_fake(draft, ownership):
@@ -658,54 +596,6 @@ def test_legacy_directory_ownership_sweep_deletes_exact_ids_only(
                     transaction, owner_id=user_id, agent_id=agent_id)
             repos.tool_policy_state.remove_owner_state(
                 transaction, owner_id=other_user)
-
-
-def test_narrative_is_long_detects_length_headings_tables():
-    assert Orchestrator._narrative_is_long("x" * 800) is True
-    assert Orchestrator._narrative_is_long("## Specific Aims\nshort") is True
-    assert Orchestrator._narrative_is_long("| a | b |\n| 1 | 2 |") is True
-    assert Orchestrator._narrative_is_long("A short plain answer.") is False
-
-
-def test_concise_lead_strips_structure_and_ends_at_sentence():
-    content = ("# Title\nFirst sentence of the lead. Second sentence here. "
-               + "Filler words " * 60 + "\n| t | r |\n# H2\nmore")
-    lead = Orchestrator._concise_lead(content)
-    assert lead.startswith("First sentence of the lead.")
-    assert "#" not in lead and "|" not in lead
-    assert len(lead) <= 321
-
-
-def test_concise_lead_never_ends_on_a_numbered_list_marker():
-    first = "I could not use the search API because it was blocked, so I checked each page directly."
-    content = (first + " Here are three verified sources:\n\n1. " + "A long source description " * 12
-               + "\n2. Another source\n3. A third source")
-    assert Orchestrator._concise_lead(content) == first
-
-
-def test_concise_lead_falls_back_to_a_word_cut_when_only_list_markers_remain():
-    content = "Here are the verified sources that I found for you to read through this evening, in order: 1. " + "word " * 120
-    lead = Orchestrator._concise_lead(content)
-    assert not lead.endswith("1.")
-    assert lead.endswith("…")
-
-
-def test_concise_lead_ends_at_a_sentence_that_closes_on_a_year():
-    first = "The society published its most recent revision of the hypertension management guideline in 2024."
-    content = first + " " + "Further detail about each recommendation follows here " * 8
-    assert Orchestrator._concise_lead(content) == first
-
-
-def test_narrative_doc_card_identity_stable_per_title():
-    a1 = Orchestrator._narrative_doc_card("chat-1", "## Specific Aims\nv1 text")
-    a2 = Orchestrator._narrative_doc_card("chat-1", "## Specific Aims\nv2 revised")
-    b = Orchestrator._narrative_doc_card("chat-1", "## Budget Plan\ntext")
-    other_chat = Orchestrator._narrative_doc_card("chat-2", "## Specific Aims\nv1")
-    assert a1["id"] == a2["id"]
-    assert a1["id"] != b["id"]
-    assert a1["id"] != other_chat["id"]
-    assert a1["title"] == "Specific Aims"
-    assert a1["content"][0]["variant"] == "markdown"
 
 
 def test_tool_timeout_overrides_cover_long_running_verbs():

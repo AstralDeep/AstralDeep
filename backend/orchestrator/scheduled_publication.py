@@ -9,9 +9,8 @@ import contextvars
 import copy
 import json
 import time
-from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Iterator
+from typing import Any
 
 
 class ScheduledPublicationEscapeError(RuntimeError):
@@ -106,17 +105,6 @@ class ScheduledHistoryStage:
             )
         )
 
-    def update_title(
-        self,
-        history: Any,
-        *,
-        chat_id: str,
-        user_id: str,
-        title: str,
-    ) -> None:
-        self._assert_write_target(history, chat_id, user_id)
-        self.requested_title = str(title)
-
     @property
     def messages(self) -> tuple[StagedHistoryMessage, ...]:
         return tuple(self._messages)
@@ -157,29 +145,3 @@ _ACTIVE_STAGE: contextvars.ContextVar[ScheduledHistoryStage | None] = (
 
 def current_scheduled_history_stage() -> ScheduledHistoryStage | None:
     return _ACTIVE_STAGE.get()
-
-
-@contextmanager
-def stage_scheduled_history(
-    *,
-    history: Any,
-    chat_id: str,
-    user_id: str,
-    create_chat_if_missing: bool,
-    agent_id: str | None,
-) -> Iterator[ScheduledHistoryStage]:
-    if _ACTIVE_STAGE.get() is not None:
-        raise RuntimeError("nested scheduled history stages are not supported")
-    stage = ScheduledHistoryStage(
-        history=history,
-        chat_id=chat_id,
-        user_id=user_id,
-        create_chat_if_missing=create_chat_if_missing,
-        agent_id=agent_id,
-    )
-    token = _ACTIVE_STAGE.set(stage)
-    try:
-        yield stage
-    finally:
-        stage.seal()
-        _ACTIVE_STAGE.reset(token)

@@ -1,11 +1,10 @@
-"""Tests for the bridge between the node's own turn loop and the owner's mesh log: requests claimed and answered, tool calls with tickets, refusals with dotted codes, PHI fail-closed behavior, label computation, crash recovery, mirrored thin-client turns and the machine-authority runner."""
+"""Tests for the bridge between the node and the owner's mesh log: Kernel-answered text requests, ticketed tool calls with tickets and refusals, PHI fail-closed behavior, label computation and crash recovery."""
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
 import json
-import threading
 from types import SimpleNamespace
 
 import pytest
@@ -28,7 +27,6 @@ class StubMailbox:
         return {"running": True, "address": None}
 
 
-
 class History:
     def __init__(self):
         self.created = []
@@ -43,9 +41,6 @@ class History:
 
 
 DEFINITION = "sha256:" + "d" * 64
-
-
-GRANT = SimpleNamespace(agent="kernel", tool="lookup@" + "d" * 8, scope="*", consented=True)
 
 
 class FakeCalls:
@@ -73,12 +68,6 @@ class FakeCalls:
         tool = self.listed
         return {(tool.agent_id, tool.tool): calls_module.CatalogTool(tool.definition, tool.effect_kind)}
 
-    def turn_tools(self, owner_id, grants):
-        tool = self.listed
-        if not calls_module.grant_covers(grants, tool.tool, tool.definition, tool.effect_kind):
-            return []
-        return [calls_module.TurnTool(tool.agent_id, tool.tool, tool.definition, tool.scope)]
-
     async def run(self, owner_id, local_chat, resolved, authority, arguments, ticket=None):
         if self.delay:
             await asyncio.sleep(self.delay)
@@ -95,19 +84,63 @@ def clean():
     node_mesh.install(None)
 
 
-async def build(tmp_path, runner=None, *, policy=None, phi=False, start=True, turn_seconds=5.0, owner=OWNER, joined=True, calls=None, phi_member=False):
+class KernelAnswers:
+    def __init__(self, kernel, mesh):
+        self.kernel = kernel
+        self.answered = []
+        self.contexts = []
+        self.interrupts = []
+        self.interrupt_script = [True]
+        self.context_error = None
+        self.error = None
+        self.state_on_error = None
+        self.hold = None
+        self.released = asyncio.Event()
+        kernel.supports_node_request_tools = lambda: True
+        kernel.answer_request = self.answer
+        kernel.interrupt_request = self.interrupt
+        mesh.personal_request_context = self.context
+
+    async def context(self, reference, owner, kernel):
+        self.contexts.append((reference.id, owner, kernel is self.kernel))
+        if self.context_error is not None:
+            raise self.context_error
+
+    async def answer(self, request_id):
+        self.answered.append(request_id)
+        if self.hold is not None:
+            await self.released.wait()
+        view = self.kernel.request(request_id)
+        if self.error is not None:
+            if self.state_on_error is not None:
+                view.state = self.state_on_error
+            raise self.error
+        view.state = fake.RequestState.ANSWERED
+        return SimpleNamespace(status="completed")
+
+    async def interrupt(self, request_id):
+        self.interrupts.append(request_id)
+        step = self.interrupt_script.pop(0) if len(self.interrupt_script) > 1 else self.interrupt_script[0]
+        if isinstance(step, Exception):
+            raise step
+        if step is True:
+            self.released.set()
+        return step
+
+
+async def build(tmp_path, *, policy=None, phi=False, start=True, turn_seconds=5.0, owner=OWNER, joined=True, calls=None, phi_member=False):
     mesh = node_mesh.NodeMesh(data_dir=tmp_path, binding=fake, mailbox=StubMailbox())
     await mesh.start()
     kernel = fake.Kernel.instances[-1]
     kernel.phi_member = phi_member
     if joined:
         kernel.join()
+    kernel.answers = KernelAnswers(kernel, mesh)
     history = History()
     bridge = nmc.MeshChatBridge(
         mesh,
         owner_id=owner,
         history=history,
-        runner=runner or (lambda *args: asyncio.sleep(0)),
         calls=calls,
         state_path=tmp_path / "mesh-chats.json",
         policy=policy or nmc.NodePolicy(),
@@ -129,42 +162,8 @@ async def settle(predicate, attempts=200):
     raise AssertionError("condition not reached")
 
 
-def answering(text="the answer", steps=()):
-    async def runner(owner_id, local_chat, prompt):
-        for step in steps:
-            nmc.observe_step(owner_id, local_chat, step)
-        nmc.observe_message(owner_id, local_chat, "assistant", text)
-
-    return runner
-
-
 def canonical(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
-
-
-def turn_orch(scope="tools:read"):
-    from unittest.mock import AsyncMock
-
-    return SimpleNamespace(
-        security_flags={},
-        agent_cards={"agent-1": SimpleNamespace(skills=[SimpleNamespace(id="lookup")])},
-        vessel_definitions={("agent-1", "lookup"): DEFINITION},
-        tool_permissions=SimpleNamespace(get_tool_scope=lambda agent, tool: scope, is_tool_allowed=lambda owner, agent, tool: True),
-        _audit_gate_denial=AsyncMock(),
-    )
-
-
-async def node_call(orch, owner, local, arguments, invoke, *, agent="agent-1", tool="lookup"):
-    from orchestrator import node_mesh_admission
-
-    refusal = await node_mesh_admission.check(orch, None, owner, local, agent, tool, arguments)
-    if refusal is not None:
-        return refusal
-    return await node_mesh_admission.dispatch(orch, None, owner, local, agent, tool, arguments, invoke)
-
-
-def test_recorded_arguments_keep_non_ascii_paths_in_canonical_utf8():
-    assert nmc._arguments({"path": "notes/café.md"}) == '{"path":"notes/café.md"}'
 
 
 def call_for(*, tool="lookup", arguments=None, device=PHONE, digest=None, action_tool=None, turn="turn-9", tool_def=None):
@@ -187,169 +186,79 @@ async def serve(bridge, kernel, request_id):
     await settle(lambda: request_id not in bridge._running)
 
 
-async def test_a_thin_client_turn_is_recorded_into_the_owners_chat(tmp_path):
+async def test_a_text_request_is_answered_by_the_kernel_engine_and_the_bridge_writes_nothing(tmp_path):
     mesh, kernel, history, bridge = await build(tmp_path)
-    nmc.install(bridge)
-    nmc.observe_message(OWNER, "local-a", "user", "What is the weather?\nplease")
-    nmc.observe_step(OWNER, "local-a", {"name": "weather", "args": '{"q":1}', "status": "completed", "result": "sunny", "error": None})
-    nmc.observe_step(OWNER, "local-a", {"name": "lookup", "args": None, "status": "errored", "result": None, "error": "denied"})
-    nmc.observe_step(OWNER, "local-a", {"name": "raw", "args": "not json", "status": "completed", "result": {"k": 1}, "error": None})
-    nmc.observe_message(OWNER, "local-a", "assistant", [{"type": "text", "content": "It is sunny."}])
-    await settle(lambda: kernel.recorded)
-    chat, title = kernel.created[0]
-    assert title == "What is the weather?"
-    assert kernel.sent[0][:3] == (chat, "What is the weather?\nplease", None)
-    recorded_chat, turn = only_turn(kernel)
-    assert recorded_chat == chat and turn.message == kernel.sent[0][3] and turn.answers is None and turn.continues is None
-    assert (turn.provider, turn.reason, turn.text) == ("node", "completed", "It is sunny.")
-    assert turn.labels == fake.peer_labels("PRIVATE", "TOOL_TRUSTED")
-    first, second, third = turn.steps
-    assert (first.tool, first.arguments_json, first.status, first.content, first.code) == ("weather", '{"q":1}', "ok", "sunny", None)
-    assert first.tool_def.startswith("sha256:") and first.call_id == "node-step-1"
-    assert (second.arguments_json, second.status, second.content, second.code) == ("{}", "error", "denied", "node.tool_failed")
-    assert (third.arguments_json, third.content) == ('{"text":"not json"}', '{"k": 1}')
-    assert bridge.state.local_for(chat) == "local-a"
-    await bridge.stop()
-
-
-async def test_the_second_turn_reuses_the_chat_and_continues_the_first(tmp_path):
-    mesh, kernel, history, bridge = await build(tmp_path)
-    nmc.install(bridge)
-    for text in ("one", "two"):
-        nmc.observe_message(OWNER, "local-a", "user", text)
-        nmc.observe_message(OWNER, "local-a", "assistant", f"re {text}")
-        await settle(lambda: len(kernel.recorded) == (1 if text == "one" else 2))
-    assert len(kernel.created) == 1
-    first = kernel.recorded[0][1]
-    assert kernel.recorded[1][1].continues == kernel.chats[kernel.created[0][0]].turns[0].id
-    assert first.continues is None
-    await bridge.stop()
-
-
-async def test_other_owners_and_stray_events_are_ignored(tmp_path):
-    mesh, kernel, history, bridge = await build(tmp_path)
-    nmc.install(bridge)
-    nmc.observe_message("someone.else", "local-x", "user", "hi")
-    nmc.observe_message("someone.else", "local-x", "assistant", "yo")
-    nmc.observe_message(OWNER, "local-y", "assistant", "orphan answer")
-    nmc.observe_message(OWNER, "local-z", "user", "blank")
-    nmc.observe_message(OWNER, "local-z", "assistant", "   ")
-    nmc.observe_step(OWNER, "local-unknown", {"name": "x"})
-    await asyncio.sleep(0.2)
-    assert not kernel.recorded and not kernel.created
-    await bridge.stop()
-
-
-async def test_phi_protection_blocks_mirroring(tmp_path):
-    mesh, kernel, history, bridge = await build(tmp_path, phi=True)
-    nmc.install(bridge)
-    nmc.observe_message(OWNER, "local-a", "user", "secret thing")
-    nmc.observe_message(OWNER, "local-a", "assistant", "reply")
-    await asyncio.sleep(0.2)
-    assert not kernel.recorded and not kernel.created
-    await bridge.stop()
-
-
-async def test_step_overflow_is_bounded(tmp_path):
-    mesh, kernel, history, bridge = await build(tmp_path)
-    nmc.install(bridge)
-    nmc.observe_message(OWNER, "local-a", "user", "many")
-    for index in range(nmc.MAX_STEPS + 40):
-        nmc.observe_step(OWNER, "local-a", {"name": f"t{index}", "args": "{}", "status": "completed", "result": "r", "error": None})
-    nmc.observe_message(OWNER, "local-a", "assistant", "done")
-    await settle(lambda: kernel.recorded)
-    assert len(only_turn(kernel)[1].steps) == nmc.MAX_STEPS
-    await bridge.stop()
-
-
-async def test_a_request_is_claimed_run_and_answered_with_a_recorded_turn(tmp_path):
-    prompts = []
-
-    async def runner(owner_id, local_chat, prompt):
-        prompts.append((owner_id, local_chat, prompt))
-        nmc.observe_message(owner_id, local_chat, "user", prompt)
-        nmc.observe_step(owner_id, local_chat, {"name": "search", "args": '{"q":"x"}', "status": "completed", "result": "hit", "error": None})
-        nmc.observe_message(owner_id, local_chat, "assistant", "summary from the node")
-
-    mesh, kernel, history, bridge = await build(tmp_path, runner)
-    nmc.install(bridge)
-    kernel.add_chat("c", [fake.message("m1", "earlier question"), fake.message("m2", "earlier answer", role="ASSISTANT", author="dev-x")])
-    kernel.add_chat("c", kernel.chats["c"].messages)
-    kernel.add_request("r1", "c", "summarize the thread", continues="turn-0")
-    kernel.chats["c"].turns.append(SimpleNamespace(id="turn-0", status=SimpleNamespace(name="COMPLETE"), author=PHONE, branch=None))
+    kernel.add_chat("c", [fake.message("m1", "earlier question")])
+    kernel.add_request("r1", "c", "summarize the thread")
     await serve(bridge, kernel, "r1")
-    assert prompts == [(OWNER, "local-1", "summarize the thread")]
-    assert [(role, text) for _, role, text, _ in history.added] == [("user", "earlier question"), ("assistant", "earlier answer")]
-    view = kernel.request("r1")
-    assert view.state == fake.RequestState.ANSWERED and view.turn == kernel.chats["c"].turns[-1].id
-    chat, turn = only_turn(kernel)
-    assert (chat, turn.answers, turn.continues, turn.message, turn.text) == ("c", "r1", "turn-0", None, "summary from the node")
-    assert turn.labels == fake.peer_labels("PRIVATE", "TOOL_TRUSTED")
-    assert turn.steps[0].tool == "search" and turn.steps[0].content == "hit"
-    assert "asst-" + view.turn in bridge.state.imported("c")
-    assert kernel.claimed == ["r1"] and not kernel.refused
+    assert kernel.answers.answered == ["r1"] and kernel.answers.contexts == [("r1", OWNER, True)]
+    assert kernel.request("r1").state == fake.RequestState.ANSWERED
+    assert not kernel.claimed and not kernel.refused and not kernel.recorded
+    assert history.created == [] and history.added == []
     assert await bridge.scan() == 0
     await bridge.stop()
 
 
-async def test_a_second_request_in_the_chat_does_not_reimport_history(tmp_path):
-    mesh, kernel, history, bridge = await build(tmp_path, answering())
-    nmc.install(bridge)
-    kernel.add_chat("c", [fake.message("m1", "earlier")])
-    for name in ("r1", "r2"):
-        kernel.add_request(name, "c")
-        await serve(bridge, kernel, name)
-    assert [text for _, _, text, _ in history.added] == ["earlier"]
-    assert len(kernel.recorded) == 2 and len(history.created) == 1
+async def test_a_pending_text_request_is_started_once_while_the_kernel_answers_it(tmp_path):
+    mesh, kernel, history, bridge = await build(tmp_path, start=False)
+    kernel.answers.hold = True
+    kernel.add_chat("c", [])
+    kernel.add_request("r1", "c")
+    assert await bridge.scan() == 1
+    await settle(lambda: kernel.answers.answered)
+    assert await bridge.scan() == 0
+    kernel.answers.released.set()
+    await settle(lambda: "r1" not in bridge._running)
+    assert kernel.answers.answered == ["r1"]
     await bridge.stop()
 
 
-async def test_request_labels_raise_the_labels_of_the_answer(tmp_path):
-    mesh, kernel, history, bridge = await build(tmp_path, answering())
-    nmc.install(bridge)
+async def test_the_admission_check_sees_the_joined_request_and_chat_labels(tmp_path):
+    seen = []
+
+    async def admission(request, floor):
+        seen.append((request.id, floor))
+
+    mesh, kernel, history, bridge = await build(tmp_path)
+    bridge._admission = admission
     kernel.add_chat("c", [fake.message("m1", "from a tool", integrity="untrusted")])
-    kernel.add_request("r1", "c", labels=fake.peer_labels("PRIVATE", "UNTRUSTED"))
+    kernel.add_request("r1", "c", labels=fake.peer_labels("PRIVATE", "TOOL_TRUSTED"))
     await serve(bridge, kernel, "r1")
-    assert only_turn(kernel)[1].labels == fake.peer_labels("PRIVATE", "UNTRUSTED")
+    assert seen == [("r1", ("private", "untrusted"))]
+    assert kernel.answers.answered == ["r1"]
     await bridge.stop()
 
 
 @pytest.mark.parametrize("source", ["request", "chat", "owner"])
 async def test_phi_work_is_refused_by_a_node_that_is_not_approved(tmp_path, source):
-    ran = []
-
-    async def runner(*args):
-        ran.append(args)
-
-    mesh, kernel, history, bridge = await build(tmp_path, runner, phi=source == "owner")
+    mesh, kernel, history, bridge = await build(tmp_path, phi=source == "owner")
     kernel.add_chat("c", [fake.message("m1", "chart note", confidentiality="phi" if source == "chat" else "private")])
     kernel.add_request("r1", "c", labels=fake.peer_labels("PHI" if source == "request" else "PRIVATE", "OWNER"))
     await serve(bridge, kernel, "r1")
-    assert kernel.refused == [("r1", "node.phi_not_approved")] and not ran and not kernel.claimed and not kernel.recorded
-    assert history.created == []
+    assert kernel.refused == [("r1", "node.phi_not_approved")] and not kernel.answers.answered
+    assert not kernel.claimed and not kernel.recorded and history.created == []
     await bridge.stop()
 
 
 @pytest.mark.parametrize("source", ["request", "chat", "owner"])
-async def test_an_approved_node_runs_phi_work_and_labels_the_answer_phi(tmp_path, source):
-    mesh, kernel, history, bridge = await build(
-        tmp_path, answering(steps=[{"name": "t", "args": "{}", "status": "completed", "result": "r", "error": None}]),
-        phi=source == "owner", phi_member=True,
-    )
-    nmc.install(bridge)
+async def test_an_approved_node_hands_phi_work_to_the_kernel_with_a_phi_floor(tmp_path, source):
+    floors = []
+
+    async def admission(request, floor):
+        floors.append(floor)
+
+    mesh, kernel, history, bridge = await build(tmp_path, phi=source == "owner", phi_member=True)
+    bridge._admission = admission
     kernel.add_chat("c", [fake.message("m1", "chart note", confidentiality="phi" if source == "chat" else "private")])
     kernel.add_request("r1", "c", labels=fake.peer_labels("PHI" if source == "request" else "PRIVATE", "OWNER"))
     await serve(bridge, kernel, "r1")
-    turn = only_turn(kernel)[1]
-    assert turn.labels.confidentiality == fake.PeerConfidentiality.PHI
-    assert turn.steps[0].labels.confidentiality == fake.PeerConfidentiality.PHI
-    assert kernel.request("r1").state == fake.RequestState.ANSWERED
+    assert [floor[0] for floor in floors] == ["phi"]
+    assert kernel.answers.answered == ["r1"] and kernel.request("r1").state == fake.RequestState.ANSWERED
     await bridge.stop()
 
 
 async def test_phi_history_is_not_imported_by_an_unapproved_node_and_secret_is_never_imported(tmp_path):
-    mesh, kernel, history, bridge = await build(tmp_path, answering())
-    nmc.install(bridge)
+    mesh, kernel, history, bridge = await build(tmp_path)
     kernel.add_chat("c", [fake.message("m1", "plain"), fake.message("m2", "phi text", confidentiality="phi")])
     kernel.add_request("r1", "c")
     await serve(bridge, kernel, "r1")
@@ -361,81 +270,138 @@ async def test_phi_history_is_not_imported_by_an_unapproved_node_and_secret_is_n
 
 
 async def test_a_secret_request_is_refused(tmp_path):
-    mesh, kernel, history, bridge = await build(tmp_path, answering(), phi_member=True)
+    mesh, kernel, history, bridge = await build(tmp_path, phi_member=True)
     kernel.add_chat("c", [])
     kernel.add_request("r1", "c", labels=fake.peer_labels("SECRET", "OWNER"))
     await serve(bridge, kernel, "r1")
-    assert kernel.refused == [("r1", "node.secret_label")] and not kernel.claimed
+    assert kernel.refused == [("r1", "node.secret_label")] and not kernel.claimed and not kernel.answers.answered
     await bridge.stop()
 
 
 async def test_a_request_without_an_author_is_refused(tmp_path):
-    mesh, kernel, history, bridge = await build(tmp_path, answering())
+    mesh, kernel, history, bridge = await build(tmp_path)
     kernel.add_chat("c", [])
     kernel.add_request("r1", "c", author=None)
     await serve(bridge, kernel, "r1")
-    assert kernel.refused == [("r1", "request.malformed")]
+    assert kernel.refused == [("r1", "request.malformed")] and not kernel.answers.answered
     await bridge.stop()
 
 
 @pytest.mark.parametrize(
-    "failure,code",
+    "error,state,code",
     [
-        (lambda: node_mesh.NodeMeshError("authority_missing_consent"), "node.authority_missing_consent"),
-        (lambda: RuntimeError("boom"), "node.turn_failed"),
-        (lambda: asyncio.TimeoutError(), "node.turn_timeout"),
+        (lambda: node_mesh.NodeMeshError("authority_missing_consent"), None, "node.authority_missing_consent"),
+        (lambda: RuntimeError("boom"), None, "node.turn_failed"),
+        (lambda: node_mesh.NodeMeshError("phi.group_not_ready"), fake.RequestState.CLAIMED, "phi.group_not_ready"),
+        (lambda: node_mesh.NodeMeshError("peer_turn.labels_too_low"), fake.RequestState.CLAIMED, "node.outcome_unknown"),
+        (lambda: RuntimeError("boom"), fake.RequestState.CLAIMED, "node.outcome_unknown"),
     ],
 )
-async def test_a_turn_that_cannot_run_is_refused_with_a_dotted_code(tmp_path, failure, code):
-    async def runner(*args):
-        raise failure()
-
-    mesh, kernel, history, bridge = await build(tmp_path, runner)
-    kernel.add_chat("c", [])
-    kernel.add_request("r1", "c")
-    await serve(bridge, kernel, "r1")
-    assert kernel.refused == [("r1", code)] and kernel.claimed == ["r1"] and not kernel.recorded
-    assert kernel.request("r1").state == fake.RequestState.REFUSED
-    await bridge.stop()
-
-
-async def test_a_turn_that_never_finishes_times_out(tmp_path):
-    async def runner(*args):
-        await asyncio.sleep(30)
-
-    mesh, kernel, history, bridge = await build(tmp_path, runner, turn_seconds=0.1)
-    kernel.add_chat("c", [])
-    kernel.add_request("r1", "c")
-    await serve(bridge, kernel, "r1")
-    assert kernel.refused == [("r1", "node.turn_timeout")]
-    assert not bridge._sessions
-    await bridge.stop()
-
-
-async def test_a_turn_that_ends_without_an_answer_is_refused(tmp_path, monkeypatch):
-    monkeypatch.setattr(nmc, "ANSWER_GRACE_SECONDS", 0.05)
+async def test_a_kernel_answer_that_fails_is_refused_with_a_dotted_code_while_the_request_is_open(tmp_path, error, state, code):
     mesh, kernel, history, bridge = await build(tmp_path)
+    kernel.answers.error = error()
+    kernel.answers.state_on_error = state
     kernel.add_chat("c", [])
     kernel.add_request("r1", "c")
     await serve(bridge, kernel, "r1")
-    assert kernel.refused == [("r1", "node.no_answer")]
+    assert kernel.refused == [("r1", code)] and kernel.request("r1").state == fake.RequestState.REFUSED
     await bridge.stop()
 
 
-async def test_the_kernel_refusing_the_recorded_labels_refuses_the_request(tmp_path):
-    mesh, kernel, history, bridge = await build(tmp_path, answering())
+@pytest.mark.parametrize("state", [fake.RequestState.ANSWERED, fake.RequestState.REFUSED])
+@pytest.mark.parametrize("error", [lambda: node_mesh.NodeMeshError("phi.device_excluded"), lambda: RuntimeError("late")])
+async def test_a_kernel_answer_that_fails_after_the_request_closed_is_only_logged(tmp_path, error, state):
+    mesh, kernel, history, bridge = await build(tmp_path)
+    kernel.answers.error = error()
+    kernel.answers.state_on_error = state
     kernel.add_chat("c", [])
-    kernel.floor = ("PHI", "OWNER")
     kernel.add_request("r1", "c")
     await serve(bridge, kernel, "r1")
-    assert kernel.refused == [("r1", "peer_turn.labels_too_low")] and not kernel.recorded
+    assert kernel.refused == [] and kernel.request("r1").state == state
     await bridge.stop()
 
 
-async def test_a_request_cancelled_before_the_claim_is_left_alone(tmp_path):
-    mesh, kernel, history, bridge = await build(tmp_path, answering())
+async def test_a_kernel_answer_that_overruns_is_interrupted_until_the_kernel_acknowledges(tmp_path):
+    mesh, kernel, history, bridge = await build(tmp_path, turn_seconds=0.1)
+    kernel.answers.hold = True
+    kernel.answers.interrupt_script = [node_mesh.NodeMeshError("node.busy"), False, True]
+    kernel.add_chat("c", [])
+    kernel.add_request("r1", "c")
+    await serve(bridge, kernel, "r1")
+    assert kernel.answers.interrupts == ["r1", "r1", "r1"] and not kernel.refused
+    await bridge.stop()
+
+
+async def test_an_interrupted_kernel_answer_that_then_fails_leaves_the_request_to_the_kernel(tmp_path):
+    mesh, kernel, history, bridge = await build(tmp_path, turn_seconds=0.1)
+    kernel.answers.hold = True
+    kernel.answers.error = RuntimeError("late")
+    kernel.answers.state_on_error = fake.RequestState.CLAIMED
+    kernel.add_chat("c", [])
+    kernel.add_request("r1", "c")
+    await serve(bridge, kernel, "r1")
+    assert kernel.answers.interrupts == ["r1"] and not kernel.refused and kernel.request("r1").state == fake.RequestState.CLAIMED
+    await bridge.stop()
+
+
+async def test_cancelling_a_kernel_answer_interrupts_it_and_propagates(tmp_path):
+    mesh, kernel, history, bridge = await build(tmp_path)
+    kernel.answers.hold = True
     kernel.add_chat("c", [])
     request = kernel.add_request("r1", "c")
+    task = asyncio.create_task(bridge._answer_kernel(request))
+    await settle(lambda: kernel.answers.answered)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert kernel.answers.interrupts == ["r1"] and not kernel.refused
+    await bridge.stop()
+
+
+async def test_a_request_context_the_kernel_will_not_vouch_for_is_refused_before_any_answer(tmp_path):
+    mesh, kernel, history, bridge = await build(tmp_path)
+    kernel.answers.context_error = node_mesh.NodeMeshError("gate.mesh_stopped")
+    kernel.add_chat("c", [])
+    kernel.add_request("r1", "c")
+    await serve(bridge, kernel, "r1")
+    assert kernel.refused == [("r1", "gate.mesh_stopped")] and not kernel.answers.answered
+    await bridge.stop()
+
+
+async def test_an_owner_change_while_the_request_context_is_checked_refuses_the_answer(tmp_path):
+    current = [OWNER]
+    mesh, kernel, history, bridge = await build(tmp_path, owner=lambda: current[0])
+
+    async def switching(reference, owner, kernel_):
+        current[0] = "someone.else"
+
+    mesh.personal_request_context = switching
+    kernel.add_chat("c", [])
+    kernel.add_request("r1", "c")
+    await serve(bridge, kernel, "r1")
+    assert kernel.refused == [("r1", "node.owner_mismatch")] and not kernel.answers.answered
+    await bridge.stop()
+
+
+async def test_an_answered_request_whose_turn_is_still_running_is_served_again_on_recovery(tmp_path):
+    mesh, kernel, history, bridge = await build(tmp_path, start=False)
+    kernel.add_chat("c", [])
+    mine = kernel.add_request("r1", "c", state="ANSWERED")
+    mine.turn = "turn-1"
+    kernel.chats["c"].turns.append(SimpleNamespace(id="turn-1", status=SimpleNamespace(name="RUNNING"), author="dev-node", branch=None))
+    kernel.add_request("r2", "c", state="ANSWERED").turn = "turn-2"
+    kernel.chats["c"].turns.append(SimpleNamespace(id="turn-2", status=SimpleNamespace(name="COMPLETE"), author="dev-node", branch=None))
+    await bridge.scan()
+    await settle(lambda: not bridge._running)
+    assert kernel.answers.answered == ["r1"]
+    await bridge.stop()
+
+
+async def test_a_call_request_cancelled_before_the_claim_is_left_alone(tmp_path):
+    calls = FakeCalls()
+    mesh, kernel, history, bridge = await build(tmp_path, calls=calls)
+    kernel.add_chat("c", [])
+    request = kernel.add_request("r1", "c", call=call_for())
     original = kernel.claim_request
 
     def cancelled(request_id):
@@ -444,12 +410,12 @@ async def test_a_request_cancelled_before_the_claim_is_left_alone(tmp_path):
 
     kernel.claim_request = cancelled
     await serve(bridge, kernel, "r1")
-    assert not kernel.refused and not kernel.recorded
+    assert not kernel.refused and not kernel.recorded and not calls.ran
     await bridge.stop()
 
 
 async def test_a_refusal_the_kernel_will_not_take_is_only_logged(tmp_path):
-    mesh, kernel, history, bridge = await build(tmp_path, answering(), phi=True)
+    mesh, kernel, history, bridge = await build(tmp_path, phi=True)
     kernel.add_chat("c", [])
     request = kernel.add_request("r1", "c")
     request.state = fake.RequestState.CLAIMED
@@ -461,8 +427,8 @@ async def test_a_refusal_the_kernel_will_not_take_is_only_logged(tmp_path):
     await bridge.stop()
 
 
-async def test_a_request_claimed_before_a_crash_is_refused_once_on_the_first_scan(tmp_path):
-    mesh, kernel, history, bridge = await build(tmp_path, answering())
+async def test_a_text_request_claimed_before_a_crash_is_refused_once_on_the_first_scan(tmp_path):
+    mesh, kernel, history, bridge = await build(tmp_path)
     kernel.add_chat("c", [])
     mine = kernel.add_request("r1", "c", state="CLAIMED")
     kernel.add_request("r2", "c", state="CLAIMED", to="dev-other")
@@ -475,106 +441,22 @@ async def test_a_request_claimed_before_a_crash_is_refused_once_on_the_first_sca
 
 
 async def test_policy_off_and_unjoined_nodes_serve_nothing(tmp_path):
-    mesh, kernel, history, bridge = await build(tmp_path, answering(), policy=nmc.NodePolicy(serve_requests=False))
+    mesh, kernel, history, bridge = await build(tmp_path, policy=nmc.NodePolicy(serve_requests=False))
     kernel.add_chat("c", [])
     kernel.add_request("r1", "c")
     assert await bridge.scan() == 0 and kernel.request("r1").state == fake.RequestState.PENDING
     await bridge.stop()
-    mesh, kernel, history, bridge = await build(tmp_path / "b", answering(), joined=False)
+    mesh, kernel, history, bridge = await build(tmp_path / "b", joined=False)
     assert await bridge.scan() == 0
     await bridge.stop()
-    mesh, kernel, history, bridge = await build(tmp_path / "c", answering(), owner=None)
+    mesh, kernel, history, bridge = await build(tmp_path / "c", owner=None)
     kernel.add_request("r1", "c")
     assert await bridge.scan() == 0
     await bridge.stop()
 
 
-async def test_a_pending_request_is_started_once_while_it_runs(tmp_path):
-    release = asyncio.Event()
-
-    async def runner(owner_id, local_chat, prompt):
-        await release.wait()
-        nmc.observe_message(owner_id, local_chat, "assistant", "late")
-
-    mesh, kernel, history, bridge = await build(tmp_path, runner)
-    nmc.install(bridge)
-    kernel.add_chat("c", [])
-    view = kernel.add_request("r1", "c")
-    kernel.pending_requests_for_me = lambda: [view]
-    assert await bridge.scan() == 1
-    await settle(lambda: kernel.claimed)
-    assert await bridge.scan() == 0
-    release.set()
-    await settle(lambda: kernel.recorded)
-    await bridge.stop()
-
-
-async def test_a_cancelled_requests_late_worker_cannot_answer_its_replacement(tmp_path, monkeypatch):
-    loop = asyncio.get_running_loop()
-    worker_started = asyncio.Event()
-    release_worker = threading.Event()
-    worker_finished = asyncio.Event()
-    replacement_started = asyncio.Event()
-    release_replacement = asyncio.Event()
-    late_observed = asyncio.Event()
-
-    def publish_late(owner, local_chat):
-        loop.call_soon_threadsafe(worker_started.set)
-        release_worker.wait()
-        nmc.observe_step(owner, local_chat, {
-            "name": "cancelled-tool", "args": {}, "status": "completed", "result": "cancelled result",
-        })
-        nmc.observe_message(owner, local_chat, "assistant", "cancelled answer")
-        loop.call_soon_threadsafe(worker_finished.set)
-
-    async def runner(owner, local_chat, prompt):
-        if prompt == "first":
-            await asyncio.to_thread(publish_late, owner, local_chat)
-        else:
-            replacement_started.set()
-            await release_replacement.wait()
-            nmc.observe_message(owner, local_chat, "assistant", "replacement answer")
-
-    mesh, kernel, history, bridge = await build(tmp_path, runner)
-    nmc.install(bridge)
-    original = bridge._handle_message
-
-    async def handle(*args):
-        await original(*args)
-        if args[3] == "cancelled answer":
-            late_observed.set()
-
-    monkeypatch.setattr(bridge, "_handle_message", handle)
-    kernel.add_chat("c", [])
-    first_request = kernel.add_request("first", "c", "first")
-    second_request = kernel.add_request("second", "c", "second")
-    first = asyncio.create_task(bridge._run_turn(first_request, "local", nmc.BASE_LABELS))
-    second = None
-    try:
-        await asyncio.wait_for(worker_started.wait(), 30)
-        first.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await first
-        second = asyncio.create_task(bridge._run_turn(second_request, "local", nmc.BASE_LABELS))
-        await asyncio.wait_for(replacement_started.wait(), 30)
-        release_worker.set()
-        await asyncio.wait_for(late_observed.wait(), 30)
-        assert not bridge._sessions["local"].done.is_set()
-        release_replacement.set()
-        assert await second == ([], "replacement answer")
-    finally:
-        first.cancel()
-        release_worker.set()
-        release_replacement.set()
-        await asyncio.wait_for(worker_finished.wait(), 30)
-        if second is not None:
-            await asyncio.gather(second, return_exceptions=True)
-        await asyncio.gather(first, return_exceptions=True)
-        await bridge.stop()
-
-
 async def test_a_failure_before_any_write_leaves_the_request_pending_for_a_retry(tmp_path):
-    mesh, kernel, history, bridge = await build(tmp_path, answering())
+    mesh, kernel, history, bridge = await build(tmp_path)
     kernel.add_chat("c", [])
     kernel.add_request("r1", "c")
     original = kernel.chat
@@ -604,6 +486,7 @@ async def test_a_tool_call_is_verified_run_through_the_nodes_gates_and_recorded(
     assert calls.tickets == [vessel_executor.CallTicket("{}", call.action_json, call.arguments_json)]
     chat, turn = only_turn(kernel)
     assert (turn.answers, turn.continues, turn.text, turn.reason) == ("r1", "turn-0", "", "completed")
+    assert (turn.provider, turn.model) == ("node", "tool-runner")
     step = turn.steps[0]
     assert (step.call_id, step.tool, step.arguments_json, step.tool_def, step.status, step.content, step.code) == (
         "call-1", "lookup", call.arguments_json, "sha256:" + "d" * 64, "ok", "sunny", None,
@@ -612,194 +495,63 @@ async def test_a_tool_call_is_verified_run_through_the_nodes_gates_and_recorded(
     await bridge.stop()
 
 
-async def test_a_node_run_turn_mints_its_tool_and_records_the_real_receipt(tmp_path, monkeypatch):
-    import httpx
-
-    minted = []
-    sent = []
-
-    async def mint(request_id, **call):
-        minted.append((request_id, call))
-        action = json.loads(call_for(arguments={"q": "weather"}, device="dev-node", turn=request_id).action_json)
-        return SimpleNamespace(ticket_json='{"signed":true}', action_json=canonical(action), receipt_event="receipt-1")
-
-    def deliver(request):
-        sent.append(json.loads(request.content))
-        return httpx.Response(200, json={"output": "sunny", "error": False})
-
-    executor = vessel_executor.VesselExecutor(
-        vessel_executor.ExecutorSettings("http://executor:8800", "catalog", agent_tokens={"agent-1": "agent"}),
-        httpx.AsyncClient(transport=httpx.MockTransport(deliver)),
-    )
-
-    orch = turn_orch("tools:write")
-
-    async def runner(owner, local, prompt):
-        response = await node_call(orch, owner, local, {"q": "weather"}, lambda: executor.invoke("agent-1", "lookup", {"q": "weather"}, owner=owner))
-        nmc.observe_step(owner, local, {"name": "agent-1__lookup", "args": '{"q":"weather"}', "status": "completed", "result": response.result})
-        nmc.observe_message(owner, local, "assistant", "It is sunny.")
-
-    mesh, kernel, history, bridge = await build(tmp_path, runner, calls=FakeCalls(scope="tools:write"))
-    kernel.mesh_grants = [GRANT]
-    monkeypatch.setattr(mesh, "mint_ticket", mint, raising=False)
-    kernel.add_chat("c", [])
-    kernel.add_request("r1", "c")
-    await serve(bridge, kernel, "r1")
-    assert len(sent) == 1 and sent[0]["ticket_json"] == '{"signed":true}'
-    request_id, call = minted[0]
-    assert request_id == "r1" and call["tool"] == "lookup" and call["tool_def"] == DEFINITION
-    assert call["effect_kind"] == "outside_effect" and call["arguments_json"] == '{"q":"weather"}'
-    step = only_turn(kernel)[1].steps[0]
-    assert step.receipt == "receipt-1" and step.tool_def == DEFINITION and step.call_id == call["call_id"]
-    assert step.tool == "lookup" and step.content == "sunny"
-    assert vessel_executor.current_ticket() is None
+async def test_peer_calls_import_completed_signed_history_once_without_creating_another_mesh_chat(tmp_path):
+    mesh, kernel, history, bridge = await build(tmp_path, calls=FakeCalls())
+    kernel.add_chat("c", [
+        fake.message("m1", "résumé"),
+        fake.message("m2", "answer", role="ASSISTANT"),
+        fake.message("m3", "unfinished", role="ASSISTANT", status="PENDING"),
+    ])
+    for request_id in ("r1", "r2"):
+        kernel.add_request(request_id, "c", call=call_for())
+    await bridge.scan()
+    await settle(lambda: not bridge._running)
+    assert sorted(record[1].answers for record in kernel.recorded) == ["r1", "r2"]
+    assert history.created == [OWNER]
+    assert history.added == [("local-1", "user", "résumé", OWNER), ("local-1", "assistant", "answer", OWNER)]
+    assert bridge.state.imported("c") >= {"m1", "m2"}
+    assert not kernel.created and not kernel.sent
     await bridge.stop()
-    await executor.close()
 
 
-async def test_a_node_mint_refusal_prevents_the_executor_request(tmp_path, monkeypatch):
-    import httpx
+async def test_a_failed_history_import_reuses_already_stored_messages(tmp_path, monkeypatch):
+    _, kernel, history, bridge = await build(tmp_path, calls=FakeCalls())
+    kernel.add_chat("c", [fake.message("m1", "first"), fake.message("m2", "second")])
+    append = history.add_message
 
-    sent = []
-    responses = []
+    def fail_second(chat_id, role, text, owner):
+        if text == "second":
+            raise OSError("history unavailable")
+        append(chat_id, role, text, owner)
 
-    async def mint(*args, **kwargs):
-        raise node_mesh.NodeMeshError("consent.required")
-
-    def deliver(request):
-        sent.append(request)
-        return httpx.Response(200, json={"output": "must not run"})
-
-    executor = vessel_executor.VesselExecutor(
-        vessel_executor.ExecutorSettings("http://executor:8800", "catalog", agent_tokens={"agent-1": "agent"}),
-        httpx.AsyncClient(transport=httpx.MockTransport(deliver)),
-    )
-
-    orch = turn_orch()
-
-    async def runner(owner, local, prompt):
-        responses.append(await node_call(orch, owner, local, {}, lambda: executor.invoke("agent-1", "lookup", {}, owner=owner)))
-        nmc.observe_message(owner, local, "assistant", "Consent is required.")
-
-    mesh, kernel, history, bridge = await build(tmp_path, runner, calls=FakeCalls())
-    kernel.mesh_grants = [GRANT]
-    monkeypatch.setattr(mesh, "mint_ticket", mint, raising=False)
-    kernel.add_chat("c", [])
-    kernel.add_request("r1", "c")
+    monkeypatch.setattr(history, "add_message", fail_second)
+    kernel.add_request("r1", "c", call=call_for())
     await serve(bridge, kernel, "r1")
-    assert responses and responses[0].error["code"] == "consent.required" and not sent
-    assert orch._audit_gate_denial.await_args.kwargs == {"gate": "node_mesh", "detail": "consent.required"}
+    assert kernel.request("r1").state == fake.RequestState.CLAIMED and not bridge._calls.ran
+    assert bridge.state.imported("c") == {"m1"}
+
+    monkeypatch.setattr(history, "add_message", append)
+    kernel.add_request("r2", "c", call=call_for())
+    await serve(bridge, kernel, "r2")
+    assert kernel.request("r2").state == fake.RequestState.ANSWERED
+    assert [m[2] for m in history.added] == ["first", "second"]
+    await bridge.stop()
+
+
+async def test_a_local_history_checkpoint_failure_after_the_peer_reply_never_repeats_the_tool(tmp_path, monkeypatch):
+    _, kernel, _, bridge = await build(tmp_path, calls=FakeCalls())
+    kernel.add_chat("c", [])
+    kernel.add_request("r1", "c", call=call_for())
+
+    def fail_mark(_chat, _messages):
+        raise OSError("checkpoint unavailable")
+
+    monkeypatch.setattr(bridge.state, "mark_imported", fail_mark)
+    await serve(bridge, kernel, "r1")
     assert kernel.request("r1").state == fake.RequestState.ANSWERED
+    assert await bridge.scan() == 0
+    assert len(bridge._calls.ran) == len(kernel.recorded) == 1
     await bridge.stop()
-    await executor.close()
-
-
-@pytest.mark.parametrize("case,code", [("owner", "node.owner_mismatch"), ("tool", "request.call_mismatch"), ("limit", "mint.limit")])
-async def test_node_mint_context_refuses_a_foreign_owner_tool_or_excess_call(tmp_path, monkeypatch, case, code):
-    import httpx
-
-    results = []
-    issued = []
-    calls = FakeCalls()
-    if case == "tool":
-        calls.resolved = calls_module.ResolvedTool("different", "lookup", "tools:read", DEFINITION)
-    monkeypatch.setattr(nmc, "MAX_STEPS", 1)
-
-    async def mint(request, **kwargs):
-        issued.append(kwargs)
-        ticket = call_for(arguments={}, device="dev-node", turn=request)
-        return SimpleNamespace(ticket_json=ticket.ticket_json, action_json=ticket.action_json, receipt_event=None)
-
-    executor = vessel_executor.VesselExecutor(
-        vessel_executor.ExecutorSettings("http://executor:8800", "catalog", agent_tokens={"agent-1": "agent"}),
-        httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"output": "done"}))),
-    )
-
-    orch = turn_orch()
-
-    async def runner(owner, local, prompt):
-        def invoke():
-            return executor.invoke("agent-1", "lookup", {}, owner=owner)
-
-        if case == "limit":
-            assert (await node_call(orch, owner, local, {}, invoke)).result == "done"
-        results.append(await node_call(orch, "other" if case == "owner" else owner, local, {}, invoke))
-        nmc.observe_message(owner, local, "assistant", "Refused.")
-
-    mesh, kernel, history, bridge = await build(tmp_path, runner, calls=calls)
-    kernel.mesh_grants = [GRANT]
-    monkeypatch.setattr(mesh, "mint_ticket", mint)
-    kernel.add_chat("c", [])
-    kernel.add_request("r1", "c")
-    await serve(bridge, kernel, "r1")
-    assert results and results[0].error["code"] == code
-    assert len(issued) == (1 if case == "limit" else 0)
-    await bridge.stop()
-    await executor.close()
-
-
-async def test_unrelated_tool_steps_never_inherit_a_minted_calls_receipt(tmp_path, monkeypatch):
-    mesh, kernel, history, bridge = await build(tmp_path, answering())
-    session = nmc._Session(OWNER, "local")
-    session.minted.append({
-        "call_id": "call", "tool": "lookup", "qualified": "agent-1__lookup", "arguments_json": '{"q":"x"}',
-        "tool_def": DEFINITION, "receipt": "receipt-1", "labels": ("private", "untrusted"),
-    })
-    bridge._sessions["local"] = session
-    for name, arguments in [("other", '{"q":"x"}'), ("lookup", '{"q":"y"}'), ("lookup", '{"q":"x"}'), ("lookup", '{"q":"x"}')]:
-        bridge._handle_step(OWNER, "local", {"name": name, "args": arguments, "status": "completed", "result": "done"})
-    recorded = nmc._step_records(session.steps, ("private", "tool_trusted"))
-    assert [s.receipt for s in recorded] == [None, None, "receipt-1", None]
-    await bridge.stop()
-
-
-@pytest.mark.parametrize("cap,count,receipts,errors", [(1, 1, ["receipt-1"], ["mint.limit"]), (64, 2, ["receipt-2", "receipt-1"], [])])
-async def test_parallel_node_calls_get_distinct_ids_and_keep_their_exact_receipts(tmp_path, monkeypatch, cap, count, receipts, errors):
-    import httpx
-
-    issued = []
-    responses = []
-    monkeypatch.setattr(nmc, "MAX_STEPS", cap)
-
-    async def mint(request, **call):
-        await asyncio.sleep(0)
-        issued.append(call)
-        arguments = json.loads(call["arguments_json"])
-        ticket = call_for(arguments=arguments, device="dev-node", turn=request)
-        return SimpleNamespace(ticket_json=ticket.ticket_json, action_json=ticket.action_json, receipt_event=f"receipt-{arguments['q']}")
-
-    executor = vessel_executor.VesselExecutor(
-        vessel_executor.ExecutorSettings("http://executor:8800", "catalog", agent_tokens={"agent-1": "agent"}),
-        httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"output": "done"}))),
-    )
-
-    orch = turn_orch()
-
-    async def runner(owner, local, prompt):
-        def invoke(n):
-            return lambda: executor.invoke("agent-1", "lookup", {"q": n}, owner=owner)
-
-        responses.extend(await asyncio.gather(*(node_call(orch, owner, local, {"q": n}, invoke(n)) for n in [1, 2])))
-        for n, response in reversed(list(zip([1, 2], responses))):
-            if response.error is not None:
-                continue
-            nmc.observe_step(owner, local, {"name": "agent-1__lookup", "args": canonical({"q": n}), "status": "completed", "result": "done"})
-        nmc.observe_message(owner, local, "assistant", "Both done.")
-
-    mesh, kernel, history, bridge = await build(tmp_path, runner, calls=FakeCalls())
-    kernel.mesh_grants = [GRANT]
-    monkeypatch.setattr(mesh, "mint_ticket", mint)
-    kernel.add_chat("c", [])
-    kernel.add_request("r1", "c")
-    await serve(bridge, kernel, "r1")
-    assert len(issued) == count and len({call["call_id"] for call in issued}) == count
-    assert [response.error["code"] for response in responses if response.error is not None] == errors
-    assert sum(response.result == "done" for response in responses) == count
-    steps = only_turn(kernel)[1].steps
-    assert [step.receipt for step in steps] == receipts
-    assert len({step.call_id for step in steps}) == count
-    await bridge.stop()
-    await executor.close()
 
 
 async def test_a_write_tool_is_verified_as_an_outside_effect(tmp_path):
@@ -809,6 +561,80 @@ async def test_a_write_tool_is_verified_as_an_outside_effect(tmp_path):
     kernel.add_request("r1", "c", call=call_for())
     await serve(bridge, kernel, "r1")
     assert kernel.verified[0][2] == "outside_effect"
+    await bridge.stop()
+
+
+def test_output_labels_raise_integrity_for_an_outward_read_and_keep_every_other_floor():
+    assert nmc.output_labels(("private", "owner"), "outward_read") == ("private", "untrusted")
+    assert nmc.output_labels(("private", "tool_trusted"), "outward_read") == ("private", "untrusted")
+    assert nmc.output_labels(("phi", "tool_trusted"), "outward_read") == ("phi", "untrusted")
+    assert nmc.output_labels(("phi", "untrusted"), "outward_read") == ("phi", "untrusted")
+    for floor in [("private", "owner"), ("phi", "tool_trusted"), ("private", "untrusted")]:
+        assert nmc.output_labels(floor, "outside_effect") == floor
+
+
+@pytest.mark.parametrize("scope,integrity", [("tools:read", "UNTRUSTED"), ("tools:write", "TOOL_TRUSTED")])
+async def test_a_called_tools_step_is_labelled_by_its_effect_kind(tmp_path, scope, integrity):
+    mesh, kernel, history, bridge = await build(tmp_path, calls=FakeCalls(scope=scope))
+    kernel.add_chat("c", [])
+    kernel.add_request("r1", "c", call=call_for())
+    await serve(bridge, kernel, "r1")
+    turn = only_turn(kernel)[1]
+    assert turn.labels == fake.peer_labels("PRIVATE", "TOOL_TRUSTED")
+    assert turn.steps[0].labels == fake.peer_labels("PRIVATE", integrity)
+    await bridge.stop()
+
+
+@pytest.mark.parametrize(
+    "scope,ticket,expected",
+    [
+        ("tools:read", ("PHI", "TOOL_TRUSTED"), ("PHI", "UNTRUSTED")),
+        ("tools:write", ("PHI", "TOOL_TRUSTED"), ("PHI", "TOOL_TRUSTED")),
+        ("tools:read", ("PRIVATE", "UNTRUSTED"), ("PRIVATE", "UNTRUSTED")),
+        ("tools:write", ("PRIVATE", "UNTRUSTED"), ("PRIVATE", "UNTRUSTED")),
+    ],
+)
+async def test_a_called_tools_step_keeps_the_phi_and_untrusted_floor_the_ticket_raised(tmp_path, scope, ticket, expected):
+    mesh, kernel, history, bridge = await build(tmp_path, calls=FakeCalls(scope=scope), phi_member=True)
+    kernel.ticket_labels = fake.peer_labels(*ticket)
+    kernel.add_chat("c", [])
+    kernel.add_request("r1", "c", call=call_for())
+    await serve(bridge, kernel, "r1")
+    turn = only_turn(kernel)[1]
+    assert turn.labels == fake.peer_labels(ticket[0], "UNTRUSTED" if ticket[1] == "UNTRUSTED" else "TOOL_TRUSTED")
+    assert turn.steps[0].labels == fake.peer_labels(*expected)
+    await bridge.stop()
+
+
+async def test_an_owner_change_after_the_claim_refuses_the_call_before_it_runs(tmp_path):
+    current = [OWNER]
+    calls = FakeCalls()
+    mesh, kernel, history, bridge = await build(tmp_path, calls=calls, owner=lambda: current[0])
+    kernel.add_chat("c", [fake.message("m1", "owner history")])
+    kernel.add_request("r1", "c", call=call_for())
+    original = kernel.claim_request
+
+    def claim(request_id):
+        current[0] = "someone.else"
+        return original(request_id)
+
+    kernel.claim_request = claim
+    await serve(bridge, kernel, "r1")
+    assert kernel.refused == [("r1", "node.owner_mismatch")] and not calls.ran and not kernel.recorded
+    assert not history.created and not history.added
+    await bridge.stop()
+
+
+async def test_a_tool_that_raises_leaves_the_claimed_call_open_instead_of_closing_it(tmp_path):
+    class Exploding(FakeCalls):
+        async def run(self, *args, **kwargs):
+            raise RuntimeError("boom")
+
+    mesh, kernel, history, bridge = await build(tmp_path, calls=Exploding())
+    kernel.add_chat("c", [])
+    request = kernel.add_request("r1", "c", call=call_for())
+    await serve(bridge, kernel, "r1")
+    assert request.state == fake.RequestState.CLAIMED and not kernel.refused and not kernel.recorded
     await bridge.stop()
 
 
@@ -855,6 +681,30 @@ async def test_a_forged_or_refused_ticket_is_refused_with_the_kernel_code_and_no
     kernel.add_request("r1", "c", call=call_for())
     await serve(bridge, kernel, "r1")
     assert kernel.refused == [("r1", error)] and not calls.ran and not kernel.claimed and not kernel.recorded
+    await bridge.stop()
+
+
+@pytest.mark.parametrize(("after_sync", "expected_runs"), [
+    (None, 1), ("ticket.stopped", 0), ("ticket.consent_sync_pending", 0),
+])
+async def test_consent_evidence_can_sync_before_claiming_a_call(tmp_path, monkeypatch, after_sync, expected_runs):
+    calls = FakeCalls()
+    mesh, kernel, _history, bridge = await build(tmp_path, calls=calls, start=False)
+    monkeypatch.setattr(nmc, "CONSENT_SYNC_DELAYS", (0,))
+    kernel.add_chat("c", [])
+    request = kernel.add_request("r1", "c", call=call_for())
+    verify = kernel.verify_ticket
+    results = iter(("ticket.consent_sync_pending", after_sync))
+
+    def verify_after_sync(*args):
+        assert not kernel.claimed and not calls.ran
+        kernel.ticket_error = next(results)
+        return verify(*args)
+
+    monkeypatch.setattr(kernel, "verify_ticket", verify_after_sync)
+    await bridge._answer(request)
+    assert len(calls.ran) == len(kernel.claimed) == expected_runs
+    assert kernel.refused == ([] if after_sync is None else [("r1", after_sync)])
     await bridge.stop()
 
 
@@ -976,7 +826,7 @@ async def test_start_refuses_without_the_kernel_export(tmp_path, monkeypatch):
 
 
 async def test_chat_changes_wake_the_scan(tmp_path):
-    mesh, kernel, history, bridge = await build(tmp_path, answering(), start=False)
+    mesh, kernel, history, bridge = await build(tmp_path, start=False)
     nmc.install(bridge)
     bridge._poll_seconds = 60
     await bridge.start()
@@ -984,7 +834,7 @@ async def test_chat_changes_wake_the_scan(tmp_path):
     kernel.add_chat("c", [])
     kernel.add_request("r1", "c")
     kernel.notify()
-    await settle(lambda: kernel.recorded)
+    await settle(lambda: kernel.answers.answered)
     await bridge.stop()
 
 
@@ -994,8 +844,8 @@ def test_chat_state_persists_links_and_imports(tmp_path):
     state.link("mesh-1", "local-1")
     state.mark_imported("mesh-1", ["a", "b", "a"])
     reloaded = nmc.ChatState(path)
-    assert reloaded.local_for("mesh-1") == "local-1" and reloaded.mesh_for("local-1") == "mesh-1"
-    assert reloaded.mesh_for("nope") is None and reloaded.local_for("nope") is None
+    assert reloaded.local_for("mesh-1") == "local-1"
+    assert reloaded.local_for("nope") is None
     assert reloaded.imported("mesh-1") == {"a", "b"}
     assert oct(path.stat().st_mode & 0o777) == "0o600"
 
@@ -1006,18 +856,6 @@ def test_chat_state_ignores_a_corrupt_file(tmp_path):
     assert nmc.ChatState(path).local_for("x") is None
     path.write_text("[]")
     assert nmc.ChatState(path).imported("x") == set()
-
-
-def test_message_text_extraction():
-    assert nmc.message_text("plain") == "plain"
-    assert nmc.message_text([{"type": "card", "children": [{"type": "text", "content": "inner"}]}, {"type": "markdown", "content": "md"}]) == "inner\n\nmd"
-    assert nmc.message_text({"type": "image"}) == ""
-    deep = {"a": {}}
-    node = deep
-    for _ in range(20):
-        node["a"] = {"a": {}}
-        node = node["a"]
-    assert nmc.message_text(deep) == ""
 
 
 def test_policy_from_environment():
@@ -1032,131 +870,12 @@ def test_labels_join_to_the_most_restrictive_and_unknown_values_fail_closed():
     assert nmc.labels_of(fake.peer_labels("PHI", "OWNER")) == ("phi", "owner")
 
 
-def test_module_observers_do_nothing_without_a_bridge():
-    nmc.install(None)
-    nmc.observe_message(OWNER, "c", "user", "x")
-    nmc.observe_step(OWNER, "c", {})
-    assert nmc.active() is None
-
-
 async def test_protection_check_uses_the_phi_policy(monkeypatch):
     import personalization.phi_policy as policy
 
     monkeypatch.setattr(policy, "protection_enabled", lambda owner: owner == "protected")
     assert nmc._protection_enabled("protected") is True
     assert nmc._protection_enabled("other") is False
-
-
-def machine_authority(scopes):
-    from orchestrator.chain_authority import MachineAuthority
-
-    return MachineAuthority(
-        access_token="consent-token", allowed_scopes=list(scopes), principal="machine:mesh_request",
-        user_id=OWNER, consent_ref="grant-1", turn_class="mesh_request",
-    )
-
-
-class RunnerOrch:
-    def __init__(self, result=None):
-        self.calls = {}
-        self.result = result
-
-    async def derive_machine_authority(self, **kwargs):
-        self.calls["derive"] = kwargs
-        return self.result if self.result is not None else machine_authority(kwargs["consented_scopes"])
-
-    def _bind_machine_turn(self, vws, authority):
-        from orchestrator import node_mesh_admission
-
-        self.calls["bound"] = authority
-        self.calls["marked"] = getattr(vws, node_mesh_admission.TURN_MARK, False)
-
-    def _unbind_machine_turn(self, vws):
-        self.calls["unbound"] = True
-
-    async def handle_chat_message(self, vws, text, chat_id, user_id=None):
-        self.calls["handled"] = (text, chat_id, user_id)
-
-
-async def test_a_personal_runner_outside_a_node_turn_is_refused():
-    orch = RunnerOrch()
-    with pytest.raises(node_mesh.NodeMeshError) as refused:
-        await nmc.orchestrator_runner(orch)(OWNER, "local-1", "hello")
-    assert refused.value.code == "request.call_mismatch"
-    assert "derive" not in orch.calls and "handled" not in orch.calls
-
-
-async def test_a_runner_outside_a_node_turn_gets_no_scopes_and_no_tools(monkeypatch):
-    from orchestrator.chain_authority import AuthoritySkip
-
-    monkeypatch.setenv("ASTRAL_NODE_PROFILE", "institution")
-
-    orch = RunnerOrch()
-    await nmc.orchestrator_runner(orch)(OWNER, "local-1", "hello")
-    assert orch.calls["derive"] == {"user_id": OWNER, "agent_id": None, "turn_class": "mesh_request", "consented_scopes": []}
-    assert orch.calls["bound"].allowed_tools == () and orch.calls["marked"] is True
-    assert orch.calls["handled"] == ("hello", "local-1", OWNER) and orch.calls["unbound"]
-
-    with pytest.raises(node_mesh.NodeMeshError) as refused:
-        await nmc.orchestrator_runner(RunnerOrch(AuthoritySkip("missing_consent", "no grant")))(OWNER, "local-1", "hello")
-    assert refused.value.code == "authority_missing_consent"
-
-
-async def test_a_runner_inside_a_node_turn_binds_exactly_the_granted_tools_and_their_scopes(tmp_path, monkeypatch):
-    from orchestrator import node_mesh_admission
-
-    monkeypatch.setenv("ASTRAL_NODE_PROFILE", "institution")
-
-    mesh, kernel, history, bridge = await build(tmp_path, start=False)
-    tools = {("b", "two", DEFINITION): "tools:write", ("a", "one", DEFINITION): "tools:read", ("c", "three", DEFINITION): "tools:read"}
-
-    async def no_catalog():
-        return {}
-
-    async def no_mint(*args):
-        raise AssertionError("not minted")
-
-    orch = RunnerOrch()
-    with node_mesh_admission.turn(mesh, lambda: OWNER, OWNER, "local-1", tools, no_catalog, no_mint):
-        await nmc.orchestrator_runner(orch)(OWNER, "local-1", "hello")
-    assert orch.calls["derive"]["consented_scopes"] == ["tools:read", "tools:write"]
-    assert orch.calls["bound"].allowed_tools == (("a", "one", DEFINITION), ("b", "two", DEFINITION), ("c", "three", DEFINITION))
-    assert node_mesh_admission.current_turn() is None
-
-
-async def test_a_turn_offers_only_catalog_tools_a_consented_grant_for_the_current_hash_covers(tmp_path):
-    seen = []
-
-    async def runner(owner, local, prompt):
-        from orchestrator import node_mesh_admission
-
-        seen.append(dict(node_mesh_admission.current_turn().tools))
-        nmc.observe_message(owner, local, "assistant", "done")
-
-    mesh, kernel, history, bridge = await build(tmp_path, runner, calls=FakeCalls())
-    grants = [
-        [GRANT],
-        [],
-        [SimpleNamespace(agent="kernel", tool="lookup", scope="*", consented=True)],
-        [SimpleNamespace(agent="kernel", tool="lookup@" + "e" * 8, scope="*", consented=True)],
-        [SimpleNamespace(agent="kernel", tool="lookup@" + "d" * 8, scope="outside_effect", consented=True)],
-        [SimpleNamespace(agent="kernel", tool="lookup@" + "d" * 8, scope="outward_read", consented=False)],
-        [SimpleNamespace(agent="other", tool="lookup@" + "d" * 8, scope="outward_read", consented=True)],
-        [SimpleNamespace(agent="*", tool="lookup@" + "d" * 8, scope="outward_read", consented=True)],
-    ]
-    for index, current in enumerate(grants):
-        kernel.mesh_grants = current
-        kernel.add_chat(f"c{index}", [])
-        kernel.add_request(f"r{index}", f"c{index}")
-        await serve(bridge, kernel, f"r{index}")
-    covered = {("agent-1", "lookup", DEFINITION): "tools:read"}
-    assert seen == [covered, {}, {}, {}, {}, {}, {}, covered]
-    kernel.grants_error = "grant.unavailable"
-    kernel.add_chat("cx", [])
-    kernel.add_request("rx", "cx")
-    await serve(bridge, kernel, "rx")
-    assert seen[-1] == {} and kernel.request("rx").state == fake.RequestState.ANSWERED
-    await bridge.stop()
 
 
 async def test_start_for_wires_the_bridge_and_stop_all_tears_it_down(tmp_path, monkeypatch):

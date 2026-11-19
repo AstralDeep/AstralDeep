@@ -1,6 +1,5 @@
-"""Pure, DB-free evolutionary archive of past generated-agent drafts: scores new drafts
-by static surrogate signals to skip hopeless self-tests, and conditions codegen
-prompts on the most relevant past successes.
+"""Pure, DB-free evolutionary archive of past generated-agent drafts that conditions
+codegen prompts on the most relevant past successes.
 """
 
 from __future__ import annotations
@@ -20,10 +19,8 @@ logger = logging.getLogger("Orchestrator.DraftArchive")
 __all__ = [
     "ArchivedDraft",
     "archive_enabled",
-    "surrogate_score",
     "top_exemplars",
     "condition_prompt",
-    "should_skip_self_test",
     "get_archive",
     "record_archived_draft",
     "reset_archive",
@@ -69,59 +66,6 @@ def _jaccard(a: set[str], b: set[str]) -> float:
     return len(a & b) / len(union)
 
 
-_RED_FLAGS: tuple[str, ...] = (
-    "eval(",
-    "exec(",
-    "subprocess",
-    "import socket",
-    "__import__",
-)
-
-
-def surrogate_score(code: str) -> float:
-    text = code or ""
-    stripped = text.strip()
-
-    if len(stripped) < 20:
-        return 0.0
-
-    lowered = text.lower()
-    score = 0.0
-
-    if (
-        "tool_registry" in lowered
-        or "register_tool" in lowered
-        or re.search(r"@\w*tool\b", lowered) is not None
-    ):
-        score += 0.25
-
-    if '"""' in text or "'''" in text:
-        score += 0.20
-
-    if (
-        re.search(r"return\s*\{", text) is not None
-        or ".to_dict" in lowered
-        or "create_ui_response" in lowered
-        or "components" in lowered
-    ):
-        score += 0.20
-
-    if re.search(r"\btry\b", text) is not None and re.search(r"\bexcept\b", text) is not None:
-        score += 0.15
-
-    n = len(stripped)
-    if 200 <= n <= 8000:
-        score += 0.20
-    elif 80 <= n < 200:
-        score += 0.10
-
-    for flag in _RED_FLAGS:
-        if flag in lowered:
-            score *= 0.5
-
-    return _clamp01(score)
-
-
 def _clamp01(value: float) -> float:
     if not math.isfinite(value):
         return 0.0
@@ -130,10 +74,6 @@ def _clamp01(value: float) -> float:
     if value > 1.0:
         return 1.0
     return value
-
-
-def should_skip_self_test(code: str, *, min_score: float = 0.25) -> bool:
-    return surrogate_score(code) < min_score
 
 
 def top_exemplars(
