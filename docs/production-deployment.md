@@ -422,8 +422,13 @@ this pipeline has published them, the live bytes must equal that release's
 assets: the stage waits up to ten minutes for the site to sync, then fails rather
 than drop items, reset the serial or lower the minimum build.
 
-The workflow also builds the pinned Apple Kernel framework and the Mac node pack
-in separate read-only, 30-minute jobs before the environment-approved release job.
+The read-only framework job reuses the universal Apple archive from a successful
+AstralKernel qualification push to `main` for the exact Kernel gitlink. It checks
+the GitHub archive digest, compiler versions and every payload in the pinned
+source manifest. If the archive is unavailable, five macOS jobs each compile one
+target from that gitlink. Assembly checks the source, compiler, architectures
+and digests before packaging the framework. The Mac node pack builds separately.
+All producer jobs have a maximum runtime of 30 minutes.
 In parallel, a read-only job waits up to 25 minutes for a successful
 `apple-ci.yml` push run on AstralProjection `main` at the exact Projection
 gitlink in the decided Deep commit, using Projection's public Actions API. A

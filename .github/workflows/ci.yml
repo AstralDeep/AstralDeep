@@ -859,6 +859,7 @@ jobs:
             backend/tests/test_ci_plane_lane.py
             scripts/tests/test_prepare_plane_upgrade_baseline.py
             scripts/tests/test_package_macos_candidate.py
+            scripts/tests/test_release_apple_framework.py
             backend/tests/test_release_macos.py
             backend/tests/test_next_macos_release.py
             backend/tests/test_macos_release_notes.py

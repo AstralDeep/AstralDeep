@@ -1,7 +1,6 @@
 # Publishes a notarized macOS DMG as an immutable macos-v<version>-<build> release after CI succeeds for a push to main, or stages one when dispatched from main.
 # The RELEASE_MACOS_HOLD repository variable set to true stops the automatic path and never blocks a dispatch, and the DMG ships the signed macOS node pack with the two Linux packs.
 # scripts/next_macos_release.py decides the version, scripts/macos_release_notes.py writes the notes and scripts/release_macos.py builds, notarizes and publishes.
-# Framework-only dry runs build the same source-bound Apple artifacts without Mac packaging or signing.
 name: Release macOS
 
 on:
@@ -49,6 +48,10 @@ jobs:
       build: ${{ steps.decide.outputs.build }}
       skip: ${{ steps.decide.outputs.skip }}
       previous_target: ${{ steps.decide.outputs.previous_target }}
+      apple_inputs: ${{ steps.apple.outputs.apple_inputs }}
+      apple_artifact: ${{ steps.apple.outputs.apple_artifact }}
+      apple_digest: ${{ steps.apple.outputs.apple_digest }}
+      apple_bytes: ${{ steps.apple.outputs.apple_bytes }}
     steps:
       - name: Reject framework-only publication
         if: ${{ inputs.framework_only == true && inputs.dry_run != true }}
@@ -106,6 +109,16 @@ jobs:
           test "$DECIDED_HEAD" = "$EXPECTED_HEAD"
           test "$DECIDED_SKIP" = "false"
 
+      - name: Select qualified Apple framework or pinned source builds
+        id: apple
+        if: ${{ steps.decide.outputs.skip == 'false' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          kernel="$(git rev-parse HEAD:components/AstralKernel)"
+          python3 scripts/release_apple_framework.py plan "$kernel" "$GITHUB_OUTPUT"
+
   native-check:
     name: Require exact pinned Projection Apple CI
     needs: [decide]
@@ -122,6 +135,7 @@ jobs:
           persist-credentials: false
       - name: Wait for pinned Projection Apple CI
         env:
+          GH_TOKEN: ${{ github.token }}
           DECIDED_HEAD: ${{ needs.decide.outputs.head }}
         run: |
           set -euo pipefail
@@ -132,7 +146,7 @@ jobs:
           workflow=.github/workflows/apple-ci.yml
           for attempt in {1..26}; do
             response="$(curl --fail --silent --show-error --max-time 20 \
-              -H 'Accept: application/vnd.github+json' \
+              -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
               "https://api.github.com/repos/$repo/actions/workflows/apple-ci.yml/runs?head_sha=$projection&event=push&branch=main&per_page=100")"
             decision="$(python3 -c '
           import json
@@ -177,50 +191,93 @@ jobs:
           echo "::error::No successful pinned Projection Apple CI within 25 minutes for $projection"
           exit 1
 
-  apple-artifacts:
-    name: Build source-bound Apple framework
+  apple-input:
+    name: Prepare Apple framework input (${{ matrix.target }})
     needs: [decide]
     if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && (needs.decide.outputs.skip != 'true') }}
-    runs-on: macos-26
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.decide.outputs.apple_inputs) }}
+    runs-on: ${{ matrix.target == 'qualified' && 'ubuntu-24.04' || 'macos-26' }}
     timeout-minutes: 30
     permissions:
       contents: read
-    env:
-      XCODE_VERSION: "26.6"
-      XCODE_BUILD: "17F113"
+      actions: read
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        if: ${{ matrix.target != 'qualified' }}
+        with:
+          ref: ${{ needs.decide.outputs.head }}
+          submodules: true
+          persist-credentials: false
+      - name: Build the pinned Apple target
+        if: ${{ matrix.target != 'qualified' }}
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          components/AstralKernel/scripts/select-xcode.sh
+          components/AstralKernel/scripts/build-apple-target.sh --target "$TARGET" --out "$RUNNER_TEMP/input"
+      - name: Download the selected Kernel archive
+        if: ${{ matrix.target == 'qualified' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT: ${{ needs.decide.outputs.apple_artifact }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/input"
+          gh api "repos/AstralDeep/AstralKernel/actions/artifacts/$ARTIFACT/zip" > "$RUNNER_TEMP/input/provider.zip"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: macos-kernel-input-${{ matrix.target }}
+          path: ${{ runner.temp }}/input
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  apple-artifacts:
+    name: Build source-bound Apple framework
+    needs: [decide, apple-input]
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && (needs.decide.outputs.skip != 'true') }}
+    runs-on: ${{ needs.decide.outputs.apple_artifact != '' && 'ubuntu-24.04' || 'macos-26' }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
           ref: ${{ needs.decide.outputs.head }}
-          submodules: recursive
+          submodules: true
           persist-credentials: false
-      - name: Select exact Xcode for source-bound artifacts
-        run: |
-          set -euo pipefail
-          selected=""
-          for candidate in /Applications/Xcode_26.6.app /Applications/Xcode_26.6*.app /Applications/Xcode.app; do
-            [[ -d "$candidate" ]] || continue
-            if [[ "$("$candidate/Contents/Developer/usr/bin/xcodebuild" -version | sed -n '1p')" == "Xcode ${XCODE_VERSION}" ]] && \
-               [[ "$("$candidate/Contents/Developer/usr/bin/xcodebuild" -version | sed -n '2p')" == "Build version ${XCODE_BUILD}" ]]; then
-              selected="$candidate"
-              break
-            fi
-          done
-          [[ -n "$selected" ]] || { echo "Xcode ${XCODE_VERSION} (${XCODE_BUILD}) is required" >&2; exit 1; }
-          sudo xcode-select --switch "$selected/Contents/Developer"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: macos-kernel-input-*
+          path: ${{ runner.temp }}/inputs
       - name: Build and verify the pinned Apple Kernel framework
         env:
           DECIDED_HEAD: ${{ needs.decide.outputs.head }}
+          ARTIFACT: ${{ needs.decide.outputs.apple_artifact }}
+          DIGEST: ${{ needs.decide.outputs.apple_digest }}
+          SIZE: ${{ needs.decide.outputs.apple_bytes }}
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$DECIDED_HEAD"
-          rustup toolchain install 1.99.1 --profile minimal
-          rustup target add --toolchain 1.99.1 aarch64-apple-darwin x86_64-apple-darwin aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
-          components/AstralKernel/scripts/build-apple.sh
-          python3 components/AstralKernel/scripts/artifact_manifest.py verify \
-            --root components/AstralProjection/apple-clients/AstralKernel/Artifacts \
-            --kind apple --expected-source "$(git -C components/AstralKernel rev-parse HEAD)"
-          tar -czf "$RUNNER_TEMP/apple-artifacts.tar.gz" -C components/AstralProjection/apple-clients/AstralKernel Artifacts
+          kernel="$(git rev-parse HEAD:components/AstralKernel)"
+          test "$(git -C components/AstralKernel rev-parse HEAD)" = "$kernel"
+          out="$RUNNER_TEMP/Artifacts"
+          if [[ -n "$ARTIFACT" ]]; then
+            python3 scripts/release_apple_framework.py restore "$RUNNER_TEMP/inputs/macos-kernel-input-qualified/provider.zip" "$out" "$SIZE" "$DIGEST"
+          else
+            components/AstralKernel/scripts/select-xcode.sh
+            mkdir "$RUNNER_TEMP/slices"
+            for target in aarch64-apple-darwin x86_64-apple-darwin aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios; do
+              mv "$RUNNER_TEMP/inputs/macos-kernel-input-$target" "$RUNNER_TEMP/slices/$target"
+            done
+            components/AstralKernel/scripts/assemble-apple.sh --input "$RUNNER_TEMP/slices" --out "$out"
+          fi
+          python3 components/AstralKernel/scripts/artifact_manifest.py verify --root "$out" --kind apple --expected-source "$kernel"
+          tar -czf "$RUNNER_TEMP/apple-artifacts.tar.gz" -C "$RUNNER_TEMP" Artifacts
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: macos-apple-artifacts-${{ needs.decide.outputs.head }}
