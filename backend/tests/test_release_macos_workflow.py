@@ -239,7 +239,8 @@ def test_pinned_native_check_is_read_only_bounded_and_precedes_signing(flow):
     assert '-H "Authorization: Bearer $GH_TOKEN"' in gate["run"]
     assert "https://api.github.com/repos/$repo/actions/workflows/apple-ci.yml/runs?" in gate["run"]
     assert "git ls-tree HEAD -- components/AstralProjection" in gate["run"]
-    assert "for attempt in {1..26}" in gate["run"] and "sleep 60" in gate["run"]
+    assert "for attempt in {1..26}" in gate["run"] and "remaining < 60" in gate["run"]
+    assert "deadline=$((SECONDS + 25 * 60))" in gate["run"]
     assert "python3 -c" in gate["run"] and "jq" not in gate["run"]
     assert list(flow["jobs"]).index("native-check") < list(flow["jobs"]).index("release")
 
@@ -255,7 +256,8 @@ def native_run(*, conclusion="success", **changes):
     return run
 
 
-def execute_native_check(flow, tmp_path, runs, *, projection="b" * 40, checked_head="a" * 40, response=None):
+def execute_native_check(flow, tmp_path, runs, *, projection="b" * 40, checked_head="a" * 40, response=None,
+                         auth_status=200, public_status=200, recover_on=0):
     commands = tmp_path / "bin"
     commands.mkdir(parents=True)
     git = commands / "git"
@@ -266,10 +268,23 @@ def execute_native_check(flow, tmp_path, runs, *, projection="b" * 40, checked_h
         "printf '160000 commit %s\\tcomponents/AstralProjection\\n' \"$TEST_PROJECTION\";;\n"
         "  *) exit 2;;\nesac\n", encoding="utf-8")
     curl = commands / "curl"
-    curl.write_text(
-        "#!/bin/sh\nfor arg do url=\"$arg\"; done\n"
-        "printf '%s\\n' \"$url\" >> \"$API_QUERY_LOG\"\n"
-        "printf '%s' \"$FAKE_RESPONSE\"\n", encoding="utf-8")
+    curl.write_text("""#!/bin/sh
+access=public
+while [ "$#" -gt 1 ]; do
+    case "$1" in
+        --output) output=$2; shift 2 ;;
+        -H) if [ "$2" = "Authorization: Bearer $GH_TOKEN" ]; then access=authenticated; fi; shift 2 ;;
+        *) shift ;;
+    esac
+done
+echo "$access" >> "$ACCESS_LOG"
+echo "$1" >> "$API_QUERY_LOG"
+if [ "$access" = authenticated ]; then status=$AUTH_STATUS; else status=$PUBLIC_STATUS; fi
+if [ "$RECOVER_ON" -gt 0 ] && [ "$(wc -l < "$ACCESS_LOG")" -ge "$RECOVER_ON" ]; then status=200; fi
+printf '%s' "$FAKE_RESPONSE" > "$output"
+printf '%s' "$status"
+[ "$status" != 000 ]
+""", encoding="utf-8")
     sleeper = commands / "sleep"
     sleeper.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     for command in (git, curl, sleeper):
@@ -279,7 +294,9 @@ def execute_native_check(flow, tmp_path, runs, *, projection="b" * 40, checked_h
         "PATH": str(commands) + os.pathsep + env["PATH"],
         "DECIDED_HEAD": "a" * 40, "TEST_HEAD": checked_head, "TEST_PROJECTION": projection,
         "FAKE_RESPONSE": response if response is not None else json.dumps({"workflow_runs": runs}),
-        "API_QUERY_LOG": str(tmp_path / "queries"), "GH_TOKEN": "fixture",
+        "API_QUERY_LOG": str(tmp_path / "queries"), "ACCESS_LOG": str(tmp_path / "access"),
+        "GH_TOKEN": "scoped-test-credential", "RUNNER_TEMP": str(tmp_path),
+        "AUTH_STATUS": str(auth_status), "PUBLIC_STATUS": str(public_status), "RECOVER_ON": str(recover_on),
     })
     result = subprocess.run(
         ["bash", "-c", step(flow["jobs"]["native-check"], "Wait for pinned Projection Apple CI")["run"]],
@@ -295,6 +312,32 @@ def test_native_check_accepts_only_exact_pinned_main_push_and_queries_that_sourc
         "https://api.github.com/repos/AstralDeep/AstralProjection/actions/workflows/apple-ci.yml/runs?"
         f"head_sha={'b' * 40}&event=push&branch=main&per_page=100"
     ]
+
+
+@pytest.mark.parametrize("auth_status,public_status,recover_on,expected,access", [
+    (403, 200, 0, 0, ["authenticated", "public"]),
+    (404, 200, 0, 0, ["authenticated", "public"]),
+    (403, 429, 3, 0, ["authenticated", "public", "authenticated"]),
+    ("000", 503, 4, 0, ["authenticated", "public", "authenticated", "public"]),
+    (403, 403, 0, 1, ["authenticated", "public"] * 26),
+    (404, 404, 0, 1, ["authenticated", "public"]),
+    (400, 200, 0, 1, ["authenticated"]),
+])
+def test_native_check_recovers_only_from_transient_public_api_failures(
+        flow, tmp_path, auth_status, public_status, recover_on, expected, access):
+    result, queries = execute_native_check(flow, tmp_path, [native_run()], auth_status=auth_status,
+                                          public_status=public_status, recover_on=recover_on)
+    assert result.returncode == expected, result.stderr
+    assert (tmp_path / "access").read_text().splitlines() == access
+    assert len(set(queries)) == 1
+    assert "scoped-test-credential" not in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("payload", ["not json", json.dumps({"workflow_runs": [native_run(conclusion="failure")]})])
+def test_native_check_rejects_unqualified_public_response(flow, tmp_path, payload):
+    result, queries = execute_native_check(flow, tmp_path, [], response=payload, auth_status=403)
+    assert result.returncode != 0
+    assert len(queries) == 2
 
 
 def test_native_check_accepts_exact_green_even_with_earlier_failed_run(flow, tmp_path):

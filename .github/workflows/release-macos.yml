@@ -144,11 +144,28 @@ jobs:
           [[ "$projection" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Missing exact Projection gitlink"; exit 1; }
           repo=AstralDeep/AstralProjection
           workflow=.github/workflows/apple-ci.yml
+          url="https://api.github.com/repos/$repo/actions/workflows/apple-ci.yml/runs?head_sha=$projection&event=push&branch=main&per_page=100"
+          response="$RUNNER_TEMP/projection-apple-ci.json"
+          deadline=$((SECONDS + 25 * 60))
           for attempt in {1..26}; do
-            response="$(curl --fail --silent --show-error --max-time 20 \
-              -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
-              "https://api.github.com/repos/$repo/actions/workflows/apple-ci.yml/runs?head_sha=$projection&event=push&branch=main&per_page=100")"
-            decision="$(python3 -c '
+            for access in authenticated public; do
+              remaining=$((deadline - SECONDS))
+              (( remaining > 0 )) || break 2
+              headers=(-H 'Accept: application/vnd.github+json')
+              if [[ "$access" == authenticated ]]; then headers+=(-H "Authorization: Bearer $GH_TOKEN"); fi
+              if ! status="$(curl --silent --show-error --max-time "$((remaining < 10 ? remaining : 10))" \
+                --output "$response" --write-out '%{http_code}' "${headers[@]}" "$url")"; then
+                status=000
+              fi
+              case "$status" in
+                200) break ;;
+                000|401|403|404|408|429|5??) ;;
+                *) echo "::error::Projection Actions API returned HTTP $status"; exit 1 ;;
+              esac
+            done
+            case "$status" in
+              401|404) echo "::error::Projection Actions API returned HTTP $status"; exit 1 ;;
+              200) decision="$(python3 -c '
           import json
           import sys
 
@@ -177,7 +194,9 @@ jobs:
               print("failure")
           else:
               print("pending")
-          ' "$projection" "$repo" "$workflow" <<< "$response")"
+          ' "$projection" "$repo" "$workflow" < "$response")" ;;
+              *) decision=pending ;;
+            esac
             if [[ "$decision" == success ]]; then
               echo "Pinned Projection Apple CI succeeded for $projection"
               exit 0
@@ -186,7 +205,9 @@ jobs:
               echo "::error::Pinned Projection Apple CI completed without success for $projection"
               exit 1
             fi
-            if (( attempt < 26 )); then sleep 60; fi
+            remaining=$((deadline - SECONDS))
+            (( remaining > 0 )) || break
+            if (( attempt < 26 )); then sleep "$((remaining < 60 ? remaining : 60))"; fi
           done
           echo "::error::No successful pinned Projection Apple CI within 25 minutes for $projection"
           exit 1

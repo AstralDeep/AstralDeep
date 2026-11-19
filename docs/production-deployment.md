@@ -431,7 +431,9 @@ and digests before packaging the framework. The Mac node pack builds separately.
 All producer jobs have a maximum runtime of 30 minutes.
 In parallel, a read-only job waits up to 25 minutes for a successful
 `apple-ci.yml` push run on AstralProjection `main` at the exact Projection
-gitlink in the decided Deep commit, using Projection's public Actions API. A
+gitlink in the decided Deep commit. It queries Projection's Actions API with
+the job token, retries through the public endpoint when necessary, and bounds
+transient network or rate-limit retries within the same deadline. A
 completed failure or cancellation with no successful run stops the release
 immediately; a missing or pending run stops it at the deadline. Signing and
 publication cannot start until this native gate
