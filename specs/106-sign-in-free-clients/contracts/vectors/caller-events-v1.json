@@ -1,0 +1,834 @@
+{
+  "cases": [
+    {
+      "expect": {
+        "class": "unauthorized",
+        "status": 401
+      },
+      "input": {
+        "code": "node.bearer_refused"
+      },
+      "kind": "classify",
+      "name": "classify_node_bearer_refused"
+    },
+    {
+      "expect": {
+        "class": "unauthorized",
+        "status": 401
+      },
+      "input": {
+        "code": "caller.malformed"
+      },
+      "kind": "classify",
+      "name": "classify_caller_malformed"
+    },
+    {
+      "expect": {
+        "class": "unauthorized",
+        "status": 401
+      },
+      "input": {
+        "code": "caller.proof_malformed"
+      },
+      "kind": "classify",
+      "name": "classify_caller_proof_malformed"
+    },
+    {
+      "expect": {
+        "class": "unauthorized",
+        "status": 401
+      },
+      "input": {
+        "code": "caller.bad_signature"
+      },
+      "kind": "classify",
+      "name": "classify_caller_bad_signature"
+    },
+    {
+      "expect": {
+        "class": "unauthorized",
+        "status": 401
+      },
+      "input": {
+        "code": "caller.proof_bad_signature"
+      },
+      "kind": "classify",
+      "name": "classify_caller_proof_bad_signature"
+    },
+    {
+      "expect": {
+        "class": "forbidden",
+        "status": 403
+      },
+      "input": {
+        "code": "caller.mesh_mismatch"
+      },
+      "kind": "classify",
+      "name": "classify_caller_mesh_mismatch"
+    },
+    {
+      "expect": {
+        "class": "forbidden",
+        "status": 403
+      },
+      "input": {
+        "code": "caller.wrong_node"
+      },
+      "kind": "classify",
+      "name": "classify_caller_wrong_node"
+    },
+    {
+      "expect": {
+        "class": "forbidden",
+        "status": 403
+      },
+      "input": {
+        "code": "caller.device_removed"
+      },
+      "kind": "classify",
+      "name": "classify_caller_device_removed"
+    },
+    {
+      "expect": {
+        "class": "forbidden",
+        "status": 403
+      },
+      "input": {
+        "code": "caller.wrong_minter"
+      },
+      "kind": "classify",
+      "name": "classify_caller_wrong_minter"
+    },
+    {
+      "expect": {
+        "class": "forbidden",
+        "status": 403
+      },
+      "input": {
+        "code": "caller.stopped"
+      },
+      "kind": "classify",
+      "name": "classify_caller_stopped"
+    },
+    {
+      "expect": {
+        "class": "forbidden",
+        "status": 403
+      },
+      "input": {
+        "code": "caller.expired"
+      },
+      "kind": "classify",
+      "name": "classify_caller_expired"
+    },
+    {
+      "expect": {
+        "class": "forbidden",
+        "status": 403
+      },
+      "input": {
+        "code": "caller.not_yet_valid"
+      },
+      "kind": "classify",
+      "name": "classify_caller_not_yet_valid"
+    },
+    {
+      "expect": {
+        "class": "forbidden",
+        "status": 403
+      },
+      "input": {
+        "code": "caller.revoked"
+      },
+      "kind": "classify",
+      "name": "classify_caller_revoked"
+    },
+    {
+      "expect": {
+        "class": "forbidden",
+        "status": 403
+      },
+      "input": {
+        "code": "caller.proof_mismatch"
+      },
+      "kind": "classify",
+      "name": "classify_caller_proof_mismatch"
+    },
+    {
+      "expect": {
+        "class": "forbidden",
+        "status": 403
+      },
+      "input": {
+        "code": "caller.proof_stale"
+      },
+      "kind": "classify",
+      "name": "classify_caller_proof_stale"
+    },
+    {
+      "expect": {
+        "class": "forbidden",
+        "status": 403
+      },
+      "input": {
+        "code": "caller.replayed"
+      },
+      "kind": "classify",
+      "name": "classify_caller_replayed"
+    },
+    {
+      "expect": {
+        "class": "forbidden",
+        "status": 403
+      },
+      "input": {
+        "code": "caller.tool_not_covered"
+      },
+      "kind": "classify",
+      "name": "classify_caller_tool_not_covered"
+    },
+    {
+      "expect": {
+        "class": "forbidden",
+        "status": 403
+      },
+      "input": {
+        "code": "caller.tool_changed"
+      },
+      "kind": "classify",
+      "name": "classify_caller_tool_changed"
+    },
+    {
+      "expect": {
+        "class": "forbidden",
+        "status": 403
+      },
+      "input": {
+        "code": "caller.tool_unavailable"
+      },
+      "kind": "classify",
+      "name": "classify_caller_tool_unavailable"
+    },
+    {
+      "expect": {
+        "class": "unavailable",
+        "status": 503
+      },
+      "input": {
+        "code": "caller.replay_full"
+      },
+      "kind": "classify",
+      "name": "classify_caller_replay_full"
+    },
+    {
+      "expect": {
+        "class": "unavailable",
+        "status": 503
+      },
+      "input": {
+        "code": "mesh.not_enrolled"
+      },
+      "kind": "classify",
+      "name": "classify_mesh_not_enrolled"
+    },
+    {
+      "expect": {
+        "class": "unavailable",
+        "status": 503
+      },
+      "input": {
+        "code": "node.development_mesh"
+      },
+      "kind": "classify",
+      "name": "classify_node_development_mesh"
+    },
+    {
+      "expect": {
+        "class": "unavailable",
+        "status": 503
+      },
+      "input": {
+        "code": "node.mesh_unavailable"
+      },
+      "kind": "classify",
+      "name": "classify_node_mesh_unavailable"
+    },
+    {
+      "expect": {
+        "class": "unavailable",
+        "status": 503
+      },
+      "input": {
+        "code": "node.owner_unbound"
+      },
+      "kind": "classify",
+      "name": "classify_node_owner_unbound"
+    },
+    {
+      "expect": {
+        "class": "gate",
+        "status": 503
+      },
+      "input": {
+        "code": "gate.permission_denied"
+      },
+      "kind": "classify",
+      "name": "classify_gate_permission_denied"
+    },
+    {
+      "expect": {
+        "class": "gate",
+        "status": 503
+      },
+      "input": {
+        "code": "gate.mesh_stopped"
+      },
+      "kind": "classify",
+      "name": "classify_gate_mesh_stopped"
+    },
+    {
+      "expect": {
+        "class": "gate",
+        "status": 503
+      },
+      "input": {
+        "code": "gate.anything_new"
+      },
+      "kind": "classify",
+      "name": "classify_gate_anything_new"
+    },
+    {
+      "expect": {
+        "class": "opaque",
+        "status": 500
+      },
+      "input": {
+        "code": "caller.unknown_future_code"
+      },
+      "kind": "classify",
+      "name": "classify_caller_unknown_future_code"
+    },
+    {
+      "expect": {
+        "class": "opaque",
+        "status": 500
+      },
+      "input": {
+        "code": ""
+      },
+      "kind": "classify",
+      "name": "classify_empty"
+    },
+    {
+      "expect": {
+        "class": "opaque",
+        "status": 500
+      },
+      "input": {
+        "code": "gate"
+      },
+      "kind": "classify",
+      "name": "classify_gate"
+    },
+    {
+      "expect": {
+        "consent": "full"
+      },
+      "input": {
+        "principal": "owner-device",
+        "turns": false
+      },
+      "kind": "consent_class",
+      "name": "consent_class_owner_device_no_turns"
+    },
+    {
+      "expect": {
+        "visible": true
+      },
+      "input": {
+        "principal": "owner-device",
+        "signal": "consent.requested",
+        "turns": false
+      },
+      "kind": "visible",
+      "name": "visible_owner_device_no_turns_consent_requested"
+    },
+    {
+      "expect": {
+        "visible": true
+      },
+      "input": {
+        "principal": "owner-device",
+        "signal": "consent.resolved",
+        "turns": false
+      },
+      "kind": "visible",
+      "name": "visible_owner_device_no_turns_consent_resolved"
+    },
+    {
+      "expect": {
+        "visible": false
+      },
+      "input": {
+        "principal": "owner-device",
+        "signal": "consent.blocked",
+        "turns": false
+      },
+      "kind": "visible",
+      "name": "visible_owner_device_no_turns_consent_blocked"
+    },
+    {
+      "expect": {
+        "visible": false
+      },
+      "input": {
+        "principal": "owner-device",
+        "signal": "consent.resumed",
+        "turns": false
+      },
+      "kind": "visible",
+      "name": "visible_owner_device_no_turns_consent_resumed"
+    },
+    {
+      "expect": {
+        "consent": "full"
+      },
+      "input": {
+        "principal": "owner-device",
+        "turns": true
+      },
+      "kind": "consent_class",
+      "name": "consent_class_owner_device_turns"
+    },
+    {
+      "expect": {
+        "visible": true
+      },
+      "input": {
+        "principal": "owner-device",
+        "signal": "consent.requested",
+        "turns": true
+      },
+      "kind": "visible",
+      "name": "visible_owner_device_turns_consent_requested"
+    },
+    {
+      "expect": {
+        "visible": true
+      },
+      "input": {
+        "principal": "owner-device",
+        "signal": "consent.resolved",
+        "turns": true
+      },
+      "kind": "visible",
+      "name": "visible_owner_device_turns_consent_resolved"
+    },
+    {
+      "expect": {
+        "visible": false
+      },
+      "input": {
+        "principal": "owner-device",
+        "signal": "consent.blocked",
+        "turns": true
+      },
+      "kind": "visible",
+      "name": "visible_owner_device_turns_consent_blocked"
+    },
+    {
+      "expect": {
+        "visible": false
+      },
+      "input": {
+        "principal": "owner-device",
+        "signal": "consent.resumed",
+        "turns": true
+      },
+      "kind": "visible",
+      "name": "visible_owner_device_turns_consent_resumed"
+    },
+    {
+      "expect": {
+        "consent": "none"
+      },
+      "input": {
+        "principal": "caller-ticket",
+        "turns": false
+      },
+      "kind": "consent_class",
+      "name": "consent_class_caller_ticket_no_turns"
+    },
+    {
+      "expect": {
+        "visible": false
+      },
+      "input": {
+        "principal": "caller-ticket",
+        "signal": "consent.requested",
+        "turns": false
+      },
+      "kind": "visible",
+      "name": "visible_caller_ticket_no_turns_consent_requested"
+    },
+    {
+      "expect": {
+        "visible": false
+      },
+      "input": {
+        "principal": "caller-ticket",
+        "signal": "consent.resolved",
+        "turns": false
+      },
+      "kind": "visible",
+      "name": "visible_caller_ticket_no_turns_consent_resolved"
+    },
+    {
+      "expect": {
+        "visible": false
+      },
+      "input": {
+        "principal": "caller-ticket",
+        "signal": "consent.blocked",
+        "turns": false
+      },
+      "kind": "visible",
+      "name": "visible_caller_ticket_no_turns_consent_blocked"
+    },
+    {
+      "expect": {
+        "visible": false
+      },
+      "input": {
+        "principal": "caller-ticket",
+        "signal": "consent.resumed",
+        "turns": false
+      },
+      "kind": "visible",
+      "name": "visible_caller_ticket_no_turns_consent_resumed"
+    },
+    {
+      "expect": {
+        "consent": "own-redacted"
+      },
+      "input": {
+        "principal": "caller-ticket",
+        "turns": true
+      },
+      "kind": "consent_class",
+      "name": "consent_class_caller_ticket_turns"
+    },
+    {
+      "expect": {
+        "visible": false
+      },
+      "input": {
+        "principal": "caller-ticket",
+        "signal": "consent.requested",
+        "turns": true
+      },
+      "kind": "visible",
+      "name": "visible_caller_ticket_turns_consent_requested"
+    },
+    {
+      "expect": {
+        "visible": false
+      },
+      "input": {
+        "principal": "caller-ticket",
+        "signal": "consent.resolved",
+        "turns": true
+      },
+      "kind": "visible",
+      "name": "visible_caller_ticket_turns_consent_resolved"
+    },
+    {
+      "expect": {
+        "visible": true
+      },
+      "input": {
+        "principal": "caller-ticket",
+        "signal": "consent.blocked",
+        "turns": true
+      },
+      "kind": "visible",
+      "name": "visible_caller_ticket_turns_consent_blocked"
+    },
+    {
+      "expect": {
+        "visible": true
+      },
+      "input": {
+        "principal": "caller-ticket",
+        "signal": "consent.resumed",
+        "turns": true
+      },
+      "kind": "visible",
+      "name": "visible_caller_ticket_turns_consent_resumed"
+    },
+    {
+      "expect": {
+        "consent": "none"
+      },
+      "input": {
+        "principal": "outside-service",
+        "turns": false
+      },
+      "kind": "consent_class",
+      "name": "consent_class_outside_service_no_turns"
+    },
+    {
+      "expect": {
+        "visible": false
+      },
+      "input": {
+        "principal": "outside-service",
+        "signal": "consent.requested",
+        "turns": false
+      },
+      "kind": "visible",
+      "name": "visible_outside_service_no_turns_consent_requested"
+    },
+    {
+      "expect": {
+        "visible": false
+      },
+      "input": {
+        "principal": "outside-service",
+        "signal": "consent.resolved",
+        "turns": false
+      },
+      "kind": "visible",
+      "name": "visible_outside_service_no_turns_consent_resolved"
+    },
+    {
+      "expect": {
+        "visible": false
+      },
+      "input": {
+        "principal": "outside-service",
+        "signal": "consent.blocked",
+        "turns": false
+      },
+      "kind": "visible",
+      "name": "visible_outside_service_no_turns_consent_blocked"
+    },
+    {
+      "expect": {
+        "visible": false
+      },
+      "input": {
+        "principal": "outside-service",
+        "signal": "consent.resumed",
+        "turns": false
+      },
+      "kind": "visible",
+      "name": "visible_outside_service_no_turns_consent_resumed"
+    },
+    {
+      "expect": {
+        "consent": "none"
+      },
+      "input": {
+        "principal": "outside-service",
+        "turns": true
+      },
+      "kind": "consent_class",
+      "name": "consent_class_outside_service_turns"
+    },
+    {
+      "expect": {
+        "visible": false
+      },
+      "input": {
+        "principal": "outside-service",
+        "signal": "consent.requested",
+        "turns": true
+      },
+      "kind": "visible",
+      "name": "visible_outside_service_turns_consent_requested"
+    },
+    {
+      "expect": {
+        "visible": false
+      },
+      "input": {
+        "principal": "outside-service",
+        "signal": "consent.resolved",
+        "turns": true
+      },
+      "kind": "visible",
+      "name": "visible_outside_service_turns_consent_resolved"
+    },
+    {
+      "expect": {
+        "visible": false
+      },
+      "input": {
+        "principal": "outside-service",
+        "signal": "consent.blocked",
+        "turns": true
+      },
+      "kind": "visible",
+      "name": "visible_outside_service_turns_consent_blocked"
+    },
+    {
+      "expect": {
+        "visible": false
+      },
+      "input": {
+        "principal": "outside-service",
+        "signal": "consent.resumed",
+        "turns": true
+      },
+      "kind": "visible",
+      "name": "visible_outside_service_turns_consent_resumed"
+    },
+    {
+      "expect": {
+        "code": "events.malformed"
+      },
+      "input": {
+        "principal": "contact",
+        "turns": false
+      },
+      "kind": "consent_class",
+      "name": "consent_class_unknown_principal"
+    },
+    {
+      "expect": {
+        "code": "events.malformed"
+      },
+      "input": {
+        "principal": "caller-ticket",
+        "turns": 1
+      },
+      "kind": "consent_class",
+      "name": "consent_class_turns_not_boolean"
+    },
+    {
+      "expect": {
+        "code": "events.malformed"
+      },
+      "input": {
+        "principal": "owner-device",
+        "signal": "consent.approved",
+        "turns": true
+      },
+      "kind": "visible",
+      "name": "visible_unknown_signal"
+    },
+    {
+      "expect": {
+        "event": {
+          "request": "req-1",
+          "signal": "consent.blocked"
+        }
+      },
+      "input": {
+        "event": {
+          "action_digest": "sha256:abababababababababababababababababababababababababababababababab",
+          "approver": "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "arguments": {
+            "to": "someone"
+          },
+          "outcome": "approved",
+          "request": "req-1",
+          "signal": "consent.blocked",
+          "tool": "send_message"
+        }
+      },
+      "kind": "redact",
+      "name": "redact_drops_everything_but_signal_and_request"
+    },
+    {
+      "expect": {
+        "event": {
+          "request": "req-1",
+          "signal": "consent.resumed"
+        }
+      },
+      "input": {
+        "event": {
+          "outcome": "denied",
+          "request": "req-1",
+          "signal": "consent.resumed"
+        }
+      },
+      "kind": "redact",
+      "name": "redact_resumed"
+    },
+    {
+      "expect": {
+        "code": "events.malformed"
+      },
+      "input": {
+        "event": {
+          "request": "req-1",
+          "signal": "consent.requested"
+        }
+      },
+      "kind": "redact",
+      "name": "redact_refuses_an_owner_signal"
+    },
+    {
+      "expect": {
+        "code": "events.malformed"
+      },
+      "input": {
+        "event": {
+          "signal": "consent.blocked"
+        }
+      },
+      "kind": "redact",
+      "name": "redact_refuses_a_missing_request"
+    }
+  ],
+  "classes": [
+    {
+      "class": "unauthorized",
+      "codes": [
+        "node.bearer_refused",
+        "caller.malformed",
+        "caller.proof_malformed",
+        "caller.bad_signature",
+        "caller.proof_bad_signature"
+      ],
+      "status": 401
+    },
+    {
+      "class": "forbidden",
+      "codes": [
+        "caller.mesh_mismatch",
+        "caller.wrong_node",
+        "caller.device_removed",
+        "caller.wrong_minter",
+        "caller.stopped",
+        "caller.expired",
+        "caller.not_yet_valid",
+        "caller.revoked",
+        "caller.proof_mismatch",
+        "caller.proof_stale",
+        "caller.replayed",
+        "caller.tool_not_covered",
+        "caller.tool_changed",
+        "caller.tool_unavailable"
+      ],
+      "status": 403
+    },
+    {
+      "class": "unavailable",
+      "codes": [
+        "caller.replay_full",
+        "mesh.not_enrolled",
+        "node.development_mesh",
+        "node.mesh_unavailable",
+        "node.owner_unbound"
+      ],
+      "status": 503
+    }
+  ],
+  "format": "astral.caller-events/v1",
+  "notification_types": [],
+  "spec": "106/contracts/caller-events.md"
+}

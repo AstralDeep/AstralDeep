@@ -1,4 +1,4 @@
-"""Boot posture for the personal node: refuses to start with exit 78 when production secrets are missing or placeholders, the node key is unusable, or legacy settings are present.
+"""Boot posture for the personal node: refuses to start with exit 78 when production secrets are missing or placeholders, the node key is unusable, legacy settings are present, or assembly_manifest.py refuses config/astral-assembly.json.
 The orchestrator entrypoint and the agent-key check call it, and it imports no sign-in or session code.
 """
 
@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 
 logger = logging.getLogger("orchestrator.boot_posture")
 
@@ -82,10 +83,38 @@ def refuse_removed_profile() -> None:
         raise SystemExit(78)
 
 
+ASSEMBLY_REFUSED = "node.assembly_refused"
+
+
+def assembly_path() -> Path:
+    from orchestrator import assembly_manifest
+
+    return Path(__file__).resolve().parents[2] / "config" / assembly_manifest.FILE
+
+
+def refuse_invalid_assembly() -> None:
+    from orchestrator import assembly_manifest, node_api
+
+    path = assembly_path()
+    try:
+        assembly_manifest.require(
+            path,
+            capabilities=(*node_api.CAPABILITIES, *node_api.MESH_CAPABILITIES),
+            caller_notification_types=assembly_manifest.CALLER_NOTIFICATION_TYPES,
+        )
+    except assembly_manifest.AssemblyError as exc:
+        logger.critical(
+            "%s: %s in %s. The node did not start. No data was read or changed.",
+            ASSEMBLY_REFUSED, exc.code, path,
+        )
+        raise SystemExit(78) from None
+
+
 def assert_production_posture() -> None:
     from shared import node_identity
 
     refuse_removed_profile()
+    refuse_invalid_assembly()
     refuse_snapshot_links_on_personal_node()
     mock_requested = os.getenv("USE_MOCK_AUTH", "").strip().lower() in ("1", "true", "yes")
     if is_dev_mode():

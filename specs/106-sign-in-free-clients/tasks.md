@@ -38,6 +38,26 @@ Unfinished work:
 - Docs: the downloads page on the site and the `AGENTS.md` diff for owner review.
 - The Android and Windows clients stay paused (O9).
 
+## Convergence and caller contracts, 2026-11-19
+
+The owner ruled that the web chat is removed and is hosted nowhere. Clients run turns on the Kernel engine.
+
+Landed in Deep:
+
+- The node no longer serves the browser shell at `/` or the `/static` mount. The route census proves both are gone.
+- [contracts/caller-events.md](contracts/caller-events.md) commits the caller refusal codes, the request lifecycle with no notifications, and consent visibility per principal class. A caller never sees another principal's consent.
+- [contracts/assembly.md](contracts/assembly.md) is the activation manifest. The node's own is `config/astral-assembly.json`. The node validates it at boot and stops with exit 78, and the contract tests check its pinned contract digests.
+
+Decided and not built:
+
+- No caller turn door. A caller ticket still starts no turn, so the redacted `consent.blocked` and `consent.resumed` pair is reserved with no producer.
+- No feature flag moved into the manifest.
+
+Still open:
+
+- The Python turn loop's code stays in `backend/orchestrator/`. No client door reaches it: `register_ui` is refused and every bearer is refused. The scheduler's `run_scheduled_turn` and the explicit conformance runner still call it. Deleting it with `hitl_confirmation`, `goal_steering` and message compaction is the OD3 cleanup above, and it is larger than this change.
+- Projection still carries the web client and its browser suites. Removing them is a Projection change with a pin bump here.
+
 Earlier status (2026-11-15): phase 0 was in progress. Spec 105 was complete, and part of phase 1
 landed early with its closure. See [Progress](#progress-2026-11-15).
 Read [spec.md](spec.md) for intent and [plan.md](plan.md) for order and exit criteria. Evidence for
