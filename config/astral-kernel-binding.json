@@ -3,7 +3,7 @@
   "source": {
     "repository": "https://github.com/AstralDeep/AstralKernel.git",
     "branch": "main",
-    "commit": "f108c8504edb995d29570f38da83fbc2eb3aa6c1"
+    "commit": "4c43032b7398ada7906ade37f7f3dab4000779f3"
   },
   "python": {
     "distribution": "astral-kernel",
@@ -14,21 +14,21 @@
     "linux-aarch64": {
       "wheel": {
         "file": "astral_kernel-0.2.0-py3-none-manylinux_2_36_aarch64.whl",
-        "sha256": "83ea6e9de8f1d19157eab975e251267cbf2a65499ddc3fa756096de077aa074b"
+        "sha256": "8ad0a5aea744ae1e75ae4d965d09890375db8d5c50d5d229fb95d83fcae8791d"
       },
       "mailbox": {
         "file": "astral-mailbox-linux-aarch64",
-        "sha256": "12aea6f7c88f0ebfa3ddcff56a110242ef5f2ea485de3f3b5ae74a8a332bdda3"
+        "sha256": "304267348286e40be55cdff9bcbf3676330202721ffe283c785358d56868e784"
       }
     },
     "linux-x86_64": {
       "wheel": {
         "file": "astral_kernel-0.2.0-py3-none-manylinux_2_36_x86_64.whl",
-        "sha256": "b8a51a133d29940e08ca29f3e8eaa3bfc93db2550a0680b41f8a536230e45d52"
+        "sha256": "edea7001759a6288220817151df3c3300afe244825cf22d2542a78d952e7b31c"
       },
       "mailbox": {
         "file": "astral-mailbox-linux-x86_64",
-        "sha256": "6b04c6bfbd53f4ed952ddc25f715ec733eca25850847273d8dbe9b26d8ae7714"
+        "sha256": "0d6dbfff5e1b8e185c2667d7d43d57556b3f550f9734cdccaa16ad6d5211ac6d"
       }
     }
   }
