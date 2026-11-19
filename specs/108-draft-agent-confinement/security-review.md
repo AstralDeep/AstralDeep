@@ -1,6 +1,7 @@
 # Security review: draft agents that run unconfined
 
-**Date:** 2026-11-18. **Status:** open. The disposition in section 6 waits for the owner.
+**Date:** 2026-11-18. **Status:** ruled. The owner chose the disposition in section 6 on 2026-11-18. The
+review stays open until the fixes land and the exception ends.
 **Tracking:** issue 682.
 
 **Scope.** Model-written agent servers on a personal node. That is a draft the owner is testing, and
@@ -177,8 +178,9 @@ accepted, and two of them reach PHI nodes. They should not wait for a policy ver
 F4 is the exception itself. Only A or B closes it. A is the design the spec already wants, and B is
 the fallback if A slips past its date.
 
-**The owner decides** between A, B and C, the date for A, and whether step 1 may land before that
-decision. Until then this review stays open.
+**The owner ruled on 2026-11-18.** The disposition is the one above: C now, A as the target, and B as
+the default for any node the owner has not opted in. Step 1 and step 2 may land now. The date for A
+is set when the v2 policy is specified. Nothing in this ruling is built yet.
 
 ## 7. Related work
 
