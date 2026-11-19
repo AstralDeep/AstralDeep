@@ -6,6 +6,7 @@ import asyncio
 
 import httpx
 import pytest
+from conftest import needs_bash, needs_procfs
 
 from astralvessel import sandbox
 from astralvessel.manifest import load_package
@@ -57,16 +58,22 @@ async def test_sandbox_tools_run_with_limits(package_dir):
     assert err and "relative" in out
     out, err = await runner.run("list", {"path": "notes"})
     assert out.strip() == "ada-lovelace.md"
-    out, err = await runner.run("bash", {"command": "echo hi && exit 3"})
-    assert err and "hi" in out and "exit code 3" in out
-    out, err = await runner.run("bash", {"command": "sleep 30"})
-    assert err and "timed out" in out
     out, err = await runner.run("echo", {"word": "vessel"})
     assert not err and '"word": "vessel"' in out
     out, err = await runner.run("read", {"path": "missing.md"})
     assert err
 
 
+@needs_bash
+async def test_the_bash_tool_reports_exit_codes_and_timeouts(package_dir):
+    runner = LocalRunner(load_package(package_dir))
+    out, err = await runner.run("bash", {"command": "echo hi && exit 3"})
+    assert err and "hi" in out and "exit code 3" in out
+    out, err = await runner.run("bash", {"command": "sleep 30"})
+    assert err and "timed out" in out
+
+
+@needs_bash
 async def test_bash_does_not_inherit_the_harness_environment(package_dir, monkeypatch):
     monkeypatch.setenv("VESSEL_SECRET_PROBE", "should-not-leak")
     runner = LocalRunner(load_package(package_dir))
@@ -95,6 +102,7 @@ async def test_glob_stops_at_its_time_budget(package_dir):
     assert not err and "stopped after 0 s" in out
 
 
+@needs_procfs
 async def test_reaper_kills_strays_but_spares_running_calls(monkeypatch):
     from astralvessel.tools import ACTIVE_SESSIONS
     stray = await asyncio.create_subprocess_exec("sleep", "30", start_new_session=True)
@@ -116,11 +124,16 @@ async def test_reaper_kills_strays_but_spares_running_calls(monkeypatch):
         await running.wait()
 
 
-async def test_tool_output_and_long_lines_are_bounded(package_dir):
+@needs_bash
+async def test_flooded_output_is_stopped_at_the_byte_budget(package_dir):
     from astralvessel.tools import MAX_OUTPUT_BYTES, run_sandbox_tool
     out, err = await run_sandbox_tool("bash", {"command": "head -c 5000000 /dev/zero | tr '\\0' a"},
                                       workdir=str(package_dir), timeout=20, declared={}, package_root="")
     assert err and "[output stopped" in out and len(out) < MAX_OUTPUT_BYTES + 70_000
+
+
+async def test_read_lines_are_truncated_within_the_budget(package_dir):
+    from astralvessel.tools import run_sandbox_tool
     (package_dir / "long.txt").write_text("a" * 50_000 + "\nsecond\n")
     out, err = await run_sandbox_tool("read", {"path": "long.txt"}, workdir=str(package_dir), timeout=5,
                                       declared={}, package_root="")
@@ -128,9 +141,12 @@ async def test_tool_output_and_long_lines_are_bounded(package_dir):
 
 
 async def test_declared_flag_tools_accept_only_declared_parameters(package_dir):
+    import sys
+
     from astralvessel.manifest import DeclaredTool
     from astralvessel.tools import run_sandbox_tool
-    tool = DeclaredTool(name="say", description="x", command=["echo"], input="args",
+    say = [sys.executable.replace("\\", "/"), "-c", "import sys; print(' '.join(sys.argv[1:]))"]
+    tool = DeclaredTool(name="say", description="x", command=say, input="args",
                         parameters={"type": "object", "properties": {"word": {"type": "string"}}})
     out, err = await run_sandbox_tool("say", {"word": "hi"}, workdir=str(package_dir), timeout=5,
                                       declared={"say": tool}, package_root="")
@@ -149,17 +165,17 @@ async def test_sandbox_server_checks_workspace_keys(package_dir):
     app = sandbox.sandbox_app(str(package_dir), token="t" * 16, confine=False)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://sb") as client:
         auth = {"Authorization": "Bearer " + "t" * 16}
-        bad = await client.post("/run", json={"name": "bash", "args": {"command": "true"}, "workspace": "../x"},
+        bad = await client.post("/run", json={"name": "echo", "args": {"word": "hi"}, "workspace": "../x"},
                                 headers=auth)
         assert bad.status_code == 400
-        good = await client.post("/run", json={"name": "bash", "args": {"command": "true"}, "workspace": "c" * 32},
+        good = await client.post("/run", json={"name": "echo", "args": {"word": "hi"}, "workspace": "c" * 32},
                                  headers=auth)
         assert good.status_code == 200 and not good.json()["error"]
         assert (await client.post("/end", json={"workspace": "c" * 32}, headers=auth)).status_code == 200
         assert (await client.post("/end", json={"workspace": 5}, headers=auth)).status_code == 400
         assert (await client.post("/end", json=["x"], headers=auth)).status_code == 400
         assert (await client.post("/end", json={"workspace": "c" * 32})).status_code == 401
-        late = await client.post("/run", json={"name": "bash", "args": {"command": "true"}, "workspace": "c" * 32},
+        late = await client.post("/run", json={"name": "echo", "args": {"word": "hi"}, "workspace": "c" * 32},
                                  headers=auth)
         assert late.status_code == 410
 
@@ -169,7 +185,7 @@ async def test_ending_a_turn_stops_its_calls_still_running(package_dir):
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://sb") as client:
         auth = {"Authorization": "Bearer " + "t" * 16}
         call = asyncio.create_task(client.post(
-            "/run", json={"name": "bash", "args": {"command": "sleep 30"}, "workspace": "e" * 32}, headers=auth))
+            "/run", json={"name": "slow", "args": {"word": "hi"}, "workspace": "e" * 32}, headers=auth))
         await asyncio.sleep(0.5)
         started = asyncio.get_running_loop().time()
         assert (await client.post("/end", json={"workspace": "e" * 32}, headers=auth)).status_code == 200

@@ -12,10 +12,10 @@ import time
 from pathlib import Path
 
 import pytest
+from conftest import host_platform, needs_node_pack, needs_posix_modes, needs_posix_signals, needs_posix_units
 from test_bundle import make_pack
 from test_deploy import deployment_text
 
-from astralvessel import bundle as bundle_module
 from astralvessel import runtime as rt
 from astralvessel import units
 from astralvessel.bundle import install
@@ -33,7 +33,7 @@ def bundle(tmp_path):
                                                       ("pydantic", "2.14.3"), ("starlette", "1.10.0"),
                                                       ("uvicorn", "0.54.0"), ("fastapi", "0.162.9"))]
     descriptor, digest = make_pack(tmp_path / "src", files=files)
-    installed = install(str(descriptor), digest, tmp_path / "bundles", platform=bundle_module.platform_name())
+    installed = install(str(descriptor), digest, tmp_path / "bundles", platform=host_platform())
     object.__setattr__(installed, "manifest", {**installed.manifest, "installed_distributions": dists})
     return installed
 
@@ -54,6 +54,7 @@ def make(tmp_path, package_dir, bundle, egress=False, **kwargs):
     return runtime, calls
 
 
+@needs_posix_modes
 def test_prepare_copies_code_writes_private_files_and_keeps_secrets(tmp_path, package_dir, bundle):
     runtime, _ = make(tmp_path, package_dir, bundle)
     runtime.prepare(MASTER)
@@ -85,7 +86,7 @@ def test_the_process_environment_is_host_paths_on_loopback(tmp_path, package_dir
     assert node["ASTRAL_VESSEL_EXECUTOR_URL"] == "http://127.0.0.1:8700"
     assert executor["VESSEL_HOST"] == sandbox["VESSEL_HOST"] == "127.0.0.1"
     assert json.loads(executor["VESSEL_SANDBOX_PORTS"]) == {"guide": 8710}
-    assert sandbox["VESSEL_PORT"] == "8710" and sandbox["VESSEL_RG_BIN"].endswith("bin/rg")
+    assert sandbox["VESSEL_PORT"] == "8710" and sandbox["VESSEL_RG_BIN"].replace("\\", "/").endswith("bin/rg")
 
 
 def test_ports_are_stable_across_prepare(tmp_path, package_dir, bundle):
@@ -142,6 +143,7 @@ def test_a_pack_without_astral_exec_is_refused(tmp_path, package_dir, bundle):
         runtime.prepare(MASTER)
 
 
+@needs_posix_units
 def test_golden_systemd_unit_for_a_sandbox_sets_limits_and_holds_no_secret(tmp_path, package_dir, bundle):
     runtime, _ = make(tmp_path, package_dir, bundle)
     runtime.prepare(MASTER)
@@ -175,6 +177,7 @@ WantedBy=default.target
     assert "MemoryMax" not in units.systemd_unit("dep", runtime.spec("node"))
 
 
+@needs_posix_units
 def test_golden_launchd_plist(tmp_path, package_dir, bundle):
     runtime, _ = make(tmp_path, package_dir, bundle)
     runtime.prepare(MASTER)
@@ -208,6 +211,7 @@ def test_launchd_calls_are_recorded(tmp_path, package_dir, bundle):
     assert calls[0][2].endswith(".executor")
 
 
+@needs_posix_units
 def test_systemd_calls_and_the_linger_note_never_sudo(tmp_path, package_dir, bundle):
     notes = []
     runtime, calls = make(tmp_path, package_dir, bundle, platform="linux", out=notes.append)
@@ -245,6 +249,7 @@ def alive(pid):
     return True
 
 
+@needs_posix_signals
 def test_the_foreground_supervisor_restarts_a_crashed_child_and_leaves_none(tmp_path):
     marker = tmp_path / "pids"
     crash = f"import os;open({str(marker)!r},'a').write(str(os.getpid())+'\\n');import sys;sys.exit(3)"
@@ -269,6 +274,7 @@ def test_the_foreground_supervisor_restarts_a_crashed_child_and_leaves_none(tmp_
     assert not any(alive(p) for p in pids) and supervisor.children == {}
 
 
+@needs_posix_signals
 def test_stop_kills_a_child_that_ignores_term(tmp_path):
     stubborn = ("import signal,time;signal.signal(signal.SIGTERM,signal.SIG_IGN);print('up',flush=True);"
                 "time.sleep(60)")
@@ -294,6 +300,7 @@ def test_children_get_an_explicit_environment(tmp_path, monkeypatch):
     assert "VESSEL_SANDBOX_TOKEN" not in env and env["HOME"] == str(tmp_path)
 
 
+@needs_node_pack
 def test_runtime_foreground_start_and_stop(tmp_path, package_dir, bundle):
     runtime, calls = make(tmp_path, package_dir, bundle)
     runtime.prepare(MASTER)

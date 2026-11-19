@@ -9,6 +9,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from conftest import needs_posix_modes
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "install_kernel.py"
 spec = importlib.util.spec_from_file_location("install_kernel", SCRIPT)
@@ -67,6 +68,7 @@ def test_verify_requires_both_matching_artifacts(artifacts):
         installer.verify(directory, "linux-x86_64", manifest)
 
 
+@needs_posix_modes
 def test_install_installs_wheel_imports_binding_and_copies_mailbox(artifacts, tmp_path, monkeypatch):
     directory, manifest = artifacts
     calls = []

@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 
 import pytest
+from conftest import needs_host_backend
 
 from astralvessel import conformance
 from astralvessel.probes import Report
@@ -30,6 +31,7 @@ def test_every_container_probe_maps_to_a_case_a_test_or_a_documented_weaker_line
     assert set(conformance.PROBE_MAP) <= names
 
 
+@needs_host_backend
 def test_mapped_cases_exist_and_mapped_tests_are_real():
     cases = case_names()
     for name, (kind, detail) in conformance.PROBE_MAP.items():
