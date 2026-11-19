@@ -14,6 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
+from conftest import needs_host_backend
 from test_bundle import make_pack
 from test_deploy import deployment_text
 
@@ -140,6 +141,7 @@ class FakeRuntime(rt.Runtime):
         return {role: True for role in self.roles}
 
 
+@needs_host_backend
 def test_up_foreground_in_an_empty_folder_makes_no_docker_call_and_checks_in_order(tmp_path, pack, docker,
                                                                                    monkeypatch, capsys):
     patch_pack_dists(monkeypatch)
@@ -173,6 +175,7 @@ def test_up_foreground_in_an_empty_folder_makes_no_docker_call_and_checks_in_ord
     assert "ready: node at" in capsys.readouterr().out
 
 
+@needs_host_backend
 def test_up_with_an_agent_waits_for_every_sandbox_and_the_executor(tmp_path, pack, docker, monkeypatch, package_dir):
     patch_pack_dists(monkeypatch)
     folder = tmp_path / "dep"
@@ -197,6 +200,7 @@ def test_up_with_an_agent_waits_for_every_sandbox_and_the_executor(tmp_path, pac
     assert seen == [1] and not docker.exists()
 
 
+@needs_host_backend
 def test_up_names_a_role_that_never_became_ready(tmp_path, pack, docker, monkeypatch, capsys):
     patch_pack_dists(monkeypatch)
     folder = tmp_path / "work"
@@ -212,6 +216,7 @@ def test_up_names_a_role_that_never_became_ready(tmp_path, pack, docker, monkeyp
     assert "not ready after" in capsys.readouterr().out and FakeRuntime.stopped == [True]
 
 
+@needs_host_backend
 def test_no_pack_gives_a_pointed_error(tmp_path, docker, monkeypatch):
     folder = tmp_path / "work"
     folder.mkdir()
@@ -241,6 +246,7 @@ def process_folder(tmp_path):
     return folder
 
 
+@needs_host_backend
 def test_check_and_down_make_no_docker_call_and_down_keeps_data(tmp_path, pack, docker, monkeypatch):
     patch_pack_dists(monkeypatch)
     folder = process_folder(tmp_path)
@@ -266,6 +272,7 @@ def test_down_volumes_deletes_only_the_node_data(tmp_path, docker):
     assert (folder / ".generated" / "node.env").exists() and not docker.exists()
 
 
+@needs_host_backend
 def test_down_stops_installed_units_and_a_supervisor_by_its_pid_file(tmp_path, docker, monkeypatch):
     folder = process_folder(tmp_path)
     child = subprocess.Popen(["sleep", "30"], start_new_session=True)
@@ -315,6 +322,7 @@ def test_up_refuses_container_data_and_writes_nothing(tmp_path):
     assert {str(p.relative_to(folder)): p.read_bytes() for p in folder.rglob("*") if p.is_file()} == before
 
 
+@needs_host_backend
 def test_the_data_checks_read_host_paths(tmp_path, monkeypatch, capsys):
     folder = process_folder(tmp_path)
     deployment = operate.load(folder / "deployment.toml")

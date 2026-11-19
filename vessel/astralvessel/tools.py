@@ -197,12 +197,21 @@ async def _supervise(argv: list[str], *, cwd: str, env: dict[str, str], timeout:
         out = await asyncio.wait_for(_collect(proc, stdin), timeout=timeout)
     except (TimeoutError, asyncio.CancelledError) as exc:
         if graceful:
-            with contextlib.suppress(ProcessLookupError):
-                os.killpg(proc.pid, 15)
-            with contextlib.suppress(TimeoutError, asyncio.CancelledError):
-                await asyncio.wait_for(asyncio.shield(proc.wait()), 3)
+            if hasattr(os, "killpg"):
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(proc.pid, 15)
+                with contextlib.suppress(TimeoutError, asyncio.CancelledError):
+                    await asyncio.wait_for(asyncio.shield(proc.wait()), 3)
+            else:
+                with contextlib.suppress(ProcessLookupError):
+                    proc.terminate()
+                with contextlib.suppress(TimeoutError, asyncio.CancelledError):
+                    await asyncio.wait_for(asyncio.shield(proc.wait()), 3)
         try:
-            os.killpg(proc.pid, 9)
+            if hasattr(os, "killpg"):
+                os.killpg(proc.pid, 9)
+            else:
+                proc.kill()
         except ProcessLookupError:
             pass
         await proc.wait()
@@ -243,8 +252,12 @@ async def _collect(proc: asyncio.subprocess.Process, stdin: bytes | None) -> byt
         chunks.append(chunk)
         size += len(chunk)
         if size > MAX_OUTPUT_BYTES:
-            with contextlib.suppress(ProcessLookupError):
-                os.killpg(proc.pid, 9)
+            if hasattr(os, "killpg"):
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(proc.pid, 9)
+            else:
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
             chunks.append(b"\n[output stopped at %d bytes]" % MAX_OUTPUT_BYTES)
             break
     await proc.wait()
@@ -259,9 +272,17 @@ def fd_path(fd: int) -> str:
     return os.readlink(f"/proc/self/fd/{fd}")
 
 
-def _open_checked(path: Path, confinement: Confinement | None, *, directory: bool = False) -> int:
+def _open_checked(path: Path, confinement: Confinement | None, *, directory: bool = False) -> int | Path:
     # Open first, then check where the descriptor really points: a call can swap links in its workspace
     # between a path check and the open, and these tools run in the unconfined server.
+    # Windows has no descriptor-relative API, so the resolved path is checked and returned instead.
+    if sys.platform.startswith("win32"):
+        real = path.resolve(strict=True)
+        if confinement is not None and not confinement.allows(real):
+            raise PermissionError(errno.EACCES, "outside the agent's data")
+        if not directory and not real.is_file():
+            raise IsADirectoryError(errno.EISDIR, "not a regular file")
+        return real
     fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | (os.O_DIRECTORY if directory else 0))
     try:
         real = fd_path(fd)
@@ -322,11 +343,13 @@ async def _grep(args: dict[str, Any], workdir: str, timeout: int,
         if args.get("glob"):
             argv += ["--glob", str(args["glob"])]
         argv += ["--", str(args["pattern"]), target]
-    else:
+    elif shutil.which("grep"):
         argv = ["grep", "-rnE"] + (["-i"] if args.get("ignore_case") else [])
         if args.get("glob"):
             argv.append(f"--include={args['glob']}")
         argv += ["--", str(args["pattern"]), target]
+    else:
+        return await _python_grep(args, target, cap, confinement)
     code, out = await _proc(argv, cwd=workdir, timeout=timeout, confinement=confinement)
     if code == 1 and not out.strip():
         return "no matches", False
@@ -365,7 +388,7 @@ async def _python_grep(args: dict[str, Any], target: str, cap: int,
                 continue
             try:
                 fd = _open_checked(path, confinement)  # checks where the opened descriptor really points
-                with os.fdopen(fd, encoding="utf-8", errors="replace") as handle:
+                with open(fd, encoding="utf-8", errors="replace") as handle:
                     for number, line in enumerate(handle, 1):
                         if pattern.search(line[:MAX_LINE_CHARS]):
                             found.append(f"{path}:{number}:{line.rstrip()[:400]}")
@@ -399,10 +422,13 @@ async def _glob(args: dict[str, Any], workdir: str, timeout: int,
         fd = _open_checked(base, confinement, directory=True)
         try:
             # Walk through the opened descriptor, so swapping a folder for a link mid-walk changes nothing.
-            root = Path(f"/proc/self/fd/{fd}") if sys.platform.startswith("linux") else Path(fd_path(fd))
+            if isinstance(fd, int):
+                root = Path(f"/proc/self/fd/{fd}") if sys.platform.startswith("linux") else Path(fd_path(fd))
+            else:
+                root = fd  # Windows: the confinement check still filters each entry against the real root
             # A bare name pattern such as "*.md" searches the whole tree.
             for match in root.rglob(pattern) if "/" not in pattern else root.glob(pattern):
-                if time.monotonic() > deadline:
+                if time.monotonic() >= deadline:
                     return found, True
                 if confinement is not None and not confinement.allows(match):
                     continue  # a symlink pointing outside the agent's data
@@ -410,7 +436,8 @@ async def _glob(args: dict[str, Any], workdir: str, timeout: int,
                 if len(found) > cap:
                     break
         finally:
-            os.close(fd)
+            if isinstance(fd, int):
+                os.close(fd)
         return found, False
 
     found, timed_out = await asyncio.to_thread(walk)
@@ -430,7 +457,8 @@ async def _list(args: dict[str, Any], workdir: str, confinement: Confinement | N
             entries = sorted(((e.name, e.is_dir(follow_symlinks=False)) for e in scan),
                              key=lambda e: (not e[1], e[0]))
     finally:
-        os.close(fd)
+        if isinstance(fd, int):
+            os.close(fd)
     shown = [name + ("/" if is_dir else "") for name, is_dir in entries[:500]]
     more = f"\n[{len(entries) - 500} more entries]" if len(entries) > 500 else ""
     return "\n".join(shown) + more or "[empty directory]", False
@@ -520,7 +548,8 @@ FLAT_DEPTH = 8
 
 def _open_up(path: str) -> None:
     if not sys.platform.startswith("linux"):
-        with contextlib.suppress(OSError):
+        # Windows cannot chmod with follow_symlinks=False; its folders are not mode-shut anyway.
+        with contextlib.suppress(OSError, NotImplementedError):
             mode = os.lstat(path).st_mode
             if stat.S_ISDIR(mode) and mode & 0o700 != 0o700:
                 os.chmod(path, stat.S_IMODE(mode) | 0o700, follow_symlinks=False)
@@ -564,7 +593,8 @@ def disk_usage(path: str, limit: int = 0) -> int:
                 continue
             except OSError:
                 return max(total, limit) + 1  # a name too long to reach, or a folder shut mid-walk
-            total += info.st_blocks * 512 + ENTRY_BYTES
+            # Windows stat has no st_blocks; the allocated size is approximated from the file size.
+            total += getattr(info, "st_blocks", (info.st_size + 511) // 512) * 512 + ENTRY_BYTES
             if stat.S_ISDIR(info.st_mode):
                 if depth + 1 > MAX_DEPTH:
                     return max(total, limit) + 1

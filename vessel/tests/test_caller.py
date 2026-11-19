@@ -11,6 +11,7 @@ import stat
 from pathlib import Path
 
 import pytest
+from conftest import needs_posix_modes, needs_symlink
 from cryptography.hazmat.primitives.asymmetric import ed25519
 
 from astralvessel import caller as callers
@@ -79,6 +80,7 @@ def test_a_proof_is_signed_by_the_holder_and_fresh_each_time():
     assert first != second
 
 
+@needs_posix_modes
 def test_the_key_command_makes_a_private_file_and_prints_only_the_public_holder_form(tmp_path, capsys):
     holder = callers.create_key(tmp_path)
     path = tmp_path / callers.KEY_FILE
@@ -99,6 +101,7 @@ def test_the_key_command_makes_a_private_file_and_prints_only_the_public_holder_
     assert "holder  astral-caller-holder:v1:" in out and callers.KEY_TEXT not in out
 
 
+@needs_posix_modes
 def test_a_key_file_open_to_group_or_others_is_refused(tmp_path):
     callers.create_key(tmp_path)
     path = tmp_path / callers.KEY_FILE
@@ -110,6 +113,7 @@ def test_a_key_file_open_to_group_or_others_is_refused(tmp_path):
     assert callers.read_key(tmp_path).startswith(callers.KEY_TEXT)
 
 
+@needs_symlink
 def test_a_missing_or_linked_key_and_a_missing_ticket_give_pointed_errors(tmp_path, monkeypatch):
     with pytest.raises(callers.CallerError, match="run astralvessel caller key"):
         callers.read_key(tmp_path)
@@ -128,6 +132,7 @@ def test_a_missing_or_linked_key_and_a_missing_ticket_give_pointed_errors(tmp_pa
         callers.read_ticket(str(tmp_path))
 
 
+@needs_posix_modes
 def test_the_ticket_comes_from_the_option_or_the_file_the_variable_names(tmp_path, monkeypatch):
     (tmp_path / callers.KEY_FILE).write_text(KEY)
     (tmp_path / callers.KEY_FILE).chmod(0o600)
@@ -230,6 +235,7 @@ def test_a_ticket_over_the_contracts_header_limit_is_refused_before_sending():
     assert len(edge) < callers.MAX_HEADER and callers.Caller(edge, KEY).ticket_id == "t"
 
 
+@needs_symlink
 def test_a_key_file_swapped_for_a_link_after_creation_is_refused_without_following_it(tmp_path):
     secret = tmp_path / "elsewhere"
     secret.write_text(KEY)

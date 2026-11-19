@@ -173,7 +173,7 @@ class Runtime:
     unit_dir: Path | None = None
     out: Callable[[str], None] = print
     user: str = field(default_factory=lambda: getpass.getuser())
-    uid: int = field(default_factory=os.getuid)
+    uid: int = field(default_factory=lambda: os.getuid() if hasattr(os, "getuid") else 0)
     supervisor: units.Supervisor | None = None
 
     def __post_init__(self) -> None:

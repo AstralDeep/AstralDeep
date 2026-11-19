@@ -8,6 +8,7 @@ import stat
 from types import SimpleNamespace
 
 import pytest
+from conftest import needs_posix_modes
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
@@ -117,6 +118,8 @@ async def test_without_a_binding_every_ticket_is_refused(tmp_path):
     await verifier.stop()
 
 
+@needs_posix_modes
+@needs_posix_modes
 async def test_the_executor_waits_for_the_nodes_mailbox_and_then_offers_pairing(tmp_path):
     verifier = await opened(tmp_path, None, None, "MAILBOX")
     assert await verifier.state() == "waiting_for_node"
@@ -145,6 +148,8 @@ async def test_the_executor_waits_for_the_nodes_mailbox_and_then_offers_pairing(
     assert not kernel.network
 
 
+@needs_posix_modes
+@needs_posix_modes
 async def test_a_loopback_executor_opens_at_once_without_a_mailbox_and_stays_on_loopback(tmp_path):
     verifier = await opened(tmp_path, None, loopback=True)
     await until(lambda: _is(verifier, "not_enrolled"))
@@ -157,6 +162,8 @@ async def _is(verifier, state):
     return await verifier.state() == state
 
 
+@needs_posix_modes
+@needs_posix_modes
 async def test_an_enrolled_executor_verifies_and_maps_kernel_refusals(tmp_path):
     verifier = await opened(tmp_path, "MAILBOX")
 
@@ -184,6 +191,8 @@ async def test_an_enrolled_executor_verifies_and_maps_kernel_refusals(tmp_path):
     await verifier.stop()
 
 
+@needs_posix_modes
+@needs_posix_modes
 async def test_the_keys_made_for_the_kernel_are_private_and_kept(tmp_path):
     verifier = await opened(tmp_path, "MAILBOX")
 
@@ -206,6 +215,8 @@ async def test_the_keys_made_for_the_kernel_are_private_and_kept(tmp_path):
     await again.stop()
 
 
+@needs_posix_modes
+@needs_posix_modes
 async def test_the_signer_signs_for_the_kernel_but_never_for_an_owners_consent(tmp_path):
     verifier = await opened(tmp_path, "MAILBOX")
 
@@ -229,6 +240,7 @@ async def test_the_signer_signs_for_the_kernel_but_never_for_an_owners_consent(t
     await verifier.stop()
 
 
+@needs_posix_modes
 def test_a_key_file_with_loose_modes_or_bad_content_is_refused(tmp_path):
     def load():
         return keys.ExecutorKeys.load_or_create(tmp_path, new_secret=lambda: os.urandom(32))
@@ -254,6 +266,7 @@ def test_a_key_file_with_loose_modes_or_bad_content_is_refused(tmp_path):
         load()
 
 
+@needs_posix_modes
 def test_a_loose_directory_is_tightened_and_a_failed_write_leaves_no_half_file(tmp_path):
     tmp_path.chmod(0o755)
     keys.ExecutorKeys.load_or_create(tmp_path, new_secret=lambda: os.urandom(32))

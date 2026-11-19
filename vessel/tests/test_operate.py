@@ -13,6 +13,7 @@ import tomllib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
+from conftest import needs_posix_modes
 
 from astralvessel import operate
 from astralvessel.deployment import load_deployment
@@ -50,10 +51,12 @@ def test_a_key_on_the_command_line_is_refused_and_env_names_must_be_set(monkeypa
                        interactive=False)
     with pytest.raises(SystemExit, match="http"):
         operate.gather(options(upstream_url="ftp://nope"), interactive=False)
+    monkeypatch.setenv("MY_PROVIDER_KEY", "sk-from-env")
     with pytest.raises(SystemExit, match="upstream-url"):
-        operate.gather(options(api_key="env:HOME"), interactive=False)
+        operate.gather(options(api_key="env:MY_PROVIDER_KEY"), interactive=False)
 
 
+@needs_posix_modes
 def test_flags_write_a_deployment_that_loads(tmp_path, monkeypatch):
     monkeypatch.setenv("MY_PROVIDER_KEY", "sk-from-env")
     answers = operate.gather(options(example=True, image="registry.test/node:7", port=9001, upstream_url="https://m.test/v1",
@@ -219,6 +222,7 @@ def test_mount_folders_are_expanded_and_must_exist(package_dir, tmp_path, monkey
     (package_dir / "vessel.toml").write_text((package_dir / "vessel.toml").read_text().replace(
         "[sandbox]", '[sandbox]\nmounts = [{ source = "notes", target = "/notes" }]'))
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     (tmp_path / "notes").mkdir()
     base = {"agent": [str(package_dir)]}
     got = operate.gather(options(**base, mount=["agent:/notes=~/notes"]), interactive=False)
@@ -258,8 +262,11 @@ def test_a_key_with_shell_characters_survives_the_env_file(tmp_path, monkeypatch
     operate.write_deployment(tmp_path, answers, example=False)
     monkeypatch.delenv("VESSEL_UPSTREAM_MODEL_KEY", raising=False)
     load_env_file(tmp_path / ".env")
-    assert operate.os.environ["VESSEL_UPSTREAM_MODEL_KEY"] == "ab$cd#x y"
-    assert operate._check_key("it's") and operate._check_key("a\nb")
+    try:
+        assert operate.os.environ["VESSEL_UPSTREAM_MODEL_KEY"] == "ab$cd#x y"
+        assert operate._check_key("it's") and operate._check_key("a\nb")
+    finally:
+        operate.os.environ.pop("VESSEL_UPSTREAM_MODEL_KEY", None)  # load_env_file writes the real environment
 
 
 def test_a_failed_write_leaves_nothing_behind(tmp_path, monkeypatch):
