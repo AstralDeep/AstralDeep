@@ -59,6 +59,7 @@ RUN pip install --no-cache-dir -r backend/requirements.txt -r backend/requiremen
 
 COPY --from=component-builder /build/pyproject.toml /build/.gitmodules ./
 COPY --from=component-builder /build/config/astral-composition.json ./config/astral-composition.json
+COPY config/astral-assembly.json ./config/astral-assembly.json
 COPY config/documents/ ./config/documents/
 COPY --from=component-builder /build/scripts/install_local_components.py ./scripts/install_local_components.py
 COPY --from=component-builder /component-wheels/ /opt/astral-component-wheels/

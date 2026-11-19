@@ -35,8 +35,6 @@ PUBLIC = {
     ("GET", "/openapi.json"): "a redirect to the API schema",
     ("GET", "/healthz"): "liveness",
     ("GET", "/readyz"): "readiness",
-    ("MOUNT", "/static"): "static shell assets",
-    ("GET", "/"): "the browser shell, which reads no credential and carries no session data",
     ("GET", "/api/node/agent-servers"): "a loopback-only answer that reads no bearer",
     ("GET", "/api/node/descriptor"): "the node descriptor",
     ("GET", "/.well-known/astral-node/jwks.json"): "the node's public keys",
@@ -116,6 +114,12 @@ def test_every_served_route_refuses_a_bearer_or_is_named(app):
     assert {path for _, path in seen} >= FLAG_GATED | {"/api/node/mesh/offer", "/ws", *OPERATOR_PATHS}
     assert set(PUBLIC) | set(IN_BAND) | set(PERSONAL_REFUSED) <= seen
     assert len(seen) > 230
+
+
+def test_the_node_hosts_no_browser_shell_or_static_assets(app):
+    seen = census(app)[1]
+    assert ("GET", "/") not in seen and ("MOUNT", "/static") not in seen
+    assert not any(path == "/" or path.startswith("/static") for _, path in seen)
 
 
 def test_the_owner_token_pairing_routes_are_gone(app):

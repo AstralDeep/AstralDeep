@@ -24,6 +24,7 @@ CAPABILITIES = (
     "delegation-eddsa",
     "emergency-stop",
 )
+MESH_CAPABILITIES = ("mesh-peer", "mesh-mailbox")
 PAIRING_SECRET_HEADER = "astral-pairing-secret"
 NO_STORE = {"Cache-Control": "no-store"}
 

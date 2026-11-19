@@ -29,8 +29,7 @@ import websockets
 import websockets.exceptions
 import aiohttp
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
-from fastapi.staticfiles import StaticFiles
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
@@ -757,10 +756,6 @@ _MERGED_COLLIDING_VERBS = frozenset({
 })
 
 
-_ASSET_VERSION_CACHE: Dict[str, str] = {}
-_ASSET_VERSION_MAP_CACHE: Dict[str, Dict[str, str]] = {}
-_ASSET_TOKEN_RE = re.compile(r"%%ASTRAL_V:([^%]+)%%")
-
 _NARRATIVE_STREAM_CHAT: contextvars.ContextVar = contextvars.ContextVar(
     "narrative_stream_chat", default=None)
 _NARRATIVE_STREAMED: contextvars.ContextVar = contextvars.ContextVar(
@@ -824,113 +819,6 @@ def _audit_computer_announce_refused(owner_sub: str, payload: dict, detail: str)
     except Exception:  # noqa: BLE001
         logger.debug("076: announce refusal audit failed", exc_info=True)
 
-
-def _static_asset_version(static_dir: str) -> str:
-    cached = _ASSET_VERSION_CACHE.get(static_dir)
-    if cached:
-        return cached
-    import hashlib
-    import os as _o
-    h = hashlib.sha1()
-    for name in ("client.js", "astral.css"):
-        try:
-            with open(_o.path.join(static_dir, name), "rb") as fh:
-                h.update(fh.read())
-        except OSError:
-            pass
-    ver = h.hexdigest()[:12] or "dev"
-    _ASSET_VERSION_CACHE[static_dir] = ver
-    return ver
-
-
-def _static_version_map(static_dir: str) -> Dict[str, str]:
-    cached = _ASSET_VERSION_MAP_CACHE.get(static_dir)
-    if cached is not None:
-        return cached
-    import hashlib
-    import os as _o
-    versions: Dict[str, str] = {}
-    with perf_span("static.version_map"):
-        for root, _dirs, files in _o.walk(static_dir):
-            for name in files:
-                full = _o.path.join(root, name)
-                rel = _o.path.relpath(full, static_dir).replace(_o.sep, "/")
-                try:
-                    h = hashlib.sha1()
-                    with open(full, "rb") as fh:
-                        for block in iter(lambda: fh.read(1 << 20), b""):
-                            h.update(block)
-                    versions[rel] = h.hexdigest()[:12]
-                except OSError:
-                    continue
-    _ASSET_VERSION_MAP_CACHE[static_dir] = versions
-    return versions
-
-
-def _apply_asset_versions(shell: str, static_dir: str) -> str:
-    versions = _static_version_map(static_dir)
-    return _ASSET_TOKEN_RE.sub(lambda m: versions.get(m.group(1), "dev"), shell)
-
-
-def _projection_static_filesystem_root() -> str:
-    import os as _o
-    from pathlib import Path as _Path
-
-    from astralprojection import static_root
-
-    resource = static_root()
-    try:
-        candidate = _Path(_o.fspath(resource)).resolve(strict=True)
-    except (OSError, TypeError, ValueError):
-        raise RuntimeError(
-            "AstralProjection static resources are not filesystem-backed"
-        ) from None
-    if not candidate.is_dir():
-        raise RuntimeError("AstralProjection static resource root is unavailable")
-    return str(candidate)
-
-
-def csp_connect_src() -> str:
-    raw = (os.getenv("LIVEKIT_PUBLIC_URL", "") or "").strip()
-    if not raw:
-        return "'self'"
-    try:
-        from urllib.parse import urlsplit
-        parts = urlsplit(raw)
-    except Exception:
-        return "'self'"
-    if parts.scheme not in ("ws", "wss", "http", "https") or not parts.netloc:
-        return "'self'"
-    return f"'self' {parts.scheme}://{parts.netloc}"
-
-
-class _NoCacheStaticFiles(StaticFiles):
-    async def get_response(self, path, scope):
-        response = await super().get_response(path, scope)
-        cache_control = "no-cache"
-        try:
-            from urllib.parse import parse_qs
-            query = (scope.get("query_string") or b"").decode("latin-1")
-            requested = (parse_qs(query).get("v") or [None])[0]
-            if requested:
-                rel = str(path).replace("\\", "/").lstrip("/")
-                current = _static_version_map(str(self.directory)).get(rel)
-                if current and requested == current:
-                    cache_control = "public, max-age=31536000, immutable"
-        except Exception:
-            cache_control = "no-cache"
-        try:
-            response.headers["Cache-Control"] = cache_control
-        except Exception:
-            pass
-        if path == "fonts/open-sans-latin.woff2":
-            response.headers["Content-Type"] = "font/woff2"
-        if path == "service-worker.js" and response.status_code in (200, 304):
-            response.headers["Service-Worker-Allowed"] = "/"
-            response.headers["Cache-Control"] = "no-cache"
-            response.headers["Content-Security-Policy"] = "default-src 'none'; connect-src 'self'"
-            response.headers["X-Content-Type-Options"] = "nosniff"
-        return response
 
 TOOL_TIMEOUT_OVERRIDES = {
     "sandbox_qualification_scratch_write": 180.0,
@@ -25992,83 +25880,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         @app.websocket("/ws")
         async def websocket_endpoint(websocket: WebSocket):
             await self.handle_ui_connection_fastapi(websocket)
-
-        import secrets as _secrets
-        from astralprojection import template_path as _projection_template_path
-        from fastapi.responses import HTMLResponse as _HTMLResponse
-        _projection_static_dir = _projection_static_filesystem_root()
-        _shell_resource = _projection_template_path("shell.html")
-
-        @app.get("/", response_class=_HTMLResponse)
-        async def serve_shell(request: Request):
-            try:
-                shell = _shell_resource.read_text(encoding="utf-8")
-                from webrender.chrome.console_model import render_console_labels
-                shell = render_console_labels(shell)
-            except Exception:
-                logger.exception("astralprojection: shell template missing")
-                return _HTMLResponse("<h1>AstralDeep</h1><p>UI shell unavailable.</p>", status_code=500)
-            topbar = ""
-            try:
-                from orchestrator.chrome_availability import projection_chrome_availability
-                from webrender.chrome import render_topbar
-                topbar = render_topbar(
-                    roles=[],
-                    **projection_chrome_availability(self),
-                )
-            except Exception:
-                logger.exception("chrome: topbar render failed — serving bare shell")
-            shell = shell.replace("%%ASTRAL_TOKEN%%", "")
-            from html import escape as _html_escape
-            identity = {"name": "Guest", "role": "Guest", "initials": "A"}
-            for placeholder, key in (
-                ("%%ASTRAL_USER_NAME%%", "name"),
-                ("%%ASTRAL_USER_ROLE%%", "role"),
-                ("%%ASTRAL_USER_INITIALS%%", "initials"),
-            ):
-                shell = shell.replace(placeholder, _html_escape(str(identity.get(key, ""))))
-
-            resumed_flag = "false"
-            shell = shell.replace("%%ASTRAL_RESUMED%%", resumed_flag)
-            accept_attr = ""
-            try:
-                from orchestrator.attachments.content_type import ACCEPTED_EXTENSIONS
-                accept_attr = ",".join("." + e for e in sorted(ACCEPTED_EXTENSIONS))
-            except Exception:
-                logger.debug("attachment accept-list injection failed", exc_info=True)
-            shell = shell.replace("%%ASTRAL_ACCEPT%%", accept_attr)
-            landing_json = '{"scenarios":[],"categories":[],"agents":[]}'
-            shell = shell.replace("%%ASTRAL_LANDING%%", landing_json)
-
-            shell = _apply_asset_versions(shell, _projection_static_dir)
-            nonce = _secrets.token_urlsafe(16)
-            shell = shell.replace("%%ASTRAL_NONCE%%", nonce)
-            connect_src = csp_connect_src()
-            resp = _HTMLResponse(shell.replace("%%ASTRAL_TOPBAR%%", topbar))
-            resp.headers["Cache-Control"] = "no-store"
-            resp.headers["Content-Security-Policy"] = (
-                "default-src 'self'; "
-                f"script-src 'self' 'nonce-{nonce}'; "
-                "style-src 'self' 'unsafe-inline'; "
-                "img-src 'self' data: blob: https:; "
-                "media-src 'self' data: blob: https:; "
-                f"connect-src {connect_src}; "
-                "font-src 'self'; "
-                "object-src 'none'; "
-                "base-uri 'none'; "
-                "frame-ancestors 'none'; "
-                "form-action 'self'"
-            )
-            resp.headers["X-Content-Type-Options"] = "nosniff"
-            resp.headers["Referrer-Policy"] = "no-referrer"
-            resp.headers["Permissions-Policy"] = "camera=(), geolocation=()"
-            return resp
-
-        app.mount(
-            "/static",
-            _NoCacheStaticFiles(directory=_projection_static_dir),
-            name="static",
-        )
 
         from orchestrator.api import chat_router, component_router, agent_router, dashboard_router, draft_router, voice_router, task_router, async_task_router, user_router, chrome_router, export_router, share_router, operation_router
         from orchestrator.auth import auth_router
