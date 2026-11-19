@@ -146,15 +146,16 @@ change lands in two steps.
    capability statements. It keeps writing the old form. It writes its own capability statement only
    once it also carries the activation code of Phase 3, so no released kernel announces early.
    This timing is proposed by the spec and awaits the owner.
-2. **Activate.** When every member of the personal group has announced, the mesh activates the split
-   format. From then on every member writes it, and limited history is allowed. Activation never
+2. **Activate.** When every member of the personal group has announced, an updated device writes
+   the activation statement with owner presence (spec section 7.3). From then on every member writes it, and limited history is allowed. Activation never
    reverts. A device that cannot announce the capability is refused at pairing.
 
 Until activation, pairing keeps refusing limited history. The refusal names the devices that still
 need an update.
 
-A device that never updates stops reading new events after activation. It keeps what it had and
-holds the new envelopes aside until it updates. Phase 0 proves this on a real 2.1.0 build.
+A device that never updates blocks activation until the owner updates or removes it. A member that
+goes back to an old build after activation stops reading new events. It keeps what it had and holds
+the new envelopes aside until it updates. Phase 0 proves this on a real 2.1.0 build.
 
 ### 3.8 Epochs that began before activation
 
@@ -259,8 +260,9 @@ device with limited history *(live)*.
 
 ### Phase 5: mixed-version qualification and release
 
-A recorded run with one 2.1.0 device and two updated devices: before activation, at activation, and
-after the old device updates *(live)*.
+A recorded run with one 2.1.0 device and two updated devices: while the old device blocks activation
+and is named, after it updates and announces, and after activation. Then one device goes back to
+the 2.1.0 build and holds new envelopes aside *(live)*.
 
 Then the Kernel release, the Deep pin and the apps, in that order.
 

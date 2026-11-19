@@ -20,7 +20,7 @@ Three Kernel versions matter for mixed meshes.
 
 | Name here | Kernel | How it is known |
 |---|---|---|
-| Pre-106 | `c2c1cc4` | 106 `phi-destinations.md` section 10 names it for Mac 97 and iPhone 99 |
+| Pre-106 | `c2c1cc4` | Inferred from 106 `phi-destinations.md` section 10, whose rows name `c2c1cc4` and the Mac 97 and iPhone 99 devices |
 | 2.1.0 | `eb9821f4` | Inferred from Deep's Kernel gitlink at `350759eb`, the merge that completed spec 106. The release tag was not checked |
 | Updated | A Kernel with this spec's work | |
 
@@ -336,6 +336,8 @@ The plan does not name these, so this spec does not either. Each is fixed in its
   statement bound to an `add` entry cannot be signed before that entry exists.
 - The causal order that decides whether an `add` precedes the activation statement.
 - The exact position rule of R13.
+- What happens to wraps already written for an `add` the fold declines to seat, since that device
+  would hold current epoch secrets without being a member.
 - The reasons carried by `pairing.history_unavailable`, and how the blocking devices travel with it.
 - The code for a pairing request from a device that cannot announce the capability.
 
@@ -434,9 +436,12 @@ the first draft. They are delegated decisions and stand until the owner rules ot
    format, so a member key alone must not be able to write it.
 2. **Seating after activation is a fold rule (R12).** A local pairing refusal does not stop another
    member or the recovery key from adding an old build.
-3. **The cited roster covers every preceding member (R11).** A statement citing a stale roster could
-   activate while a member that cannot read the split form is seated. Concurrent `add` entries are
-   handled by R12 so that a late arrival never undoes an activation, which never reverts.
+3. **The cited roster covers its members (R11).** The decision was that the cited roster must cover
+   every member that precedes or is concurrent with the statement. A statement citing a stale roster
+   could activate while a member that cannot read the split form is seated. This spec narrows it,
+   pending the coordinating session's confirmation: coverage counts preceding members, and
+   concurrent `add` entries go through R12. A statement cannot cite an `add` it has not seen, and a
+   late concurrent arrival must never undo an activation, which never reverts.
 4. **Capability statements are bound (R10).** A device that announced and then went back to an old
    build must not count.
 5. **"After activation" has a boundary (R13).** Without one, writers that fold the statement at
@@ -470,7 +475,7 @@ says otherwise.
 
 ## 11. Acceptance criteria
 
-Each runs in CI through the real Kernel calls unless marked *(live)* or *(recorded run)*.
+Each runs in CI through the real Kernel calls unless marked *(live)*, a recorded demonstration.
 
 **Derivation and wire**
 
@@ -483,7 +488,7 @@ Each runs in CI through the real Kernel calls unless marked *(live)* or *(record
   envelope bytes, event ids, signatures and chains are unchanged (R9).
 - **AC6.** No header key name in the vectors equals an epoch id. The log holds an envelope whose
   leading 32 bytes name no known epoch with `event.epoch_unknown`, with the feed unchanged. A real
-  2.1.0 build holds split-form envelopes aside and rejects none *(recorded run)*.
+  2.1.0 build holds split-form envelopes aside and rejects none *(live)*.
 
 **Read both**
 
@@ -543,7 +548,7 @@ Each runs in CI through the real Kernel calls unless marked *(live)* or *(record
   sealed under it. Its own next write to that chat seals with the rotated key's `ck:` id. In a second
   case a later-sorting chat key under the older epoch also exists. Updated devices seal with the
   rotated key and the 2.1.0 device seals with the older one, recorded as known 2.1.0 behaviour
-  *(recorded run)*.
+  *(live)*.
 - **AC30.** The `chat_personal_*` cases of `phi-destination-v1.json` pass through the runtime write
   path as well as the pure function.
 - **AC31.** The PHI suites pass with their files unchanged: Kernel
@@ -555,5 +560,6 @@ Each runs in CI through the real Kernel calls unless marked *(live)* or *(record
 - **AC32.** Deep's four backend groups pass on the new pin with a limited joiner in the node tests.
 - **AC33.** The Mac and iPhone apps pair a device From now on, its device screen shows the join date,
   and a chat it cannot read shows as closed *(live)*.
-- **AC34.** A recorded run with one 2.1.0 device and two updated devices, before activation, at
-  activation and after the old device updates *(live)*.
+- **AC34.** A recorded run with one 2.1.0 device and two updated devices: while the old device
+  blocks activation and is named, after it updates and announces, and after activation. Then one
+  device goes back to the 2.1.0 build and holds new envelopes aside *(live)*.
