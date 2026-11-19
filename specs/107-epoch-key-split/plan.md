@@ -11,6 +11,7 @@ Paths under "105" are `specs/105-decentralized-personal-mesh/contracts/`. Paths 
 `specs/106-sign-in-free-clients/contracts/`. Kernel paths are in the AstralKernel repository at
 `eb9821f4`. A line marked **today** was read from the code or a contract on 2026-11-18. The
 [spec](spec.md) checked these lines again at Kernel `dbab48b9` and corrected one, in section 3.6.
+It also proposes one change, in sections 3.7 and 5, which awaits the owner (spec section 9).
 
 ## 1. The ruling
 
@@ -140,6 +141,7 @@ change lands in two steps.
 1. **Read both.** A kernel reads both forms, serves header-only holders, and reads other devices'
    capability statements. It keeps writing the old form. It writes its own capability statement only
    once it also carries the activation code of Phase 3, so no released kernel announces early.
+   This timing is proposed by the spec and awaits the owner.
 2. **Activate.** When every member of the personal group has announced, the mesh activates the split
    format. From then on every member writes it, and limited history is allowed. Activation never
    reverts. A device that cannot announce the capability is refused at pairing.
@@ -222,7 +224,8 @@ Finished when the reference tests pass on the new vectors.
 ### Phase 2: Kernel reads both
 
 Derivation, both envelope forms, header-only holdings, serving and withholding, and reading the
-capability statement. Writers keep the old form, and no kernel writes the statement yet.
+capability statement. Writers keep the old form, and no kernel writes the statement yet. This
+timing is proposed by the spec and awaits the owner.
 
 Finished when a mixed mesh of old-form and new-form writers converges in the Kernel's sync tests, and
 a header-only holder verifies every chain and opens no old content key.

@@ -35,8 +35,8 @@ sections 2 and 4).
 A peer must open every header to run the chain checks (105 `sync.md` section 4). So a new device needs
 every old epoch key just to follow the log. Each of those keys also opens every old content key.
 
-Limited history is therefore all or nothing. The Kernel refuses it today rather than hand out more
-than the owner chose.
+Limited history is therefore all or nothing. The Kernel refuses it today, so a device gets full
+history or no pairing.
 
 A second gap sits beside it. Removing a device starts a new epoch, but a personal chat keeps the
 content key it had. A removed device that later gets ciphertext of an old chat can still open it.
@@ -97,7 +97,6 @@ Checked at Kernel `dbab48b9` and Deep's `specs/` on this branch, 2026-11-18.
 | Removal starts a new epoch but keeps chat keys | Holds. `remove_device` writes the removal and new epochs, no `key.content` | `crates/astral-kernel/src/mesh_ops.rs` |
 | The event id does not cover `header_ct` | Holds. It is the hash of the signed header | 105 `event.md` sections 2, 5, 7 |
 | `HistoryGrant` has three choices | Holds. `All`, `CurrentEpoch`, `FromNow`, on the wire `all`, `current`, `from_now` | `crates/astral-mesh/src/pairing.rs`, `crates/astral-kernel-ffi/src/records.rs` |
-| The mesh content key is introduced once | Holds. `publish_content_key("mesh")` runs only at recovery confirmation, which creates the mesh | `crates/astral-kernel/src/mesh_ops.rs` |
 | "PHI chats already follow the current-key rule. The personal group adopts the same text" | **Wrong.** See below | 106 `phi-destinations.md` sections 8 and 10 |
 
 **The correction.** 106 `phi-destinations.md` section 8 already states the current-key rule for both
@@ -110,13 +109,20 @@ it (`prepare_phi_chat` in `phi_chat_key.rs`). A personal write seals with the ca
 `chat.create` key. `fold_content_keys` caches the last personal chat-scoped key it meets, with no
 current-epoch filter. No Kernel test writes to a chat after a personal epoch change.
 
-So the rule is specified and the Kernel does not follow it. Ruling 4 is Kernel conformance work, not a
-contract change. Plan section 3.6 and its section 4 row are corrected on this branch.
+So the rule is specified and the Kernel does not follow it. Ruling 4 is Kernel conformance work and
+needs no contract change. Plan section 3.6 and its section 4 row are corrected on this branch.
+
+The same fold exists at `eb9821f4`. A 2.1.0 Kernel caches a personal chat-scoped key it folds and
+seals the chat's later writes with it, taking the last such key in stored order.
 
 **What changed since `eb9821f4`.** Ten files changed. The work folds content keys at seal time
 through a gate and a key-event counter (`mesh_core.rs`, `chats.rs`, `phi_chat_key.rs`, `recovery.rs`,
 `astral-log`). None of it touches `astral-core`, `astral-mesh`, `pairing.rs` or `shares.rs`. The plan's
-other Kernel symbols in its section 4 table are covered that way, not by reading each again.
+other Kernel symbols in its section 4 table are covered by that diff, without reading each again.
+
+**Also found.** The mesh content key is introduced once. `publish_content_key("mesh")` runs only at
+recovery confirmation, which creates the mesh (`crates/astral-kernel/src/mesh_ops.rs`). R1 adds the
+second introduction.
 
 **Apple and Deep.** The Mac and iPhone app approves with `.all` in `RealMeshKernel.swift` and shows a
 fixed "History access" of "All chats" in `MeshDeviceDetailView.swift` (Projection `d3a296b3`). Deep and
@@ -135,7 +141,7 @@ The approval sheet on the Mac and the iPhone gains one choice with two options.
 | Option | Meaning shown |
 |---|---|
 | All history | The device reads every chat, old and new |
-| From now on | The device reads chats from this moment. It sees when older events happened, not what they said |
+| From now on | The device reads chats from this moment. For older events it sees only when they happened |
 
 - All history stays the default.
 - From now on is offered only after activation. Before activation it shows as unavailable, with the
@@ -155,11 +161,11 @@ The approval sheet on the Mac and the iPhone gains one choice with two options.
 | `key.content` bodies of earlier epochs | Never | Not applicable |
 | `key.credential` boxes sealed to it | As today | As today |
 
-A chat the joiner cannot read shows as one it cannot open, never as empty.
+A chat the joiner cannot read shows as closed to this device. It never shows as empty.
 
 ### 5.3 The device screen
 
-"History access" on each device's screen shows what the roster says, not a fixed string.
+"History access" on each device's screen shows what the roster says.
 
 | Roster facts | Shown |
 |---|---|
@@ -225,7 +231,7 @@ associated data. A full wrap keeps purpose `epoch`.
   `history`. This joins the `phi`, `secret` and `unknown` reasons of 105 `sync.md` section 5.
 - `mesh` scope bodies under the reintroduced mesh content key are sent (R1).
 - A header-only holder forwards headers and holds no old bodies.
-- When the owner grants more history, the device asks for the bodies it lacks.
+- When a full wrap of an earlier epoch reaches a header-only holder, it asks for the bodies it lacks.
 
 ### 6.5 Left to the Phase 1 contracts
 
@@ -255,7 +261,10 @@ that announces a capability it cannot honour.
 ### 7.3 Step two: activate
 
 - An updated device writes the activation statement once every current personal member has
-  announced. One statement exists per mesh. A second is ignored.
+  announced. The statement cites the roster state and the capability statements it relies on.
+- Every peer judges a statement's validity from the facts it cites, never from its own view of who
+  has announced. The form and the tie-break between two concurrent statements are fixed in Phase 1.
+  After that, a second statement changes nothing.
 - From activation, every member writes the split form, and limited history is allowed.
 - Before activation, pairing refuses limited history with `pairing.history_unavailable` and names
   the devices that still need an update.
@@ -269,9 +278,10 @@ The rule of 106 `phi-destinations.md` section 8 applies to personal writes. The 
 to a chat after a personal epoch change introduces a chat-scoped `key.content` under the current
 epoch, with reason `first_write` or `epoch_changed`.
 
-It needs no activation. 106 section 10 already says a deployed Kernel learns such a key from the event
-and reads what it seals. A deployed Kernel keeps sealing with its old key, so the removal gap closes
-only for writers on the new Kernel that have folded the removal.
+It needs no activation. A 2.1.0 Kernel never starts the rotation itself. It learns a rotated key from
+the event, reads what it seals, and adopts it for its own later writes to that chat, picking the last
+such key in stored order (section 4). So the removal gap closes for a chat once an updated writer has
+rotated it, and a 2.1.0 writer that has folded the rotation follows.
 
 ### 7.5 Epochs that began before activation
 
@@ -294,19 +304,35 @@ Codes in plain type exist today. Codes marked *Phase 1* are named in their contr
 | A header-only holder asks for an old body | Withheld | reason `history` |
 | A header-only holder meets an old body some other way | Not opened | `event.key_unknown` |
 | A split header edited, or bound to the wrong format | Refused | `event.decrypt_failed` |
-| An activation statement written while a member has not announced | Rejected by every peer | *Phase 1* |
-| A second activation statement | Ignored, no change | none |
+| An activation statement whose cited facts do not show every member announced | Rejected by every peer alike | *Phase 1* |
+| A second activation statement | No change, by the Phase 1 tie-break | none |
 | A personal write when the personal group has no current epoch | Refused | `phi.group_not_ready`, as 106 section 8 row 2 |
 
-## 9. Out of scope
+## 9. Calls for the owner to check
+
+These are choices this spec makes beyond the plan and the rulings. Each stands unless the owner
+says otherwise.
+
+1. **No capability statement before Phase 3.** The plan had Phase 2 kernels announce. This spec
+   moves writing it to Phase 3 so a Kernel pin bump for ruling 4, which publishes a Mac release on a
+   green `main`, can never ship a Kernel that announces a capability it cannot act on (section 7.2).
+2. **No wrap of a personal secret on request (R6).** Today's contracts allow it and the Kernel never
+   does it. Limited history needs the ban written down.
+3. **Who writes the activation statement.** Any updated device writes it once the facts it cites
+   show every member announced. No owner prompt is asked for. The alternative is to ask the owner
+   with presence.
+4. **The sheet labels.** "All history" and "From now on", with All history the default.
+
+## 10. Out of scope
 
 - Granting one old chat to a limited device. The design allows it later.
+- A client control to grant a limited device more history. The Kernel side is in scope, as task T3.7.
 - Any change to the phi group, share sessions or caller tickets.
 - Shipping `current`. It waits on a later owner decision.
 - The Android and Windows clients, which are paused.
 - The web shell, which has no pairing surface.
 
-## 10. Acceptance criteria
+## 11. Acceptance criteria
 
 Each runs in CI through the real Kernel calls unless marked *(live)*.
 
@@ -331,8 +357,9 @@ Each runs in CI through the real Kernel calls unless marked *(live)*.
 
 - **AC9.** Pairing with `from_now` before activation fails with `pairing.history_unavailable`, and
   the refusal lists each member that has not announced.
-- **AC10.** An activation statement written before every member announced changes nothing on any
-  peer. A second valid statement changes nothing.
+- **AC10.** An activation statement whose cited facts do not cover every member is rejected by peers
+  holding different views of the roster. Two concurrent valid statements resolve to one on every
+  peer, and a later one changes nothing.
 - **AC11.** After activation, a request from a device that cannot announce is refused.
 
 **Limited history**
@@ -343,16 +370,19 @@ Each runs in CI through the real Kernel calls unless marked *(live)*.
   before the join.
 - **AC14.** `current` with more than one personal epoch is still refused.
 - **AC15.** A restore with the 24 words after a limited join reads full history.
+- **AC23.** When a header-only holder receives a full wrap of an earlier epoch, it asks for and opens
+  that epoch's bodies, and its history in status changes to match.
 
 **Personal current-key rule**
 
 - **AC16.** After `remove_device`, the first personal write to an old chat writes a chat-scoped
   `key.content` under the new epoch, and the message seals under that key.
 - **AC17.** The removed device, given that message's ciphertext, cannot open it.
-- **AC18.** A 2.1.0 Kernel (`eb9821f4`) learns the rotated personal key from the event and reads the
-  message sealed under it *(recorded run)*.
+- **AC18.** A 2.1.0 Kernel (`eb9821f4`) learns the rotated personal key from the event, reads the
+  message sealed under it, and the run records which key its own next write to that chat uses
+  *(recorded run)*.
 - **AC19.** The `chat_personal_*` cases of `phi-destination-v1.json` pass through the runtime write
-  path, not only the pure function.
+  path as well as the pure function.
 
 **Clients and release**
 
