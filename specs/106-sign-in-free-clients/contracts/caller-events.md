@@ -77,7 +77,7 @@ executing node still match. A remote approval binds these fields and the
 challenge in the presence-signed v2 consent proof. Existing local approvals
 use v1. An expired or interrupted turn cannot resume through a late decision.
 When PHI is involved both devices must remain eligible for that content.
-The node cannot sign the owner's action approval. The recipient check in the reference assumes the Kernel has already checked current roster membership and content visibility.
+The node tracks the pending action locally and can stop the turn. Approval requires the requesting owner's presence signature. An independent executor verifies the presented approval without receiving a review prompt. The recipient check in the reference assumes the Kernel has already checked current roster membership and content visibility.
 
 ### Relayed action proof
 
