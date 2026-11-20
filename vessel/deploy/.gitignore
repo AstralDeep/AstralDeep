@@ -1,2 +1,4 @@
 compose.generated.yml
 .generated/
+capabilities/
+capabilities-ledger.json
