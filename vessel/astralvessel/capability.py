@@ -141,7 +141,8 @@ def _index_entry(registry_dir: Path, capability_id: str, constraint: str) -> dic
     published = [e for e in index["entries"] if e.get("id") == capability_id
                  and _satisfies(str(e.get("version", "")), constraint)]
     if not published:
-        raise CapabilityError("capability.missing", f"no installed registry version of {capability_id} satisfies {constraint}")
+        raise CapabilityError("capability.missing",
+                              f"no installed registry version of {capability_id} satisfies {constraint}")
     return _highest(published)
 
 
