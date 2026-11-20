@@ -915,13 +915,26 @@ def test_state_notices_survive_the_copy_cuts(monkeypatch):
     assert "Currently" in render(orch, {"tab": "soul"})
 
 
-def test_assignment_limit_fields_carry_no_help_sentences():
-    limits = surf._assignment_limits()
+@pytest.mark.parametrize("mode", ["create", "revise"])
+def test_retired_assignment_links_show_the_reason_without_a_spending_form(monkeypatch, mode):
+    from orchestrator.chrome_events import current_surface_socket
 
-    fields = surf._assignment_limit_fields(limits)
-
-    assert fields and all("help" not in item for item in fields)
-    assert {"daily.spend_micro_units", "lifetime.spend_micro_units"} <= {item["name"] for item in fields}
+    monkeypatch.setitem(flags._flags, "persistent_agents", True)
+    orch = make_orch()
+    socket = object()
+    orch.ui_sessions[socket] = {"sub": "u1"}
+    orch.persistent_assignments = object()
+    params = {"tab": "schedule", "assignment_mode": mode}
+    token = current_surface_socket.set(socket)
+    try:
+        markup = render(orch, params)
+        structured = asyncio.run(surf.components(orch, "u1", ["user"], params))
+    finally:
+        current_surface_socket.reset(token)
+    for content in (markup, json.dumps(structured)):
+        assert "execution engine has been retired" in content
+        assert "spend_micro_units" not in content
+        assert f"chrome_assignment_{mode}" not in content
 
 
 def test_run_policy_form_has_no_field_help_and_keeps_its_state_text():

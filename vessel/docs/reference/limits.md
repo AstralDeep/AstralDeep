@@ -8,5 +8,5 @@
 | Files a call may return | 4 per call, types listed in `[output] files` | The manifest |
 | Disk per turn and per user | A quarter and a half of `scratch` | `turn_disk` and `user_disk` |
 | Open files in a call | 4096 | The sandbox |
-| Tickets remembered against replay | 65536 live ids, each kept 3600 seconds, in a file | `VESSEL_REPLAY_RETENTION_SECONDS` |
+| Tickets remembered against replay | 65536 live ids, each kept through verified expiry and for at least 3600 seconds by default | `VESSEL_REPLAY_RETENTION_SECONDS` |
 | Pairing offer life | 10 minutes | The node |

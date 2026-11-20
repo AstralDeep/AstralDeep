@@ -42,7 +42,7 @@ Unfinished work:
 
 Owner rulings. The Kernel engine is the only turn engine. A web shell is no longer a core component: it is one possible application-layer client, built later on the Kernel engine, and the node hosts none. No caller turn door is built yet. A feature that existed only by running a Python turn is retired, not ported.
 
-Landed in Deep:
+The node and its qualification harness:
 
 - The Python turn loop is deleted. `Orchestrator.handle_chat_message` and everything only it used are gone, with the REST chat route, the `chat_message` socket action, the bridge's Python-runner mode, the node's own-turn ticket minting, the post-approval turn continuation, sub-tasks, goals and plan steering, message compaction, the designer round delivery and scheduled chat turns. A scheduled chat job now ends with `turn_engine_retired`.
 - A node answers a mesh text request only with `kernel.answer_request`. `backend/tests/test_single_turn_engine.py` lists every module that may start a turn, call a model or enter protected dispatch.
@@ -59,15 +59,14 @@ Coverage given up, in code that survives:
 - Voice chat deletion fencing, and emergency-stop gating on new chat turns and scheduled turns. Their entry points are gone.
 - Parallel-batch dispatch. Only the single tool entry remains.
 
-Still open:
+Follow-up implementation on PR 701:
 
-- The attended approval cards in `hitl_confirmation.py` and `remote_confirmation.py`. Nothing in production can bind an approval task now, and with no person attached they already refuse, so a ticketed call runs a reviewed action only on the Kernel ticket's approval. The card code and its tests remain and should go.
-- The bearer REST routes and the UI socket door stay registered behind their refusals. This is the OD3 cleanup above.
-- Persistent agents, off by default, still run bounded Python episodes that call a model.
-- The Kernel trusts the labels a node records for a call result. A Kernel-side floor from the tool definition would not depend on the node. That is a Kernel change.
-- A node turn that needs consent waits on the node's own Kernel, and the node never signs an owner consent. Whether an owner device is shown that pending consent is not verified. If it is not, the turn ends at the bridge's turn timeout with the effect not run. Before the label fix such a turn ran the effect with no consent.
-- `config/astral-assembly.json` records these open items as exceptions.
-- The bridge still carries the code that mirrored thin-client turns into the mesh. Nothing produces such turns now.
+- The node mounts its public discovery, local pairing and operator controls, authenticated worker socket, MCP and A2A surfaces. The bearer UI routers and UI socket are retired. The route census checks each mounted method and path and its authentication boundary.
+- A reviewed effect passes the Kernel ticket checks at authorization and physical dispatch. A missing or mismatched approval refuses the effect. The old Python approval tasks, decision cards, continuation and terminal REST callbacks are retired. Project read grants, PHI, tool permission, remote policy, emergency stop and audit checks still apply.
+- The assignment service preserves owner-bound reads, controls and replay of existing results. New Python chat, research and monitoring episodes return `turn_engine_retired`. Recovery fences old leases and preserves uncertain outcomes for reconciliation. Dreaming continues independently.
+- The mesh bridge no longer mirrors local history writes into the mesh. It still imports signed history, records ticketed peer-call outcomes and recovers interrupted requests.
+- The Python coordinator is removed. The explicit offline `synthetic_coordinator_planning` task reproduces the archived prompt benchmark and identifies its synthetic results.
+- The companion Kernel and Apple client implement review on the original requesting owner device and enforce a result-label floor at the consuming Kernel. The mesh consent rule is in [caller-events.md](contracts/caller-events.md). These changes require compatible pinned Kernel, Projection and Vessel builds. Production acceptance is tied to those exact component versions.
 
 Earlier status (2026-11-15): phase 0 was in progress. Spec 105 was complete, and part of phase 1
 landed early with its closure. See [Progress](#progress-2026-11-15).

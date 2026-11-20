@@ -188,10 +188,16 @@ def framework_only_jobs(run):
             and type(response.get("total_count")) is int
             and 0 < response["total_count"] == len(response["jobs"]) <= 100,
             "framework producer job graph is malformed or exceeds bounds")
+    prefix = "Prepare Apple framework input"
+    targets = ("aarch64-apple-darwin", "x86_64-apple-darwin", "aarch64-apple-ios", "aarch64-apple-ios-sim", "x86_64-apple-ios")
+    slices = {f"{prefix} ({target})" for target in targets}
+    qualified = {f"{prefix} (qualified)"}
+    linux_packs = {"Build and check the linux-aarch64 node pack", "Build and check the linux-x86_64 node pack"}
+    outcomes = {**expected, **dict.fromkeys(linux_packs, "skipped"), **dict.fromkeys(slices | qualified, "success")}
     latest, identities, occurrences = {}, set(), set()
     for job in response["jobs"]:
         require(isinstance(job, dict) and type(job.get("id")) is int and job["id"] > 0
-                and job["id"] not in identities and isinstance(job.get("name"), str) and job["name"] in expected
+                and job["id"] not in identities and isinstance(job.get("name"), str) and job["name"] in outcomes
                 and job.get("run_id") == run["id"] and job.get("head_sha") == run["head_sha"]
                 and type(job.get("run_attempt")) is int and 1 <= job["run_attempt"] <= attempt
                 and job.get("status") == "completed"
@@ -199,7 +205,7 @@ def framework_only_jobs(run):
                 and job["conclusion"] in {"success", "failure", "skipped", "cancelled", "timed_out",
                                                "action_required", "neutral", "stale", "startup_failure"},
                 "framework producer job identity or completion is invalid")
-        require(expected[job["name"]] != "skipped" or job["conclusion"] == "skipped",
+        require(outcomes[job["name"]] != "skipped" or job["conclusion"] == "skipped",
                 "framework producer must skip Mac packaging and publication in every attempt")
         occurrence = (job["name"], job["run_attempt"])
         require(occurrence not in occurrences, "duplicate framework producer job attempt")
@@ -207,13 +213,26 @@ def framework_only_jobs(run):
         identities.add(job["id"])
         if job["name"] not in latest or latest[job["name"]]["run_attempt"] < job["run_attempt"]:
             latest[job["name"]] = job
+    decision = latest.get("Decide the next Mac release", {})
+    steps = decision.get("steps")
+    require(isinstance(steps, list) and all(isinstance(item, dict) for item in steps),
+            "framework decision steps are malformed")
+    selectors = [item for item in steps if item.get("name") == "Select qualified Apple framework or pinned source builds"]
+    if selectors or latest.keys() & (slices | qualified):
+        require(len(selectors) == 1 and selectors[0].get("status") == "completed"
+                and selectors[0].get("conclusion") == "success", "missing successful framework input selection")
+        for name in (slices | qualified) & latest.keys():
+            if latest[name]["run_attempt"] < decision["run_attempt"]:
+                del latest[name]
+        inputs = latest.keys() & (slices | qualified)
+        require(inputs == slices or inputs == qualified, "incomplete Apple framework inputs")
+        expected.update(dict.fromkeys(inputs, "success"))
+    if selectors or latest.keys() & linux_packs:
+        expected.update(dict.fromkeys(linux_packs, "skipped"))
     require(set(latest) == set(expected)
             and any(job["run_attempt"] == attempt for job in latest.values())
             and all(job["conclusion"] == expected[name] for name, job in latest.items()),
             "manual Apple producer is not a successful framework-only job graph")
-    steps = latest["Decide the next Mac release"].get("steps")
-    require(isinstance(steps, list) and all(isinstance(item, dict) for item in steps),
-            "framework decision steps are malformed")
     markers = [item for item in steps if item.get("name") == "Confirm framework-only source decision"]
     require(len(markers) == 1 and markers[0].get("status") == "completed"
             and markers[0].get("conclusion") == "success", "missing successful framework-only source decision")

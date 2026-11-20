@@ -18,9 +18,9 @@
           "sha256": "0bf1b6695e15b9badf4a5328409b3fb6acd8e89ea3d6786db92eb06009ebc951"
         },
         {
-          "format": "astral.caller-events/v1",
+          "format": "astral.caller-events/v2",
           "path": "specs/106-sign-in-free-clients/contracts/caller-events.md",
-          "sha256": "95d67488ac9d7bf794a534fe0748dfa6b423de27dbb43056c5abec3c91a66119"
+          "sha256": "b83070bb5f88dcb8235aa9f4f291e5912d6942fb5c990e4a94fe0ca6985d6b8b"
         }
       ]
     },
@@ -115,30 +115,5 @@
       "consent": "none"
     }
   },
-  "exceptions": [
-    {
-      "id": "attended-approval-cards",
-      "date": "2026-11-19",
-      "review": "AstralDeep PR 700",
-      "summary": "The attended approval cards in hitl_confirmation.py and remote_confirmation.py remain. No production path can bind an approval task, and with no person attached they refuse, so a reviewed action runs only on the Kernel ticket's approval."
-    },
-    {
-      "id": "node-result-labels",
-      "date": "2026-11-19",
-      "review": "AstralDeep PR 700",
-      "summary": "The Kernel accepts the labels a node records for a call result. The node records an outward read untrusted, and a Kernel-side floor from the tool definition is not built."
-    },
-    {
-      "id": "persistent-agent-episodes",
-      "date": "2026-11-19",
-      "review": "AstralDeep PR 700",
-      "summary": "Persistent agents, off by default behind FF_PERSISTENT_AGENTS, run bounded Python episodes that call a model."
-    },
-    {
-      "id": "refused-bearer-surface",
-      "date": "2026-11-19",
-      "review": "AstralDeep PR 700",
-      "summary": "The bearer REST routes and the UI socket door stay registered and refuse every request on a personal node."
-    }
-  ]
+  "exceptions": []
 }

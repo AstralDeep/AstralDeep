@@ -517,10 +517,11 @@ async def test_ticket_discovery_requires_current_publication_and_direct_calls_ne
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("configured", "expected"), [(None, "127.0.0.1"), ("192.168.1.5", "192.168.1.5"), ("::1", "::1")])
-async def test_startup_mounts_a2a_and_publication_routes_when_server_enabled(monkeypatch, publication_host, configured, expected):
+async def test_startup_serves_a2a_discovery_and_ticket_requests(tmp_path, monkeypatch, publication_host, configured, expected):
     from orchestrator import boot_posture
     from orchestrator import orchestrator as module
     from shared.a2a_publication import A2APublicationRegistry
+    from tests.test_caller_tickets import a2a_tools, code_of, served
     from tests.test_evidence_entry import lifetime_host
 
     monkeypatch.setenv("ASTRAL_ENV", "development")
@@ -569,21 +570,29 @@ async def test_startup_mounts_a2a_and_publication_routes_when_server_enabled(mon
         return SimpleNamespace(serve=serving)
 
     monkeypatch.setattr(module.uvicorn, "Server", capture)
-    await host._run_started_server()
-    serving.assert_awaited_once()
-    assert captured["host"] == expected
-    assert isinstance(host.a2a_publications, A2APublicationRegistry)
-    route_paths = set()
-    for route in captured["app"].router.routes:
-        route_paths.add(getattr(route, "path", ""))
-        original = getattr(route, "original_router", None)
-        for sub in getattr(original, "routes", []) or []:
-            route_paths.add(getattr(sub, "path", ""))
-    assert "/a2a" in route_paths
-    assert "/a2a/.well-known/agent-card.json" in route_paths
-    assert "/api/a2a/publications" in route_paths
-    assert "/api/a2a/publications/catalog" in route_paths
-    await host._close_started_services()
+    try:
+        await host._run_started_server()
+        serving.assert_awaited_once()
+        assert captured["host"] == expected
+        assert isinstance(host.a2a_publications, A2APublicationRegistry)
+        async with served(tmp_path, monkeypatch, app=captured["app"]) as door:
+            card = await door.client.get("/a2a/.well-known/agent-card.json")
+            assert card.status_code == 200
+            assert "chat" in {skill["id"] for skill in card.json()["skills"]}
+            headers = {"Authorization": "Bearer retired"}
+            denied = await door.client.post("/a2a", headers=headers, json={})
+            assert (denied.status_code, code_of(denied)) == (401, "node.bearer_refused")
+            ticket = door.mint([], a2a=True)
+            listed = await door.send_a2a(ticket)
+            assert listed.status_code == 200 and a2a_tools(listed) == set()
+            for method, path in (
+                ("GET", "/api/a2a/publications"),
+                ("GET", "/api/a2a/publications/catalog"),
+                ("POST", "/api/a2a/publications/intents"),
+            ):
+                assert (await door.client.request(method, path, headers=headers)).status_code == 404
+    finally:
+        await host._close_started_services()
 
 
 # --- admin REST API ----------------------------------------------------------

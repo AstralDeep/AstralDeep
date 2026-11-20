@@ -1041,9 +1041,6 @@ class Orchestrator:
 
         from llm_config.data_sharing import DataSharingStore
         from llm_config.typesafe_store import TypeSafeCredentialStore
-        self._typesafe_outcome_tasks: set = set()
-        self._typesafe_confirm_turns: set = set()
-        self._typesafe_turn_styles: dict = {}
         self._typesafe_store = TypeSafeCredentialStore(
             data_dir=data_dir,
             plane_runtime=self.runtime_composition.plane.runtime,
@@ -14227,6 +14224,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 # Never forward a consumed authorization token to the agent
                 if isinstance(args, dict) and "_txn_token" in args:
                     args = {k: v for k, v in args.items() if k != "_txn_token"}
+                if "_txn_token" in stream_params:
+                    stream_params = {k: v for k, v in stream_params.items() if k != "_txn_token"}
 
         kernel_effect = None
         if user_id and agent_id and action.needs_review:
@@ -14297,11 +14296,8 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                     tool_name, args, actor_principal=user_id, trust=trust,
                     agent_id=agent_id,
                     public_reader=_hitl.registered_public_reader(self, agent_id, tool_name))
-                # Kernel authority covers only the matching egress confirmation; other risks remain.
-                _typesafe_confirms = self._typesafe_turn_requires_confirmation(chat_id)
-                kernel_covers_egress_review = (kernel_effect is not None and not _typesafe_confirms
-                                               and not (set(risks) - {_hitl.EGRESS}))
-                if (_hitl.requires_confirmation(risks) or _typesafe_confirms) and not kernel_covers_egress_review:
+                kernel_covers_egress_review = kernel_effect is not None and set(risks) == {_hitl.EGRESS}
+                if _hitl.requires_confirmation(risks) and not kernel_covers_egress_review:
                     logger.warning("hitl.confirm user=%s tool=%s risks=%s", user_id, tool_name, risks)
                     await self._audit_gate_denial(websocket, user_id, agent_id, tool_name, chat_id, args,
                                                   gate="hitl", detail="confirmation_required")
@@ -17888,23 +17884,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
         return [ws for ws in self._sockets_on_chat(user_id, chat_id)
                 if ws is not websocket]
 
-    def _typesafe_turn_requires_confirmation(self, chat_id) -> bool:
-        if not chat_id:
-            return False
-        return bool(getattr(self, "_typesafe_confirm_turns", set()) and
-                    chat_id in self._typesafe_confirm_turns)
-
-    def _typesafe_set_turn_verdict(self, chat_id, verdict) -> None:
-        if not chat_id:
-            return
-        turns = getattr(self, "_typesafe_confirm_turns", None)
-        if turns is None:
-            turns = self._typesafe_confirm_turns = set()
-        if verdict is not None and getattr(verdict, "requires_confirmation", False):
-            turns.add(chat_id)
-        else:
-            turns.discard(chat_id)
-
     async def _broadcast_user_history(self, user_id: str | None = None, *, projects_changed: bool = False):
         if not self.ui_clients:
             return
@@ -19679,7 +19658,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
     async def _close_started_services(self) -> None:
         task = getattr(self, "_started_services_close_task", None)
         if task is None:
-            self._typesafe_outcomes_closing = True
             task = asyncio.create_task(
                 self._close_started_services_once(),
                 name="orchestrator-started-services-close",
@@ -19780,13 +19758,6 @@ Respond with ONLY valid JSON (no markdown code fences) in this format:
                 try:
                     await self.async_task_manager.stop_retention_sweep()
                 finally:
-                    typesafe_tasks = tuple(
-                        getattr(self, "_typesafe_outcome_tasks", ())
-                    )
-                    if typesafe_tasks:
-                        await asyncio.gather(
-                            *typesafe_tasks, return_exceptions=True
-                        )
                     voice_close_error: BaseException | None = None
                     voice_services = getattr(self, "voice_services", None)
                     if voice_services is not None:

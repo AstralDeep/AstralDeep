@@ -1,11 +1,9 @@
-"""Tests for persistent_agents/service.py and api.py: create and replay avoid duplicate
-grants, activation failures create no running assignment, live execution rechecks
-grant and source arguments, and owner reads hide dispatch capabilities.
-"""
+"""Verifies owner-scoped assignment reads, replay, retired execution and Plane errors."""
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
+from uuid import uuid4
 
 import pytest
 from astralplane.repositories.assignment_models import AssignmentRecord
@@ -106,8 +104,6 @@ async def test_store_transaction_contract_and_bounded_errors():
     assert AssignmentStore(orch).repository is repo
 
 
-
-
 @pytest.mark.asyncio
 async def test_retired_create_preserves_owner_receipts_and_refuses_new_work_before_tool_checks():
     import hashlib
@@ -134,3 +130,56 @@ async def test_retired_create_preserves_owner_receipts_and_refuses_new_work_befo
     with pytest.raises(AssignmentError, match="assignment_owner_required"):
         await service.create("other", claims, request)
     assert [call[0] for call in store.calls] == ["get_submission_receipt", "get_submission_receipt"]
+
+@pytest.mark.parametrize("command", ["revise", "resume", "run-now"])
+async def test_owner_cannot_reactivate_a_retained_assignment(command):
+    from persistent_agents.models import ControlRequest, ReviseAssignmentRequest
+    from persistent_agents.service import AssignmentService
+    from persistent_agents.tests.test_models import create_payload
+
+    store = MemoryStore()
+    identity = str(uuid4())
+    store.records["owner", identity] = SimpleNamespace(owner_id="owner", instruction_revision=1, control_epoch=1)
+    service = AssignmentService(object(), store=store, enabled=True, phi_gate=object())
+    control = {"expected_instruction_revision": 1, "expected_control_epoch": 1}
+    with pytest.raises(AssignmentError, match="turn_engine_retired") as refused:
+        if command == "revise":
+            request = ReviseAssignmentRequest.model_validate({**create_payload(), **control})
+            await service.revise("owner", {"sub": "owner"}, identity, request)
+        else:
+            request = ControlRequest(submission_id=str(uuid4()), **control)
+            await service.control("owner", {"sub": "owner"}, identity, command, request)
+    assert refused.value.status_code == 410
+    assert [call[0] for call in store.calls] == ["get_assignment", "get_submission_receipt"]
+
+
+@pytest.mark.parametrize("decision", ["approve", "decline"])
+async def test_pending_action_allows_an_audited_decline_and_refuses_execution(decision):
+    from persistent_agents.models import ApprovalDecisionRequest
+    from persistent_agents.service import AssignmentService
+
+    owner = "owner"
+    claims = {"sub": owner}
+    identity, action_id = str(uuid4()), str(uuid4())
+    socket = object()
+    request = ApprovalDecisionRequest(decision=decision, submission_id=str(uuid4()),
+        expected_instruction_revision=1, expected_control_epoch=1, request_digest="a" * 64)
+    record = SimpleNamespace(assignment_id=identity, owner_id=owner, instruction_revision=1, control_epoch=1)
+    proposal = SimpleNamespace(state="proposed", intent=SimpleNamespace(
+        request_digest=request.request_digest, permission_digest="b" * 64, precondition_digest="c" * 64))
+    declined = SimpleNamespace(state="declined")
+    store = SimpleNamespace(call=AsyncMock(side_effect=[record, proposal, declined]))
+    service = AssignmentService(SimpleNamespace(ui_sessions={socket: claims}), store=store,
+                                enabled=True, phi_gate=object())
+    service._audit = AsyncMock()
+    call = service.decide(owner, claims, identity, action_id, request, interaction=socket)
+    if decision == "approve":
+        with pytest.raises(AssignmentError, match="turn_engine_retired"):
+            await call
+        assert store.call.await_count == 2
+        service._audit.assert_not_awaited()
+    else:
+        assert await call is declined
+        assert store.call.await_args.args == ("decide_action",)
+        assert store.call.await_args.kwargs["decision"].permission_digest == "b" * 64
+        service._audit.assert_awaited_once_with(claims, decision, record)

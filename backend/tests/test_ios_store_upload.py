@@ -101,6 +101,47 @@ def test_framework_producer_requires_provider_graph_and_kernel_qualification(fra
             + "&event=push&per_page=100") in framework_provider[3]
 
 
+@pytest.mark.parametrize("inputs", [
+    ("qualified",),
+    ("aarch64-apple-darwin", "x86_64-apple-darwin", "aarch64-apple-ios", "aarch64-apple-ios-sim", "x86_64-apple-ios"),
+])
+def test_framework_producer_binds_selected_inputs_and_skipped_linux_jobs(framework_provider, inputs):
+    run, graph, _, _ = framework_provider
+    jobs = graph["jobs"]
+    for arch in ("aarch64", "x86_64"):
+        jobs.append({**jobs[3], "name": f"Build and check the linux-{arch} node pack", "id": 100 + len(jobs)})
+    graph["total_count"] = len(jobs)
+    assert upload.framework_only_jobs(run)["jobs"][jobs[-1]["name"]]["conclusion"] == "skipped"
+    selector = {"name": "Select qualified Apple framework or pinned source builds", "status": "completed", "conclusion": "success"}
+    jobs[0]["steps"].append(selector)
+    with pytest.raises(ValueError, match="incomplete Apple"):
+        upload.framework_only_jobs(run)
+    for target in inputs:
+        jobs.append({**jobs[2], "name": f"Prepare Apple framework input ({target})", "id": 100 + len(jobs)})
+    graph["total_count"] = len(jobs)
+    assert set(upload.framework_only_jobs(run)["jobs"]) == {job["name"] for job in jobs}
+    selector["conclusion"] = "skipped"
+    with pytest.raises(ValueError, match="selection"):
+        upload.framework_only_jobs(run)
+    selector["conclusion"] = "success"
+    jobs[5]["conclusion"] = "success"
+    with pytest.raises(ValueError, match="skip Mac packaging"):
+        upload.framework_only_jobs(run)
+    jobs[5]["conclusion"] = "skipped"
+    jobs[-1]["conclusion"] = "failure"
+    with pytest.raises(ValueError, match="successful framework-only"):
+        upload.framework_only_jobs(run)
+    run["run_attempt"] = 2
+    previous_name = jobs[-1]["name"]
+    jobs.append({**jobs[0], "id": 500, "run_attempt": 2})
+    jobs.append({**jobs[2], "id": 501, "run_attempt": 2, "name": "Prepare Apple framework input (qualified)"})
+    graph["total_count"] = len(jobs)
+    receipt = upload.framework_only_jobs(run)
+    assert receipt["jobs"]["Prepare Apple framework input (qualified)"]["id"] == 501
+    if len(inputs) > 1:
+        assert previous_name not in receipt["jobs"]
+
+
 def test_automatic_producer_keeps_its_existing_receipt_and_does_not_query_jobs_or_kernel(provider):
     receipt = upload.producer(11, 22)
     assert not {"provider_event", "framework_only", "kernel_qualification"} & receipt.keys()

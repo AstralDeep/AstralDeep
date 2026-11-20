@@ -4,6 +4,9 @@
 from __future__ import annotations
 
 import json
+import sqlite3
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 import pytest
@@ -43,6 +46,7 @@ class FakeVerifier:
         self.started = self.stopped = False
         self.digest = None
         self.mesh = "mesh-1"
+        self.expires_s = int(time.time()) + 300
         self.who = {"mesh": "mesh-1", "device": "device-1", "turn": "turn-1", "agents": ("kernel",)}
 
     async def start(self):
@@ -66,7 +70,8 @@ class FakeVerifier:
         self.calls.append((ticket_json, action_json, effect))
         if self.fail:
             raise Refused(self.fail)
-        return Verified(**self.who, action_digest=self.digest or f"sha256:{len(self.calls):064d}")
+        return Verified(**self.who, expires_s=self.expires_s,
+                        action_digest=self.digest or f"sha256:{len(self.calls):064d}")
 
 
 @pytest.fixture
@@ -129,20 +134,65 @@ def test_replays_are_remembered_across_a_restart_and_forgotten_with_the_ticket(t
     now = [1000.0]
     path = tmp_path / "state" / "spent.db"
     seen = Replays(path, retention_s=60, limit=3, clock=lambda: now[0])
-    assert seen.first_use("a") and not seen.first_use("a") and seen.first_use("b")
+    assert seen.first_use("a", 1050) and not seen.first_use("a", 1050) and seen.first_use("b", 1050)
     assert path.stat().st_mode & 0o77 == 0
     seen.close()
     restarted = Replays(path, retention_s=60, limit=3, clock=lambda: now[0])
-    assert not restarted.first_use("a") and not restarted.first_use("b")
+    assert not restarted.first_use("a", int(now[0]) + 50) and not restarted.first_use("b", int(now[0]) + 50)
     now[0] += 61
-    assert restarted.first_use("a")
+    assert restarted.first_use("a", int(now[0]) + 50)
 
 
 def test_a_full_replay_memory_refuses_rather_than_forgetting(tmp_path):
     seen = Replays(tmp_path / "spent.db", retention_s=60, limit=2, clock=lambda: 5.0)
-    assert seen.first_use("a") and seen.first_use("b")
+    assert seen.first_use("a", 1050) and seen.first_use("b", 1050)
     with pytest.raises(ReplayMemoryFull):
-        seen.first_use("c")
+        seen.first_use("c", 1050)
+
+
+def test_verified_expiry_outlasts_short_retention_and_concurrent_claims(tmp_path):
+    path = tmp_path / "spent.db"
+    now = [1000.0]
+    ledgers = [Replays(path, retention_s=1, clock=lambda: now[0]) for _ in range(2)]
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            outcomes = list(pool.map(lambda ledger: ledger.first_use("once", 1200), ledgers))
+        assert sorted(outcomes) == [False, True]
+        now[0] = 1199.99
+        assert not ledgers[1].first_use("once", 1200)
+        now[0] = 1200.5
+        assert not ledgers[0].first_use("once", 1600)
+        now[0] = 1201
+        assert ledgers[0].first_use("once", 1600)
+    finally:
+        for ledger in ledgers:
+            ledger.close()
+
+
+def test_existing_spent_rows_keep_their_original_deadlines(tmp_path):
+    path = tmp_path / "spent.db"
+    with sqlite3.connect(path) as db:
+        db.execute("CREATE TABLE spent (id TEXT PRIMARY KEY, expires REAL NOT NULL)")
+        db.execute("INSERT INTO spent VALUES ('old', 1010)")
+    now = [1009.0]
+    ledger = Replays(path, clock=lambda: now[0])
+    try:
+        assert not ledger.first_use("old", 1100)
+        with sqlite3.connect(path) as db:
+            assert db.execute("SELECT expires FROM spent WHERE id = 'old'").fetchone() == (1010,)
+        now[0] = 1010
+        assert ledger.first_use("new", 1120)
+        with sqlite3.connect(path) as db:
+            assert db.execute("SELECT id, expires FROM spent").fetchall() == [("new", now[0] + 3600)]
+    finally:
+        ledger.close()
+
+
+async def test_expired_verified_claim_refuses_before_sandbox(stack, client):
+    deployment, verifier, _ = stack
+    verifier.expires_s = 1
+    response = await client.post("/run", json=call(deployment), headers=AUTH)
+    assert (response.status_code, response.json()["code"]) == (403, "ticket.expired")
 
 
 @needs_bash

@@ -28,6 +28,46 @@ async def test_every_paired_case_is_withheld_on_the_kernel_turn_path():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("approve", [False, True], ids=["deny", "approve"])
+async def test_requesting_owner_decides_the_exact_node_effect(approve):
+    driver = pd.PersonalDispatchQualification("paired-owner-approval")
+    try:
+        await driver.setup()
+        case = "owner-review"
+        driver.fixture.payloads[case] = "There are three agenda items."
+        arguments = {"case_id": case, "destination": "fixture", "material": "Agenda reviewed"}
+        await driver._grant((pd.READ_LOCAL, pd.EFFECT))
+        chat = await driver._open_chat("Review the agenda")
+        owner = driver.owner_device.kernel
+        driver.model.script = [
+            pd.ScriptedTurn(tool=pd.READ_LOCAL, arguments={"case_id": case}),
+            pd.ScriptedTurn(tool=pd.EFFECT, arguments=arguments),
+            pd.ScriptedTurn(text="Review complete."),
+        ]
+        request = owner.send_request(chat, "Read the agenda and save my review.", driver.node_device, None, None)
+        await pd._until(lambda: any(c.chat_id == chat for c in owner.pending_consents()), "owner approval")
+        pending, = [c for c in owner.pending_consents() if c.chat_id == chat]
+        assert pending.tool_name == pd.EFFECT and json.loads(pending.arguments_json) == arguments
+        assert json.loads(pending.action_json)["device"] == driver.node_device
+        assert driver.fixture.effects[case] == []
+        owner.resolve_consent(pending.request_id, approve)
+        await pd._until(
+            lambda: owner.request(request).state in (pd.ak.RequestState.ANSWERED, pd.ak.RequestState.REFUSED)
+            and driver._settled(chat),
+            "reviewed turn completion",
+        )
+        await pd._until(lambda: not any(c.chat_id == chat for c in owner.pending_consents()), "prompt removal")
+        rows, intact = driver._audit(driver._local(chat))
+        assert intact and any(r["action_type"] == f"tool.{pd.READ_LOCAL}.end" and r["outcome"] == "success" for r in rows)
+        effects = [r for r in rows if r["action_type"] == f"tool.{pd.EFFECT}.end" and r["outcome"] == "success"]
+        assert len(effects) == int(approve)
+        expected = [{"destination": "fixture", "material": "Agenda reviewed"}] if approve else []
+        assert driver.fixture.effects[case] == expected
+    finally:
+        await driver.teardown()
+
+
+@pytest.mark.asyncio
 async def test_teardown_restores_the_environment_and_removes_the_workspace():
     before = {key: os.environ.get(key) for key in pd.ENV_KEYS}
     driver = pd.PersonalDispatchQualification("teardown")

@@ -76,9 +76,19 @@ To join, request an offer as described under Pair a device. Approve the offer on
 
 The node supervises one mailbox for its own mesh and holds at most one mesh. The node's own kernel uses that mailbox, and devices of the mesh set its address and exchange events through it when they are never online together.
 
-Settings: `ASTRAL_NODE_MESH=0` turns the peer off, `ASTRAL_NODE_MESH_LABEL`, `ASTRAL_NODE_MESH_RELAY` (`default`, `none` or URLs), `ASTRAL_NODE_MAILBOX=0`, `ASTRAL_MAILBOX_BIN`, `ASTRAL_NODE_MAILBOX_BIND`, and and `ASTRAL_NODE_MESH_REQUESTS=off` to stop serving requests.
+Settings: `ASTRAL_NODE_MESH=0` turns the peer off, `ASTRAL_NODE_MESH_LABEL`, `ASTRAL_NODE_MESH_RELAY` (`default`, `none` or URLs), `ASTRAL_NODE_MAILBOX=0`, `ASTRAL_MAILBOX_BIN`, `ASTRAL_NODE_MAILBOX_BIND`, and `ASTRAL_NODE_MESH_REQUESTS=off` to stop serving requests.
 
-A device that cannot do something itself sends a request addressed to the node. The node claims it, runs it on its own loop through its own gate stack and machine authority, and records the turn it ran with `answers` set to the request. When it cannot serve, it refuses the request with a dotted code, such as `node.phi_not_approved` or a `ticket.*` code. Turns the node runs for thin clients are recorded into the owner's chat the same way.
+A device can address a text request to the node. The node claims it and calls
+`kernel.answer_request`. The shared Kernel records the turn in the mesh and
+links it to the signed request. Each tool call still passes the node's own
+permission, policy and audit checks. Refusals carry codes such as
+`node.phi_not_approved` and `ticket.expired`.
+
+If an outward read leads to an effect that needs approval, review the prompt on
+the Mac or iPhone that sent the request. It shows the tool and its arguments.
+Approval authorizes that action once. Denial stops the effect. If the device
+does not respond before the node interrupts the turn, start a new request to
+try again. Existing bearer clients cannot answer a mesh consent prompt.
 
 A request that carries a tool call comes with a ticket. The node derives the effect kind from its own record of the tool, verifies the ticket with its own roster, stop counter and clock, checks the action against the call, compares the tool definition hash in the action with the hash of its own definition of that tool (name, description, input schema and annotations), and then runs its own gates. A forged ticket, a different device or tool, a changed tool definition (`gate.tool_def_changed`), or arguments that do not match the action are refused before anything runs.
 
@@ -99,6 +109,6 @@ A production node refuses to start (exit 78) when any of the first three is set 
 
 At start the node reads `GET /tools` and lists each sandboxed agent with the executor's own definition hash for every tool. Once the node has joined the owner's mesh it publishes those tools to the mesh catalog with the annotation `{"agent": "<id>"}`, so the hash in a device's ticket is the hash the executor holds. With no executor configured, or when it cannot be reached at start, no sandboxed tool is listed. A sandboxed agent whose executor is gone refuses the call with `executor.unavailable`.
 
-A call goes to `POST /run` with the tool, the exact arguments the action covers, the signed action, the ticket and the owner the node is serving. The action must name the tool, `agent` and `mesh`. It carries no owner or workspace: the executor takes the owner from its deployment and derives the workspace from the ticket, and returns that workspace from `/run`. The node ends it with `POST /end` using the agent's token when the node stops or the workspace has been idle for 15 minutes. The node refuses a call without a ticket with `executor.ticket_required`, so a turn the node starts itself cannot reach a sandbox until the kernel can mint a ticket for it.
+A call goes to `POST /run` with the tool, the exact arguments the action covers, the signed action, the ticket and the owner the node is serving. The action must name the tool, `agent` and `mesh`. It carries no owner or workspace: the executor takes the owner from its deployment and derives the workspace from the ticket, and returns that workspace from `/run`. The node ends it with `POST /end` using the agent's token when the node stops or the workspace has been idle for 15 minutes. The Kernel mints a ticket for each admitted call. A call without a ticket is refused with `executor.ticket_required`.
 
 Executor refusals keep their dotted codes, such as `ticket.replayed` or `gate.tool_def_changed`. A tool error in the sandbox is `executor.tool_error`. If the node cannot connect, nothing ran and the code is `executor.unavailable`. If the connection fails or times out after the call was sent, the code is `executor.outcome_unknown` and the call is not retried.

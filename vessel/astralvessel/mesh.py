@@ -20,6 +20,9 @@ BINDING = "astral_kernel"
 ENROLLED = {"ENROLLED", "RESTORED"}
 DOTTED = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z0-9_]+)+$")
 SYNC_INTERVAL_MS = 2000
+CONSENT_SYNC_SECONDS = 3 * SYNC_INTERVAL_MS / 1000
+CONSENT_RECHECK_SECONDS = 0.25
+PENDING_LINEAGE = "ticket.consent_sync_pending"
 
 
 class Refused(Exception):
@@ -42,6 +45,7 @@ class Verified:
     device: str
     turn: str
     action_digest: str
+    expires_s: int
     agents: tuple[str, ...] = ()
 
 
@@ -126,15 +130,42 @@ class KernelVerifier:
         return {"code": offer.code, "payload": offer.payload, "expires_ms": int(offer.expires_ms)}
 
     async def verify(self, ticket_json: str, action_json: str, effect: str) -> Verified:
-        state = await self.state()
-        if state != "enrolled":
-            raise Refused(f"executor.{state}")
+        kernel = self._kernel
+        if kernel is None:
+            raise Refused(f"executor.{await self.state()}")
+
+        async def verify_current() -> Verified:
+            state = await self.state()
+            if state != "enrolled":
+                raise Refused(f"executor.{state}")
+            claims = await asyncio.to_thread(kernel.verify_ticket, ticket_json, action_json, effect)
+            expiry = getattr(claims, "expires_s", None)
+            if type(expiry) is not int or not 0 < expiry < 2**63 - 1:
+                raise Refused("ticket.bad_expiry")
+            return Verified(claims.mesh, claims.device, claims.turn, claims.action_digest, expiry,
+                            tuple(getattr(claims, "agents", ()) or ()))
+
         try:
-            claims = await asyncio.to_thread(self._kernel.verify_ticket, ticket_json, action_json, effect)
+            return await verify_current()
+        except self._binding.KernelError as exc:
+            code = dotted(getattr(exc, "code", ""), "ticket")
+            if code != PENDING_LINEAGE:
+                raise Refused(code) from None
+
+        try:
+            async with asyncio.timeout(CONSENT_SYNC_SECONDS):
+                await kernel.sync_now()
+                while True:
+                    try:
+                        return await verify_current()
+                    except self._binding.KernelError as exc:
+                        if dotted(getattr(exc, "code", ""), "ticket") != PENDING_LINEAGE:
+                            raise
+                    await asyncio.sleep(CONSENT_RECHECK_SECONDS)
+        except TimeoutError:
+            raise Refused(PENDING_LINEAGE) from None
         except self._binding.KernelError as exc:
             raise Refused(dotted(getattr(exc, "code", ""), "ticket")) from None
-        return Verified(claims.mesh, claims.device, claims.turn, claims.action_digest,
-                        tuple(getattr(claims, "agents", ()) or ()))
 
 
 def _signer(binding: Any, keys: ExecutorKeys) -> Any:

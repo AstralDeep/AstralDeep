@@ -99,11 +99,11 @@ def workflow_allows(entry, *, event="workflow_dispatch", ref="refs/heads/main", 
 
 
 @pytest.mark.parametrize("event,dry_run,framework_only,skip,expected", [
-    ("workflow_dispatch", False, False, "false", PACKS | {"decide", "native-check", "apple-artifacts", "node-pack", "release"}),
-    ("workflow_dispatch", True, False, "false", PACKS | {"decide", "native-check", "apple-artifacts", "node-pack", "release"}),
-    ("workflow_dispatch", True, True, "false", {"decide", "native-check", "apple-artifacts"}),
+    ("workflow_dispatch", False, False, "false", PACKS | {"decide", "native-check", "apple-input", "apple-artifacts", "node-pack", "release"}),
+    ("workflow_dispatch", True, False, "false", PACKS | {"decide", "native-check", "apple-input", "apple-artifacts", "node-pack", "release"}),
+    ("workflow_dispatch", True, True, "false", {"decide", "native-check", "apple-input", "apple-artifacts"}),
     ("workflow_dispatch", True, False, "true", {"decide"}),
-    ("workflow_run", False, False, "false", PACKS | {"decide", "native-check", "apple-artifacts", "node-pack", "release"}),
+    ("workflow_run", False, False, "false", PACKS | {"decide", "native-check", "apple-input", "apple-artifacts", "node-pack", "release"}),
     ("workflow_run", False, False, "true", {"decide"}),
 ])
 def test_framework_mode_runs_only_the_source_bound_producer_jobs(flow, event, dry_run, framework_only, skip, expected):
@@ -201,7 +201,8 @@ def test_decide_is_cheap_unprivileged_and_guarded(flow):
         "github.event.workflow_run.head_repository.full_name == github.repository",
     ):
         assert clause in expression
-    assert set(decide["outputs"]) == {"head", "version", "build", "skip", "previous_target"}
+    assert set(decide["outputs"]) == {"head", "version", "build", "skip", "previous_target",
+                                      "apple_inputs", "apple_artifact", "apple_digest", "apple_bytes"}
     assert "secrets." not in yaml.safe_dump(decide)
 
 
@@ -234,10 +235,12 @@ def test_pinned_native_check_is_read_only_bounded_and_precedes_signing(flow):
     checkout = job["steps"][0]
     assert checkout["with"] == {"ref": "${{ needs.decide.outputs.head }}", "persist-credentials": False}
     gate = step(job, "Wait for pinned Projection Apple CI")
-    assert gate["env"] == {"DECIDED_HEAD": "${{ needs.decide.outputs.head }}"}
+    assert gate["env"] == {"DECIDED_HEAD": "${{ needs.decide.outputs.head }}", "GH_TOKEN": "${{ github.token }}"}
+    assert '-H "Authorization: Bearer $GH_TOKEN"' in gate["run"]
     assert "https://api.github.com/repos/$repo/actions/workflows/apple-ci.yml/runs?" in gate["run"]
     assert "git ls-tree HEAD -- components/AstralProjection" in gate["run"]
-    assert "for attempt in {1..26}" in gate["run"] and "sleep 60" in gate["run"]
+    assert "for attempt in {1..26}" in gate["run"] and "remaining < 60" in gate["run"]
+    assert "deadline=$((SECONDS + 25 * 60))" in gate["run"]
     assert "python3 -c" in gate["run"] and "jq" not in gate["run"]
     assert list(flow["jobs"]).index("native-check") < list(flow["jobs"]).index("release")
 
@@ -253,7 +256,8 @@ def native_run(*, conclusion="success", **changes):
     return run
 
 
-def execute_native_check(flow, tmp_path, runs, *, projection="b" * 40, checked_head="a" * 40, response=None):
+def execute_native_check(flow, tmp_path, runs, *, projection="b" * 40, checked_head="a" * 40, response=None,
+                         auth_status=200, public_status=200, recover_on=0):
     commands = tmp_path / "bin"
     commands.mkdir(parents=True)
     git = commands / "git"
@@ -264,10 +268,23 @@ def execute_native_check(flow, tmp_path, runs, *, projection="b" * 40, checked_h
         "printf '160000 commit %s\\tcomponents/AstralProjection\\n' \"$TEST_PROJECTION\";;\n"
         "  *) exit 2;;\nesac\n", encoding="utf-8")
     curl = commands / "curl"
-    curl.write_text(
-        "#!/bin/sh\nfor arg do url=\"$arg\"; done\n"
-        "printf '%s\\n' \"$url\" >> \"$API_QUERY_LOG\"\n"
-        "printf '%s' \"$FAKE_RESPONSE\"\n", encoding="utf-8")
+    curl.write_text("""#!/bin/sh
+access=public
+while [ "$#" -gt 1 ]; do
+    case "$1" in
+        --output) output=$2; shift 2 ;;
+        -H) if [ "$2" = "Authorization: Bearer $GH_TOKEN" ]; then access=authenticated; fi; shift 2 ;;
+        *) shift ;;
+    esac
+done
+echo "$access" >> "$ACCESS_LOG"
+echo "$1" >> "$API_QUERY_LOG"
+if [ "$access" = authenticated ]; then status=$AUTH_STATUS; else status=$PUBLIC_STATUS; fi
+if [ "$RECOVER_ON" -gt 0 ] && [ "$(wc -l < "$ACCESS_LOG")" -ge "$RECOVER_ON" ]; then status=200; fi
+printf '%s' "$FAKE_RESPONSE" > "$output"
+printf '%s' "$status"
+[ "$status" != 000 ]
+""", encoding="utf-8")
     sleeper = commands / "sleep"
     sleeper.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     for command in (git, curl, sleeper):
@@ -277,7 +294,9 @@ def execute_native_check(flow, tmp_path, runs, *, projection="b" * 40, checked_h
         "PATH": str(commands) + os.pathsep + env["PATH"],
         "DECIDED_HEAD": "a" * 40, "TEST_HEAD": checked_head, "TEST_PROJECTION": projection,
         "FAKE_RESPONSE": response if response is not None else json.dumps({"workflow_runs": runs}),
-        "API_QUERY_LOG": str(tmp_path / "queries"),
+        "API_QUERY_LOG": str(tmp_path / "queries"), "ACCESS_LOG": str(tmp_path / "access"),
+        "GH_TOKEN": "scoped-test-credential", "RUNNER_TEMP": str(tmp_path),
+        "AUTH_STATUS": str(auth_status), "PUBLIC_STATUS": str(public_status), "RECOVER_ON": str(recover_on),
     })
     result = subprocess.run(
         ["bash", "-c", step(flow["jobs"]["native-check"], "Wait for pinned Projection Apple CI")["run"]],
@@ -293,6 +312,32 @@ def test_native_check_accepts_only_exact_pinned_main_push_and_queries_that_sourc
         "https://api.github.com/repos/AstralDeep/AstralProjection/actions/workflows/apple-ci.yml/runs?"
         f"head_sha={'b' * 40}&event=push&branch=main&per_page=100"
     ]
+
+
+@pytest.mark.parametrize("auth_status,public_status,recover_on,expected,access", [
+    (403, 200, 0, 0, ["authenticated", "public"]),
+    (404, 200, 0, 0, ["authenticated", "public"]),
+    (403, 429, 3, 0, ["authenticated", "public", "authenticated"]),
+    ("000", 503, 4, 0, ["authenticated", "public", "authenticated", "public"]),
+    (403, 403, 0, 1, ["authenticated", "public"] * 26),
+    (404, 404, 0, 1, ["authenticated", "public"]),
+    (400, 200, 0, 1, ["authenticated"]),
+])
+def test_native_check_recovers_only_from_transient_public_api_failures(
+        flow, tmp_path, auth_status, public_status, recover_on, expected, access):
+    result, queries = execute_native_check(flow, tmp_path, [native_run()], auth_status=auth_status,
+                                          public_status=public_status, recover_on=recover_on)
+    assert result.returncode == expected, result.stderr
+    assert (tmp_path / "access").read_text().splitlines() == access
+    assert len(set(queries)) == 1
+    assert "scoped-test-credential" not in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("payload", ["not json", json.dumps({"workflow_runs": [native_run(conclusion="failure")]})])
+def test_native_check_rejects_unqualified_public_response(flow, tmp_path, payload):
+    result, queries = execute_native_check(flow, tmp_path, [], response=payload, auth_status=403)
+    assert result.returncode != 0
+    assert len(queries) == 2
 
 
 def test_native_check_accepts_exact_green_even_with_earlier_failed_run(flow, tmp_path):
@@ -380,24 +425,36 @@ def test_the_bundle_release_keeps_every_signing_and_trust_gate(flow, text):
 
 
 def test_node_pack_and_framework_producers_are_read_only_and_bounded(flow):
-    for name in ("apple-artifacts", "node-pack"):
+    for name in ("apple-input", "apple-artifacts", "node-pack"):
         job = flow["jobs"][name]
-        assert job["runs-on"] == "macos-26" and job["timeout-minutes"] == 30
-        assert job["permissions"] == {"contents": "read"}
+        assert "macos-26" in job["runs-on"] and job["timeout-minutes"] <= 30
+        assert job["permissions"]["contents"] == "read" and set(job["permissions"].values()) == {"read"}
         assert condition(job).startswith(f"{GUARD} && ")
-        assert "secrets." not in yaml.safe_dump(job)
+        assert "secrets." not in yaml.safe_dump(job) and "environment" not in job
     assert flow["jobs"]["node-pack"]["needs"] == ["decide", "apple-artifacts"]
 
 
 def test_framework_producer_preserves_all_slices_and_source_bound_artifact_contract(flow):
+    decision = step(flow["jobs"]["decide"], "Select qualified Apple framework or pinned source builds")
+    assert 'git rev-parse HEAD:components/AstralKernel' in decision["run"]
+    assert 'release_apple_framework.py plan "$kernel"' in decision["run"]
+    assert decision["env"] == {"GH_TOKEN": "${{ github.token }}"}
+    inputs = flow["jobs"]["apple-input"]
+    assert inputs["strategy"]["matrix"]["target"] == "${{ fromJSON(needs.decide.outputs.apple_inputs) }}"
+    prepare = step(inputs, "Build the pinned Apple target")
+    assert prepare["if"] == "${{ matrix.target != 'qualified' }}"
+    assert "scripts/select-xcode.sh" in prepare["run"] and "scripts/build-apple-target.sh" in prepare["run"]
+    download = step(inputs, "Download the selected Kernel archive")
+    assert download["if"] == "${{ matrix.target == 'qualified' }}"
+    assert "repos/AstralDeep/AstralKernel/actions/artifacts/$ARTIFACT/zip" in download["run"]
     job = flow["jobs"]["apple-artifacts"]
-    assert "environment" not in job
-    assert job["env"] == {"XCODE_VERSION": "26.6", "XCODE_BUILD": "17F113"}
+    assert job["needs"] == ["decide", "apple-input"]
     build = step(job, "Build and verify the pinned Apple Kernel framework")["run"]
     assert 'test "$(git rev-parse HEAD)" = "$DECIDED_HEAD"' in build
-    assert "rustup target add --toolchain 1.99.1 aarch64-apple-darwin x86_64-apple-darwin aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios" in build
-    assert "components/AstralKernel/scripts/build-apple.sh" in build
-    assert '--kind apple --expected-source "$(git -C components/AstralKernel rev-parse HEAD)"' in build
+    assert 'release_apple_framework.py restore' in build
+    assert "components/AstralKernel/scripts/assemble-apple.sh" in build
+    assert 'test "$(git -C components/AstralKernel rev-parse HEAD)" = "$kernel"' in build
+    assert '--kind apple --expected-source "$kernel"' in build
     upload = job["steps"][-1]
     assert upload["with"] == {
         "name": "macos-apple-artifacts-${{ needs.decide.outputs.head }}",

@@ -1,8 +1,8 @@
 # Caller events and consent visibility
 
-This contract fixes what a principal can observe about a personal node. It commits the refusal codes a caller receives, the request lifecycle of the `/mcp` and `/a2a` doors, and who may see a pending consent. Format version `astral.caller-events/v1`.
+This contract fixes what a principal can observe about a personal node. It commits the refusal codes a caller receives, the request lifecycle of the `/mcp` and `/a2a` doors, and who may see a pending consent. Format version `astral.caller-events/v2`.
 
-Reference code: `reference/caller_events.py`. Generator: `reference/generate_caller_event_vectors.py`. Vectors: `vectors/caller-events-v1.json`. The ticket and proof formats stay in [caller-ticket.md](caller-ticket.md).
+Reference code: `reference/caller_events.py`. Generator: `reference/generate_caller_event_vectors.py`. Vectors: `vectors/caller-events-v2.json`. The ticket and proof formats stay in [caller-ticket.md](caller-ticket.md).
 
 ## 1. Scope rule
 
@@ -56,16 +56,42 @@ The `/a2a` door answers a caller's message with one A2A task that ends completed
 
 ## 5. Consent visibility
 
-The consent itself is unchanged. The Kernel engine pauses, an owner device signs with its presence key over the action digest, the approval is bound into the ticket, and the executor verifies it offline.
+The Kernel engine pauses before the effect. The owner device reviews the exact tool and arguments. Its presence signature binds the action digest, and the executor verifies the approval in the ticket.
 
 This section fixes who sees it.
 
 | Class | Pending consents | Consent signals |
 |---|---|---|
-| `owner-device` | The full list, through the Kernel's `pending_consents()` | The Kernel's turn progress events `ConsentRequested` and `ConsentResolved` |
+| `owner-device` | Full details for requests this device can decide, through the Kernel's `pending_consents()` | Local turn progress or a change to the signed mesh log |
 | `caller-ticket` on a door that starts no turn | None | None |
 | `caller-ticket` on a door that starts turns | None | `consent.blocked` and `consent.resumed`, for its own turn only |
 | `outside-service` | None | None |
+
+For a local turn, the initiating owner device decides its own pending actions.
+For a text request sent to a node, only the active owner device that sent the
+request may answer the node's challenge. Other roster members do not acquire
+approval authority by receiving chat history. The requester refreshes its
+pending list when chat records sync, even if it has no local turn running.
+The node verifies that the request, turn, proposed call, exact action and
+executing node still match. A remote approval binds these fields and the
+challenge in the presence-signed v2 consent proof. Existing local approvals
+use v1. An expired or interrupted turn cannot resume through a late decision.
+When PHI is involved both devices must remain eligible for that content.
+The node tracks the pending action locally and can stop the turn. Approval requires the requesting owner's presence signature. An independent executor verifies the presented approval without receiving a review prompt. The recipient check in the reference assumes the Kernel has already checked current roster membership and content visibility.
+
+### Relayed action proof
+
+The ticket carries a consent with exactly `v` (2), `kind` (`action`), `digest`, `device`, `clock`, `relay` and `sig`. The presence key on the requesting owner device signs the canonical fields excluding `sig` in the existing `astral.consent/v1` signing context. The top-level `device` identifies that signer. The action names the executing node.
+
+| Field in `relay` | Binding |
+|---|---|
+| `challenge` | ID of the node’s signed consent challenge |
+| `request` | ID of the text request from the reviewing device |
+| `turn` | ID of the turn answering that request |
+| `call` | Identifier of the proposed tool call within the turn |
+| `node` | Device ID of the node handling the turn |
+
+The executor checks the signed action and its matching chat records before claiming the effect. A verifier missing otherwise-valid signed evidence may return `ticket.consent_sync_pending` and check again after sync. A refusal, expiry or missing proof at the end of that wait leaves the effect unclaimed. The local v1 proof follows the original ticket contract.
 
 The visibility class of a door is `full`, `own-redacted` or `none`, in the order of the rows above. Rows two and four are both `none`.
 
@@ -93,6 +119,6 @@ The reference answers a visibility question with `true` or `false`. It refuses b
 
 ## 8. Versioning
 
-Sections 3 and 4 describe shipped behavior. Section 5 is in force for the owner and caller rows that have producers, and it reserves the redacted pair.
+Version 2 restricts a delegated node consent to the requesting owner device and adds a log-change signal for that device. The caller door behavior remains compatible with version 1. Sections 3 and 4 describe shipped behavior. Section 5 is in force for the owner and caller rows that have producers, and it reserves the redacted pair.
 
 A change to a code's class, to the lifecycle or to a visibility row raises the format version. The document, the vectors and the reference change together.

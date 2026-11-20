@@ -112,7 +112,9 @@ def code_of(response: httpx.Response) -> str:
 
 
 @asynccontextmanager
-async def served(tmp_path, monkeypatch, *, bind: bool = True, host: Optional[Host] = None) -> AsyncIterator[Door]:
+async def served(
+    tmp_path, monkeypatch, *, bind: bool = True, host: Optional[Host] = None, app: Optional[FastAPI] = None,
+) -> AsyncIterator[Door]:
     async with dev_node(tmp_path, monkeypatch, bind=bind) as mesh:
         previous = node_mesh.current()
         node_mesh.install(mesh.node)
@@ -122,9 +124,10 @@ async def served(tmp_path, monkeypatch, *, bind: bool = True, host: Optional[Hos
             owner = node_identity.owner_id_for_mesh((await mesh.node.status())["mesh_id"])
             await publish_catalog(mesh, OrchestratorCalls(host).published_tools(owner))
             await wait_for_caller_pause(mesh)
-            app = FastAPI()
-            install_mcp_server(app, host, public_base_url=BASE)
-            setup_orchestrator_a2a(app, host)
+            if app is None:
+                app = FastAPI()
+                install_mcp_server(app, host, public_base_url=BASE)
+                setup_orchestrator_a2a(app, host)
             transport = httpx.ASGITransport(app=app)
             async with httpx.AsyncClient(transport=transport, base_url=BASE) as client:
                 yield Door(mesh, client, host)

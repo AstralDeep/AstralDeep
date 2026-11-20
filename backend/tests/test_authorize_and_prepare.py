@@ -184,6 +184,32 @@ async def test_policy_deny_refuses(orch, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_policy_consumes_one_time_token_before_agent_and_stream_dispatch(orch, monkeypatch):
+    from orchestrator import transaction_token
+
+    monkeypatch.setenv("FF_POLICY_ENGINE", "true")
+    monkeypatch.setenv("POLICY_RULES", json.dumps([{"when": {"tool": "t1"}, "effect": "require_token"}]))
+    monkeypatch.setenv("TXN_TOKEN_KEY", "policy-fixture-key")
+    args = {"q": "weather"}
+    token = transaction_token.mint("a1", "u1", "t1", args)
+    lookup = AsyncMock()
+    orch._auto_subscribe_stream_artifacts = lookup
+    ws = MagicMock()
+
+    refused = await _auth(orch, args=args, ws=ws)
+    assert "needs a valid one-time authorization token" in _msg(refused)
+    lookup.assert_not_awaited()
+    prepared = await _auth(orch, args={**args, "_txn_token": token}, ws=ws)
+    assert isinstance(prepared, PreparedDispatch)
+    assert prepared.args["q"] == "weather" and "_txn_token" not in prepared.args
+    assert prepared.stream_params == args
+    lookup.assert_awaited_once_with(ws, "c1", "u1", "t1", args)
+    replay = await _auth(orch, args={**args, "_txn_token": token}, ws=ws)
+    assert "already used" in _msg(replay)
+    assert lookup.await_count == 1
+
+
+@pytest.mark.asyncio
 async def test_policy_rewrite_updates_args_and_stream_params(orch, monkeypatch):
     from orchestrator import policy
     monkeypatch.setattr(policy, "policy_enabled", lambda: True)
@@ -219,6 +245,18 @@ async def test_unrequested_destructive_action_stops_at_exact_source_review(orch,
     assert out.response.error["code"] == "source_bound_approval_required"
     assert not out.response.ui_components
     orch._execute_with_retry.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_kernel_authority_covers_egress_and_preserves_irreversible_review(orch, monkeypatch):
+    from orchestrator import node_mesh_admission
+
+    monkeypatch.setenv("FF_HITL_HIGHRISK", "true")
+    monkeypatch.setattr(node_mesh_admission, "source_bound_capability", AsyncMock(return_value=object()))
+    assert isinstance(await _auth(orch, tool="send_email"), PreparedDispatch)
+    denied = await _auth(orch, tool="delete_records")
+    assert isinstance(denied, GateRefusal)
+    assert denied.response.error["code"] == "confirmation_required"
 
 
 @pytest.mark.asyncio

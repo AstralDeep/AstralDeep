@@ -2,11 +2,10 @@
 
 [![CI](https://github.com/AstralDeep/AstralDeep/actions/workflows/ci.yml/badge.svg)](https://github.com/AstralDeep/AstralDeep/actions/workflows/ci.yml)
 
-AstralDeep is a clinical-AI, multi-agent platform. A single FastAPI orchestrator with a
-PostgreSQL backend coordinates first-party, user-authored, and remote agents. It serves the REST
-API and the WebSocket/A2A agent transport on one port (8001). The Kernel engine is the only turn engine. The
-Apple clients embed it, and the node answers mesh requests on it. A web client is a later
-application and the node hosts none.
+AstralDeep is a clinical-AI, multi-agent platform. Its FastAPI service is a node
+in the owner's mesh. It exposes the node API and optional MCP, A2A and worker
+transports on port 8001. The shared Kernel runs turns on Apple devices and on
+the node. AstralPlane supplies SQLite or PostgreSQL for durable state.
 
 The design rule throughout is **"LLM proposes, code decides"**. Models may draft layouts,
 plans, or artifacts, but deterministic code validates, authorizes, bounds, and renders them.
@@ -31,41 +30,25 @@ plans, or artifacts, but deterministic code validates, authorizes, bounds, and r
 
 The user interface is server-driven along one pipeline:
 
-**AstralPrimitives defines → AstralProjection renders and adapts → AstralDeep orchestrates.**
+**AstralPrimitives defines → the base authorizes and adapts → AstralProjection renders.**
 
-There is no single-page application. AstralDeep composes responses from typed UI primitives.
-AstralProjection renders them to sanitized HTML for the web, or to structured frames for the
-native clients, and its ROTE layer adapts them to each device's declared capabilities. Durable
-state flows through AstralPlane, and agent authority can be enforced by an external LETS warden.
+Mac and iPhone clients render structured UI from their local signed mesh log.
+The watch uses its paired iPhone. AstralKernel runs turns and validates tool
+authority. AstralDeep answers mesh requests, runs protected tool dispatch,
+and uses AstralPlane for durable state. ROTE adapts the UI to device
+capabilities. The node exposes discovery, pairing and operator controls,
+and can serve MCP, A2A and authenticated worker connections.
 
 ```mermaid
 flowchart LR
-    subgraph Clients
-        Web[Web browser]
-        Win[Windows]
-        And[Android]
-        Apple[iOS / macOS / watchOS]
-    end
-    subgraph Deep[AstralDeep orchestrator :8001]
-        API[REST + WebSocket]
-        Orch[Orchestration, auth,<br/>permissions, delegation]
-        Agents[Bundled agents<br/>in-process]
-    end
-    Prims[AstralPrimitives<br/>primitive definitions]
-    Proj[AstralProjection<br/>renderer, ROTE, clients]
-    Plane[AstralPlane<br/>durable state]
-    PG[(PostgreSQL)]
-    LETS[LETS warden<br/>external, optional]
-    Remote[BYO and remote<br/>compute agents]
-
-    Clients --> API
-    API --> Orch
-    Orch --> Agents
-    Orch --> Remote
-    Orch -- composes --> Prims
-    Orch -- renders through --> Proj
-    Orch --> Plane --> PG
-    Orch -. receipts .-> LETS
+    Owner[Mac or iPhone] <-->|Signed mesh log| Kernel[Kernel on the node]
+    Watch[Watch] <--> Owner
+    Caller[MCP or A2A caller] -->|Caller ticket| Deep[AstralDeep]
+    Kernel -->|Verified tool call| Deep
+    Deep --> Agents[First-party agents]
+    Deep --> Vessel[Vessel executor]
+    Deep --> Plane[AstralPlane]
+    Deep -. Delegated authority .-> LETS[LETS]
 ```
 
 Bundled first-party agents run in-process by default. External, draft, and user-authored agents
@@ -104,7 +87,7 @@ fails closed when an installed component does not match its pin. See
 | `vessel/` | The `astralvessel` package and command: the sandbox executor for agent tools. It has its own manifest, tests, lint, and release tags. |
 | `examples/` | Small runnable examples, such as an MCP server that streams progress. |
 | `backend/agents/` | Bundled first-party agents. |
-| `backend/persistent_agents/` | Durable, lease-based assignment runtime for long-running work. |
+| `backend/persistent_agents/` | Historical assignment reads, owner controls and recovery for retired Python episodes. |
 | `backend/shared/` | Shared protocol structures (`protocol.py`), the approved outbound HTTP path (`external_http.py`), and other cross-cutting helpers. |
 | `backend/llm_config/`, `backend/personalization/`, `backend/scheduler/`, `backend/voice_agent/`, `backend/audit/` | Per-user LLM configuration, memory and personalization, scheduled jobs, conversational voice, and the audit trail. |
 | `backend/tests/` and `*/tests/` | Backend test suites. |
@@ -151,27 +134,26 @@ Docker build must supply it with `--build-context kernel-artifacts=build/kernel-
 Missing bindings or a digest mismatch fail the build; the real-Kernel tests require both the
 native binding and mailbox.
 
-When the container reports healthy, the node answers on <http://localhost:8001>. It serves no page at `/`. Useful endpoints:
+When the container reports healthy, check the node at <http://localhost:8001/docs>.
+The following endpoints are available for installation checks.
 
 | Endpoint | Purpose |
 |---|---|
 | `/healthz` | Liveness |
 | `/readyz` | Readiness (the compose health check) |
 | `/docs` | Interactive API documentation |
+| `/api/node/descriptor` | Node identity, capabilities and mesh status |
 
-The example environment runs in development mode (`ASTRAL_ENV=development`). A personal node
-(`ASTRAL_NODE_PROFILE=personal`) has no sign-in: run `python scripts/dev_mesh.py` to create a
-dev owner device, pair the node and mint a caller ticket.
+The example environment runs in development mode (`ASTRAL_ENV=development`).
+For a seeded development mesh, `python scripts/dev_mesh.py --help` lists the
+commands for creating an owner device, pairing and minting a caller ticket.
 
 ### First connection and service verification
 
-The app guides the first connection: it shows the endpoint you reached
-and whether it matches an address this deployment publishes, real readiness for the
-database, voice workers, agent publication, and the optional LETS warden
-(each with an actionable fix when not ready), and the key rules. Astral has no sign-in, and
-provider keys are entered only in the encrypted in-product LLM setup, never typed by agents. The same report is available
-at `GET /api/connection/status` (HTTP 503 when a required service is not ready), and the
-server pushes this guide when a required service is down at registration.
+Check `/readyz` for persistence and LETS readiness. On the node host, request
+a pairing offer and approve it on your Mac or iPhone. After pairing, check
+`mesh.state`, `mesh.mesh_id` and `mesh.member_id` in the node descriptor.
+See [Pair a device](docs/personal-node.md#pair-a-device).
 
 ### Diagnose an installation
 
@@ -193,11 +175,9 @@ candidate-bound staging qualification.
 
 ### Connect a language model
 
-The product ships with no LLM credential. Each user connects their own provider through the
-first-run dialog (later under Settings → LLM settings). The key is stored per user and
-encrypted under `CREDENTIAL_ENCRYPTION_KEY`. Administrators separately configure a System LLM
-for background work such as scheduled jobs and knowledge synthesis. Provider keys are never
-read from the environment.
+Add the model provider on your Mac or iPhone. Pasted keys sync sealed to the
+owner's devices. A credential obtained by signing in stays in the keystore
+of the device where you signed in. See the [credential item contract](specs/106-sign-in-free-clients/contracts/credential-items.md).
 
 ## Configuration
 
@@ -276,20 +256,19 @@ production image to the GitHub Container Registry with an immutable commit tag.
 
 | Client | Technology | Source |
 |---|---|---|
-| Web | Server-rendered HTML with vanilla JavaScript and CSS, served by AstralDeep | AstralProjection `backend/webrender/` |
-| Windows | Python and PySide6 | AstralProjection `windows-client/` |
-| Android | Kotlin and Jetpack Compose | AstralProjection `android-client/` |
+| Web renderer | HTML, vanilla JavaScript and CSS for a future application-layer client | AstralProjection `backend/webrender/` |
+| Windows (paused) | Python and PySide6 | AstralProjection `windows-client/` |
+| Android (paused) | Kotlin and Jetpack Compose | AstralProjection `android-client/` |
 | iOS, macOS, watchOS | Swift and SwiftUI | AstralProjection `apple-clients/` |
 
-Every client renders the same server-owned chrome, settings surfaces, and theme. A change to
-the UI protocol, chrome, theme, or layout lands on every in-scope client in the same feature,
-guarded by the protocol manifest and each client's drift tests. The native clients pair with a node
-and need no sign-in.
+Mac and iPhone pair with the owner's mesh and render from their local signed
+logs. The watch connects through its paired iPhone. Android and Windows show
+the availability screen while their Kernel ports await qualification.
 
-Client releases run from protected workflows in this repository over the pinned AstralProjection
-revision. Windows releases are cut from `v*` tags, Apple releases from `apple-v*` tags, and
-Android releases are started manually. Signing and publication run only in separately
-protected jobs.
+The macOS release workflow runs after successful CI on a push to `main`. It
+builds from the exact Deep commit and pinned components, then publishes a
+signed direct download under a `macos-v*` tag. See the
+[macOS release workflow](.github/workflows/release-macos.yml).
 
 ## Agents
 
@@ -349,7 +328,7 @@ improvement, use the [issue template](https://github.com/AstralDeep/AstralDeep/i
 | [Production deployment](docs/production-deployment.md) | Deploying and operating AstralDeep in production |
 | [Run your own node](docs/personal-node.md) | Installing, pairing and operating a personal node |
 | [Component composition](docs/component-composition.md) | Component pins, verification, and recovery |
-| [Bring-your-own client agents](docs/byo-client-agents.md) | Operating personal agents |
+| [Bring-your-own client agents](docs/byo-client-agents.md) | Legacy desktop tunnel and feature-flag reference |
 | [Your own agents and skills](docs/your-own-agents-and-skills.md) | Authoring agents and skills |
 | [Remote compute agents](docs/remote-compute-agents.md) | Operating remote-compute agents |
 | [Remote computer control](docs/remote-computer-control.md) | Controlling a remote computer |

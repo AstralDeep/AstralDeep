@@ -415,6 +415,7 @@ jobs:
           POSTGRES_DB: ad_gate_plane
         ports: ["5432:5432"]
         options: >-
+          --tmpfs /var/lib/postgresql/data:rw,size=4g
           --health-cmd "pg_isready -U astral -d ad_gate_plane"
           --health-interval 5s --health-timeout 5s --health-retries 12
     steps:
@@ -450,7 +451,7 @@ jobs:
           set -euo pipefail
           base_sha="$(jq -er .base_deep_sha plane/build/backend-web/consumer-baseline.json)"
           python scripts/ci_plane_lane.py --base "$base_sha" --head "$CANDIDATE_SHA" --github-output "$GITHUB_OUTPUT"
-      - name: Relax durability on the throwaway CI server only
+      - name: Configure the memory-backed Plane test database
         working-directory: plane
         run: |
           set -euo pipefail
@@ -462,7 +463,13 @@ jobs:
           import psycopg2
 
           dsn = os.environ["ASTRALPLANE_TEST_POSTGRES_DSN"]
-          wanted = {"fsync": "off", "synchronous_commit": "off", "full_page_writes": "off"}
+          wanted = {
+              "fsync": "off",
+              "synchronous_commit": "off",
+              "full_page_writes": "off",
+              "random_page_cost": "1",
+              "join_collapse_limit": "4",
+          }
           admin = psycopg2.connect(dsn)
           admin.autocommit = True
           with admin.cursor() as cursor:
@@ -859,6 +866,7 @@ jobs:
             backend/tests/test_ci_plane_lane.py
             scripts/tests/test_prepare_plane_upgrade_baseline.py
             scripts/tests/test_package_macos_candidate.py
+            scripts/tests/test_release_apple_framework.py
             backend/tests/test_release_macos.py
             backend/tests/test_next_macos_release.py
             backend/tests/test_macos_release_notes.py

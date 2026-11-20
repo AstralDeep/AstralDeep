@@ -112,8 +112,6 @@ class ReplayMemoryFull(Exception):
 
 
 class Replays:
-    # A ticket pays for one effect. The kernel verifies each ticket afresh, so the executor keeps the ids it has run
-    # in a file that survives a restart. An id is kept for the retention window, which must cover a ticket's life.
     def __init__(self, path: Path, retention_s: int = RETENTION_SECONDS, limit: int = SEEN_LIMIT,
                  clock: Callable[[], float] = time.time):
         self._retention, self._limit, self._clock = retention_s, limit, clock
@@ -124,14 +122,19 @@ class Replays:
         self._db.execute("CREATE TABLE IF NOT EXISTS spent (id TEXT PRIMARY KEY, expires REAL NOT NULL)")
         path.chmod(0o600)
 
-    def first_use(self, key: str) -> bool:
-        with self._lock:
+    def first_use(self, key: str, expires_s: int) -> bool:
+        with self._lock, self._db:
+            self._db.execute("BEGIN IMMEDIATE")
             now = self._clock()
+            if type(expires_s) is not int or not now < expires_s < 2**63 - 1:
+                raise Refused("ticket.expired")
             self._db.execute("DELETE FROM spent WHERE expires <= ?", (now,))
+            if self._db.execute("SELECT 1 FROM spent WHERE id = ?", (key,)).fetchone():
+                return False
             if self._db.execute("SELECT COUNT(*) FROM spent").fetchone()[0] >= self._limit:
                 raise ReplayMemoryFull
-            return self._db.execute("INSERT OR IGNORE INTO spent VALUES (?, ?)",
-                                    (key, now + self._retention)).rowcount == 1
+            self._db.execute("INSERT INTO spent VALUES (?, ?)", (key, max(now + self._retention, expires_s + 1)))
+            return True
 
     def close(self) -> None:
         self._db.close()
@@ -217,8 +220,10 @@ def executor_app(deployment: Deployment, verifier: Verifier, runners: dict[str, 
         if owner not in ("", bound_owner) or workspace not in (None, bound_workspace):
             return _refusal("request.call_mismatch", 403)
         try:
-            if not replays.first_use(verified.action_digest):
+            if not replays.first_use(verified.action_digest, verified.expires_s):
                 return _refusal("ticket.replayed", 403)
+        except Refused as exc:
+            return _refusal(exc.code, 403)
         except ReplayMemoryFull:
             return _refusal("executor.replay_memory_full", 429)
         output, error = await runners[agent_id].run(name, arguments, bound_workspace, owner=bound_owner)

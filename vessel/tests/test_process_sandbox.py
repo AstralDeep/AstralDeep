@@ -8,6 +8,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -206,7 +207,7 @@ class Verifier:
         if self.fail:
             raise Refused(self.fail)
         return Verified(mesh="mesh-1", device="device-1", turn="turn-1", agents=("kernel",),
-                        action_digest=f"sha256:{self.calls:064d}")
+                        expires_s=int(time.time()) + 300, action_digest=f"sha256:{self.calls:064d}")
 
 
 def executor_stack(world: dict, process: bool = True):
@@ -289,7 +290,7 @@ def test_a_replayed_ticket_is_refused_in_process_mode():
 
         async def same(ticket_json, action_json, effect):
             return Verified(mesh="mesh-1", device="device-1", turn="turn-1", agents=("kernel",),
-                            action_digest="sha256:" + "1" * 64)
+                            expires_s=int(time.time()) + 300, action_digest="sha256:" + "1" * 64)
 
         verifier.verify = same
 

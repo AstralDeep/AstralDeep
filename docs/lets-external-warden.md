@@ -96,8 +96,6 @@ orchestrator additions (read-only trust mount, two executor volumes,
 - `/readyz` carries a `lets` object (`mode`, `status`, `reason`,
   `governed_effects_permitted`, `observed_at_ns`). Off mode is exactly
   `{"mode":"off","status":"disabled"}`.
-- `GET /lets/health` (admin bearer) returns the full redacted projection
-  including the redacted host configuration.
 - The reachability probe (`GET /health/ready` on the warden) runs on a
   daemon thread, single-flight, cached for `LETS_HEALTH_PROBE_INTERVAL_SECONDS`.
 
