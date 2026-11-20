@@ -3,3 +3,4 @@ compose.generated.yml
 capabilities/
 capabilities-ledger.json
 dispatch-out.txt
+registry-cache/
