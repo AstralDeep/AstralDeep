@@ -6,18 +6,15 @@ class/outcome, and successful silent refresh stays audit-silent.
 from __future__ import annotations
 
 import asyncio
-import inspect
 import json
 import os
 import sys
-import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 import httpx
 import pytest
-from cryptography.fernet import Fernet
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
@@ -29,8 +26,6 @@ os.environ.setdefault("AUDIT_HMAC_KEY_ID", "k1")
 from audit.hooks import record_auth_event, record_workspace_event  # noqa: E402
 from audit.recorder import Recorder, get_recorder, set_recorder  # noqa: E402
 from audit.repository import AuditRepository  # noqa: E402
-from orchestrator import web_auth  # noqa: E402
-from tests.helpers.session_plane_runtime import web_session_store  # noqa: E402
 from tests.helpers.voice_plane_runtime import isolated_plane_runtime  # noqa: E402
 
 
@@ -243,101 +238,3 @@ def _fake_async_client(payload=None, fail=False):
     return _FakeAsyncClient
 
 
-def _refresh_env(monkeypatch, db):
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
-    monkeypatch.setenv("KEYCLOAK_AUTHORITY", "http://keycloak.test/realms/astral")
-    monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-frontend")
-    monkeypatch.delenv("KEYCLOAK_CLIENT_SECRET", raising=False)
-    monkeypatch.setenv("WEB_SESSION_ENC_KEY", Fernet.generate_key().decode())
-    store = web_session_store(db)
-    monkeypatch.setattr(web_auth, "_get_store", lambda: store)
-    return store
-
-
-def test_refresh_session_success_path_is_audit_silent(db, monkeypatch):
-    store = _refresh_env(monkeypatch, db)
-    monkeypatch.setattr(
-        web_auth.httpx, "AsyncClient",
-        _fake_async_client({"access_token": "new-at", "refresh_token": "new-rt"}),
-    )
-
-    audit_calls = []
-
-    async def capture_audit(action, sub, description, *, outcome="success"):
-        audit_calls.append((action, sub, outcome))
-
-    monkeypatch.setattr(web_auth, "_audit", capture_audit)
-
-    kill_calls = []
-    real_kill = web_auth._kill_session
-
-    async def capture_kill(sid, sess, **kw):
-        kill_calls.append(sid)
-        await real_kill(sid, sess, **kw)
-
-    monkeypatch.setattr(web_auth, "_kill_session", capture_kill)
-
-    user_id = _uid()
-    sess = {
-        "access_token": "old-at", "refresh_token": "rt-old",
-        "sub": user_id, "created_at": time.time(),
-    }
-    sid = f"sid-{uuid.uuid4().hex[:8]}"
-    store.create(sid, user_id=user_id, access_token="old-at", refresh_token="rt-old",
-                 hard_max_seconds=3600)
-    sess["incarnation_id"] = store.get(sid)["incarnation_id"]
-    try:
-        out = asyncio.run(web_auth._refresh_session(sid, sess))
-        assert out is not sess
-        assert out["incarnation_id"] == sess["incarnation_id"]
-        assert out["access_token"] == "new-at"
-        assert out["refresh_token"] == "new-rt"
-        assert web_session_store(db).get(sid)["refresh_token"] == "new-rt"
-        assert audit_calls == []
-        assert kill_calls == []
-    finally:
-        store.delete(sid)
-
-
-def test_refresh_session_source_confines_audit_to_failure_branch():
-    src = inspect.getsource(web_auth._refresh_session)
-    assert "_audit(" not in src, "success path must not audit"
-    assert src.count('audit_action="token_refresh_failed"') == 1
-    assert src.count("_kill_session(") == 1
-    kill_src = inspect.getsource(web_auth._kill_session)
-    assert "_audit(" in kill_src
-    assert "if audit_action:" in kill_src
-
-
-def test_refresh_session_refusal_audits_token_refresh_failed_end_to_end(db, recorder, monkeypatch):
-    store = _refresh_env(monkeypatch, db)
-    monkeypatch.setattr(web_auth.httpx, "AsyncClient", _fake_async_client(fail=True))
-
-    user_id = _uid()
-    sid = f"sid-{uuid.uuid4().hex[:12]}"
-    sess = {
-        "access_token": "old-at", "refresh_token": "rt-dead",
-        "sub": user_id, "created_at": time.time(),
-    }
-    web_auth._SESSIONS[sid] = sess
-    store.create(sid, user_id=user_id, access_token="old-at", refresh_token="rt-dead",
-                 hard_max_seconds=3600)
-    sess["incarnation_id"] = store.get(sid)["incarnation_id"]
-    try:
-        out = asyncio.run(web_auth._refresh_session(sid, sess))
-        assert out is None
-        assert sid not in web_auth._SESSIONS
-        assert web_session_store(db).get(sid) is None
-
-        rows = _audit_rows(db, user_id)
-        assert len(rows) == 1
-        row = rows[0]
-        assert row["event_class"] == "auth"
-        assert row["action_type"] == "auth.token_refresh_failed"
-        assert row["outcome"] == "failure"
-        assert row["actor_user_id"] == user_id
-        assert "refresh" in row["description"].lower()
-    finally:
-        web_auth._SESSIONS.pop(sid, None)
-        store.delete(sid)
-        _purge_audit(db, user_id)

@@ -5,8 +5,11 @@ The bootstrap grammar from scripts/verify_release_evidence_bootstrap.py is run o
 from __future__ import annotations
 
 import importlib.util
+import json
+import os
 import re
 import shlex
+import subprocess
 import sys
 from pathlib import Path
 
@@ -20,6 +23,7 @@ SECRETS = {
     "APPLE_DEVELOPER_ID_APP_CERT_P12_BASE64", "APPLE_DEVELOPER_ID_CERT_PASSWORD", "ASC_KEY_ID", "ASC_ISSUER_ID",
     "ASC_KEY_P8_BASE64", "SPARKLE_ED25519_PRIVATE_KEY",
 }
+PACKS = {"node-pack-linux-aarch64", "node-pack-linux-x86-64"}
 PBXPROJ = "components/AstralProjection/apple-clients/AstralApp/AstralApp.xcodeproj/project.pbxproj"
 
 
@@ -68,11 +72,121 @@ def test_runs_after_green_ci_on_main_or_by_dispatch_that_defaults_to_a_dry_run(f
     assert on["workflow_run"] == {"workflows": ["CI"], "types": ["completed"], "branches": ["main"]}
     dry_run = on["workflow_dispatch"]["inputs"]["dry_run"]
     assert dry_run["type"] == "boolean" and dry_run["default"] is True
+    framework = on["workflow_dispatch"]["inputs"]["framework_only"]
+    assert framework["type"] == "boolean" and framework["default"] is False
     assert flow["permissions"] == {"contents": "read"}
     assert flow["concurrency"] == {
         "group": "release-macos-${{ github.event_name == 'workflow_dispatch' && inputs.dry_run != false && 'dry-run' || 'publish' }}",
         "cancel-in-progress": False,
     }
+
+
+def workflow_allows(entry, *, event="workflow_dispatch", ref="refs/heads/main", dry_run=True,
+                    framework_only=False, skip="false", hold=""):
+    values = {
+        "github.event_name": event, "github.ref": ref, "github.repository": "AstralDeep/AstralDeep",
+        "github.event.workflow_run.conclusion": "success", "github.event.workflow_run.event": "push",
+        "github.event.workflow_run.head_branch": "main",
+        "github.event.workflow_run.head_repository.full_name": "AstralDeep/AstralDeep",
+        "inputs.dry_run": dry_run, "inputs.framework_only": framework_only,
+        "needs.decide.outputs.skip": skip, "needs.native-check.result": "success",
+        "vars.RELEASE_MACOS_HOLD": hold,
+    }
+    expression = re.sub(r"(?<!')\btrue\b(?!')", "True", condition(entry))
+    expression = re.sub(r"(?<!')\bfalse\b(?!')", "False", expression)
+    expression = re.sub(r"\b(?:github|inputs|needs|vars)\.[\w.-]+", lambda match: repr(values[match[0]]), expression)
+    return eval(expression.replace("&&", " and ").replace("||", " or "), {"__builtins__": {}})
+
+
+@pytest.mark.parametrize("event,dry_run,framework_only,skip,expected", [
+    ("workflow_dispatch", False, False, "false", PACKS | {"decide", "native-check", "apple-input", "apple-artifacts", "node-pack", "release"}),
+    ("workflow_dispatch", True, False, "false", PACKS | {"decide", "native-check", "apple-input", "apple-artifacts", "node-pack", "release"}),
+    ("workflow_dispatch", True, True, "false", {"decide", "native-check", "apple-input", "apple-artifacts"}),
+    ("workflow_dispatch", True, False, "true", {"decide"}),
+    ("workflow_run", False, False, "false", PACKS | {"decide", "native-check", "apple-input", "apple-artifacts", "node-pack", "release"}),
+    ("workflow_run", False, False, "true", {"decide"}),
+])
+def test_framework_mode_runs_only_the_source_bound_producer_jobs(flow, event, dry_run, framework_only, skip, expected):
+    assert {name for name, job in flow["jobs"].items()
+            if workflow_allows(job, event=event, dry_run=dry_run, framework_only=framework_only, skip=skip)} == expected
+
+
+@pytest.mark.parametrize("dry_run,framework_only", [(True, False), (False, False), (True, True), (False, True)])
+def test_no_dispatch_mode_can_run_jobs_from_another_ref(flow, dry_run, framework_only):
+    assert all(not workflow_allows(job, ref="refs/heads/candidate", dry_run=dry_run, framework_only=framework_only)
+               for job in flow["jobs"].values())
+
+
+@pytest.mark.parametrize("dry_run,framework_only,rejected", [
+    (True, False, False), (False, False, False), (True, True, False), (False, True, True),
+])
+def test_framework_publication_is_rejected_before_checkout(flow, dry_run, framework_only, rejected):
+    decide = flow["jobs"]["decide"]
+    guard = step(decide, "Reject framework-only publication")
+    assert decide["steps"][0] == guard
+    assert workflow_allows(guard, dry_run=dry_run, framework_only=framework_only) is rejected
+    if rejected:
+        result = subprocess.run(["bash", "-c", guard["run"]], capture_output=True, text=True, check=False)
+        assert result.returncode != 0 and "::error::" in result.stdout
+        assert all(not workflow_allows(flow["jobs"][name], dry_run=dry_run, framework_only=framework_only)
+                   for name in ("node-pack", "release"))
+
+
+@pytest.mark.parametrize("dry_run,framework_only,expected", [
+    (True, False, False), (False, False, False), (True, True, True), (False, True, False),
+])
+def test_framework_decision_has_provider_visible_proof_only_for_safe_framework_mode(flow, dry_run, framework_only, expected):
+    marker = step(flow["jobs"]["decide"], "Confirm framework-only source decision")
+    assert workflow_allows(marker, dry_run=dry_run, framework_only=framework_only) is expected
+    assert marker["env"] == {
+        "DECIDED_HEAD": "${{ steps.decide.outputs.head }}", "EXPECTED_HEAD": "${{ github.sha }}",
+        "DECIDED_SKIP": "${{ steps.decide.outputs.skip }}",
+    }
+    for head, skip, valid in [("a" * 40, "false", True), ("b" * 40, "false", False), ("a" * 40, "true", False)]:
+        result = subprocess.run(["bash", "-c", marker["run"]], env={
+            **os.environ, "DECIDED_HEAD": head, "EXPECTED_HEAD": "a" * 40, "DECIDED_SKIP": skip,
+        }, capture_output=True, text=True, check=False)
+        assert (result.returncode == 0) is valid
+
+
+@pytest.mark.parametrize("framework_only,mac_skip,checked_head", [
+    (True, "true", "a" * 40), (False, "true", "a" * 40), (False, "false", "a" * 40),
+    (True, "true", "b" * 40), (False, "false", "b" * 40),
+])
+def test_framework_source_decision_does_not_allocate_a_mac_release(flow, tmp_path, framework_only, mac_skip, checked_head):
+    commands = tmp_path / "bin"
+    commands.mkdir()
+    git = commands / "git"
+    git.write_text('#!/bin/sh\nprintf "%s\\n" "$TEST_HEAD"\n', encoding="utf-8")
+    python = commands / "python"
+    python.write_text(
+        '#!/bin/sh\nprintf "%s\\n" "$*" > "$TEST_MAC_CALL"\n'
+        'printf "skip=%s\\nversion=2.0.1\\nbuild=97\\nprevious_target=prior\\n" "$TEST_SKIP" >> "$GITHUB_OUTPUT"\n',
+        encoding="utf-8")
+    git.chmod(0o755)
+    python.chmod(0o755)
+    decision = step(flow["jobs"]["decide"], "Decide the next release")
+    assert decision["env"]["FRAMEWORK_ONLY"] == "${{ github.event_name == 'workflow_dispatch' && inputs.framework_only == true }}"
+    output, called = tmp_path / "output", tmp_path / "mac-call"
+    env = {
+        **os.environ, "PATH": str(commands) + os.pathsep + os.environ["PATH"],
+        "EXPECTED_HEAD": "a" * 40, "FRAMEWORK_ONLY": str(framework_only).lower(),
+        "TEST_HEAD": checked_head,
+        "GITHUB_OUTPUT": str(output), "GITHUB_REPOSITORY": "AstralDeep/AstralDeep",
+        "TEST_MAC_CALL": str(called), "TEST_SKIP": mac_skip,
+    }
+    result = subprocess.run(["bash", "-c", decision["run"]], env=env, capture_output=True, text=True, check=False)
+    if checked_head != "a" * 40:
+        assert result.returncode != 0 and not output.exists() and not called.exists()
+        return
+    assert result.returncode == 0, result.stderr
+    outputs = dict(line.split("=", 1) for line in output.read_text().splitlines())
+    assert outputs["head"] == "a" * 40
+    assert called.exists() is not framework_only
+    if framework_only:
+        assert outputs == {"head": "a" * 40, "skip": "false"}
+    else:
+        assert outputs == {"head": "a" * 40, "skip": mac_skip, "version": "2.0.1", "build": "97", "previous_target": "prior"}
 
 
 def test_decide_is_cheap_unprivileged_and_guarded(flow):
@@ -87,14 +201,16 @@ def test_decide_is_cheap_unprivileged_and_guarded(flow):
         "github.event.workflow_run.head_repository.full_name == github.repository",
     ):
         assert clause in expression
-    assert set(decide["outputs"]) == {"head", "version", "build", "skip", "previous_target"}
+    assert set(decide["outputs"]) == {"head", "version", "build", "skip", "previous_target",
+                                      "apple_inputs", "apple_artifact", "apple_digest", "apple_bytes"}
     assert "secrets." not in yaml.safe_dump(decide)
 
 
 def test_release_job_runs_only_for_a_green_main_commit_that_is_not_released(flow):
     job = flow["jobs"]["release"]
-    assert job["runs-on"] == "macos-26" and job["timeout-minutes"] == 60
-    assert job["needs"] == ["decide"] and job["permissions"] == {"contents": "write"}
+    assert job["runs-on"] == "macos-26" and job["timeout-minutes"] == 30
+    assert job["needs"] == ["decide", "native-check", "apple-artifacts", "node-pack", *sorted(PACKS)]
+    assert job["permissions"] == {"contents": "write"}
     assert job["environment"] == "release-macos"
     expression = condition(job)
     assert expression.startswith(f"{GUARD} && (")
@@ -102,8 +218,248 @@ def test_release_job_runs_only_for_a_green_main_commit_that_is_not_released(flow
         "github.event.workflow_run.conclusion == 'success'", "github.event.workflow_run.head_branch == 'main'",
         "github.event.workflow_run.head_repository.full_name == github.repository",
         "needs.decide.outputs.skip != 'true'",
+        "needs.native-check.result == 'success'",
     ):
         assert clause in expression
+
+
+def test_pinned_native_check_is_read_only_bounded_and_precedes_signing(flow):
+    job = flow["jobs"]["native-check"]
+    assert job["needs"] == ["decide"]
+    assert job["runs-on"] == "ubuntu-24.04" and job["timeout-minutes"] == 27
+    assert job["permissions"] == {"contents": "read", "actions": "read"}
+    assert condition(job).startswith(f"{GUARD} && ")
+    assert "needs.decide.outputs.skip != 'true'" in condition(job)
+    assert "emergency_skip_ci" not in yaml.safe_dump(job)
+    assert "secrets." not in yaml.safe_dump(job)
+    checkout = job["steps"][0]
+    assert checkout["with"] == {"ref": "${{ needs.decide.outputs.head }}", "persist-credentials": False}
+    gate = step(job, "Wait for pinned Projection Apple CI")
+    assert gate["env"] == {"DECIDED_HEAD": "${{ needs.decide.outputs.head }}", "GH_TOKEN": "${{ github.token }}"}
+    assert '-H "Authorization: Bearer $GH_TOKEN"' in gate["run"]
+    assert "https://api.github.com/repos/$repo/actions/workflows/apple-ci.yml/runs?" in gate["run"]
+    assert "git ls-tree HEAD -- components/AstralProjection" in gate["run"]
+    assert "for attempt in {1..26}" in gate["run"] and "remaining < 60" in gate["run"]
+    assert "deadline=$((SECONDS + 25 * 60))" in gate["run"]
+    assert "python3 -c" in gate["run"] and "jq" not in gate["run"]
+    assert list(flow["jobs"]).index("native-check") < list(flow["jobs"]).index("release")
+
+
+def native_run(*, conclusion="success", **changes):
+    run = {
+        "head_sha": "b" * 40, "head_branch": "main", "event": "push",
+        "path": ".github/workflows/apple-ci.yml", "repository": {"full_name": "AstralDeep/AstralProjection"},
+        "head_repository": {"full_name": "AstralDeep/AstralProjection"},
+        "status": "completed", "conclusion": conclusion,
+    }
+    run.update(changes)
+    return run
+
+
+def execute_native_check(flow, tmp_path, runs, *, projection="b" * 40, checked_head="a" * 40, response=None,
+                         auth_status=200, public_status=200, recover_on=0):
+    commands = tmp_path / "bin"
+    commands.mkdir(parents=True)
+    git = commands / "git"
+    git.write_text(
+        "#!/bin/sh\ncase \"$*\" in\n"
+        "  'rev-parse HEAD') printf '%s\\n' \"$TEST_HEAD\";;\n"
+        "  'ls-tree HEAD -- components/AstralProjection') "
+        "printf '160000 commit %s\\tcomponents/AstralProjection\\n' \"$TEST_PROJECTION\";;\n"
+        "  *) exit 2;;\nesac\n", encoding="utf-8")
+    curl = commands / "curl"
+    curl.write_text("""#!/bin/sh
+access=public
+while [ "$#" -gt 1 ]; do
+    case "$1" in
+        --output) output=$2; shift 2 ;;
+        -H) if [ "$2" = "Authorization: Bearer $GH_TOKEN" ]; then access=authenticated; fi; shift 2 ;;
+        *) shift ;;
+    esac
+done
+echo "$access" >> "$ACCESS_LOG"
+echo "$1" >> "$API_QUERY_LOG"
+if [ "$access" = authenticated ]; then status=$AUTH_STATUS; else status=$PUBLIC_STATUS; fi
+if [ "$RECOVER_ON" -gt 0 ] && [ "$(wc -l < "$ACCESS_LOG")" -ge "$RECOVER_ON" ]; then status=200; fi
+printf '%s' "$FAKE_RESPONSE" > "$output"
+printf '%s' "$status"
+[ "$status" != 000 ]
+""", encoding="utf-8")
+    sleeper = commands / "sleep"
+    sleeper.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    for command in (git, curl, sleeper):
+        command.chmod(0o755)
+    env = os.environ.copy()
+    env.update({
+        "PATH": str(commands) + os.pathsep + env["PATH"],
+        "DECIDED_HEAD": "a" * 40, "TEST_HEAD": checked_head, "TEST_PROJECTION": projection,
+        "FAKE_RESPONSE": response if response is not None else json.dumps({"workflow_runs": runs}),
+        "API_QUERY_LOG": str(tmp_path / "queries"), "ACCESS_LOG": str(tmp_path / "access"),
+        "GH_TOKEN": "scoped-test-credential", "RUNNER_TEMP": str(tmp_path),
+        "AUTH_STATUS": str(auth_status), "PUBLIC_STATUS": str(public_status), "RECOVER_ON": str(recover_on),
+    })
+    result = subprocess.run(
+        ["bash", "-c", step(flow["jobs"]["native-check"], "Wait for pinned Projection Apple CI")["run"]],
+        cwd=tmp_path, env=env, capture_output=True, text=True, timeout=10, check=False)
+    queries = (tmp_path / "queries").read_text(encoding="utf-8").splitlines() if (tmp_path / "queries").exists() else []
+    return result, queries
+
+
+def test_native_check_accepts_only_exact_pinned_main_push_and_queries_that_source(flow, tmp_path):
+    result, queries = execute_native_check(flow, tmp_path, [native_run()])
+    assert result.returncode == 0, result.stderr
+    assert queries == [
+        "https://api.github.com/repos/AstralDeep/AstralProjection/actions/workflows/apple-ci.yml/runs?"
+        f"head_sha={'b' * 40}&event=push&branch=main&per_page=100"
+    ]
+
+
+@pytest.mark.parametrize("auth_status,public_status,recover_on,expected,access", [
+    (403, 200, 0, 0, ["authenticated", "public"]),
+    (404, 200, 0, 0, ["authenticated", "public"]),
+    (403, 429, 3, 0, ["authenticated", "public", "authenticated"]),
+    ("000", 503, 4, 0, ["authenticated", "public", "authenticated", "public"]),
+    (403, 403, 0, 1, ["authenticated", "public"] * 26),
+    (404, 404, 0, 1, ["authenticated", "public"]),
+    (400, 200, 0, 1, ["authenticated"]),
+])
+def test_native_check_recovers_only_from_transient_public_api_failures(
+        flow, tmp_path, auth_status, public_status, recover_on, expected, access):
+    result, queries = execute_native_check(flow, tmp_path, [native_run()], auth_status=auth_status,
+                                          public_status=public_status, recover_on=recover_on)
+    assert result.returncode == expected, result.stderr
+    assert (tmp_path / "access").read_text().splitlines() == access
+    assert len(set(queries)) == 1
+    assert "scoped-test-credential" not in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("payload", ["not json", json.dumps({"workflow_runs": [native_run(conclusion="failure")]})])
+def test_native_check_rejects_unqualified_public_response(flow, tmp_path, payload):
+    result, queries = execute_native_check(flow, tmp_path, [], response=payload, auth_status=403)
+    assert result.returncode != 0
+    assert len(queries) == 2
+
+
+def test_native_check_accepts_exact_green_even_with_earlier_failed_run(flow, tmp_path):
+    result, queries = execute_native_check(flow, tmp_path, [native_run(conclusion="failure"), native_run()])
+    assert result.returncode == 0, result.stderr
+    assert len(queries) == 1
+
+
+@pytest.mark.parametrize("response", ["not json", "{}", '{"workflow_runs":{}}',
+                                            '{"workflow_runs":[null]}',
+                                            '{"workflow_runs":[{"head_sha":"bad","repository":null}]}'])
+def test_native_check_rejects_malformed_api_response(flow, tmp_path, response):
+    result, queries = execute_native_check(flow, tmp_path, [], response=response)
+    assert result.returncode != 0
+    assert len(queries) == 1
+    assert "Malformed Projection Apple CI response" in result.stderr
+
+
+@pytest.mark.parametrize("change", [
+    {"head_sha": "c" * 40}, {"head_branch": "feature"}, {"event": "pull_request"},
+    {"path": ".github/workflows/other.yml"},
+    {"repository": {"full_name": "Other/AstralProjection"}},
+    {"head_repository": {"full_name": "Other/AstralProjection"}},
+])
+def test_native_check_rejects_wrong_source_identity(flow, tmp_path, change):
+    result, queries = execute_native_check(flow, tmp_path, [native_run(**change)])
+    assert result.returncode != 0
+    assert len(queries) == 26
+
+
+@pytest.mark.parametrize("conclusion", ["failure", "cancelled", "timed_out"])
+def test_native_check_stops_immediately_on_completed_failure(flow, tmp_path, conclusion):
+    result, queries = execute_native_check(flow, tmp_path, [native_run(conclusion=conclusion)])
+    assert result.returncode != 0
+    assert len(queries) == 1
+
+
+def test_native_check_rejects_pending_or_missing_green_run(flow, tmp_path):
+    result, queries = execute_native_check(
+        flow, tmp_path, [native_run(status="in_progress", conclusion=None)])
+    assert result.returncode != 0
+    assert len(queries) == 26
+
+
+def test_native_check_requires_decided_head_and_gitlink(flow, tmp_path):
+    result, queries = execute_native_check(flow, tmp_path, [native_run()], checked_head="c" * 40)
+    assert result.returncode != 0 and queries == []
+    result, queries = execute_native_check(flow, tmp_path / "missing-link", [native_run()], projection="missing")
+    assert result.returncode != 0 and queries == []
+
+
+@pytest.mark.parametrize("hold,event,runs", [
+    ("true", "workflow_run", False),
+    ("false", "workflow_run", True),
+    ("", "workflow_run", True),
+    ("true", "workflow_dispatch", True),
+])
+def test_hold_stops_only_the_automatic_path(flow, hold, event, runs):
+    for name in ("decide", "release"):
+        assert workflow_allows(flow["jobs"][name], event=event, hold=hold, dry_run=False) is runs
+
+
+def test_hold_gates_exactly_the_two_privileged_entry_points(flow):
+    clause = "vars.RELEASE_MACOS_HOLD != 'true'"
+    assert [name for name, job in flow["jobs"].items() if clause in condition(job)] == ["decide", "release"]
+    assert flow["jobs"]["decide"]["if"].count(clause) == 1
+
+
+def test_the_bundle_release_keeps_every_signing_and_trust_gate(flow, text):
+    job = flow["jobs"]["release"]
+    names = [entry.get("name", "") for entry in job["steps"]]
+    assert names.index("Import the Developer ID identity into an ephemeral keychain") < names.index(
+        "Sign the Mac node pack with the hardened runtime and try notarizing it") < names.index("Build, notarize and publish")
+    sign = step(job, "Sign the Mac node pack with the hardened runtime and try notarizing it")["run"]
+    assert "--hardened" in sign and "notarytool submit" in sign and '!= "Accepted"' not in sign and "Accepted" in sign
+    assert "Developer ID Application: Personalized AI Labs LLC (593LGH35GS)" in sign
+    build = step(job, "Build, notarize and publish")["run"]
+    assert '--node-bundle-dir "$RUNNER_TEMP/bundle" --node-team-id 593LGH35GS' in build and "--node-pack-dir" not in build
+    assert step(job, "Require release secrets") and step(job, "Require the decided commit")
+    assert flow["jobs"]["native-check"]["needs"] == ["decide"] and "native-check" in job["needs"]
+    for name in PACKS:
+        pack = flow["jobs"][name]
+        assert pack["timeout-minutes"] == 30 and pack["permissions"] == {"contents": "read"}
+        assert pack["runs-on"] in {"ubuntu-24.04", "ubuntu-24.04-arm"} and "secrets." not in yaml.safe_dump(pack)
+
+
+def test_node_pack_and_framework_producers_are_read_only_and_bounded(flow):
+    for name in ("apple-input", "apple-artifacts", "node-pack"):
+        job = flow["jobs"][name]
+        assert "macos-26" in job["runs-on"] and job["timeout-minutes"] <= 30
+        assert job["permissions"]["contents"] == "read" and set(job["permissions"].values()) == {"read"}
+        assert condition(job).startswith(f"{GUARD} && ")
+        assert "secrets." not in yaml.safe_dump(job) and "environment" not in job
+    assert flow["jobs"]["node-pack"]["needs"] == ["decide", "apple-artifacts"]
+
+
+def test_framework_producer_preserves_all_slices_and_source_bound_artifact_contract(flow):
+    decision = step(flow["jobs"]["decide"], "Select qualified Apple framework or pinned source builds")
+    assert 'git rev-parse HEAD:components/AstralKernel' in decision["run"]
+    assert 'release_apple_framework.py plan "$kernel"' in decision["run"]
+    assert decision["env"] == {"GH_TOKEN": "${{ github.token }}"}
+    inputs = flow["jobs"]["apple-input"]
+    assert inputs["strategy"]["matrix"]["target"] == "${{ fromJSON(needs.decide.outputs.apple_inputs) }}"
+    prepare = step(inputs, "Build the pinned Apple target")
+    assert prepare["if"] == "${{ matrix.target != 'qualified' }}"
+    assert "scripts/select-xcode.sh" in prepare["run"] and "scripts/build-apple-target.sh" in prepare["run"]
+    download = step(inputs, "Download the selected Kernel archive")
+    assert download["if"] == "${{ matrix.target == 'qualified' }}"
+    assert "repos/AstralDeep/AstralKernel/actions/artifacts/$ARTIFACT/zip" in download["run"]
+    job = flow["jobs"]["apple-artifacts"]
+    assert job["needs"] == ["decide", "apple-input"]
+    build = step(job, "Build and verify the pinned Apple Kernel framework")["run"]
+    assert 'test "$(git rev-parse HEAD)" = "$DECIDED_HEAD"' in build
+    assert 'release_apple_framework.py restore' in build
+    assert "components/AstralKernel/scripts/assemble-apple.sh" in build
+    assert 'test "$(git -C components/AstralKernel rev-parse HEAD)" = "$kernel"' in build
+    assert '--kind apple --expected-source "$kernel"' in build
+    upload = job["steps"][-1]
+    assert upload["with"] == {
+        "name": "macos-apple-artifacts-${{ needs.decide.outputs.head }}",
+        "path": "${{ runner.temp }}/apple-artifacts.tar.gz", "if-no-files-found": "error", "retention-days": 1,
+    }
 
 
 def test_no_job_or_step_uses_always(text):

@@ -93,13 +93,13 @@ def test_fcm_send_success_and_token_cache():
         clock=lambda: 1000.0,
     )
     adapter.send(
-        device_token="dev-token",
+        device_token="device-token-1",
         title="Task finished",
         body="All good",
         notification_id="notif-1",
     )
     adapter.send(
-        device_token="dev-token",
+        device_token="device-token-1",
         title="Task finished",
         body="All good",
         notification_id="notif-1",
@@ -111,7 +111,7 @@ def test_fcm_send_success_and_token_cache():
     send = send_calls[0]
     assert send["api_key"] == "tok-1"
     message = send["json_body"]["message"]
-    assert message["token"] == "dev-token"
+    assert message["token"] == "device-token-1"
     assert "notification" not in message
     assert message["android"] == {"ttl": "300s"}
     assert message["data"] == {"notification_id": "notif-1"}

@@ -84,7 +84,8 @@
       "assignment_owner_retired",
       "assignment_precondition_changed",
       "assignment_result_quarantined",
-      "assignment_retry_exhausted"
+      "assignment_retry_exhausted",
+      "turn_engine_retired"
     ],
     "usage_basis_values": [
       "estimated",
@@ -343,7 +344,7 @@
       "scope": "operations.control"
     },
     "astral_submit_operation": {
-      "description": "Submit one chat-kind Work operation for the credential's owner.",
+      "description": "Replay a previously accepted Work submission to retrieve its existing operation.",
       "facade_method": "submit",
       "input_schema": {
         "properties": {

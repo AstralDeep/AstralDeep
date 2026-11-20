@@ -8,7 +8,7 @@ import asyncio
 import contextvars
 import logging
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass
 
 from orchestrator.computer_hosts import ComputerHostError
@@ -160,6 +160,7 @@ class ProjectBridgeLease:
                 or not session_transition and (not self.session.current(orch) if self.session is not None
                     else self.manager.live_for_host(self.origin.owner, self.origin.host.host_id) is not None)
                 or self.session is not None and id(self.controller) != self.session.controller
+                or getattr(orch, "cancelled_sessions", {}).get(id(self.controller))
                 or claims.get("sub") != self.origin.owner
                 or getattr(orch, "_connection_contexts", {}).get(id(self.controller)) is not self.connection
                 or self.connection is None or not self.connection.registered or self.connection.closing
@@ -204,11 +205,18 @@ async def project_dispatch_scope(orch, websocket, owner, chat, agent, tool, args
                     origin = await resolve_project_origin(orch, owner, chat, host)
                     normalize_project_arguments(origin, tool, args)
                     origins.append(origin)
+    preview = nullcontext()
+    if origins and tool == "project_preview":
+        from orchestrator.preview_authority import preview_authority_scope
+
+        session = orch.computer_sessions.live_for_host(owner, origins[0].host.host_id)
+        preview = preview_authority_scope(args, session)
     scope = (uuid.uuid4().hex, tuple(origins), asyncio.current_task(), websocket)
     _ACTIVE[scope[0]] = scope
     token = _CURRENT.set(scope)
     try:
-        yield
+        with preview:
+            yield
     finally:
         _CURRENT.reset(token)
         _ACTIVE.pop(scope[0], None)
@@ -333,19 +341,6 @@ def normalize_project_arguments(origin, tool, args):
             args["cwd"] = resolve_cwd(args.get("cwd", origin.primary), origin.roots, origin.host.name)
     except CwdRefusal as exc:
         raise _refusal(exc.code, str(exc)) from None
-
-
-def project_review_targets(orch, owner, chat, host, tool, args):
-    origin = current_origin(orch, owner, chat, host)
-    key = "cwd" if tool in {"run_command", "project_preview"} else "path" if tool in {"read_file", "list_dir", "write_file", "delete_path"} else None
-    if origin is None or key is None:
-        return frozenset()
-    normalized = dict(args)
-    normalize_project_arguments(origin, tool, normalized)
-    value = args.get(key)
-    if not isinstance(value, str) or normalized.get(key) != value:
-        return frozenset()
-    return frozenset({(key, value)})
 
 
 async def invalidate_deleted_project(orch, owner, project):

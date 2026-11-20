@@ -1,5 +1,5 @@
 """Read-only, in-memory guidance authority for turns already admitted elsewhere;
-machine/voice/foreground/background/HTTP bindings retain a parent's read origin
+voice/foreground/background/HTTP bindings retain a parent's read origin
 without ever granting model, tool, or authored-metadata authority themselves.
 """
 
@@ -19,6 +19,7 @@ import traceback
 from starlette.websockets import WebSocketState
 
 from astralplane.repositories.history import SessionConsentObservation
+from astralplane import is_lock_contention
 from astralplane.repositories import RepositoryConflictError
 from orchestrator import auth
 from orchestrator.human_request_authority import (
@@ -167,7 +168,6 @@ class TurnGuidanceBinding:
     chat_id: str
     operations: tuple[_OperationBinding, ...] = ()
     background: object = field(default=None, repr=False)
-    machine: object = field(default=None, repr=False)
     voice: object = field(default=None, repr=False)
     parent: object = field(default=None, repr=False)
     budget: object = field(default=None, repr=False)
@@ -219,226 +219,13 @@ class TurnGuidanceBinding:
         self.local(orch)
         if self.parent is not None:
             self.parent.current(tx, orch)
-        if self.machine is not None:
-            self.machine.current(tx, orch, self.origin)
         for operation in self.operations:
             operation.current(tx, orch, self.origin)
-        if self.machine is not None:
-            self.machine.current_grant(tx, orch, self.origin)
         if self.voice is not None:
             self.voice.current(tx, orch, self.origin)
-        if self.machine is not None:
-            self.machine.current(tx, orch, self.origin)
         for operation in self.operations:
             operation.current(tx, orch, self.origin)
         self.local(orch)
-
-
-@dataclass(frozen=True, slots=True, repr=False)
-class _MachineBinding:
-    websocket: object
-    authority: object
-    registration: dict = field(repr=False)
-    snapshot: dict = field(repr=False)
-    grant: object = field(repr=False)
-    store: object = field(repr=False)
-    adapter: object = field(repr=False)
-    repository: object = field(repr=False)
-    scheduled: object = field(default=None, repr=False)
-
-    def current(self, tx, orch, origin):
-        if (getattr(self.websocket, "_guidance_machine_authority", None) is not self.authority
-                or getattr(orch, "ui_sessions", {}).get(self.websocket) is not self.registration
-                or self.registration != self.snapshot
-                or getattr(orch, "offline_grants", None) is not self.store
-                or self.store._grants is not self.adapter
-                or self.adapter.plane_runtime is not origin.binding.runtime
-                or self.adapter.repository is not self.repository
-                or origin.binding.repositories.offline_grants is not self.repository):
-            _refuse()
-        if self.scheduled is not None:
-            store, adapter, repository, attempt, job = self.scheduled
-            if (store._plane is not adapter or adapter.plane_runtime is not origin.binding.runtime
-                    or adapter.repository is not repository
-                    or origin.binding.repositories.scheduler is not repository or attempt.job != job):
-                _refuse()
-            _scheduled_current(tx, self.scheduled, origin.owner_id)
-
-    def current_grant(self, tx, orch, origin):
-        # Grant lock must follow slot/operation locks, never precede
-        grant = self.repository.assert_current_grant(tx, owner_id=origin.owner_id,
-                                                     grant_id=self.grant.grant_id)
-        if grant != self.grant:
-            _refuse()
-
-
-def _scheduled_current(tx, scheduled, owner):
-    from astralplane.repositories.scheduler import OccurrenceState
-    _, _, repository, attempt, job = scheduled
-    claim = attempt.claim
-    current = repository.assert_current_claim(tx, owner_id=owner,
-        occurrence_id=str(claim.occurrence_id), claim_generation=claim.claim_generation,
-        lease_token=str(claim.lease_token), lease_owner=claim.lease_owner,
-        states=(OccurrenceState.RUNNING,))
-    if (current.operation_id != str(attempt.operation_id)
-            or current.operation_execution_generation != attempt.execution_fence.execution_generation
-            or current.job_id != str(job["id"])):
-        _refuse()
-
-
-async def bind_machine_guidance(*, expected_orchestrator, websocket, authority,
-                                chat_id, scheduled_attempt=None, scheduled_store=None):
-    from orchestrator.async_tasks import VirtualWebSocket
-    from orchestrator.chain_authority import MachineAuthority, machine_session_binding
-    from orchestrator.offline_grant import OfflineGrantStore
-    from scheduler.store import ScheduledAttempt, ScheduledJobStore
-    if (type(authority) is not MachineAuthority or type(websocket) is not VirtualWebSocket
-            or getattr(websocket, "_guidance_machine_authority", None) is not authority):
-        _refuse()
-    orch = expected_orchestrator
-    binding = _Composition.capture_host(getattr(orch, "human_request_boundary", None))
-    registration = getattr(orch, "ui_sessions", {}).get(websocket)
-    snapshot = machine_session_binding(authority)
-    store = getattr(orch, "offline_grants", None)
-    if type(store) is not OfflineGrantStore or registration != snapshot:
-        _refuse()
-    adapter = store._grants
-    repository = binding.repositories.offline_grants
-    if adapter.plane_runtime is not binding.runtime or adapter.repository is not repository:
-        _refuse()
-    scheduled = None
-    if authority.turn_class == "scheduled_job":
-        if (type(scheduled_attempt) is not ScheduledAttempt or type(scheduled_store) is not ScheduledJobStore
-                or scheduled_attempt.execution_fence is None
-                or scheduled_attempt.job.get("user_id") != authority.user_id
-                or scheduled_attempt.job.get("offline_grant_id") != authority.consent_ref):
-            _refuse()
-        scheduled = (scheduled_store, scheduled_store._plane, binding.repositories.scheduler,
-                     scheduled_attempt, deepcopy(scheduled_attempt.job))
-    elif scheduled_attempt is not None or scheduled_store is not None:
-        _refuse()
-    elif authority.turn_class not in {"parser_replay", "draft_self_test"}:
-        _refuse()
-
-    def capture(tx):
-        binding.session_repository.bound_request_execution_waits(tx)
-        binding.assert_host_current(orch)
-        binding.repositories.preferences.skills.lock_owner(tx, owner_id=authority.user_id)
-        if scheduled is not None:
-            _scheduled_current(tx, scheduled, authority.user_id)
-        operation = (orch.work_admission.assert_current_execution_lease(
-            scheduled_attempt.execution_fence, transaction=tx) if scheduled is not None else None)
-        grant = repository.assert_current_grant(tx, owner_id=authority.user_id, grant_id=authority.consent_ref)
-        if scheduled is not None:
-            _scheduled_current(tx, scheduled, authority.user_id)
-            orch.work_admission.assert_current_execution_lease(scheduled_attempt.execution_fence, transaction=tx)
-        return grant, operation
-    origin = None
-    returned = False
-    try:
-        async with asyncio.timeout(15):
-            grant, operation = await binding.adapter.run_in_transaction(capture)
-            claims = await auth.verify_user(await auth.verify_production_token(authority.access_token))
-            expiry = _expiry(claims, authority.user_id)
-            origin = _GuidanceOrigin(binding, authority.user_id, authority.access_token,
-                _claims_json(claims), None, expiry, _socket_policy())
-            machine = _MachineBinding(websocket, authority, registration, snapshot,
-                                      grant, store, adapter, repository, scheduled)
-            operations = (() if operation is None else (_OperationBinding.capture(
-                orch, origin, operation, scheduled_attempt.execution_fence),))
-            result = TurnGuidanceBinding(origin, websocket, chat_id, operations, machine=machine)
-            reader = TurnGuidanceReader(result, expected_orchestrator=orch)
-            try:
-                await reader.verify_delivery()
-            finally:
-                reader.close()
-            returned = True
-            return result
-    except AssignmentError:
-        raise
-    except Exception:
-        _refuse()
-    finally:
-        if origin is not None and not returned:
-            origin.close()
-
-
-def bind_background_guidance(origin, *, expected_orchestrator, websocket):
-    from orchestrator.async_tasks import BackgroundTask, BackgroundTaskManager, VirtualWebSocket
-    if type(origin) is not _GuidanceOrigin or type(websocket) is not VirtualWebSocket:
-        _refuse()
-    manager = getattr(expected_orchestrator, "async_task_manager", None)
-    task = websocket.task
-    if type(manager) is not BackgroundTaskManager or type(task) is not BackgroundTask:
-        _refuse()
-    operation = _OperationBinding.capture(expected_orchestrator, origin,
-                                         task._operation, task._execution_fence)
-    value = TurnGuidanceBinding(origin, websocket, task.chat_id, (operation,),
-                               (manager, task, task._execution_fence))
-    value.local(expected_orchestrator)
-    return value
-
-
-@dataclass(frozen=True, slots=True, repr=False)
-class _VoiceBinding:
-    services: object
-    store: object
-    adapter: object
-    repository: object
-    turn: object
-    operation_id: str
-    connection_generation: str
-
-    def current(self, tx, orch, origin):
-        if (getattr(orch, "voice_services", None) is not self.services
-                or self.services.repository is not self.store
-                or self.store._plane is not self.adapter
-                or self.adapter.plane_runtime is not origin.binding.runtime
-                or self.adapter.repository is not self.repository
-                or self.store._voice is not self.repository
-                or origin.binding.repositories.voice is not self.repository):
-            _refuse()
-        # NOWAIT lock; sample DB time after, never the host clock
-        observation = self.repository.assert_current_guidance_turn(tx,
-            owner_id=origin.owner_id, session_id=self.turn.session_id, turn_id=self.turn.turn_id,
-            expected_session_generation=self.turn.session_generation,
-            expected_media_grant_revision=self.turn.media_grant_revision,
-            operation_id=self.operation_id)
-        session, current = observation.session, observation.turn
-        if session["owner_connection_generation"] != self.connection_generation:
-            _refuse()
-        for name in ("turn_id", "client_turn_id", "session_id", "session_generation",
-                     "media_grant_revision", "user_id", "chat_id", "chat_context_revision",
-                     "execution_base_render_revision", "submission_id", "request_generation"):
-            if str(current.get(name)) != str(getattr(self.turn, name)):
-                _refuse()
-
-
-def bind_voice_guidance(origin, *, expected_orchestrator, websocket, voice_dispatch,
-                        operation_context, chat_id):
-    from orchestrator.orchestrator import _VoiceDispatchContext
-    from orchestrator.voice_sessions import TranscriptAdmission, VoiceSessionRepository
-    if (type(origin) is not _GuidanceOrigin or type(voice_dispatch) is not _VoiceDispatchContext
-            or type(voice_dispatch.admission) is not TranscriptAdmission
-            or type(operation_context) is not dict
-            or operation_context.get("operation_kind") != "voice_chat_message"):
-        _refuse()
-    turn = voice_dispatch.admission.turn
-    operation = _OperationBinding.capture(expected_orchestrator, origin,
-        operation_context.get("operation"), operation_context.get("execution_fence"))
-    if (str(operation.record.chat_id) != chat_id or turn.chat_id != chat_id
-            or turn.user_id != origin.owner_id
-            or str(operation.record.request_generation) != turn.request_generation
-            or str(operation.record.connection_generation) != voice_dispatch.connection_generation
-            or voice_dispatch.connection_generation != origin.connection_generation):
-        _refuse()
-    services = getattr(expected_orchestrator, "voice_services", None)
-    store = getattr(services, "repository", None)
-    if type(store) is not VoiceSessionRepository:
-        _refuse()
-    voice = _VoiceBinding(services, store, store._plane, origin.binding.repositories.voice,
-                           turn, str(operation.record.operation_id), voice_dispatch.connection_generation)
-    return TurnGuidanceBinding(origin, websocket, chat_id, (operation,), voice=voice)
 
 
 def bind_foreground_guidance(origin, *, expected_orchestrator, websocket, operation_context, chat_id):
@@ -456,42 +243,6 @@ def bind_foreground_guidance(origin, *, expected_orchestrator, websocket, operat
         pending.registration, deepcopy(pending.captured), pending.connection_generation)
     foreground.current(expected_orchestrator)
     return TurnGuidanceBinding(origin, websocket, chat_id, (operation,), foreground=foreground)
-
-
-def bind_http_guidance(origin, *, expected_orchestrator, websocket, chat_id):
-    if type(origin) is not _GuidanceOrigin or not isinstance(chat_id, str) or not chat_id:
-        _refuse()
-    origin.current(expected_orchestrator)
-    return TurnGuidanceBinding(origin, websocket, chat_id)
-
-
-def inherit_turn_guidance(parent, *, expected_orchestrator, websocket, chat_id, budget):
-    from orchestrator.chain_authority import ChainBudget
-    if (type(parent) is not TurnGuidanceBinding or type(budget) is not ChainBudget
-            or budget.parent is None or not isinstance(chat_id, str) or not chat_id):
-        _refuse()
-    parent.local(expected_orchestrator)
-    if getattr(expected_orchestrator, "_chain_budgets", {}).get(parent.chat_id) is not budget.parent:
-        _refuse()
-    limits, current = [], budget
-    while current is not None:
-        if type(current) is not ChainBudget or len(limits) >= 32 or any(row[0] is current for row in limits):
-            _refuse()
-        limits.append((current, current.max_hops, current.max_depth, current.wall_clock_s,
-                       current.started_at, current.parent))
-        current = current.parent
-    return TurnGuidanceBinding(parent.origin, websocket, chat_id, parent=parent,
-                               budget=budget, budget_limits=tuple(limits))
-
-
-@dataclass(frozen=True, slots=True, repr=False)
-class TurnSelectionBinding:
-    agent: object = None
-    skills: tuple = ()
-    notes: tuple = ()
-
-    def recheck(self, tx, repositories, owner_id):
-        _selection_current(tx, repositories, owner_id, self.agent, self.skills, self.notes)
 
 
 def _selection_current(tx, repositories, owner_id, agent, skills, notes):
@@ -520,36 +271,6 @@ def _selection_current(tx, repositories, owner_id, agent, skills, notes):
         if (type(note) is not ExplicitNoteRecord or note.owner_id != owner_id
                 or note.note_id != note_id or note.revision != revision):
             _refuse()
-
-
-def _selection_identifiers(value):
-    from orchestrator.work_submit import _selected_ids
-    try:
-        _selected_ids(value)
-    except AssignmentError:
-        _refuse()
-    agent = None if value["agent"] is None else (value["agent"]["agent_id"], value["agent"]["revision_id"])
-    skills = tuple(sorted((entry["skill_id"], entry["revision"]) for entry in value["skills"]))
-    notes = tuple(sorted((entry["note_id"], entry["revision"]) for entry in value["notes"]))
-    return agent, skills, notes
-
-
-async def bind_turn_selection(binding, *, expected_orchestrator, selection):
-    from dataclasses import replace
-    if type(binding) is not TurnGuidanceBinding:
-        _refuse()
-    binding.local(expected_orchestrator)
-    agent, skills, notes = _selection_identifiers(selection)
-    reader = TurnGuidanceReader(binding, expected_orchestrator=expected_orchestrator)
-    try:
-        def check(tx, repositories):
-            _selection_current(tx, repositories, binding.origin.owner_id, agent, skills, notes)
-            return TurnSelectionBinding(agent, skills, notes)
-        resolved = await reader.transaction(check, expected_orchestrator=expected_orchestrator)
-        await reader.verify_delivery()
-    finally:
-        reader.close()
-    return replace(binding, selection=resolved)
 
 
 @contextmanager
@@ -672,7 +393,7 @@ class TurnGuidanceReader:
                         result = await self._turn.origin.binding.adapter.run_in_transaction(invoke)
                     except RepositoryConflictError as exc:
                         if (attempt == 3 or callback_started or self._turn.voice is None
-                                or getattr(exc.__context__, "pgcode", None) != "55P03"):
+                                or not is_lock_contention(exc)):
                             raise
                         await asyncio.sleep(0.05 * (attempt + 1))
                         self._local(expected_orchestrator)
@@ -699,15 +420,3 @@ class TurnGuidanceReader:
             raise
         except Exception as exc:
             _refuse(cause=exc)
-
-
-async def acquire_turn_guidance_reader(*, expected_orchestrator, websocket, chat_id):
-    binding = current_turn_guidance(expected_orchestrator=expected_orchestrator,
-                                    websocket=websocket, chat_id=chat_id)
-    reader = TurnGuidanceReader(binding, expected_orchestrator=expected_orchestrator)
-    try:
-        await reader.verify_delivery()
-        return reader
-    except BaseException:
-        reader.close()
-        raise

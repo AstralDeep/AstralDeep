@@ -4,13 +4,15 @@
 # the container cannot import.
 target-version = "py311"
 
-# The component directories are independently owned submodules with their own
-# verification gates.  AstralDeep's repo-root lint must cover Deep-owned code,
-# not re-lint pinned component internals under the parent's policy.
+# The component submodules and the in-tree packages with their own manifests
+# (vessel, plane) have their own verification gates.  AstralDeep's repo-root lint must
+# cover Deep-owned code, not re-lint them under the parent's policy.
 exclude = [
   ".venv",
   "node_modules",
   "backend/tmp",
   "backend/data",
   "components",
+  "vessel",
+  "plane",
 ]

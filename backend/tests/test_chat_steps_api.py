@@ -5,7 +5,6 @@ defense-in-depth redaction, and no-store caching.
 
 from __future__ import annotations
 
-import os
 import sys
 import time
 import uuid
@@ -21,15 +20,9 @@ if str(BACKEND_DIR) not in sys.path:
 
 from tests.helpers.voice_plane_runtime import isolated_plane_runtime  # noqa: E402
 
-os.environ["USE_MOCK_AUTH"] = "true"
-
-
-MOCK_JWT_TOKEN = (
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
-    "eyJyZWFsbV9hY2Nlc3MiOnsicm9sZXMiOlsiYWRtaW4iLCJ1c2VyIl19LCJyZXNvdXJjZV9hY2Nlc3MiOnsiYXN0cmFsLWZyb250ZW5kIjp7InJvbGVzIjpbImFkbWluIiwidXNlciJdfX0sInN1YiI6ImRldi11c2VyLWlkIiwicHJlZmVycmVkX3VzZXJuYW1lIjoiRGV2VXNlciJ9."
-    "fake-signature-ignore"
-)
-AUTH_HEADER = {"Authorization": f"Bearer {MOCK_JWT_TOKEN}"}
+SUBJECT = "dev-user-id"
+OWNER = SUBJECT
+AUTH_HEADER: dict = {}
 
 
 @pytest.fixture
@@ -79,11 +72,20 @@ def plane_runtime():
 
 
 @pytest.fixture
-def client(app_and_orch):
+def unauthenticated_client(app_and_orch):
     from fastapi.testclient import TestClient
 
     app, _ = app_and_orch
     return TestClient(app)
+
+
+@pytest.fixture
+def client(app_and_orch, unauthenticated_client):
+    from orchestrator.auth import require_user_id
+
+    app, _ = app_and_orch
+    app.dependency_overrides[require_user_id] = lambda: OWNER
+    return unauthenticated_client
 
 
 @pytest.fixture
@@ -94,12 +96,12 @@ def orch(app_and_orch):
 
 @pytest.fixture
 def fresh_chat(orch):
-    chat_id = orch.history.create_chat(user_id="dev-user-id")
+    chat_id = orch.history.create_chat(user_id=OWNER)
     yield chat_id
     with orch.plane_runtime.transaction() as transaction:
         orch.plane_runtime.repositories.history.conversations.delete(
             transaction,
-            owner_id="dev-user-id",
+            owner_id=OWNER,
             conversation_id=chat_id,
         )
 
@@ -137,8 +139,15 @@ def _insert_step(runtime, *, chat_id, user_id, name, status, started_at, ended_a
 
 
 class TestAuth:
-    def test_401_without_token(self, client, fresh_chat):
-        resp = client.get(f"/api/chats/{fresh_chat}/steps")
+    def test_401_without_token(self, unauthenticated_client, fresh_chat):
+        resp = unauthenticated_client.get(f"/api/chats/{fresh_chat}/steps")
+        assert resp.status_code == 401
+
+
+    def test_401_for_an_unsigned_token(self, unauthenticated_client, fresh_chat):
+        resp = unauthenticated_client.get(
+            f"/api/chats/{fresh_chat}/steps",
+            headers={"Authorization": "Bearer e30.e30.sig"})
         assert resp.status_code == 401
 
 
@@ -160,13 +169,13 @@ class TestPopulated:
         now = int(time.time() * 1000)
         _insert_step(
             orch.plane_runtime,
-            chat_id=fresh_chat, user_id="dev-user-id",
+            chat_id=fresh_chat, user_id=OWNER,
             name="zeta", status="completed",
             started_at=now + 200, ended_at=now + 300,
         )
         _insert_step(
             orch.plane_runtime,
-            chat_id=fresh_chat, user_id="dev-user-id",
+            chat_id=fresh_chat, user_id=OWNER,
             name="alpha", status="completed",
             started_at=now, ended_at=now + 100,
         )
@@ -206,7 +215,7 @@ class TestInterruptedHealing:
         long_ago = int(time.time() * 1000) - 60_000
         _insert_step(
             orch.plane_runtime,
-            chat_id=fresh_chat, user_id="dev-user-id",
+            chat_id=fresh_chat, user_id=OWNER,
             name="stale", status="in_progress",
             started_at=long_ago,
         )
@@ -219,7 +228,7 @@ class TestInterruptedHealing:
         long_ago = int(time.time() * 1000) - 60_000
         persisted = _insert_step(
             orch.plane_runtime,
-            chat_id=fresh_chat, user_id="dev-user-id",
+            chat_id=fresh_chat, user_id=OWNER,
             name="stale-2", status="in_progress",
             started_at=long_ago,
         )
@@ -229,7 +238,7 @@ class TestInterruptedHealing:
         with orch.plane_runtime.transaction() as transaction:
             row = orch.plane_runtime.repositories.chat_steps.get_step(
                 transaction,
-                owner_id="dev-user-id",
+                owner_id=OWNER,
                 step_id=persisted.step_id,
             )
         assert row is not None
@@ -239,7 +248,7 @@ class TestInterruptedHealing:
         recent = int(time.time() * 1000) - 1000
         _insert_step(
             orch.plane_runtime,
-            chat_id=fresh_chat, user_id="dev-user-id",
+            chat_id=fresh_chat, user_id=OWNER,
             name="recent", status="in_progress",
             started_at=recent,
         )
@@ -252,7 +261,7 @@ class TestDefenseInDepthRedaction:
         now = int(time.time() * 1000)
         _insert_step(
             orch.plane_runtime,
-            chat_id=fresh_chat, user_id="dev-user-id",
+            chat_id=fresh_chat, user_id=OWNER,
             name="legacy-row", status="completed",
             started_at=now, ended_at=now + 10,
             result="Patient SSN 123-45-6789 found in cohort.",

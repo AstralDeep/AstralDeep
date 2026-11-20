@@ -82,26 +82,8 @@ async def test_settlement_failure_preserves_cancellation_without_hiding_other_er
     ctx.observe.assert_awaited_once_with("permit", "uncertain", None)
 
 
-@pytest.mark.asyncio
-async def test_model_caps_and_nested_spend():
-    ctx = context(kind="model")
-    send = AsyncMock(return_value="response")
-    kwargs = {"messages": [{"role": "user", "content": "hi"}], "model": "configured"}
-    assert await ctx.invoke_model(send, kwargs) == "response"
-    assert kwargs["max_completion_tokens"] == 256
-    with pytest.raises(DispatchDenied):
-        await ctx.invoke_tool(send)
-    tool_ctx = context()
-    with pytest.raises(DispatchDenied):
-        await tool_ctx.invoke_model(send, kwargs)
-
-
-@pytest.mark.asyncio
-async def test_oversized_model_input_refused_before_reservation():
-    ctx = context(kind="model", max_input_bytes=1)
-    with pytest.raises(DispatchDenied):
-        await ctx.invoke_model(AsyncMock(), {"messages": ["too much"]})
-    ctx.start.assert_not_awaited()
+def test_legacy_dispatch_context_has_no_model_invocation():
+    assert not hasattr(context(kind="model"), "invoke_model")
 
 
 @pytest.mark.asyncio

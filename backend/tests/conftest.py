@@ -1,7 +1,8 @@
 """Shared pytest fixtures for backend/tests: strips ambient feature-flag env vars for
 hermeticity, moves each pytest-xdist worker onto its own database (helpers/xdist_database.py),
-builds/tears down real Orchestrator and credential/typesafe/data-sharing store fixtures, and
-exposes the session-migrated Plane template that the engine `plane` fixture clones.
+builds/tears down real Orchestrator and credential/typesafe/data-sharing store fixtures,
+installs the excluded-node stand-in mesh for draft launch tests, and exposes the
+session-migrated Plane template that the engine `plane` fixture clones.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import pytest
 _AMBIENT_FLAG_PREFIXES = ("FF_",)
 _AMBIENT_FLAGS = (
     "DELEGATION_REQUIRED",
+    "USE_MOCK_AUTH",
 )
 
 
@@ -36,6 +38,46 @@ _strip_ambient_flags()
 from tests.helpers.xdist_database import drop_worker_database, isolate_worker_database  # noqa: E402
 
 WORKER_DATABASE = isolate_worker_database(os.environ)
+
+
+ASYNC_TEST_DEADLINE_SECONDS = 240
+
+
+def pytest_collection_modifyitems(items):
+    import functools
+    import inspect
+    import threading
+
+    for item in items:
+        function = getattr(item, "obj", None)
+        if not inspect.iscoroutinefunction(function):
+            continue
+
+        @functools.wraps(function)
+        async def bounded(*args, __function=function, **kwargs):
+            loop = asyncio.get_running_loop()
+            task = asyncio.current_task()
+            expired = threading.Event()
+
+            def expire():
+                expired.set()
+                loop.call_soon_threadsafe(task.cancel)
+
+            watchdog = threading.Timer(ASYNC_TEST_DEADLINE_SECONDS, expire)
+            watchdog.daemon = True
+            watchdog.start()
+            try:
+                return await __function(*args, **kwargs)
+            except asyncio.CancelledError:
+                if expired.is_set():
+                    raise TimeoutError(
+                        f"async test exceeded {ASYNC_TEST_DEADLINE_SECONDS}s"
+                    ) from None
+                raise
+            finally:
+                watchdog.cancel()
+
+        item.obj = bounded
 
 
 def pytest_unconfigure(config):
@@ -89,6 +131,30 @@ async def orchestrator_module_factory():
                 timeout=30.0,
             )
 
+
+@pytest.fixture
+def node_data_dir(monkeypatch, tmp_path):
+    from shared import node_identity
+
+    monkeypatch.setenv(node_identity.DATA_DIR_ENV, str(tmp_path / "node"))
+    node_identity.reset_cache()
+    yield tmp_path / "node"
+    node_identity.reset_cache()
+
+
+@pytest.fixture
+def excluded_node():
+    from orchestrator import node_mesh
+    from tests.helpers.excluded_node import stand_in_mesh
+
+    previous = node_mesh.current()
+    node_mesh.install(stand_in_mesh())
+    try:
+        yield
+    finally:
+        node_mesh.install(previous)
+
+
 @pytest.fixture
 def user_skills_disabled(monkeypatch):
     from shared.feature_flags import flags
@@ -141,4 +207,3 @@ def data_sharing_store(credential_plane_089):
         plane_repositories=credential_plane_089.repositories,
     )
 
-from tests.helpers.completed_result import completed_seed  # noqa: E402,F401

@@ -1,6 +1,7 @@
 """Tests for start.py's orchestrator readiness poll and agent supervisor
 (orchestrator/local_agents.py): healthz polling with timeout, agent-entrypoint
-directory naming, and the remote-compute flag's spawn path.
+directory naming, the remote-compute flag's spawn path, and the generated agent
+launch that waits for the node's agent server answer.
 """
 
 from __future__ import annotations
@@ -245,9 +246,10 @@ class _Supervisor:
         return ()
 
 
-def _run_main(monkeypatch, backend_dir, *, inprocess, remote_flag, evidence_flags=()):
+def _run_main(monkeypatch, backend_dir, *, inprocess, remote_flag, evidence_flags=(), refused=False):
     monkeypatch.setattr(start, "__file__", str(backend_dir / "start.py"))
     monkeypatch.setattr(start, "_wait_for_orchestrator", lambda *a, **k: True)
+    monkeypatch.setattr(start, "_agent_servers_refused", lambda port: refused)
     monkeypatch.setattr(start.time, "sleep", lambda *_a, **_k: None)
     monkeypatch.setenv("FF_INPROCESS_AGENTS", "1" if inprocess else "0")
     from shared.feature_flags import flags
@@ -304,6 +306,23 @@ def test_main_never_spawns_the_tests_dir_or_misnamed_modules(monkeypatch, tmp_pa
         base = os.path.basename(s["argv"][1])
         assert not base.startswith("test_")
         assert base == f"{s['owner'].owner_id}_agent.py"
+
+
+def test_main_launches_a_generated_agent_on_loopback_with_limits_when_the_node_allows_it(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOST", "0.0.0.0")
+    backend_dir, _ = _agents_tree(tmp_path)
+    supervisor, agents = _run_main(monkeypatch, backend_dir, inprocess=True, remote_flag=False)
+    assert agents == ["external_agent"]
+    launched = supervisor.spawned[1]
+    assert launched["env"]["HOST"] == "127.0.0.1" and callable(launched["preexec_fn"])
+
+
+def test_main_holds_a_generated_agent_while_the_node_refuses_agent_servers(monkeypatch, tmp_path, capsys):
+    backend_dir, _ = _agents_tree(tmp_path)
+    supervisor, agents = _run_main(monkeypatch, backend_dir, inprocess=True, remote_flag=False, refused=True)
+    assert agents == []
+    assert [s["owner"].owner_id for s in supervisor.spawned] == ["orchestrator"]
+    assert "Holding external_agent: the node has not allowed agent servers" in capsys.readouterr().out
 
 
 def test_max_agents_count_ignores_tests_dir_and_drafts(monkeypatch, tmp_path):

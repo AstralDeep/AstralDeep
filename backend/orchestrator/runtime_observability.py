@@ -387,19 +387,6 @@ class RuntimeObservability:
             labels["result_code"] = result_code
         self.record(f"scheduler_effect_{event}_total", labels=labels)
 
-    def record_typesafe(
-        self,
-        event: str,
-        *,
-        result_code: str,
-        phase: str | None = None,
-    ) -> None:
-        labels = self._base_labels()
-        labels["result_code"] = result_code
-        if phase is not None:
-            labels["phase"] = phase
-        self.record(f"typesafe_{event}_total", labels=labels)
-
     def observe_retention(
         self,
         *,

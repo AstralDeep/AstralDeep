@@ -1,0 +1,96 @@
+site_name: AstralVessel
+site_description: The AstralDeep base with command-line tools, a personal node and a ticket-checking sandbox executor.
+site_url: https://astraldeep.github.io/AstralVessel/
+repo_url: https://github.com/AstralDeep/AstralDeep
+repo_name: AstralDeep/AstralDeep
+edit_uri: edit/main/vessel/docs/
+copyright: AstralVessel is licensed under Apache 2.0.
+
+docs_dir: docs
+exclude_docs: |
+  hooks/
+  requirements.txt
+
+hooks:
+  - docs/hooks/config_tables.py
+
+theme:
+  name: material
+  language: en
+  font:
+    text: Open Sans
+    code: JetBrains Mono
+  palette:
+    - scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to the light scheme
+    - scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-night
+        name: Switch to the dark scheme
+  features:
+    - content.code.copy
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - navigation.indexes
+    - search.highlight
+    - toc.follow
+  icon:
+    repo: material/github
+
+extra_css:
+  - stylesheets/astral.css
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+
+nav:
+  - Get started:
+      - Overview: index.md
+      - Quickstart: get-started/quickstart.md
+      - How it works: get-started/how-it-works.md
+  - Build agents:
+      - The agent folder: build/agent-folder.md
+      - vessel.toml: build/vessel-toml.md
+      - Declared tools: build/declared-tools.md
+      - Built-in tools: build/builtin-tools.md
+      - Workspaces and files: build/workspaces-and-files.md
+  - Run it:
+      - deployment.toml: run/deployment-toml.md
+      - Pairing: run/pairing.md
+      - Connections: run/connections.md
+      - The executor: run/executor.md
+      - The egress: run/models-and-egress.md
+      - Several deployments on one host: run/several-deployments.md
+      - Upgrading and releases: run/upgrading.md
+      - Migration from 0.6.0: run/migration.md
+  - Security:
+      - Threat model: security/threat-model.md
+      - Isolation and probes: security/isolation.md
+      - What it trusts: security/trust.md
+      - Platform support: security/platforms.md
+  - Reference:
+      - CLI: reference/cli.md
+      - Configuration tables: reference/configuration.md
+      - Limits: reference/limits.md
+  - Troubleshooting: troubleshooting.md
+  - Changelog: changelog.md

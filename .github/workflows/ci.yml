@@ -23,8 +23,30 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
+  kernel-binding:
+    name: Exact Kernel Python binding and mailbox
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: recursive
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+      - name: Build and verify pinned source and artifact digests
+        run: python scripts/build_kernel_binding.py --root . --output build/kernel-binding
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: kernel-binding
+          path: build/kernel-binding/
+          if-no-files-found: error
+          retention-days: 1
+
   backend-image:
     name: Clean backend production image build
+    needs: [kernel-binding]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -44,11 +66,18 @@ jobs:
           set -euo pipefail
           python scripts/verify_composition.py --root .
           python scripts/install_local_components.py validate --root . --require-gitlinks
-      - name: Build a clean production image containing the pinned browser client
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: kernel-binding
+          path: build/kernel-binding
+      - name: Verify the current-run Kernel binding
+        run: python scripts/install_kernel_binding.py verify --artifacts build/kernel-binding
+      - name: Build a clean production image containing the pinned browser client and Kernel
         run: |
           set -euo pipefail
           mkdir -p build/backend-web
           docker build --pull --no-cache --file Dockerfile \
+            --build-context kernel-artifacts=build/kernel-binding \
             --iidfile build/backend-web/image-id.txt \
             --label "org.opencontainers.image.revision=$(git rev-parse HEAD)" \
             --label "org.opencontainers.image.source=https://github.com/${{ github.repository }}" .
@@ -71,6 +100,8 @@ jobs:
     needs: [backend-image]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    env:
+      ASTRAL_NODE_PROFILE: personal
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
@@ -104,6 +135,8 @@ jobs:
     needs: [backend-image]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      ASTRAL_NODE_PROFILE: personal
     strategy:
       fail-fast: false
       matrix:
@@ -171,6 +204,7 @@ jobs:
           set -euo pipefail
           python -m pip install --require-hashes -r components/AstralProjection/tooling/python-ci/requirements.lock.txt
           python -m pip install --no-deps components/AstralPrimitives
+          python -m pip install --no-deps components/AstralKernel/python/rote
           python -m pip install --no-deps --no-build-isolation components/AstralProjection
       - name: Lint and test all Projection backend Python
         working-directory: components/AstralProjection
@@ -381,6 +415,7 @@ jobs:
           POSTGRES_DB: ad_gate_plane
         ports: ["5432:5432"]
         options: >-
+          --tmpfs /var/lib/postgresql/data:rw,size=4g
           --health-cmd "pg_isready -U astral -d ad_gate_plane"
           --health-interval 5s --health-timeout 5s --health-retries 12
     steps:
@@ -393,7 +428,7 @@ jobs:
         with:
           version: "0.11.26"
           python-version: "3.11"
-      - name: Bind Plane upgrade source to the previous immutable consumer pin
+      - name: Bind Plane upgrade source to the previous immutable consumer source
         env:
           MANUAL_BASE_SHA: ${{ inputs.base_sha }}
           CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -407,16 +442,55 @@ jobs:
             --candidate-sha "$CANDIDATE_SHA" \
             --baseline-root "$RUNNER_TEMP/plane-consumer-baseline.git" \
             --github-env "$GITHUB_ENV" \
-            --output components/AstralPlane/build/backend-web/consumer-baseline.json
-      - name: Run the full Plane suite only when the Plane pin moved
+            --output plane/build/backend-web/consumer-baseline.json
+      - name: Run the full Plane suite only when the Plane tree changed
         id: lane
         env:
           CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
-          base_sha="$(jq -er .base_deep_sha components/AstralPlane/build/backend-web/consumer-baseline.json)"
+          base_sha="$(jq -er .base_deep_sha plane/build/backend-web/consumer-baseline.json)"
           python scripts/ci_plane_lane.py --base "$base_sha" --head "$CANDIDATE_SHA" --github-output "$GITHUB_OUTPUT"
-      - working-directory: components/AstralPlane
+      - name: Configure the memory-backed Plane test database
+        working-directory: plane
+        run: |
+          set -euo pipefail
+          uv sync --frozen --group ci
+          uv run --frozen --group ci python - <<'PY'
+          import os
+          import time
+
+          import psycopg2
+
+          dsn = os.environ["ASTRALPLANE_TEST_POSTGRES_DSN"]
+          wanted = {
+              "fsync": "off",
+              "synchronous_commit": "off",
+              "full_page_writes": "off",
+              "random_page_cost": "1",
+              "join_collapse_limit": "4",
+          }
+          admin = psycopg2.connect(dsn)
+          admin.autocommit = True
+          with admin.cursor() as cursor:
+              for name, value in wanted.items():
+                  cursor.execute(f"ALTER SYSTEM SET {name} = {value}")
+              cursor.execute("SELECT pg_reload_conf()")
+          admin.close()
+          deadline = time.monotonic() + 30
+          while True:
+              probe = psycopg2.connect(dsn)
+              with probe.cursor() as cursor:
+                  cursor.execute("SELECT name, setting FROM pg_settings WHERE name = ANY(%s)", (list(wanted),))
+                  applied = dict(cursor.fetchall())
+              probe.close()
+              if applied == wanted:
+                  break
+              if time.monotonic() > deadline:
+                  raise SystemExit(f"server did not apply {wanted}: {applied}")
+              time.sleep(0.5)
+          PY
+      - working-directory: plane
         env:
           PLANE_LANE: ${{ steps.lane.outputs.lane }}
         run: |
@@ -429,7 +503,7 @@ jobs:
               tests/architecture tests/test_api.py tests/test_domain.py tests/test_bootstrap.py \
               --junitxml=build/backend-web/plane-tests.xml
           else
-            uv run --frozen --group ci pytest -q -ra -p no:cacheprovider \
+            uv run --frozen --group ci pytest -q -ra -p no:cacheprovider --durations=25 \
               --cov=astralplane --cov=scripts.import_staging_fixture \
               --cov=scripts.migrate_qualification_database \
               --cov=scripts.qualify_main_upgrade --cov=scripts.check_acceptance_faults \
@@ -437,28 +511,95 @@ jobs:
               --cov-report=xml:build/backend-web/plane-python.xml \
               --junitxml=build/backend-web/plane-tests.xml --cov-fail-under=88.75
           fi
-      - name: Enforce changed Plane Python against the baseline component
+      - name: Enforce changed Plane Python against the base Deep commit
         run: |
           set -euo pipefail
-          base_component="$PLANE_BASE_COMPONENT_SHA"
-          [[ "$base_component" =~ ^[a-f0-9]{40}$ ]]
-          candidate_component="$(git -C components/AstralPlane rev-parse HEAD)"
-          if [[ "$base_component" == "$candidate_component" ]]; then
-            printf '{"status":"not-applicable","reason":"identical-component-commit","base_sha":"%s","candidate_sha":"%s"}\n' \
-              "$base_component" "$candidate_component" \
-              > components/AstralPlane/build/backend-web/changed-coverage.json
+          [[ "$PLANE_BASE_DEEP_SHA" =~ ^[a-f0-9]{40}$ ]]
+          if [[ "$PLANE_BASE_TREE" == "$PLANE_CANDIDATE_TREE" ]]; then
+            printf '{"status":"not-applicable","reason":"identical-plane-tree","base_sha":"%s","candidate_tree":"%s"}\n' \
+              "$PLANE_BASE_DEEP_SHA" "$PLANE_CANDIDATE_TREE" \
+              > plane/build/backend-web/changed-coverage.json
             exit 0
           fi
-          cd components/AstralPlane
+          cd plane
           uv run --frozen --group ci diff-cover build/backend-web/plane-python.xml \
-            --compare-branch "$base_component" --diff-range-notation '..' --fail-under=90
+            --compare-branch "$PLANE_BASE_DEEP_SHA" --diff-range-notation '..' --fail-under=90
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: plane-postgres-evidence
-          path: components/AstralPlane/build/backend-web
+          path: plane/build/backend-web
           if-no-files-found: error
           retention-days: 14
+
+  plane-quality:
+    name: Plane lock, lint, dependency direction and review diagnostics
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          submodules: false
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.26"
+          python-version: "3.11"
+      - working-directory: plane
+        run: |
+          set -euo pipefail
+          uv lock --check
+          uv sync --frozen --group ci
+          uv run --frozen --group ci ruff check .
+          uv run --frozen --group ci python tests/architecture/test_dependency_direction.py
+      - name: Record immutable Plane test and qualification policy changes
+        working-directory: plane
+        env:
+          REVIEW_BASE: ${{ github.event.pull_request.base.sha || github.event.before || inputs.base_sha }}
+          REVIEW_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          uv run --frozen --group ci python scripts/ci_review_diagnostics.py \
+            --base "$REVIEW_BASE" --head "$REVIEW_HEAD" --output ci-review-diagnostics.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: plane-ci-review
+          path: plane/ci-review-diagnostics.json
+          if-no-files-found: error
+          retention-days: 14
+
+  plane-package-compatibility:
+    name: Plane wheel on Python ${{ matrix.python-version }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.14"]
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: false
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.26"
+          python-version: ${{ matrix.python-version }}
+      - working-directory: plane
+        run: |
+          set -euo pipefail
+          uv lock --check
+          uv build --build-constraints tooling/python-ci/build-requirements.lock.txt --require-hashes
+      - name: Install and import the wheel in a clean environment
+        working-directory: plane
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv venv --python "${{ matrix.python-version }}" --seed .package-smoke
+          uv export --frozen --no-dev --no-emit-project --format requirements-txt -o .package-smoke/requirements.txt
+          .package-smoke/bin/python -m pip install --require-hashes -r .package-smoke/requirements.txt
+          .package-smoke/bin/python -m pip install --no-deps dist/*.whl
+          .package-smoke/bin/python -c "import astralplane; assert astralplane.CONTRACT_VERSION == 'astralplane.contract/v1'"
 
   backend-changed-coverage:
     name: Immutable changed Python coverage at least 90 percent
@@ -535,176 +676,6 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - name: Start and baseline the immutable reviewed CI peer
-        id: fence_peer
-        shell: bash --noprofile --norc -euo pipefail {0}
-        run: |
-          state=$(/usr/bin/sudo --non-interactive /usr/bin/env -i PATH=/usr/bin:/usr/sbin:/bin:/sbin LANG=C LC_ALL=C /usr/bin/python3 -I - <<'ASTRAL_REVIEWED_START'
-          import hashlib, json, os, re, stat, sys, types
-          identities = (('ci_network_fixture.py', '23c0ff99e9cb3a8e0889767c9ef75f8b00c85aaf981c57634d3eecc4a134c240'), ('ci_fence_fixture_verifier_v2.py', '6c16e452bb0be0f877c40067663c6cc3759eab9ebe11fffd0d41952539b90b57'))
-          limit = 262144
-          commit = 'a1bfc19ccd9d1cc58c8298ce26718e92b76b3fb2'
-          import urllib.request
-          if os.geteuid() != 0:
-              raise RuntimeError("trusted_start_requires_root")
-          class RefuseRedirect(urllib.request.HTTPRedirectHandler):
-              def redirect_request(self, *_arguments, **_keywords):
-                  raise RuntimeError("trusted_helper_redirect_refused")
-          opener = urllib.request.build_opener(RefuseRedirect())
-          buffers = {}
-          for name, digest in identities:
-              url = "https://raw.githubusercontent.com/AstralDeep/AstralDeep/" + commit + "/scripts/" + name
-              with opener.open(url, timeout=15) as response:
-                  if response.status != 200 or response.geturl() != url:
-                      raise RuntimeError("trusted_helper_response_invalid")
-                  data = response.read(limit + 1)
-              if len(data) > limit or hashlib.sha256(data).hexdigest() != digest:
-                  raise RuntimeError("trusted_helper_digest_mismatch")
-              buffers[name] = data
-          peer = types.ModuleType("ci_peer_fixture")
-          peer.__file__ = "/run/astral-ci-peer/ci_network_fixture.py"
-          exec(compile(buffers["ci_network_fixture.py"], peer.__file__, "exec"), peer.__dict__)
-          state = peer.start()
-          try:
-              fixture = state["id"]
-              if not isinstance(fixture, str) or re.fullmatch("[0-9a-f]{16}", fixture) is None:
-                  raise RuntimeError("trusted_fixture_identity_invalid")
-              directory = "/run/astral-ci-peer/" + fixture
-              descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-              try:
-                  metadata = os.fstat(descriptor)
-                  if metadata.st_uid != 0 or metadata.st_mode & 0o022 or not stat.S_ISDIR(metadata.st_mode):
-                      raise RuntimeError("trusted_fixture_directory_invalid")
-                  for name, _digest in identities:
-                      target = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                                       0o444, dir_fd=descriptor)
-                      with os.fdopen(target, "wb") as handle:
-                          handle.write(buffers[name])
-              finally:
-                  os.close(descriptor)
-          except BaseException:
-              receipt = peer.close(state)
-              if (not isinstance(receipt, dict) or receipt.get("resources_removed") is not True
-                      or receipt.get("supervisor_exited") is not True):
-                  raise RuntimeError("trusted_fixture_cleanup_incomplete")
-              raise
-          print(json.dumps({"fixture_id": fixture}, sort_keys=True))
-          ASTRAL_REVIEWED_START
-          )
-          printf '%s' "$state" | /usr/bin/python3 -I -c 'import json,re,sys; value=json.load(sys.stdin)["fixture_id"]; assert isinstance(value,str) and re.fullmatch("[0-9a-f]{16}",value); print("fixture_id="+value)' >> "$GITHUB_OUTPUT"
-      - name: Install the reviewed Fence egress firewall in block mode
-        uses: openai/fence@f9751ca5d767dc0199e88733c2b286bd4800a008 # v0.12.5
-        with:
-          mode: block
-          invocation_id: astral-lint-${{ github.run_id }}-${{ github.run_attempt }}
-          allow_github_artifacts: true
-          allowlist: |
-            github.com:443
-            codeload.github.com:443
-            raw.githubusercontent.com:443
-            objects.githubusercontent.com:443
-            release-assets.githubusercontent.com:443
-            pypi.org:443
-            files.pythonhosted.org:443
-            ip 192.0.2.2 tcp 18443
-      - name: Verify actual Fence evidence and controlled peer denials
-        shell: bash --noprofile --norc -euo pipefail {0}
-        run: |
-          /usr/bin/python3 -I - '${{ steps.fence_peer.outputs.fixture_id }}' 'astral-lint-${{ github.run_id }}-${{ github.run_attempt }}' <<'ASTRAL_REVIEWED_VERIFY'
-          import hashlib, json, os, re, stat, sys, types
-          identities = (('ci_network_fixture.py', '23c0ff99e9cb3a8e0889767c9ef75f8b00c85aaf981c57634d3eecc4a134c240'), ('ci_fence_fixture_verifier_v2.py', '6c16e452bb0be0f877c40067663c6cc3759eab9ebe11fffd0d41952539b90b57'))
-          limit = 262144
-          fixture = sys.argv[1]
-          if re.fullmatch("[0-9a-f]{16}", fixture) is None:
-              raise RuntimeError("trusted_fixture_identity_invalid")
-          directory = "/run/astral-ci-peer/" + fixture
-          parent = os.open("/run/astral-ci-peer", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-          buffers = {}
-          try:
-              metadata = os.fstat(parent)
-              if metadata.st_uid != 0 or metadata.st_mode & 0o022 or not stat.S_ISDIR(metadata.st_mode):
-                  raise RuntimeError("trusted_fixture_root_invalid")
-              descriptor = os.open(fixture, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
-              try:
-                  metadata = os.fstat(descriptor)
-                  if metadata.st_uid != 0 or metadata.st_mode & 0o022 or not stat.S_ISDIR(metadata.st_mode):
-                      raise RuntimeError("trusted_fixture_directory_invalid")
-                  for name, digest in identities:
-                      target = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=descriptor)
-                      with os.fdopen(target, "rb") as handle:
-                          metadata = os.fstat(handle.fileno())
-                          if metadata.st_uid != 0 or metadata.st_mode & 0o022 or not stat.S_ISREG(metadata.st_mode):
-                              raise RuntimeError("trusted_helper_metadata_invalid")
-                          data = handle.read(limit + 1)
-                      if len(data) > limit or hashlib.sha256(data).hexdigest() != digest:
-                          raise RuntimeError("trusted_helper_digest_mismatch")
-                      buffers[name] = data
-              finally:
-                  os.close(descriptor)
-          finally:
-              os.close(parent)
-          modules = {}
-          for name, _digest in identities:
-              module = types.ModuleType(name[:-3])
-              module.__file__ = directory + "/" + name
-              exec(compile(buffers[name], module.__file__, "exec"), module.__dict__)
-              modules[name] = module
-          peer = modules["ci_network_fixture.py"]
-          verifier = modules['ci_fence_fixture_verifier_v2.py']
-          result = verifier.verify(fixture, sys.argv[2], verifier.runner_node24(), peer=peer,
-                                   action_pin='f9751ca5d767dc0199e88733c2b286bd4800a008')
-          print(json.dumps(result, sort_keys=True))
-          ASTRAL_REVIEWED_VERIFY
-      - name: Close the owned peer and attest supervisor exit
-        if: always()
-        shell: bash --noprofile --norc -euo pipefail {0}
-        run: |
-          /usr/bin/python3 -I - '${{ steps.fence_peer.outputs.fixture_id }}' <<'ASTRAL_REVIEWED_CLOSE'
-          import hashlib, json, os, re, stat, sys, types
-          identities = (('ci_network_fixture.py', '23c0ff99e9cb3a8e0889767c9ef75f8b00c85aaf981c57634d3eecc4a134c240'), ('ci_fence_fixture_verifier_v2.py', '6c16e452bb0be0f877c40067663c6cc3759eab9ebe11fffd0d41952539b90b57'))
-          limit = 262144
-          fixture = sys.argv[1]
-          if re.fullmatch("[0-9a-f]{16}", fixture) is None:
-              raise RuntimeError("trusted_fixture_identity_invalid")
-          directory = "/run/astral-ci-peer/" + fixture
-          parent = os.open("/run/astral-ci-peer", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-          buffers = {}
-          try:
-              metadata = os.fstat(parent)
-              if metadata.st_uid != 0 or metadata.st_mode & 0o022 or not stat.S_ISDIR(metadata.st_mode):
-                  raise RuntimeError("trusted_fixture_root_invalid")
-              descriptor = os.open(fixture, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
-              try:
-                  metadata = os.fstat(descriptor)
-                  if metadata.st_uid != 0 or metadata.st_mode & 0o022 or not stat.S_ISDIR(metadata.st_mode):
-                      raise RuntimeError("trusted_fixture_directory_invalid")
-                  for name, digest in identities:
-                      target = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=descriptor)
-                      with os.fdopen(target, "rb") as handle:
-                          metadata = os.fstat(handle.fileno())
-                          if metadata.st_uid != 0 or metadata.st_mode & 0o022 or not stat.S_ISREG(metadata.st_mode):
-                              raise RuntimeError("trusted_helper_metadata_invalid")
-                          data = handle.read(limit + 1)
-                      if len(data) > limit or hashlib.sha256(data).hexdigest() != digest:
-                          raise RuntimeError("trusted_helper_digest_mismatch")
-                      buffers[name] = data
-              finally:
-                  os.close(descriptor)
-          finally:
-              os.close(parent)
-          modules = {}
-          for name, _digest in identities:
-              module = types.ModuleType(name[:-3])
-              module.__file__ = directory + "/" + name
-              exec(compile(buffers[name], module.__file__, "exec"), module.__dict__)
-              modules[name] = module
-          peer = modules["ci_network_fixture.py"]
-          state = peer.read_owned(peer._directory(fixture) / "ready.json")
-          result = peer.close(state)
-          if result.get("resources_removed") is not True or result.get("supervisor_exited") is not True:
-              raise RuntimeError("trusted_fixture_cleanup_incomplete")
-          print(json.dumps(result, sort_keys=True))
-          ASTRAL_REVIEWED_CLOSE
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -725,7 +696,7 @@ jobs:
       ASTRAL_ENV: development
       PYTHON_DOTENV_DISABLED: "1"
       PYTHONDONTWRITEBYTECODE: "1"
-      PYTHONPATH: backend:components/AstralProjection/src:components/AstralProjection/backend:components/AstralProjection:components/AstralPlane/src:components/AstralPrimitives/src:components/LETS/src
+      PYTHONPATH: backend:components/AstralProjection/src:components/AstralProjection/backend:components/AstralProjection:plane/src:components/AstralPrimitives/src:components/LETS/src:components/AstralKernel/python/rote/src
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
@@ -746,7 +717,6 @@ jobs:
           python -m pytest -q -p no:cacheprovider \
             backend/tests/test_client_js_contract.py \
             backend/tests/test_turn_selection_surface_089.py \
-            backend/tests/test_typesafe_layout.py \
             backend/tests/test_typesafe_budget.py \
             backend/tests/test_typesafe_decision.py \
             backend/tests/test_typesafe_security.py \
@@ -820,6 +790,8 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           submodules: false
+      - name: Materialize the pinned Projection upload helper for release-tooling tests
+        run: git submodule update --init --depth 1 components/AstralProjection
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.11"
@@ -874,6 +846,8 @@ jobs:
             scripts/tests/test_backend_web_state.py
             scripts/tests/test_merge_backend_web_coverage.py
             scripts/tests/test_install_local_components.py
+            scripts/tests/test_build_kernel_binding.py
+            scripts/tests/test_install_kernel_binding.py
             scripts/tests/test_install_doctor.py
             backend/tests/test_install_doctor.py
             scripts/tests/test_retire_restored_sessions.py
@@ -882,6 +856,8 @@ jobs:
             scripts/tests/test_verify_migration_provenance.py
             scripts/tests/test_verify_primitive_coverage.py
             scripts/tests/test_verify_persistent_agents_079.py
+            scripts/tests/test_check_no_keycloak.py
+            scripts/tests/test_no_docker_check.py
             scripts/tests/test_csharp_native_coverage_079.py
             scripts/tests/test_ci_review_diagnostics.py
             scripts/tests/test_ci_browser_retry.py
@@ -890,10 +866,13 @@ jobs:
             backend/tests/test_ci_plane_lane.py
             scripts/tests/test_prepare_plane_upgrade_baseline.py
             scripts/tests/test_package_macos_candidate.py
+            scripts/tests/test_release_apple_framework.py
             backend/tests/test_release_macos.py
             backend/tests/test_next_macos_release.py
             backend/tests/test_macos_release_notes.py
             backend/tests/test_release_macos_workflow.py
+            backend/tests/test_ios_store_upload.py
+            backend/tests/test_ios_store_profile.py
           )
           test "${#RELEASE_TOOL_TESTS[@]}" -gt 0
           docker run --rm --init --cpus=2 --memory=4g \
@@ -902,11 +881,12 @@ jobs:
             --env PYTHONPATH=/workspace/backend:/workspace --env ASTRAL_ENV=development \
             --env COVERAGE_FILE=/workspace/build/060/coverage/.coverage \
             --volume "$PWD:/workspace" --workdir /workspace --entrypoint /bin/bash \
+            --volume "$PWD/components/AstralProjection/apple-clients/Scripts/altool_strict.sh:/workspace/components/AstralProjection/apple-clients/Scripts/altool_strict.sh:ro" \
             "$(cat build/backend-web/image-id.txt)" -euc '
               python -m venv --system-site-packages /tmp/tooling
               /tmp/tooling/bin/python -m pip install --require-hashes -r tooling/backend-ci/requirements.lock.txt
               /tmp/tooling/bin/python -m coverage run --source=scripts \
-                --omit=scripts/windows_release_candidate.py,scripts/export_work_contract.py \
+                --omit=scripts/windows_release_candidate.py,scripts/export_work_contract.py,scripts/dev_mesh.py,scripts/no_docker_check.py \
                 -m pytest "$@" -q \
                 --deselect=backend/tests/test_documentation_060.py::test_byo_guide_is_reachable_from_projection_apple_client_docs \
                 --deselect=backend/tests/test_python_ci_supply_chain_060.py::test_ci_only_python_manifest_cannot_enter_projection_product_artifacts \
@@ -956,6 +936,48 @@ jobs:
             --deselect=scripts/tests/test_install_local_components.py::test_real_initialized_sources_match_the_declarations \
             --deselect=scripts/tests/test_verify_composition.py::test_current_composition_has_exact_pins_canonical_urls_and_contracts \
             --deselect=scripts/tests/test_verify_composition.py::test_real_checkout_verification_executes_only_local_git_commands
+      - name: Install the contract reference packages
+        run: python -m pip install --require-hashes -r tooling/contract-ref/requirements.lock.txt
+      - name: Check the 106 contract vectors, reference tests and lint
+        shell: bash
+        run: |
+          set -euo pipefail
+          reference=specs/106-sign-in-free-clients/contracts/reference
+          for generator in generate_caller_vectors generate_local_vectors generate_exec_vectors generate_connection_vectors generate_a2a_vectors generate_credential_vectors generate_phi_vectors generate_phi_destination_vectors generate_contact_vectors generate_share_vectors generate_caller_event_vectors generate_assembly_vectors; do
+            python "$reference/$generator.py" --check
+          done
+          python -m pytest "$reference/tests" -q
+          ruff check specs/106-sign-in-free-clients/contracts
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.14"
+      - name: Check the four standard-library table generators on Python 3.14
+        shell: bash
+        run: |
+          set -euo pipefail
+          reference=specs/106-sign-in-free-clients/contracts/reference
+          for generator in generate_label_classes generate_path_fold generate_phi_fold generate_html_entities; do
+            python "$reference/$generator.py" --check
+          done
+
+  no-keycloak:
+    name: No Keycloak in tracked product files
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+      - name: Install hash-locked CI-only Python tooling
+        run: python -m pip install --require-hashes -r tooling/python-ci/requirements.lock.txt
+      - run: python scripts/check_no_keycloak.py --repo . --config scripts/no_keycloak.json
+      - run: python -m pytest -q scripts/tests/test_check_no_keycloak.py
+      - name: Check the moved packages stay their own, with the pinned ruff on PATH
+        run: python -m pytest -q scripts/tests/test_moved_packages.py
 
   composition-declarations:
     runs-on: ubuntu-24.04
@@ -978,7 +1000,7 @@ jobs:
           set -euo pipefail
           mapfile -t COMPONENT_GITLINKS < <(
             git ls-files --stage -- \
-              components/AstralPlane \
+              components/AstralKernel \
               components/AstralPrimitives \
               components/AstralProjection \
               components/LETS
@@ -989,7 +1011,7 @@ jobs:
           mapfile -t COMPONENT_STATUS < <(git submodule status --recursive)
           test "${#COMPONENT_STATUS[@]}" -eq 4
           if printf '%s\n' "${COMPONENT_STATUS[@]}" \
-            | grep -Ev '^-([0-9a-f]{40}) components/(AstralPlane|AstralPrimitives|AstralProjection|LETS)( |$)'; then
+            | grep -Ev '^-([0-9a-f]{40}) components/(AstralKernel|AstralPrimitives|AstralProjection|LETS)( |$)'; then
             exit 1
           fi
       - name: Validate exact public composition declarations
@@ -1087,10 +1109,325 @@ jobs:
           --gitleaks-ignore-path "$GITHUB_WORKSPACE/.gitleaksignore"
           --log-opts="--all" "$GITHUB_WORKSPACE"
 
+  vessel-kernel-binding:
+    name: Vessel Kernel binding for Linux amd64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+      - name: Build the manifest-pinned Vessel Kernel source for Linux amd64
+        working-directory: vessel
+        run: python scripts/build_kernel_binding.py produce --source "$RUNNER_TEMP/astral-kernel" --output "$RUNNER_TEMP/kernel-artifacts" --platform linux/amd64
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: vessel-kernel-artifacts-linux-amd64
+          path: ${{ runner.temp }}/kernel-artifacts
+          if-no-files-found: error
+          retention-days: 1
+
+  vessel-lint:
+    name: Vessel lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - name: Install hash-locked Vessel tooling
+        run: python -m pip install --require-hashes -r tooling/vessel-ci/requirements.lock.txt
+      - working-directory: vessel
+        run: ruff check .
+
+  vessel-test:
+    name: Vessel tests on Python ${{ matrix.python }}
+    needs: [vessel-kernel-binding]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: vessel-kernel-artifacts-linux-amd64
+          path: ${{ runner.temp }}/kernel-artifacts
+      - name: Install ripgrep from its release, checksum pinned
+        working-directory: ${{ runner.temp }}
+        run: |
+          f=ripgrep-14.1.1-x86_64-unknown-linux-musl.tar.gz
+          curl -fsSL --retry 3 -o "$f" "https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/$f"
+          echo "4cf9f2741e6c465ffdb7c26f38056a59e2a2544b51f7cc128ef28337eeae4d8e  $f" | sha256sum -c -
+          tar xzf "$f" && sudo install "${f%.tar.gz}/rg" /usr/local/bin/rg && rg --version
+      - name: Install bubblewrap and allow it unprivileged user namespaces
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          bwrap --ro-bind / / --unshare-user true
+      - name: Install hash-locked Vessel tooling and the package
+        run: |
+          python -m pip install --require-hashes -r tooling/vessel-ci/requirements.lock.txt
+          python -m pip install --no-deps --no-build-isolation -e vessel
+      - name: Install and import the verified Kernel binding
+        working-directory: vessel
+        run: |
+          python scripts/install_kernel.py "$RUNNER_TEMP/kernel-artifacts" --binding config/kernel-binding.json --bin-dir "$RUNNER_TEMP/kernel-bin"
+          echo "$RUNNER_TEMP/kernel-bin" >> "$GITHUB_PATH"
+          python -c "import astral_kernel"
+      - working-directory: vessel
+        run: python -m pytest -q -rs
+
+  vessel-isolation:
+    name: Vessel isolation probes
+    needs: [vessel-kernel-binding]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: vessel-kernel-artifacts-linux-amd64
+          path: ${{ runner.temp }}/kernel-artifacts
+      - name: Install hash-locked Vessel tooling and the package
+        run: |
+          python -m pip install --require-hashes -r tooling/vessel-ci/requirements.lock.txt
+          python -m pip install --no-deps --no-build-isolation -e vessel
+      - name: Prepare a deployment bound to this run's Kernel artifacts
+        working-directory: vessel
+        run: python scripts/build_kernel_binding.py prepare-deployment --artifacts "$RUNNER_TEMP/kernel-artifacts" --output deploy/deployment.ci.toml --platform linux/amd64
+      - name: Start the executor, the sandboxes and no node
+        working-directory: vessel/deploy
+        run: |
+          echo "VESSEL_SANDBOX_TOKEN=$(openssl rand -hex 32)" > .env
+          astralvessel deploy deployment.ci.toml
+          docker compose -f compose.generated.yml --env-file .env up -d --build executor
+          for ((attempt = 0; attempt < 60; attempt++)); do
+            ready=$(docker compose -f compose.generated.yml --env-file .env exec -T executor python -c "import json,urllib.request,os;body=json.load(urllib.request.urlopen('http://'+os.environ['VESSEL_HOST']+':8700/health'));agents=body.get('agents');print(isinstance(agents,dict) and all(agents.get(name) is True for name in ('field-guide','field-guide-reader')))" || true)
+            [ "$ready" = True ] && exit 0
+            sleep 5
+          done
+          docker compose -f compose.generated.yml --env-file .env logs
+          exit 1
+      - name: Isolation probes
+        working-directory: vessel/deploy
+        run: astralvessel check --isolation-only
+      - name: Logs on failure
+        if: failure()
+        working-directory: vessel/deploy
+        run: docker compose -f compose.generated.yml --env-file .env logs --tail 50
+      - name: Stop the isolation stack
+        if: always()
+        working-directory: vessel/deploy
+        run: docker compose -f compose.generated.yml --env-file .env down -v --remove-orphans || true
+
+  vessel-docs:
+    name: Vessel documentation build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - name: Install hash-locked documentation tooling
+        run: python -m pip install --require-hashes -r tooling/vessel-ci/docs.lock.txt
+      - working-directory: vessel
+        env:
+          PYTHONPATH: .
+        run: mkdocs build --strict
+
+  node-pack-linux:
+    name: Build the linux-x86_64 node pack
+    needs: [kernel-binding]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: recursive
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: kernel-binding
+          path: build/kernel-binding
+      - name: Build the pack from the current-run Kernel binding
+        run: |
+          set -euo pipefail
+          python scripts/install_kernel_binding.py verify --artifacts build/kernel-binding
+          python scripts/node_bundle/linux/build_linux.py --platform linux-x86_64 --kernel-dir build/kernel-binding --out "$RUNNER_TEMP/pack"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: node-pack-linux
+          path: ${{ runner.temp }}/pack
+          if-no-files-found: error
+          retention-days: 1
+
+  node-pack-linux-arm64:
+    name: Build the linux-aarch64 node pack
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: recursive
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+      - name: Build the pinned Kernel binding natively on arm64
+        run: python scripts/build_kernel_binding.py --root . --output build/kernel-binding --platform linux-aarch64
+      - name: Build the pack from the arm64 Kernel binding
+        run: |
+          set -euo pipefail
+          python scripts/install_kernel_binding.py verify --artifacts build/kernel-binding --platform linux-aarch64
+          python scripts/node_bundle/linux/build_linux.py --platform linux-aarch64 --kernel-dir build/kernel-binding --out "$RUNNER_TEMP/pack"
+      - name: Keep the built Kernel binding and pack as evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: node-pack-evidence-linux-aarch64
+          path: |
+            build/kernel-binding
+            ${{ runner.temp }}/pack
+          if-no-files-found: ignore
+          retention-days: 3
+
+  node-pack-macos:
+    name: Build the macOS node pack
+    runs-on: macos-26
+    timeout-minutes: 30
+    env:
+      RUSTUP_TOOLCHAIN: "1.99.1"
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: recursive
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+      - name: Install ripgrep from its release, checksum pinned
+        working-directory: ${{ runner.temp }}
+        run: |
+          f=ripgrep-14.1.1-aarch64-apple-darwin.tar.gz
+          curl -fsSL --retry 3 -o "$f" "https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/$f"
+          echo "24ad76777745fbff131c8fbc466742b011f925bfa4fffa2ded6def23b5b937be  $f" | shasum -a 256 -c -
+          tar xzf "$f" && sudo install "${f%.tar.gz}/rg" /usr/local/bin/rg && rg --version
+      - name: Build the pack from the pinned Kernel source
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.99.1 --profile minimal
+          rustup target add --toolchain 1.99.1 aarch64-apple-darwin
+          export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$GITHUB_WORKSPACE=/build/workspace --remap-path-prefix=$RUNNER_TEMP=/build/temp --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/build/cargo --remap-path-prefix=${RUSTUP_HOME:-$HOME/.rustup}=/build/rustup -C link-arg=-Wl,-install_name,@rpath/libastral_kernel_ffi.dylib"
+          export CFLAGS="${CFLAGS:-} -ffile-prefix-map=$GITHUB_WORKSPACE=/build/workspace -ffile-prefix-map=$RUNNER_TEMP=/build/temp"
+          bash components/AstralKernel/scripts/build-python-macos.sh --out "$RUNNER_TEMP/kernel-macos"
+          python3 scripts/node_bundle/assemble.py --platform macos-arm64 --kernel-dir "$RUNNER_TEMP/kernel-macos" \
+            --out "$RUNNER_TEMP/pack" --work "$RUNNER_TEMP/nodepack-work"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: node-pack-macos
+          path: ${{ runner.temp }}/pack
+          if-no-files-found: error
+          retention-days: 1
+
+  no-docker-macos:
+    name: Install and run the node with no Docker on macos-26
+    needs: [node-pack-macos]
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: node-pack-macos
+          path: ${{ runner.temp }}/pack
+      - name: Run the pack with no Docker on PATH
+        run: python scripts/no_docker_check.py --pack "$RUNNER_TEMP/pack"
+
+  no-docker-linux:
+    name: Install and run the node with no Docker on ubuntu-24.04
+    needs: [node-pack-linux]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: node-pack-linux
+          path: ${{ runner.temp }}/pack
+      - name: Remove the runner's preinstalled Docker client
+        run: |
+          for p in $(type -ap docker); do
+            real=$(readlink -f "$p")
+            if [ -e "$real" ]; then sudo mv "$real" "$real.disabled"; fi
+          done
+          hash -r
+          ! command -v docker
+      - name: Print the runner Landlock ABI
+        run: |
+          uname -srm
+          python - <<'PY'
+          import ctypes
+          libc = ctypes.CDLL(None, use_errno=True)
+          abi = libc.syscall(444, None, 0, 1)
+          print("landlock abi:", abi if abi >= 0 else f"unavailable (errno {ctypes.get_errno()})")
+          PY
+      - name: Install bubblewrap and allow unprivileged user namespaces
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          bwrap --ro-bind / / --unshare-user true
+      - name: Run the pack with no Docker on PATH
+        run: python scripts/no_docker_check.py --pack "$RUNNER_TEMP/pack"
+
   gates:
     name: Deep owner CI aggregate
     if: always()
     needs:
+      - kernel-binding
       - backend-image
       - backend-boot
       - backend-web
@@ -1105,11 +1442,25 @@ jobs:
       - composition-declarations
       - voice-worker-test
       - secret-scan
+      - no-keycloak
+      - plane-quality
+      - plane-package-compatibility
+      - no-docker-macos
+      - no-docker-linux
+      - vessel-lint
+      - vessel-test
+      - vessel-isolation
+      - vessel-docs
+      - vessel-kernel-binding
+      - node-pack-linux
+      - node-pack-linux-arm64
+      - node-pack-macos
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: Enforce every hosted owner gate
         run: |
+          [[ '${{ needs.kernel-binding.result }}' == 'success' ]]
           [[ '${{ needs.backend-image.result }}' == 'success' ]]
           [[ '${{ needs.backend-boot.result }}' == 'success' ]]
           [[ '${{ needs.backend-web.result }}' == 'success' ]]
@@ -1124,4 +1475,17 @@ jobs:
           [[ '${{ needs.composition-declarations.result }}' == 'success' ]]
           [[ '${{ needs.voice-worker-test.result }}' == 'success' ]]
           [[ '${{ needs.secret-scan.result }}' == 'success' ]]
+          [[ '${{ needs.no-keycloak.result }}' == 'success' ]]
+          [[ '${{ needs.plane-quality.result }}' == 'success' ]]
+          [[ '${{ needs.plane-package-compatibility.result }}' == 'success' ]]
+          [[ '${{ needs.no-docker-macos.result }}' == 'success' ]]
+          [[ '${{ needs.no-docker-linux.result }}' == 'success' ]]
+          [[ '${{ needs.vessel-lint.result }}' == 'success' ]]
+          [[ '${{ needs.vessel-test.result }}' == 'success' ]]
+          [[ '${{ needs.vessel-isolation.result }}' == 'success' ]]
+          [[ '${{ needs.vessel-docs.result }}' == 'success' ]]
+          [[ '${{ needs.vessel-kernel-binding.result }}' == 'success' ]]
+          [[ '${{ needs.node-pack-linux.result }}' == 'success' ]]
+          [[ '${{ needs.node-pack-linux-arm64.result }}' == 'success' ]]
+          [[ '${{ needs.node-pack-macos.result }}' == 'success' ]]
           echo "Backend/web CI passed. Native qualification is deferred; protected real-authentication, LETS-enforce, migration and recovery staging remain required before release."

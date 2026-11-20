@@ -24,8 +24,6 @@ from a2a.types import (
     Role,
     SecurityScheme,
     SecurityRequirement,
-    StringList,
-    OpenIdConnectSecurityScheme,
     Task as A2ATask,
     TaskState as A2ATaskState,
     TaskStatus as A2ATaskStatus,
@@ -115,20 +113,8 @@ def custom_skill_to_a2a(skill: CustomAgentSkill) -> A2AAgentSkill:
 def custom_card_to_a2a(card: CustomAgentCard, base_url: str) -> A2AAgentCard:
     skills = [custom_skill_to_a2a(s) for s in card.skills]
 
-    authority = os.getenv("KEYCLOAK_AUTHORITY", "")
     security_schemes: Dict[str, SecurityScheme] = {}
     security_requirements: List[SecurityRequirement] = []
-    if authority:
-        security_schemes["keycloak_oidc"] = SecurityScheme(
-            open_id_connect_security_scheme=OpenIdConnectSecurityScheme(
-                open_id_connect_url=f"{authority}/.well-known/openid-configuration",
-            )
-        )
-        security_requirements.append(SecurityRequirement(schemes={
-            "keycloak_oidc": StringList(list=[
-                "tools:read", "tools:write", "tools:search", "tools:system",
-            ]),
-        }))
 
     return A2AAgentCard(
         name=card.name,

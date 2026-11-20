@@ -91,7 +91,8 @@ def recorder(plane_runtime, tmp_path):
 
 
 @pytest.fixture(autouse=True)
-def sharing_enabled():
+def sharing_enabled(monkeypatch):
+    monkeypatch.delenv("ASTRAL_NODE_PROFILE", raising=False)
     prior = flags._flags.get("artifact_sharing")
     flags._flags["artifact_sharing"] = True
     yield

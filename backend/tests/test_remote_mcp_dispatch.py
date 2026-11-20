@@ -4,7 +4,9 @@ The registered in-process agent never sends traffic in these refusal tests.
 
 from __future__ import annotations
 
+import json
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -12,6 +14,9 @@ import pytest
 from agents.remote_mcp.remote_mcp_agent import RemoteMCPAgent
 from orchestrator.orchestrator import GateRefusal
 from shared.protocol import RegisterAgent
+from tests.test_remote_confirmation_063 import real_orch as real_orch
+
+
 @pytest.mark.asyncio
 async def test_gate_replaces_forged_owner_before_remote_mcp_read(orchestrator_factory, monkeypatch):
     from orchestrator import auth
@@ -42,3 +47,25 @@ async def test_gate_replaces_forged_owner_before_remote_mcp_read(orchestrator_fa
 
     assert not isinstance(prepared, GateRefusal)
     assert prepared.args["user_id"] == "owner"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bypass", [False, True])
+async def test_connector_effect_requires_kernel_approval_even_on_the_owner_mac(real_orch, bypass):
+    from agents.remote_mcp.mcp_tools import TOOL_REGISTRY
+
+    orch = real_orch
+    socket = object()
+    orch.ui_sessions[socket] = {"sub": "owner"}
+    orch.tool_permissions.get_tool_scope_map.return_value = {name: tool["scope"] for name, tool in TOOL_REGISTRY.items()}
+    host = SimpleNamespace(owner_sub="owner", host_id="mac", platform="macos", websocket=socket)
+    orch.computer_hosts = SimpleNamespace(host_for_socket=lambda candidate: host if candidate is socket else None)
+    orch.computer_sessions = SimpleNamespace(bypass_on=lambda owner, machine: (owner, machine) == ("owner", "mac") and bypass)
+    orch._execute_with_retry_audited = AsyncMock()
+    args = {"connector_id": "test-connector", "tool_name": "echo", "arguments": {"text": "sample"}}
+    name = "call_remote_tool"
+    call = SimpleNamespace(id="connector-call", function=SimpleNamespace(name=name, arguments=json.dumps(args)))
+    result = await orch.execute_single_tool(socket, call, {name: "remote-mcp-1"}, "chat", user_id="owner")
+    assert result.error["code"] == "source_bound_approval_required"
+    assert result.error["effect_state"] == "not_started" and not result.ui_components
+    orch._execute_with_retry_audited.assert_not_awaited()

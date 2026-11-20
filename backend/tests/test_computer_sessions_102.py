@@ -540,8 +540,14 @@ async def test_outcome_ack_requires_current_announced_incarnation_and_is_single_
     async def record_ack(*args):
         return await Orchestrator._record_computer_outcome_ack(orch, *args)
 
+    resolved_acks = []
+
+    async def resolve_unknowns(owner, host_ref, decision, incarnation_id):
+        resolved_acks.append((owner, decision, incarnation_id))
+
     monkeypatch.setattr(orch, "_cancel_turn", cancel_turn, raising=False)
     monkeypatch.setattr(orch, "_record_computer_outcome_ack", record_ack, raising=False)
+    monkeypatch.setattr(orch, "_resolve_computer_outcome_unknowns", resolve_unknowns, raising=False)
     jobs = [{"job_id": str(uuid.uuid4()), "state": "uncertain", "exit_code": None,
              "signal": None, "output_bytes": 12}]
     host_id = str(uuid.uuid4())
@@ -576,6 +582,7 @@ async def test_outcome_ack_requires_current_announced_incarnation_and_is_single_
     }
     assert len([event for event in recorder.events
                 if event.action_type == "computer_host.outcome_acknowledged"]) == 1
+    assert resolved_acks == [(OWNER, "acknowledge", incarnation)]
     assert not cancelled and host.outcome_acknowledged
 
     second_ws = orch.add(_WS(chat="chat-discard"))
@@ -721,25 +728,19 @@ class _Recorded:
 async def test_orchestrator_stop_cancels_only_the_owning_controller_turn():
     import json
 
-    from orchestrator import hitl_confirmation as hc
     from orchestrator.orchestrator import Orchestrator
 
     orch, host, controller, session = await _started()
     recorder = _Recorded()
     orch.cancelled_sessions = {}
     orch._chat_recorders = {id(controller): recorder}
-    orch._hitl_task_origins = {(OWNER, "chat-1"): (controller, object())}
-    orch._hitl_pending_calls = {"r": SimpleNamespace(owner=OWNER, chat="chat-1", websocket=controller,
-                                                     expires=float("inf"))}
     orch._cancel_turn = Orchestrator._cancel_turn.__get__(orch)
     orch.cancel_computer_turn = Orchestrator.cancel_computer_turn.__get__(orch)
     before = len(controller.sent)
     await orch.computer_sessions.end(session, "user_stop")
     assert orch.cancelled_sessions[id(controller)] is True and recorder.cancelled == 1
-    assert not orch._hitl_task_origins and not orch._hitl_pending_calls
     frames = [json.loads(frame) for frame in controller.sent[before:]]
     assert {"type": "chat_status", "status": "done", "message": "Cancelled"} in frames
-    assert hc.cancellation_witness(orch, controller, OWNER, "chat-1") is None
 
     orch2, _host2, controller2, session2 = await _started()
     orch2.cancelled_sessions = {}

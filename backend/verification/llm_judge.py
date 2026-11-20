@@ -51,7 +51,6 @@ def make_llm_judge(call_llm: Optional[Callable[..., Any]] = None):
         payload = {
             "check": check.check_id,
             "property": check.property,
-            "component_types": sorted({c.get("type") for c in evidence.components if isinstance(c, dict)}),
             "audit_actions": sorted({r.get("action_type") for r in evidence.audit_rows}),
             "audit_chain_ok": evidence.audit_chain_ok,
         }

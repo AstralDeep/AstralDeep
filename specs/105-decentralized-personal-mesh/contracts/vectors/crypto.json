@@ -1,0 +1,603 @@
+{
+  "cases": [
+    {
+      "expect": {
+        "ok": {
+          "device_id": "sha256:31e5fd9dca033a108bd47f5e447e7020e2c10a4156cec69f56b40e2f9d2cce03",
+          "identity": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+          "ops": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+          "presence": "BIeq_XsUvyewG6VDaaLJxTz0ko7vgFIN7q9FqVjxlADFesCm_ifRyvbRDnsH6KcLWtEL3Yn1nKoDWmoVznMV7MY",
+          "wrap": "LXXo9gVNFVgFIgpdAegbV-UESe0qFOG1SoskAf9-Pw8"
+        }
+      },
+      "input": {
+        "identity_scalar_hex": "0ce393242316eeda13b045c780dd99a3784bbaec0abd572ed0d822df7a61e9a6",
+        "ops_seed_hex": "37a6db180b13765d86ecf35cb5ed52d2a4aa7fb3ece91194f61e7f645e82c3c6",
+        "presence_scalar_hex": "66b9efeacbe85c32fafabc4594ae4c65513ae9a9f15078f02b6238780ebd99ea",
+        "wrap_private_hex": "934e3161ec9672a79552d2db56e2ac25fa5377388f3eb0ea915c9df63ba3a676"
+      },
+      "kind": "keypair",
+      "name": "keypair-alice"
+    },
+    {
+      "expect": {
+        "ok": {
+          "device_id": "sha256:bbab6de7ba22065b4e1503f6a7f74f6c1908c18238eccb6b25f1e86463ab2341",
+          "identity": "BEW39s2FaA9Rry5W64uN1gVnhosHVjFHVsGlDWZqGSsSirNPQJC9QENg3ii9AlqEV34QSOvHegQ4kRjvaUVLBFk",
+          "ops": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+          "presence": "BNJ7AlfpbBgZejfkfcLGgL5o0N4Ri5cwiLT03HI2Ydi8XNsb7Y3ykXY6B8i0avF6ir0vyBhebaUsU2xyjjrZhl4",
+          "wrap": "hV_WL-h-HcDkPPI_umFGnM4wqiS1zGsdsh6neZqRUj0"
+        }
+      },
+      "input": {
+        "identity_scalar_hex": "5fcd1295f19588d646f38f369c1aa31ab0ba657e2a0ae5e11c740f26a089c84e",
+        "ops_seed_hex": "b0e9bfff3ad8661a30c97858c5492e774456b06d6ec7cb73b3a3c18431a408d3",
+        "presence_scalar_hex": "436f7838b991b7dc7203257f893bf810b7005d216efa22108493968e4ceb230c",
+        "wrap_private_hex": "66ccd3807bc7390c1937aa892b267d756fd593dfb6bc212889bf4f586cb1d6a0"
+      },
+      "kind": "keypair",
+      "name": "keypair-bob"
+    },
+    {
+      "expect": {
+        "ok": {
+          "device_id": "sha256:e0d807a001a1c59d96f10ccb7c4fa8afa29a57f88ccfcd52b885983e220cd8af",
+          "identity": "BPwG9Gn2j8wvtteoUIP93Z92UIMhMC9Z7Iy0gGEpy_uRtnLBtpJwfswxsoYRNAPibuXRTaMPB51Ky8X81SgsOsQ",
+          "ops": "aJmw8045KrQPhMx9U4pbDmwsPowMa1j9_v5W83iS6OA",
+          "presence": "BJZUUm_viiYRydl1YNQ4PIDJ-MgjnAZsglZqxTjP-UrE5drLeGt-M38d1grvjiw0xfDO4d9oW--qeTWjf1M1-6c",
+          "wrap": "oxwm3fqVOLezEHDNgSGsNa2ICVOZ9DAKbo6gNQzEKQo"
+        }
+      },
+      "input": {
+        "identity_scalar_hex": "782850c40eb281337d54e213fbb6f1e45fa58883d25b1ac60e6b1e4cd9f765f4",
+        "ops_seed_hex": "f4c7daa92619d74644c327b2de7c4bb58b29f4b7005cdc3718fcb9751257132e",
+        "presence_scalar_hex": "2e1efe8dcf780eea84694e338691bca0f8a379f3ebf2692ee279bcc3256f4d2a",
+        "wrap_private_hex": "ed77f67bea91fde1d5e0b5456f847ab758bcf3cd41202fc74c0e2335d53d9c74"
+      },
+      "kind": "keypair",
+      "name": "keypair-node1"
+    },
+    {
+      "expect": {
+        "ok": {
+          "sig": "ImpUKu7PE79txxVQX9RrGNoILMRG5oj8VlmQTVHfHCa0F3Xl8pojH3SQu4WqpHmZC0-x_NUQirCUw-2eTJ1DDQ"
+        }
+      },
+      "input": {
+        "alg": "ed25519",
+        "context": "astral.event/v1",
+        "object": {
+          "a": 1,
+          "list": [
+            1,
+            2,
+            3
+          ],
+          "text": "café"
+        },
+        "secret_hex": "37a6db180b13765d86ecf35cb5ed52d2a4aa7fb3ece91194f61e7f645e82c3c6"
+      },
+      "kind": "sign",
+      "name": "ed25519-sign-event"
+    },
+    {
+      "expect": {
+        "ok": {
+          "sig": "WoxKk426E0aZGaT-j9upMzYHbTOGP7tcZKAOzsvWuyU4pGLJL-uWIL2iYk5I7_-_8ZvewEgm4IAqA3mqpZaIAA"
+        }
+      },
+      "input": {
+        "alg": "ed25519",
+        "context": "astral.roster/v1",
+        "object": {
+          "a": 1,
+          "list": [
+            1,
+            2,
+            3
+          ],
+          "text": "café"
+        },
+        "secret_hex": "37a6db180b13765d86ecf35cb5ed52d2a4aa7fb3ece91194f61e7f645e82c3c6"
+      },
+      "kind": "sign",
+      "name": "ed25519-sign-roster"
+    },
+    {
+      "expect": {
+        "ok": {
+          "sig": "W6O0kDsj161HzdQaHtwULUGpvF24RJ0S5LyZElTqeKpCrxK5d_-HFahzBCqvz8K6oXEs1e9jcMvcQ7u2ZS1LAQ"
+        }
+      },
+      "input": {
+        "alg": "ed25519",
+        "context": "astral.checkpoint/v1",
+        "object": {
+          "a": 1,
+          "list": [
+            1,
+            2,
+            3
+          ],
+          "text": "café"
+        },
+        "secret_hex": "37a6db180b13765d86ecf35cb5ed52d2a4aa7fb3ece91194f61e7f645e82c3c6"
+      },
+      "kind": "sign",
+      "name": "ed25519-sign-checkpoint"
+    },
+    {
+      "expect": {
+        "ok": {
+          "sig": "hP4lHhV-5n9i-UJIxAN71aEtseir3qB5SypjXK8eoyL1XFKfhpLAAOSMM48ME48nRVqQFYeUms82ATI3NP48AQ"
+        }
+      },
+      "input": {
+        "alg": "ed25519",
+        "context": "astral.consent/v1",
+        "object": {
+          "a": 1,
+          "list": [
+            1,
+            2,
+            3
+          ],
+          "text": "café"
+        },
+        "secret_hex": "37a6db180b13765d86ecf35cb5ed52d2a4aa7fb3ece91194f61e7f645e82c3c6"
+      },
+      "kind": "sign",
+      "name": "ed25519-sign-consent"
+    },
+    {
+      "expect": {
+        "ok": {
+          "sig": "vSDZL6qnyDysj9WL8m-iLNISYo-Mjuc5zlV0-km38uO4n3arFZ9gcKl4947wJ9Qu6TVkQRk0NI-f0mebPE0xDg"
+        }
+      },
+      "input": {
+        "alg": "ed25519",
+        "context": "astral.policy/v1",
+        "object": {
+          "a": 1,
+          "list": [
+            1,
+            2,
+            3
+          ],
+          "text": "café"
+        },
+        "secret_hex": "37a6db180b13765d86ecf35cb5ed52d2a4aa7fb3ece91194f61e7f645e82c3c6"
+      },
+      "kind": "sign",
+      "name": "ed25519-sign-policy"
+    },
+    {
+      "expect": {
+        "ok": {
+          "sig": "UxLp7EkpHM_DxFVcLL8Q7QqV4aWcfITy14iW9O62d1KgXA8OlU0mFCSPLKkW164tJAaqsV59Or-ZJHQMzp3QDA"
+        }
+      },
+      "input": {
+        "alg": "ed25519",
+        "context": "astral.attestation/v1",
+        "object": {
+          "a": 1,
+          "list": [
+            1,
+            2,
+            3
+          ],
+          "text": "café"
+        },
+        "secret_hex": "37a6db180b13765d86ecf35cb5ed52d2a4aa7fb3ece91194f61e7f645e82c3c6"
+      },
+      "kind": "sign",
+      "name": "ed25519-sign-attestation"
+    },
+    {
+      "expect": {
+        "ok": {
+          "sig": "Ta761zMibsCGsaTEn7i6ORCT_Kx9trrRle2ErFGNcZXwNkGQxVRN7FkDABb0Zk5AbxMy3muSO80AGUvEacafDQ"
+        }
+      },
+      "input": {
+        "alg": "ed25519",
+        "context": "astral.pairing/v1",
+        "object": {
+          "a": 1,
+          "list": [
+            1,
+            2,
+            3
+          ],
+          "text": "café"
+        },
+        "secret_hex": "37a6db180b13765d86ecf35cb5ed52d2a4aa7fb3ece91194f61e7f645e82c3c6"
+      },
+      "kind": "sign",
+      "name": "ed25519-sign-pairing"
+    },
+    {
+      "expect": {
+        "ok": {
+          "sig": "x-PbvZADDtGV-kk9F28fHEyRorsMrDQnJji4W2qg3UBiARBUCPdZw6AbaG30NOEMYMKCs-sDesGXnp7qwasAKw"
+        }
+      },
+      "input": {
+        "alg": "p256",
+        "context": "astral.roster/v1",
+        "object": {
+          "a": 1,
+          "list": [
+            1,
+            2,
+            3
+          ],
+          "text": "café"
+        },
+        "secret_hex": "0ce393242316eeda13b045c780dd99a3784bbaec0abd572ed0d822df7a61e9a6"
+      },
+      "kind": "sign",
+      "name": "p256-sign"
+    },
+    {
+      "expect": {
+        "ok": {
+          "valid": true
+        }
+      },
+      "input": {
+        "alg": "ed25519",
+        "context": "astral.event/v1",
+        "object": {
+          "a": 1,
+          "list": [
+            1,
+            2,
+            3
+          ],
+          "text": "café"
+        },
+        "public": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+        "sig": "ImpUKu7PE79txxVQX9RrGNoILMRG5oj8VlmQTVHfHCa0F3Xl8pojH3SQu4WqpHmZC0-x_NUQirCUw-2eTJ1DDQ"
+      },
+      "kind": "verify",
+      "name": "ed25519-verify"
+    },
+    {
+      "expect": {
+        "ok": {
+          "valid": true
+        }
+      },
+      "input": {
+        "alg": "p256",
+        "context": "astral.roster/v1",
+        "object": {
+          "a": 1,
+          "list": [
+            1,
+            2,
+            3
+          ],
+          "text": "café"
+        },
+        "public": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+        "sig": "x-PbvZADDtGV-kk9F28fHEyRorsMrDQnJji4W2qg3UBiARBUCPdZw6AbaG30NOEMYMKCs-sDesGXnp7qwasAKw"
+      },
+      "kind": "verify",
+      "name": "p256-verify"
+    },
+    {
+      "expect": {
+        "ok": {
+          "valid": false
+        }
+      },
+      "input": {
+        "alg": "ed25519",
+        "context": "astral.roster/v1",
+        "object": {
+          "a": 1,
+          "list": [
+            1,
+            2,
+            3
+          ],
+          "text": "café"
+        },
+        "public": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+        "sig": "ImpUKu7PE79txxVQX9RrGNoILMRG5oj8VlmQTVHfHCa0F3Xl8pojH3SQu4WqpHmZC0-x_NUQirCUw-2eTJ1DDQ"
+      },
+      "kind": "verify",
+      "name": "wrong-context"
+    },
+    {
+      "expect": {
+        "ok": {
+          "valid": false
+        }
+      },
+      "input": {
+        "alg": "p256",
+        "context": "astral.checkpoint/v1",
+        "object": {
+          "a": 1,
+          "list": [
+            1,
+            2,
+            3
+          ],
+          "text": "café"
+        },
+        "public": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+        "sig": "x-PbvZADDtGV-kk9F28fHEyRorsMrDQnJji4W2qg3UBiARBUCPdZw6AbaG30NOEMYMKCs-sDesGXnp7qwasAKw"
+      },
+      "kind": "verify",
+      "name": "wrong-context-p256"
+    },
+    {
+      "expect": {
+        "ok": {
+          "valid": false
+        }
+      },
+      "input": {
+        "alg": "ed25519",
+        "context": "astral.event/v1",
+        "object": {
+          "a": 2,
+          "list": [
+            1,
+            2,
+            3
+          ],
+          "text": "café"
+        },
+        "public": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+        "sig": "ImpUKu7PE79txxVQX9RrGNoILMRG5oj8VlmQTVHfHCa0F3Xl8pojH3SQu4WqpHmZC0-x_NUQirCUw-2eTJ1DDQ"
+      },
+      "kind": "verify",
+      "name": "edited-object"
+    },
+    {
+      "expect": {
+        "ok": {
+          "valid": false
+        }
+      },
+      "input": {
+        "alg": "ed25519",
+        "context": "astral.event/v1",
+        "object": {
+          "a": 1,
+          "list": [
+            1,
+            2,
+            3
+          ],
+          "text": "café"
+        },
+        "public": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+        "sig": "ImpUKu7PE79txxVQX9RrGNoILMRG5oj8VlmQTVHfHCa0F3Xl8pojH3SQu4WqpHmZC0-x_NUQirCUw-2eTJ1DDQ"
+      },
+      "kind": "verify",
+      "name": "wrong-key"
+    },
+    {
+      "expect": {
+        "ok": {
+          "valid": false
+        }
+      },
+      "input": {
+        "alg": "p256",
+        "context": "astral.roster/v1",
+        "object": {
+          "a": 1,
+          "list": [
+            1,
+            2,
+            3
+          ],
+          "text": "café"
+        },
+        "public": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+        "sig": "x-PbvZADDtGV-kk9F28fHEyRorsMrDQnJji4W2qg3UCd_u-q9wimPV_kl5ILyx7zXCR3-bwUI8NcGyvYOrglJg"
+      },
+      "kind": "verify",
+      "name": "p256-high-s-refused"
+    },
+    {
+      "expect": {
+        "ok": {
+          "valid": false
+        }
+      },
+      "input": {
+        "alg": "p256",
+        "context": "astral.roster/v1",
+        "object": {
+          "a": 1,
+          "list": [
+            1,
+            2,
+            3
+          ],
+          "text": "café"
+        },
+        "public": "BPkaiom_CCcXQmjyjzXCVW2HYAVXAA3QlNholaziNqCfZsA0mAn_8cpF1xn53HInsxayRY6U6P_mv8hQXkaxgbk",
+        "sig": "x-PbvZADDtGV-kk9F28fHEyRorsMrDQnJji4W2qg3UBiARBUCPdZw6AbaG30NOEMYMKCs-sDesGXnp7qwasA"
+      },
+      "kind": "verify",
+      "name": "p256-short-signature"
+    },
+    {
+      "expect": {
+        "ok": {
+          "valid": true
+        }
+      },
+      "input": {
+        "alg": "ed25519",
+        "context": "astral.event/v1",
+        "object": {
+          "a": 1,
+          "list": [
+            1,
+            2,
+            3
+          ],
+          "text": "café"
+        },
+        "public": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+        "sig": "ImpUKu7PE79txxVQX9RrGNoILMRG5oj8VlmQTVHfHCa0F3Xl8pojH3SQu4WqpHmZC0-x_NUQirCUw-2eTJ1DDQ"
+      },
+      "kind": "verify",
+      "name": "signature-field-excluded"
+    },
+    {
+      "expect": {
+        "ok": {
+          "ct_hex": "de4ed7acb4d5b108c36bf50e71e313972584c591b9e6"
+        }
+      },
+      "input": {
+        "aad_hex": "616164",
+        "key_hex": "0a5abe88d8146b4633c3a5ab553e4928bd8ccc1d085b42ea71d9ef5c3384f18d",
+        "nonce_hex": "7d919c24d5c6668b272bc1eb2b0c813108a049464cc4904c",
+        "plaintext_hex": "61737472616c"
+      },
+      "kind": "aead_seal",
+      "name": "xchacha20poly1305-seal"
+    },
+    {
+      "expect": {
+        "ok": {
+          "plaintext_hex": "61737472616c"
+        }
+      },
+      "input": {
+        "aad_hex": "616164",
+        "ct_hex": "de4ed7acb4d5b108c36bf50e71e313972584c591b9e6",
+        "key_hex": "0a5abe88d8146b4633c3a5ab553e4928bd8ccc1d085b42ea71d9ef5c3384f18d",
+        "nonce_hex": "7d919c24d5c6668b272bc1eb2b0c813108a049464cc4904c"
+      },
+      "kind": "aead_open",
+      "name": "xchacha20poly1305-open"
+    },
+    {
+      "expect": {
+        "error": "aead.decrypt_failed"
+      },
+      "input": {
+        "aad_hex": "616164",
+        "ct_hex": "de4ed7acb4d5b108c36bf50e71e313972584c591b900",
+        "key_hex": "0a5abe88d8146b4633c3a5ab553e4928bd8ccc1d085b42ea71d9ef5c3384f18d",
+        "nonce_hex": "7d919c24d5c6668b272bc1eb2b0c813108a049464cc4904c"
+      },
+      "kind": "aead_open",
+      "name": "xchacha20poly1305-tampered"
+    },
+    {
+      "expect": {
+        "error": "aead.decrypt_failed"
+      },
+      "input": {
+        "aad_hex": "6f74686572",
+        "ct_hex": "de4ed7acb4d5b108c36bf50e71e313972584c591b9e6",
+        "key_hex": "0a5abe88d8146b4633c3a5ab553e4928bd8ccc1d085b42ea71d9ef5c3384f18d",
+        "nonce_hex": "7d919c24d5c6668b272bc1eb2b0c813108a049464cc4904c"
+      },
+      "kind": "aead_open",
+      "name": "xchacha20poly1305-wrong-aad"
+    },
+    {
+      "expect": {
+        "ok": {
+          "okm_hex": "f722d9c22d48f78ec6ea231e05a2ffdd8769d9aa5104cfcd9ad64ba1df2496be"
+        }
+      },
+      "input": {
+        "ikm_hex": "f4f71412867455324492ce90b12ecd0a6b6319b922334e7a735d06789f0ae286",
+        "info": "astral.wrap/v1",
+        "length": 32,
+        "salt_hex": "e76044ea063414e74dbe6327489a2fa22b8ef9938d76f5391d36d5338da3b0a4"
+      },
+      "kind": "hkdf",
+      "name": "hkdf-sha256"
+    },
+    {
+      "expect": {
+        "ok": {
+          "okm_hex": "ed0458e11c96431e6d522c20dcc98ad4b55938b14a09cf497eb39a8c365a842a"
+        }
+      },
+      "input": {
+        "ikm_hex": "f4f71412867455324492ce90b12ecd0a6b6319b922334e7a735d06789f0ae286",
+        "info": "astral.recovery.sign/v1",
+        "length": 32,
+        "salt_hex": null
+      },
+      "kind": "hkdf",
+      "name": "hkdf-sha256-no-salt"
+    }
+  ],
+  "contexts": [
+    "astral.event/v1",
+    "astral.roster/v1",
+    "astral.checkpoint/v1",
+    "astral.consent/v1",
+    "astral.policy/v1",
+    "astral.attestation/v1",
+    "astral.pairing/v1"
+  ],
+  "devices": {
+    "alice": {
+      "identity_scalar_hex": "0ce393242316eeda13b045c780dd99a3784bbaec0abd572ed0d822df7a61e9a6",
+      "kind": "desktop",
+      "ops_seed_hex": "37a6db180b13765d86ecf35cb5ed52d2a4aa7fb3ece91194f61e7f645e82c3c6",
+      "presence_scalar_hex": "66b9efeacbe85c32fafabc4594ae4c65513ae9a9f15078f02b6238780ebd99ea",
+      "wrap_private_hex": "934e3161ec9672a79552d2db56e2ac25fa5377388f3eb0ea915c9df63ba3a676"
+    },
+    "bob": {
+      "identity_scalar_hex": "5fcd1295f19588d646f38f369c1aa31ab0ba657e2a0ae5e11c740f26a089c84e",
+      "kind": "pocket",
+      "ops_seed_hex": "b0e9bfff3ad8661a30c97858c5492e774456b06d6ec7cb73b3a3c18431a408d3",
+      "presence_scalar_hex": "436f7838b991b7dc7203257f893bf810b7005d216efa22108493968e4ceb230c",
+      "wrap_private_hex": "66ccd3807bc7390c1937aa892b267d756fd593dfb6bc212889bf4f586cb1d6a0"
+    },
+    "carol": {
+      "identity_scalar_hex": "37c4f251aa26504e40020b2c1a8991abd1375409e99d798db37a6ea0a112424f",
+      "kind": "desktop",
+      "ops_seed_hex": "12470ac3ce9fedabd6ec8c1975aee8b9530a10f189cdd7e814eb4ccc67c75aaa",
+      "presence_scalar_hex": "bfcf06edd73197dc7ff47b135cc6a5792aaab1ab3fef426b56921ff2ebea0edb",
+      "wrap_private_hex": "f2100eb3b3967d9462d41955564ba00be4694df3ad48cbb13a3e8347e306670d"
+    },
+    "dave": {
+      "identity_scalar_hex": "b889f91aabfd0f244f12f137e15b19f247a02d2799824ba1af6c3eb9265422a3",
+      "kind": "satellite",
+      "ops_seed_hex": "91f3ea8d5dc532355d1d9fed02e3130595e425dc932d1ac92a03d892e8384860",
+      "presence_scalar_hex": "32aa0246bf7a4958376612da9172a936fdfbbc754c9588938df23474d9da802d",
+      "wrap_private_hex": "999c04164c2f8c4f3e38e0a4071a6ef6da25a744fac14e5076fd7d9b95c4587d"
+    },
+    "mallory": {
+      "identity_scalar_hex": "b9fdeaa4e28ffe58ee6323e71e30140fd0db2bf430601c734dd757f0ea38a72d",
+      "kind": "pocket",
+      "ops_seed_hex": "3f425ae3013e29a6fd8d3e8d9449ff0e85f8013275a283880dbfef18075ca71d",
+      "presence_scalar_hex": "d6a9b899c9eae91a1cbba1abc64728f6f083c6718c0c3b78155eaf9cd8f2859c",
+      "wrap_private_hex": "528456ec67167228ec4f9df7c714ee125c28e39201372e46bed8c21603181006"
+    },
+    "node1": {
+      "identity_scalar_hex": "782850c40eb281337d54e213fbb6f1e45fa58883d25b1ac60e6b1e4cd9f765f4",
+      "kind": "node",
+      "ops_seed_hex": "f4c7daa92619d74644c327b2de7c4bb58b29f4b7005cdc3718fcb9751257132e",
+      "presence_scalar_hex": "2e1efe8dcf780eea84694e338691bca0f8a379f3ebf2692ee279bcc3256f4d2a",
+      "wrap_private_hex": "ed77f67bea91fde1d5e0b5456f847ab758bcf3cd41202fc74c0e2335d53d9c74"
+    }
+  },
+  "format": "astral.vectors/v1",
+  "name": "crypto",
+  "spec": "contracts/event.md#signatures-and-ids"
+}

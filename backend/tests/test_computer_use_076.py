@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sys
 import time
 import uuid
 from types import SimpleNamespace
@@ -24,7 +23,6 @@ from shared.protocol import (
     ProtocolValidationError,
     RegisterUI,
 )
-from tests.helpers.remote_plane_runtime import make_remote_confirmation_plane_source
 
 OWNER = "user-1"
 OTHER = "user-2"
@@ -156,6 +154,7 @@ _BROWSER_INPUT = {"browser_navigate", "browser_click", "browser_fill", "browser_
                   "browser_scroll", "browser_dialog"}
 _BROWSER_PARITY = {"browser_find", "browser_hover", "browser_zoom", "browser_console", "browser_network",
                    "browser_evaluate", "browser_resize", "browser_tabs"}
+_BROWSER_LOGIN = {"browser_request_login", "browser_fill_login"}
 
 
 def test_command_and_browser_verbs_join_the_closed_protocol_and_policy_sets():
@@ -167,8 +166,9 @@ def test_command_and_browser_verbs_join_the_closed_protocol_and_policy_sets():
     assert not policy.COMPOSITE_VERBS & COMPUTER_HOST_VERBS
     assert policy.COMPOSITE_VERBS <= policy.ALL_VERBS & policy.SESSION_REQUIRED
     assert policy.COMMAND_VERBS == _COMMAND_VERBS
-    assert policy.BROWSER_VERBS == _BROWSER_OBSERVE | _BROWSER_INPUT | _BROWSER_PARITY
-    assert len(policy.BROWSER_VERBS) == 18
+    assert policy.BROWSER_VERBS == _BROWSER_OBSERVE | _BROWSER_INPUT | _BROWSER_PARITY | _BROWSER_LOGIN
+    assert len(policy.BROWSER_VERBS) == 20
+    assert _BROWSER_LOGIN <= COMPUTER_HOST_VERBS
     assert not policy.COMMAND_VERBS & policy.BROWSER_VERBS
     assert _BROWSER_OBSERVE | {"read_output"} <= policy.OBSERVE_VERBS
     assert _BROWSER_INPUT | {"interrupt_command"} <= policy.INPUT_VERBS
@@ -188,7 +188,9 @@ def test_command_and_browser_verbs_have_tiers_scopes_timeouts_and_sessions():
         assert policy.TIERS[verb] == "observe"
     for verb in _BROWSER_INPUT | {"interrupt_command"}:
         assert policy.TIERS[verb] == "input"
+    assert policy.TIERS["browser_request_login"] == "input"
     assert policy.TIERS["run_command"] == "consequential"
+    assert policy.TIERS["browser_fill_login"] == "consequential"
     for verb in _BROWSER_OBSERVE:
         assert policy.SCOPES[verb] == "tools:read"
     for verb in _BROWSER_INPUT:
@@ -200,11 +202,14 @@ def test_command_and_browser_verbs_have_tiers_scopes_timeouts_and_sessions():
         assert policy.TIMEOUTS[verb] == 5.0
     assert policy.TIMEOUTS["browser_navigate"] == policy.TIMEOUTS["browser_wait"] == 15.0
     assert policy.TIMEOUTS["run_command"] == 630.0
+    assert policy.TIMEOUTS["browser_request_login"] == 630.0
+    assert policy.TIMEOUTS["browser_fill_login"] == 15.0
     assert policy.TIMEOUTS["read_output"] == 30.0
     assert policy.TIMEOUTS["interrupt_command"] == 5.0
     for verb in _BROWSER_INPUT - {"browser_navigate"}:
         assert policy.TIMEOUTS[verb] == 5.0
-    for verb in policy.HOST_VERBS - _COMMAND_VERBS - _BROWSER_OBSERVE - _BROWSER_INPUT:
+    for verb in (policy.HOST_VERBS - _COMMAND_VERBS - _BROWSER_OBSERVE - _BROWSER_INPUT
+                 - _BROWSER_LOGIN):
         assert 0 < policy.TIMEOUTS[verb] <= 30.0
     for verb in _COMMAND_VERBS | _BROWSER_OBSERVE | _BROWSER_INPUT:
         assert verb in policy.SESSION_REQUIRED
@@ -219,6 +224,10 @@ def test_every_command_and_first_navigation_need_review_and_reads_do_not():
     assert rc.classification_for("run_command", "computer-use-1") == "always"
     assert policy.is_destructive("run_command", {"command": "ls"}) is True
     assert policy.is_destructive("browser_navigate", {"url": "https://example.org"}) is True
+    assert policy.DESTRUCTIVE_CLASSIFICATION["browser_fill_login"] == "always"
+    assert "browser_request_login" not in policy.DESTRUCTIVE_CLASSIFICATION
+    assert rc.is_destructive_unattended("browser_fill_login", {}, "computer-use-1") is True
+    assert rc.is_destructive_unattended("browser_request_login", {}, "computer-use-1") is True
     for verb in (_COMMAND_VERBS - {"run_command", "project_preview"}) | _BROWSER_OBSERVE | (_BROWSER_INPUT - {"browser_navigate"}):
         assert verb not in policy.DESTRUCTIVE_CLASSIFICATION
         assert policy.is_destructive(verb, {}) is False
@@ -226,13 +235,13 @@ def test_every_command_and_first_navigation_need_review_and_reads_do_not():
 
 def test_consequential_verbs_are_always_gated_and_unattended_set_is_minimal():
     assert policy.CONSEQUENTIAL_VERBS <= set(policy.DESTRUCTIVE_CLASSIFICATION)
-    assert "confirm_action" in policy.DESTRUCTIVE_CLASSIFICATION
+    assert "confirm_action" not in policy.DESTRUCTIVE_CLASSIFICATION
     assert policy.UNATTENDED_ALLOWED == frozenset({"list_computers"})
     assert policy.SCOPES["write_file"] == policy.SCOPES["delete_path"] == "tools:files"
 
 
 def test_gate_policy_table_covers_each_agent_and_063_is_unchanged():
-    assert rc.GATED_AGENT_IDS == {
+    assert set(rc._policies()) == {
         "remote-compute-1", "computer-use-1", "gaiakeep-1", "cresco-1", "terminal-shell-1",
     }
     p063 = rc.policy_for("remote-compute-1")
@@ -530,21 +539,12 @@ async def test_sweep_enforces_idle_max_and_silence(monkeypatch):
     assert s3.reason == "max_duration"
 
 
-class _FakeDB:
-    def __init__(self):
-        self.rows: dict = {}
-
-
 class _Hashable:
     pass
 
 
-def _gate_orch(db):
-    source = make_remote_confirmation_plane_source(db)
+def _gate_orch():
     orch = SimpleNamespace(
-        plane_repository_source=source,
-        runtime_composition=SimpleNamespace(plane=SimpleNamespace(
-            runtime=source.plane_runtime, repositories=source.plane_repositories)),
         credential_manager=object(),
         ui_sessions={},
     )
@@ -555,166 +555,12 @@ def _gate_orch(db):
 
 
 def test_unattended_turn_may_only_list_computers():
-    orch = _gate_orch(_FakeDB())
+    orch = _gate_orch()
     for verb in ("screenshot", "click", "type_text", "write_file", "start_session"):
         out = rc.evaluate(orch, None, "computer-use-1", verb, {"computer": "x"}, "chat", OWNER)
         assert out is not None and out[0].startswith("unattended_refused")
     assert rc.evaluate(orch, None, "computer-use-1", "list_computers", {}, "chat", OWNER) is None
     assert rc.evaluate(orch, None, "remote-compute-1", "list_machines", {}, "chat", OWNER) is None
-
-
-def test_attended_input_verbs_pass_and_consequential_verbs_get_a_card():
-    db = _FakeDB()
-    orch = _gate_orch(db)
-    ws = _Hashable()
-    orch.ui_sessions[ws] = {"sub": OWNER}
-    assert rc.evaluate(orch, ws, "computer-use-1", "click", {"x": 1, "y": 2}, "chat", OWNER) is None
-    assert rc.evaluate(orch, ws, "computer-use-1", "screenshot", {}, "chat", OWNER) is None
-    unknown = rc.evaluate(orch, ws, "computer-use-1", "delete_path", {"path": "C:/tmp/x", "computer": "RYZENROLL"},
-                          "chat", OWNER)
-    assert unknown[0].startswith("computer_unavailable") and not db.rows
-    orch.computer_hosts.register(OWNER, _WS(), ComputerHostDescriptor.from_dict(_descriptor(name="RYZENROLL")))
-    out = rc.evaluate(orch, ws, "computer-use-1", "delete_path", {"path": "C:/tmp/x", "computer": "ryzenroll"}, "chat", OWNER)
-    assert out is not None and out[0].startswith("confirmation_required")
-    out_nohost = rc.evaluate(orch, ws, "computer-use-1", "write_file", {"path": "C:/x.txt", "content": "y"}, "chat", OWNER)
-    assert out_nohost is not None
-    assert all(len(r["machine_id"]) == 36 for r in db.rows.values())
-    assert "ryzenroll" not in json.dumps(out[1]) and "Delete on RYZENROLL" in json.dumps(out[1])
-    card = out[1][0]
-    assert card["type"] == "card" and "Confirm an action on" in card["title"]
-    assert card["id"].startswith("au_approval_") and rc.policy_for("computer-use-1").card_as_result is True
-    assert rc.policy_for("remote-compute-1").card_as_result is False
-    buttons = [c for c in card["content"] if c["type"] == "button"]
-    assert {b["payload"]["decision"] for b in buttons} == {"approve", "decline"}
-    assert any("Delete on" in c.get("content", "") for c in card["content"] if c["type"] == "text")
-    assert len(db.rows) == 2 and all(r["status"] == "pending" for r in db.rows.values())
-    out = rc.evaluate(orch, ws, "computer-use-1", "confirm_action", {"summary": "Buy the ticket"}, "chat", OWNER)
-    assert out is not None and "Buy the ticket" in json.dumps(out[1])
-    assert rc.evaluate(orch, ws, "computer-use-1", "open_app", {"app": "notepad"}, "chat", OWNER) is None
-    out = rc.evaluate(orch, ws, "computer-use-1", "open_app", {"app": "powershell"}, "chat", OWNER)
-    assert out is not None and "Open a terminal" in json.dumps(out[1])
-    assert "STOP NOW" in out[0] and "end your turn" in out[0]
-    rows_before = len(db.rows)
-    again = rc.evaluate(orch, ws, "computer-use-1", "open_app", {"app": "powershell"}, "chat", OWNER)
-    assert again[0] == out[0] and len(db.rows) == rows_before
-    assert again[1][0]["type"] == "alert" and "Still waiting" in again[1][0]["message"]
-    r1 = rc.evaluate(orch, ws, "remote-compute-1", "remove_path", {"machine_id": "m", "path": "/x"}, "chat", OWNER)
-    r2 = rc.evaluate(orch, ws, "remote-compute-1", "remove_path", {"machine_id": "m", "path": "/x"}, "chat", OWNER)
-    assert r1[1][0]["type"] == "card" and r2[1][0]["type"] == "card"
-
-
-def _approve_payload(reviewed):
-    return next(item["payload"] for item in reviewed[1][0]["content"]
-                if item.get("type") == "button" and item["payload"]["decision"] == "approve")
-
-
-async def test_approval_runs_the_verb_without_a_second_unfenced_continuation():
-    db = _FakeDB()
-    orch = _gate_orch(db)
-    ws = _Hashable()
-    orch.ui_sessions[ws] = {"sub": OWNER}
-    calls = []
-    renders = []
-
-    async def _execute_single_tool(websocket, tc, mapping, chat_id, user_id=None):
-        calls.append((tc.function.name, json.loads(tc.function.arguments), mapping, chat_id, user_id))
-        return SimpleNamespace(result={"_data": {"exit_code": 0, "stdout": "Wednesday"}}, error=None, ui_components=None)
-
-    from orchestrator.orchestrator import _CONNECTION_OPERATION_CONTEXT
-    # __main__ gets separate module globals from a normal import
-    global _CONNECTION_OPERATION_CONTEXT_MAIN
-    import contextvars
-    _CONNECTION_OPERATION_CONTEXT_MAIN = contextvars.ContextVar("test_main_operation", default=None)
-    sys.modules[__name__]._CONNECTION_OPERATION_CONTEXT = _CONNECTION_OPERATION_CONTEXT_MAIN
-    main_orch = type("MainOrch", (), {"__module__": __name__})()
-    main_orch.__dict__.update(vars(orch))
-    orch = main_orch
-
-    async def _serialized_chat(websocket, message, chat_id, display_message=None, *, user_id=None, **kw):
-        renders.append((message, chat_id, display_message, user_id,
-                        (_CONNECTION_OPERATION_CONTEXT.get(), _CONNECTION_OPERATION_CONTEXT_MAIN.get())))
-
-    async def _send_ui_render(websocket, comps, target=None):
-        pass
-
-    orch.execute_single_tool = _execute_single_tool
-    orch._serialized_chat = _serialized_chat
-    orch.send_ui_render = _send_ui_render
-    fake = _FakeOrch()
-    orch.computer_sessions = fake.computer_sessions
-    host_ws, host = await _online_host(fake)
-    orch.computer_hosts = fake.computer_hosts
-    grant_session = await _session(fake, host, fake.add(_WS(chat="chat-1")))
-    grant_session.controller_ws_id = id(ws)
-    orch._connection_contexts = {id(ws): _registered_context(ws)}
-    orch._ws_active_chat = {id(ws): "chat-1"}
-    assert grant_session.terminal_ok is False
-    reviewed = rc.evaluate(orch, ws, "computer-use-1", "open_app", {"app": "powershell", "computer": "RyzenRoll"},
-                           "chat-1", OWNER)
-    assert reviewed is not None
-    proposal_id = next(iter(db.rows))
-    approve = _approve_payload(reviewed)
-    click_operation = {"operation": "the approval click's connection operation"}
-    token = _CONNECTION_OPERATION_CONTEXT.set(click_operation)
-    token_main = _CONNECTION_OPERATION_CONTEXT_MAIN.set(click_operation)
-    try:
-        await rc.handle_decision(orch, ws, OWNER, approve)
-        await asyncio.sleep(0.05)
-    finally:
-        _CONNECTION_OPERATION_CONTEXT.reset(token)
-        _CONNECTION_OPERATION_CONTEXT_MAIN.reset(token_main)
-        del sys.modules[__name__]._CONNECTION_OPERATION_CONTEXT
-    assert calls and calls[0][0] == "open_app" and calls[0][1]["app"] == "powershell"
-    assert calls[0][1][rc._MARKER] == proposal_id
-    assert not renders
-    assert grant_session.terminal_ok is True
-    assert len(db.rows) == 1
-    out2 = rc.evaluate(orch, ws, "computer-use-1", "open_app", {"app": "powershell", "computer": "RyzenRoll"},
-                       "chat-1", OWNER)
-    assert out2[1][0]["type"] == "card" and len(db.rows) == 2
-
-
-async def test_failed_computer_action_requires_fresh_review_and_never_auto_continues():
-    rc._PENDING_CARDS.clear()
-    db = _FakeDB()
-    orch = _gate_orch(db)
-    ws = _Hashable()
-    orch.ui_sessions[ws] = {"sub": OWNER}
-    renders = []
-
-    async def _execute_single_tool(websocket, tc, mapping, chat_id, user_id=None):
-        return SimpleNamespace(result={"_data": {"ok": False, "code": "paused",
-                                                 "message": "RyzenRoll is paused (local_input)"}}, error=None, ui_components=None)
-
-    async def _serialized_chat(websocket, message, chat_id, display_message=None, *, user_id=None, **kw):
-        renders.append(message)
-
-    async def _send_ui_render(websocket, comps, target=None):
-        pass
-
-    orch.execute_single_tool = _execute_single_tool
-    orch._serialized_chat = _serialized_chat
-    orch.send_ui_render = _send_ui_render
-    fake = _FakeOrch()
-    orch.computer_sessions = fake.computer_sessions
-    host_ws, host = await _online_host(fake)
-    orch.computer_hosts = fake.computer_hosts
-    session = await _session(fake, host, fake.add(_WS(chat="chat-1")))
-    session.controller_ws_id = id(ws)
-    orch._connection_contexts = {id(ws): _registered_context(ws)}
-    orch._ws_active_chat = {id(ws): "chat-1"}
-    args = {"app": "powershell", "computer": "RyzenRoll"}
-    reviewed = rc.evaluate(orch, ws, "computer-use-1", "open_app", dict(args), "chat-1", OWNER)
-    assert reviewed is not None
-    await rc.handle_decision(orch, ws, OWNER, _approve_payload(reviewed))
-    await asyncio.sleep(0.05)
-    assert not renders and not session.terminal_ok
-    assert rc.evaluate(orch, ws, "computer-use-1", "open_app", dict(args), "chat-1", OWNER) is not None
-    assert len(db.rows) == 2
-    rc._RETRY_GRACE[(OWNER, "computer-use-1", "open_app", rc._fingerprint(args))] = ("x", time.time() + 60)
-    assert rc.evaluate(orch, ws, "computer-use-1", "open_app", {"app": "cmd", "computer": "RyzenRoll"},
-                       "chat-1", OWNER) is not None
-    rc._RETRY_GRACE.clear()
 
 
 def _bare_orchestrator():
@@ -726,33 +572,6 @@ def _shot(n: str):
     return SimpleNamespace(result={"_data": {"width": 10, "height": 5},
                                   "_images": [{"media_type": "image/jpeg", "base64": "QUJD" + n, "caption": f"Shot {n}"}]},
                            error=None)
-
-
-def test_images_follow_tool_messages_and_are_pruned_to_the_newest():
-    o = _bare_orchestrator()
-    messages = [{"role": "system", "content": "s"}]
-    calls = [SimpleNamespace(id="c1")]
-    for i in range(5):
-        messages.append({"role": "tool", "tool_call_id": "c1", "content": "{}"})
-        assert o._append_tool_images(messages, calls, [_shot(str(i))]) == 1
-    imgs = [m for m in messages if o._is_image_message(m)]
-    assert len(imgs) == o._MAX_IMAGE_MESSAGES == 3
-    placeholders = [m for m in messages if m.get("content") == o._IMAGE_PLACEHOLDER]
-    assert len(placeholders) == 2
-    last = imgs[-1]["content"]
-    assert last[0]["type"] == "text" and "UNTRUSTED" in last[0]["text"] and "Shot 4" in last[0]["text"]
-    assert last[1]["type"] == "image_url" and last[1]["image_url"]["url"].startswith("data:image/jpeg;base64,QUJD4")
-    assert o._strip_image_parts(messages) == 3
-    assert not o._messages_have_images(messages)
-
-
-def test_results_without_images_add_nothing_and_bad_images_are_ignored():
-    o = _bare_orchestrator()
-    messages: list = []
-    plain = SimpleNamespace(result={"_data": {}}, error=None)
-    weird = SimpleNamespace(result={"_images": [{"media_type": "text/html", "base64": "x"}, "junk"]}, error=None)
-    assert o._append_tool_images(messages, [SimpleNamespace(id="a"), SimpleNamespace(id="b")], [plain, weird]) == 0
-    assert messages == []
 
 
 def test_provider_rejection_heuristic():

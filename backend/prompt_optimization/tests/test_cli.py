@@ -26,14 +26,26 @@ def seals(monkeypatch):
     monkeypatch.setattr(cli, "configured_holdout_seals", configured)
 
 
+def test_retired_product_task_refuses_without_opening_plane_or_exporting(tmp_path, monkeypatch, capsys):
+    def unexpected(*_args):
+        pytest.fail("retired tasks must not reserve holdouts")
+
+    monkeypatch.setattr(cli, "configured_holdout_seals", unexpected)
+    out = tmp_path / "artifacts"
+    assert cli.main(["--out", str(out)]) == 2
+    assert "coordinator_planning retired" in capsys.readouterr().err
+    assert not out.exists()
+
+
 def test_scripted_run_writes_artifacts_and_exits_zero(tmp_path, monkeypatch):
     monkeypatch.chdir(cli.repo_root().parent)
     out = tmp_path / "artifacts"
-    code = cli.main(["--out", str(out)])
+    code = cli.main(["--task", "synthetic_coordinator_planning", "--out", str(out)])
     assert code == 0
     candidate = json.loads((out / "candidate_prompt.json").read_text(encoding="utf-8"))
     report = json.loads((out / "optimization_report.json").read_text(encoding="utf-8"))
     assert candidate["adoption_status"] == "proposed_not_applied"
+    assert candidate["task_id"] == report["task"]["task_id"] == "synthetic_coordinator_planning"
     assert report["status"] == "completed"
     assert report["model"]["mode"].startswith("scripted:")
     assert report["model"]["actual_model_qualified"] is False
@@ -43,8 +55,8 @@ def test_scripted_run_writes_artifacts_and_exits_zero(tmp_path, monkeypatch):
 
 def test_second_cli_invocation_cannot_reuse_final_inputs(tmp_path):
     first, second = tmp_path / "one", tmp_path / "two"
-    assert cli.main(["--out", str(first)]) == 0
-    assert cli.main(["--out", str(second)]) == 2
+    assert cli.main(["--task", "synthetic_coordinator_planning", "--out", str(first)]) == 0
+    assert cli.main(["--task", "synthetic_coordinator_planning", "--out", str(second)]) == 2
     assert not second.exists()
 
 
@@ -60,13 +72,13 @@ def test_raw_provider_config_cannot_open_a_live_route(tmp_path, monkeypatch):
 def test_cli_new_holdout_does_not_reuse_exposed_cases(tmp_path):
     from prompt_optimization.fixture import build_fixture
 
-    assert cli.main(["--out", str(tmp_path / "one")]) == 0
+    assert cli.main(["--task", "synthetic_coordinator_planning", "--out", str(tmp_path / "one")]) == 0
     cases = [case.to_dict() for case in build_fixture().cases("holdout")]
     for case in cases:
         case["request"] = "Fresh synthetic scenario " + case["request"]
     fixture = tmp_path / "new.json"
     fixture.write_text(json.dumps({"schema_version": 1, "holdout": cases}))
-    assert cli.main(["--holdout", str(fixture), "--out", str(tmp_path / "two")]) == 0
+    assert cli.main(["--task", "synthetic_coordinator_planning", "--holdout", str(fixture), "--out", str(tmp_path / "two")]) == 0
 
 
 def test_module_entry_point_exposes_scripted_help():
@@ -88,14 +100,14 @@ def test_configuration_or_persistence_failure_never_exports_success(tmp_path, mo
 
     monkeypatch.setattr(cli, "configured_holdout_seals", unavailable)
     out = tmp_path / "artifacts"
-    assert cli.main(["--out", str(out)]) == 2
+    assert cli.main(["--task", "synthetic_coordinator_planning", "--out", str(out)]) == 2
     assert not out.exists()
 
 
 def test_invalid_fixture_never_exports_success(tmp_path):
     path = tmp_path / "invalid.json"
     path.write_text("{}")
-    assert cli.main(["--holdout", str(path), "--out", str(tmp_path / "out")]) == 2
+    assert cli.main(["--task", "synthetic_coordinator_planning", "--holdout", str(path), "--out", str(tmp_path / "out")]) == 2
     assert not (tmp_path / "out").exists()
 
 

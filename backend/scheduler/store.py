@@ -6,7 +6,6 @@ authority for scheduler/loop.py and runner.py.
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import re
 import threading
@@ -22,9 +21,6 @@ from astralplane.repositories.scheduler import (
     OccurrenceState as PlaneOccurrenceState,
     ScheduledJob as PlaneScheduledJob,
     ScheduledJobPolicy as PlaneScheduledJobPolicy,
-    StagedChatLayout as PlaneStagedChatLayout,
-    StagedChatMessage as PlaneStagedChatMessage,
-    StagedChatPublication as PlaneStagedChatPublication,
 )
 from orchestrator.work_admission import (
     AdmissionClass,
@@ -42,7 +38,6 @@ from orchestrator.plane_repository_context import (
     PlaneRepositoryContext,
     repository_from,
 )
-from orchestrator.scheduled_publication import ScheduledHistoryBatch
 
 from .cron import compute_next_run_ms
 
@@ -129,19 +124,6 @@ class RunNowMaterialization:
     scheduled_for: datetime
     state: str
     created: bool
-
-
-@dataclass(frozen=True)
-class EpisodeAdmission:
-    job_id: uuid.UUID
-    owner_id: str
-    occurrence_id: uuid.UUID
-    assignment_id: uuid.UUID
-    admitted: bool
-    created: bool
-    reason: str
-    spend: int
-    policy: Optional[Dict[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -334,9 +316,6 @@ class ScheduledJobStore:
         target_chat_id: Optional[str],
         next_run_at: Optional[int],
         offline_grant_id: Optional[str],
-        prepared_consent=None,
-        offline_grants=None,
-        consent_current=None,
     ) -> Dict[str, Any]:
         job_id = str(uuid.uuid4())
         now = _now_ms()
@@ -357,40 +336,7 @@ class ScheduledJobStore:
                 target_chat_id=target_chat_id,
                 offline_grant_id=offline_grant_id,
             )
-        if prepared_consent is None and consent_current is None:
-            if offline_grants is not None:
-                raise ScheduleActionError("schedule_consent_unavailable")
-            job = self._plane.call(self._plane.repository.create_job_definition, job=definition)
-        else:
-            from orchestrator.offline_grant import OfflineGrantError, PreparedConsentGrant
-            if (not callable(consent_current)
-                    or (prepared_consent is None and offline_grants is not None)
-                    or (prepared_consent is not None and (
-                        not isinstance(prepared_consent, PreparedConsentGrant)
-                        or prepared_consent.owner_id != user_id
-                        or offline_grant_id is not None or offline_grants is None))):
-                raise ScheduleActionError("schedule_consent_unavailable")
-            # Never revoke here — a failure can't tell if it committed
-            try:
-                with self._plane.transaction() as transaction:
-                    self._plane.plane_runtime.repositories.history.sessions.bound_request_execution_waits(transaction)
-                    if not consent_current():
-                        raise ScheduleActionError("schedule_consent_unavailable")
-                    grant = offline_grant_id
-                    if prepared_consent is not None:
-                        grant = offline_grants.capture_in_transaction(transaction, prepared_consent,
-                            plane_runtime=self._plane.plane_runtime)
-                    job = self._plane.repository.create_job_definition(
-                        transaction, job=replace(definition, offline_grant_id=grant))
-                    if prepared_consent is not None:
-                        offline_grants.assert_current_capture(transaction, prepared_consent,
-                            plane_runtime=self._plane.plane_runtime)
-                    if not consent_current():
-                        raise ScheduleActionError("schedule_consent_unavailable")
-            except (OfflineGrantError, ScheduleActionError):
-                raise
-            except Exception:
-                raise ScheduleActionError("schedule_write_unavailable") from None
+        job = self._plane.call(self._plane.repository.create_job_definition, job=definition)
         return self._job_dict(job)
 
     def get_job(self, user_id: str, job_id: str) -> Optional[Dict[str, Any]]:
@@ -683,50 +629,6 @@ class ScheduledJobStore:
                     exc.code, exc.code)
             ) from exc
         return self._policy_dict(updated)
-
-    def admit_episode(
-        self,
-        claim: OccurrenceClaim,
-        *,
-        assignment_id: str,
-        spend: int = 1,
-        transaction: Any = None,
-    ) -> EpisodeAdmission:
-        admitted_at = _now_ms()
-
-        def call(cursor: Any) -> Any:
-            return self._plane.repository.admit_assignment_episode(
-                cursor,
-                owner_id=str(claim.job["user_id"]),
-                job_id=str(claim.job["id"]),
-                occurrence_id=str(claim.occurrence_id),
-                claim_generation=claim.claim_generation,
-                lease_token=str(claim.lease_token),
-                lease_owner=claim.lease_owner,
-                assignment_id=str(assignment_id),
-                admitted_at=admitted_at,
-                spend=spend,
-            )
-
-        try:
-            if transaction is not None:
-                result = call(transaction)
-            else:
-                with self._plane.transaction() as cursor:
-                    result = call(cursor)
-        except PlaneError as exc:
-            raise _stale_plane_error(exc) from exc
-        return EpisodeAdmission(
-            job_id=_as_uuid(result.job_id),
-            owner_id=result.owner_id,
-            occurrence_id=_as_uuid(result.occurrence_id),
-            assignment_id=_as_uuid(result.assignment_id),
-            admitted=result.admitted,
-            created=result.created,
-            reason=result.reason,
-            spend=result.spend,
-            policy=None if result.policy is None else self._policy_dict(result.policy),
-        )
 
     def stop_job(self, user_id: str, job_id: str, *, expected_version: int) -> JobStopOutcome:
         stopped_at = _now_ms()
@@ -1296,160 +1198,6 @@ class ScheduledJobStore:
                 ambiguous=result.ambiguous,
             )
 
-    def reserve_atomic_chat_effect(
-        self,
-        attempt: ScheduledAttempt,
-        *,
-        effect_key: str,
-        payload_digest: str,
-    ) -> EffectReservation:
-        effect_kind = "chat_history"
-        self._validate_effect_identity(
-            effect_kind=effect_kind,
-            effect_key=effect_key,
-            payload_digest=payload_digest,
-        )
-        if attempt.execution_fence is None:
-            raise StaleOccurrenceClaimError("attempt has no execution fence")
-        coordinator = self._require_coordinator()
-        with coordinator.fenced_transaction(attempt.execution_fence) as cursor:
-            self._assert_effect_authority(cursor, attempt)
-            try:
-                result = self._plane.repository.reserve_effect_for_attempt(
-                    cursor,
-                    **self._effect_attempt_arguments(attempt),
-                    effect_kind=effect_kind,
-                    effect_key=effect_key,
-                    payload_digest=payload_digest,
-                    recover_reserved=True,
-                )
-            except PlaneError as exc:
-                if exc.code == "effect_idempotency_conflict":
-                    raise EffectIdempotencyConflictError(exc.code) from exc
-                raise _stale_plane_error(exc) from exc
-            return EffectReservation(
-                state=result.state.value,
-                created=result.created,
-                ambiguous=result.ambiguous,
-            )
-    def publish_staged_chat_effect(
-        self,
-        attempt: ScheduledAttempt,
-        batch: ScheduledHistoryBatch,
-        *,
-        effect_kind: str,
-        effect_key: str,
-        payload_digest: str,
-    ) -> EffectReservation:
-        if effect_kind != "chat_history":
-            raise ValueError("staged chat publication requires chat_history")
-        self._validate_effect_identity(
-            effect_kind=effect_kind,
-            effect_key=effect_key,
-            payload_digest=payload_digest,
-        )
-        if batch.chat_id != effect_key:
-            raise ValueError("chat effect key must equal the staged chat identity")
-        if str(attempt.job["user_id"]) != batch.user_id:
-            raise ValueError("staged chat owner differs from the occurrence owner")
-        if not batch.messages:
-            raise ValueError("scheduled chat produced no history messages")
-        if attempt.execution_fence is None:
-            raise StaleOccurrenceClaimError("attempt has no execution fence")
-        commit_id = _as_uuid(batch.conversation_commit_id)
-        request_generation = _as_uuid(batch.request_generation)
-        if (
-            commit_id is None
-            or commit_id.version != 4
-            or request_generation is None
-            or request_generation.version != 4
-            or attempt.request_generation != request_generation
-            or isinstance(batch.base_render_revision, bool)
-            or not isinstance(batch.base_render_revision, int)
-            or isinstance(batch.committed_render_revision, bool)
-            or not isinstance(batch.committed_render_revision, int)
-            or batch.base_render_revision < 0
-            or batch.committed_render_revision != batch.base_render_revision + 1
-        ):
-            raise ValueError("scheduled conversation commit metadata is invalid")
-        validated_layouts = []
-        seen_layouts = set()
-        for layout in batch.canvas_layouts:
-            if not isinstance(layout, dict):
-                raise ValueError("scheduled canvas layout is invalid")
-            key = layout.get("layout_key")
-            position = layout.get("position")
-            tree = layout.get("layout")
-            if (
-                not isinstance(key, str)
-                or not key
-                or len(key) > 512
-                or key in seen_layouts
-                or isinstance(position, bool)
-                or not isinstance(position, int)
-                or position < 0
-                or not isinstance(tree, list)
-            ):
-                raise ValueError("scheduled canvas layout is invalid")
-            try:
-                encoded_tree = json.dumps(
-                    tree,
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                    allow_nan=False,
-                )
-            except (TypeError, ValueError) as exc:
-                raise ValueError("scheduled canvas layout is invalid") from exc
-            seen_layouts.add(key)
-            validated_layouts.append((key, position, encoded_tree))
-
-        coordinator = self._require_coordinator()
-        plane_publication = PlaneStagedChatPublication(
-            conversation_id=batch.chat_id,
-            owner_id=batch.user_id,
-            create_conversation_if_missing=batch.create_chat_if_missing,
-            agent_id=batch.agent_id,
-            requested_title=batch.requested_title,
-            messages=tuple(
-                PlaneStagedChatMessage(
-                    role=message.role,
-                    content=message.content,
-                    title_source=message.title_source,
-                    timestamp_ms=message.timestamp_ms,
-                )
-                for message in batch.messages
-            ),
-            publication_id=str(commit_id),
-            request_generation=str(request_generation),
-            base_render_revision=batch.base_render_revision,
-            committed_render_revision=batch.committed_render_revision,
-            layouts=tuple(
-                PlaneStagedChatLayout(
-                    layout_key=layout_key,
-                    position=position,
-                    tree=tuple(json.loads(encoded_tree)),
-                )
-                for layout_key, position, encoded_tree in validated_layouts
-            ),
-        )
-        with coordinator.fenced_transaction(attempt.execution_fence) as cursor:
-            self._assert_effect_authority(cursor, attempt)
-            try:
-                result = self._plane.repository.publish_staged_chat_effect(
-                    cursor,
-                    **self._effect_attempt_arguments(attempt),
-                    effect_key=effect_key,
-                    payload_digest=payload_digest,
-                    publication=plane_publication,
-                )
-            except PlaneError as exc:
-                if exc.code == "effect_idempotency_conflict":
-                    raise EffectIdempotencyConflictError(exc.code) from exc
-                raise _stale_plane_error(exc) from exc
-            return EffectReservation(
-                result.state.value, result.created, result.ambiguous
-            )
     def publish_effect(
         self,
         attempt: ScheduledAttempt,

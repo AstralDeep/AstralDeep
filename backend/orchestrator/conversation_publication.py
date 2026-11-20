@@ -82,23 +82,6 @@ class ConversationCompletionSummary:
 
 
 # Ignore a notification's summary field — not authoritative
-def completion_summary_from_content(
-    content: Any,
-) -> ConversationCompletionSummary | None:
-    values = content if isinstance(content, list) else [content]
-    for value in values:
-        if not isinstance(value, Mapping):
-            continue
-        if "summary_text" not in value and "summary_source" not in value:
-            continue
-        try:
-            return ConversationCompletionSummary(
-                summary_text=value.get("summary_text"),
-                summary_source=value.get("summary_source"),
-            )
-        except (TypeError, ValueError):
-            return None
-    return None
 
 
 def _identity_map(
@@ -357,12 +340,6 @@ class ConversationPublicationStage:
     def mark_dirty(self) -> None:
         self.ensure_mutable()
         self.dirty = True
-
-    def set_completion_summary(self, *, text: str, source: str) -> None:
-        self.ensure_mutable()
-        summary = ConversationCompletionSummary(text, source)
-        self.summary_text = summary.summary_text
-        self.summary_source = summary.summary_source
 
     def seal(self, *, committed: bool) -> None:
         committed = bool(committed)

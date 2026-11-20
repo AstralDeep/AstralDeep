@@ -9,7 +9,6 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WINDOWS_ROOT = REPO_ROOT / "components" / "AstralProjection" / "windows-client"
 WINDOWS_INPUT = WINDOWS_ROOT / "requirements.in"
@@ -62,31 +61,38 @@ FEATURE_075_DEPENDENCY_AUTHORITIES = {
     ),
 }
 CURRENT_DEPENDENCY_AUTHORITIES = {
+    "scripts/requirements-ios-release.txt": "83d2a399dd082c9b29d8cb067f3ac39ad09efcff1bdd3559a73f7fe836c40e8f",
     "tooling/sandbox-qualification/package.json": "eaaffe389d93fa5368216ea451d94e4c6abb8c9bcd7b81266508c6c86f56b3a3",
     "tooling/sandbox-qualification/package-lock.json": "5b6925032bd3fbda37e7847037a2feb04b485afb7a66a26da57d6c65b7f6664b",
     **FEATURE_075_DEPENDENCY_AUTHORITIES,
-    "backend/security_benchmark/requirements-eval.txt": "97a1d75fd45c83331e33e7029f8f23a12870593b67c7bbc8e4470d6baf2affee",
+    "backend/security_benchmark/requirements-eval.txt": "a169ef53f35c4d4516e256eb160c3033a0d7d05ea7329f86b633eae756059f69",
     "backend/requirements-document-worker.txt": "28383cb135800b5415ca4c9504ea83e1514fa3e6f1d89257ab06fd5e8116508a",
-    "Dockerfile": "21fecbf0fb9a24129ebd9e9c36808f4c41dae1117ea6b5aab55706d24fdf7527",
+    "Dockerfile": "e018fce82a45f7964b4104f7cf4e081a166047c1356e64d59b690728df5e0749",
     "Dockerfile.voice": "82ffc56ab274790ea60e280852eb49608e9e8f7dbc3432fc16b4a1f3bcd21b84",
-    "backend/requirements.txt": "67d70c533f6abcb21d95e2fd75e9fdc2f38fd3f7760a2bc3e95b1885d76c5631",
+    "backend/requirements.txt": "54ca1ab0277575f4c833a5437fb4e3f9defb49c9382be6b6a6828608ddc3671c",
     "backend/requirements-gaiakeep.txt": "87ea5ed066e8aa376f355df70a4efac295d331c7c77601d277a05c8acb37feea",
     "backend/tests/fixtures/runtime_reliability_060/runtime-lock-contract.json": (
-        "ff84f895f5b8253dff59c9581cc033452ad576a09e40d00da31b5ba7b0f4875e"
+        "669d780b5f58598678f589c140c213c8dfa6e1d253a12d38c6a08291d2fd2afc"
     ),
-    "pyproject.toml": "953759380a5ecbdc1138efcd4c1adcf3b0f71f9d28cb5f2c994d2a430d69a6e2",
+    "pyproject.toml": "c1cc735995869b24d3cea2f4a68c6705da51775e68e68e42ab999c5e8626ab94",
     "scripts/openai_agents_example/requirements.in": (
         "470be1f7956648dbc4f439803e8a2c07baf0cd2472279384cf60c60838e66d82"
     ),
     "scripts/openai_agents_example/requirements.lock.txt": (
         "2cd8135af1e15481dea807ebff817591b00b6bc4a020adaad1f3a63f20daf9c0"
     ),
-    "tooling/backend-ci/requirements.in": "12afc5391a3bac2493ab92d5897db76ea0b81b987259fef8dd81c5ecc8f9c3f3",
-    "tooling/backend-ci/requirements.lock.txt": "a1365367ac4308e59714635b3583aa2f5bb40dc7a9b6591912059cc3a963d5b2",
+    "tooling/backend-ci/requirements.in": "6c5d44dd5d3b6c9c1241d655c6e8c2e9d8b266c0d18d99838be058ef8b7320fe",
+    "tooling/backend-ci/requirements.lock.txt": "7368b4b122049b43e1930b1be178f82f3aeb13e481b1c8e7679c3a2c8b800815",
     "tooling/requirements-gaiakeep-tests.txt": "86c94aaf151b3920dbcdb1b682fbb9401d1b3ddb64adcd508444bc86acd5d21c",
     "tooling/requirements-gaiakeep-sdk-tests.txt": "a346c3a5ad503cf1b04e61655fb6e3ec667027f8d097c92ab960b4d013fb4c78",
-    "tooling/ui-ci/requirements.in": "0d95a3ca6a56ad256aefcf74f10323ebeef6f58e6f5ec2ec77c06c023d9ca052",
-    "tooling/ui-ci/requirements.lock.txt": "4a975d1c0adf7dcbd389cf4829513501780ee58af545a229a921ed8e66985570",
+    "tooling/ui-ci/requirements.in": "3b298d1b5ca1a5b849ed568d3a5bda4babfaea3a1187eca7983e1cf9aa73b659",
+    "tooling/ui-ci/requirements.lock.txt": "afb649d5dd7d9b74477e73b7f24972b273505a04ea2dfcd2d23defbbf71a84dc",
+    "scripts/exec_harness/Dockerfile": "b4636ddf5c80c75cb44e29cba88d4413308c824967ac50975bc8399e6be6f8a5",
+    "scripts/node_bundle/linux/Dockerfile": "12165b6182217673c434e17492c392282537f14bc1181fff52a9b8847c9edb59",
+    "tooling/contract-ref/requirements.in": "d3a35d4c88066ef69d8323917e8be4df3663acd3c71c6b49b118bfa7e73ce6f9",
+    "tooling/contract-ref/requirements.lock.txt": "98c7d84a2a18e04f5e592e7d4df8713e9608545ba361838dac11325ea17771bf",
+    "tooling/vessel-ci/requirements.in": "bfddbee7910123bcd85b33363a9346ad544f7e31717df72a5735e7596e4bac55",
+    "tooling/vessel-ci/requirements.lock.txt": "143d770408181f9cd9680db98a05e23b11405cbf76642c0be98b0b10fbb3134b",
     "uv.lock": "9ac083ef3b758ad4ceb6867290b7bd7116e0a008af86fb90d91afe6613e1d92e",
 }
 DEEP_DEPENDENCY_AUTHORITY_POLICY = {
@@ -184,6 +190,12 @@ def _pin(requirement: str) -> tuple[str, str]:
     match = re.match(r"^([A-Za-z0-9_.-]+)==([^ ;\\]+)", requirement)
     if match:
         return _normalized(match.group(1)), match.group(2)
+    for name, variable, version in (
+        ("astralprims", "ASTRAL_PRIMITIVES_WHEEL_URI", "0.13.0"),
+        ("astral-rote", "ASTRAL_ROTE_WHEEL_URI", "0.1.0"),
+    ):
+        if re.match(rf"^{name} @ \${{{variable}}}(?:\s|$)", requirement):
+            return name, version
     direct = re.match(
         r"^lets-agent @ https://github\.com/AstralDeep/LETS/releases/download/"
         r"v([0-9]+\.[0-9]+\.[0-9]+)/lets_agent-"
@@ -272,16 +284,30 @@ def test_windows_livekit_direct_pin_and_win_amd64_wheel_are_exact() -> None:
     assert _pins(WINDOWS_INPUT)["livekit"] == "1.1.14"
     locked = _pins(WINDOWS_LOCK)
     hashes = _hashes(WINDOWS_LOCK)
-    assert len(locked) == 69
-    assert len(set(locked) - {"macholib"}) == 68
+    assert len(locked) == 72
+    assert len(set(locked) - {"macholib"}) == 71
     assert locked["livekit"] == "1.1.14"
     assert {
         name: (locked[name], hashes[name])
-        for name in ("aiofiles", "livekit", "numpy", "protobuf", "types-protobuf")
+        for name in ("aiofiles", "astralprims", "astral-rote", "linkify-it-py", "livekit",
+                     "numpy", "protobuf", "types-protobuf", "uc-micro-py")
     } == {
         "aiofiles": (
             "25.1.0",
             {"abe311e527c862958650f9438e859c1fa7568a141b22abcd015e120e86a85695"},
+        ),
+        "astralprims": (
+            "0.13.0",
+            {"42aa5f519f5840273e9ac03327df5211c5a22049cb5983e5c23f2c75a25447d1"},
+        ),
+        "astral-rote": (
+            "0.1.0",
+            {"16f8f62428e76d71c2acf82b283fc4714044cad4ffc686da3ca34ee0dea9ed08"},
+        ),
+        "linkify-it-py": (
+            "2.0.3",
+            {"68cda27e162e9215c17d786649d1da0021a451bdc436ef9e0fa0ba5234b9b048",
+             "6bcbc417b0ac14323382aef5c5192c0075bf8a9d6b41820a2b66371eac6b6d79"},
         ),
         "livekit": (
             "1.1.14",
@@ -299,8 +325,25 @@ def test_windows_livekit_direct_pin_and_win_amd64_wheel_are_exact() -> None:
             "7.34.1.20260518",
             {"a0a5337413347166439c0e07cbc26c6164d091401c6f01b1dfd8cdb966c4dd8f"},
         ),
+        "uc-micro-py": (
+            "1.0.3",
+            {"d321b92cff673ec58027c04015fcaa8bb1e005478643ff4a500882eaab88c48a",
+             "db1dffff340817673d7b466ec86114a9dc0e9d4d9b5ba229d9d60e5c12600cd5"},
+        ),
     }
     assert all(locked.get(name) == version for name, version in _pins(WINDOWS_INPUT).items())
+
+
+@pytest.mark.parametrize("requirement", [
+    "astralprims @ ${ASTRAL_ROTE_WHEEL_URI}",
+    "astral-rote @ ${ASTRAL_PRIMITIVES_WHEEL_URI}",
+    "astralprims @ ${UNREVIEWED_WHEEL_URI}",
+    "unreviewed @ ${ASTRAL_PRIMITIVES_WHEEL_URI}",
+    "astralprims @ https://example.invalid/astralprims-0.13.0-py3-none-any.whl",
+])
+def test_unreviewed_local_presentation_references_are_refused(requirement: str) -> None:
+    with pytest.raises(AssertionError, match="not an exact approved pin"):
+        _pin(requirement)
 
 
 def test_contract_validator_lock_is_exact_complete_and_hash_locked() -> None:

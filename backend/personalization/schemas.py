@@ -13,7 +13,6 @@ from pydantic import BaseModel, Field, field_validator
 class PersonalitySpec(BaseModel):
     tone: Optional[str] = Field(default=None, max_length=40)
     directness: Optional[str] = Field(default=None, max_length=40)
-    humor: Optional[str] = Field(default=None, max_length=40)
     verbosity: Optional[str] = Field(default=None, max_length=40)
     notes: Optional[str] = Field(default=None, max_length=500)
 

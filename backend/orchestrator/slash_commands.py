@@ -85,38 +85,5 @@ def parse(message: str):
     return name, args
 
 
-def expand_skill(skill: Any, args: str) -> str:
-    body = str(getattr(skill, "instructions", "") or "").strip()
-    name = str(getattr(skill, "name", "") or "your skill")
-    request = args.strip() if args else ""
-    text = (f'The user invoked their own skill "{name}". Follow these instructions of '
-            f"theirs for this request:\n\n{body}\n\n")
-    if request:
-        text += f"Their request: {request}"
-    else:
-        text += ("They gave no further text — carry the skill out as written, asking for "
-                 "any input it needs.")
-    return text
-
-
-def expand_message(message: str, user_skills: Optional[Dict[str, Any]] = None) -> str:
-    parsed = parse(message)
-    if parsed is None:
-        return message
-    name, args = parsed
-    cmd = COMMANDS.get(name)
-    if cmd is None and user_skills and name in user_skills:
-        return expand_skill(user_skills[name], args)
-    if cmd is None:
-        listing = ", ".join(f"/{n}" for n in COMMANDS)
-        if user_skills:
-            listing += ", " + ", ".join(f"/{n}" for n in sorted(user_skills))
-        return (f'The user typed an unrecognized command "/{name}". Briefly tell '
-                f"them it isn't a known command and list the available ones: {listing}.")
-    if name == "help":
-        return _t_help(args, user_skills)
-    return cmd["template"](args)
-
-
 def reserved_names() -> List[str]:
     return list(COMMANDS)

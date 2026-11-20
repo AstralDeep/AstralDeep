@@ -90,10 +90,20 @@ jobs:
           python -c "import sys; assert sys.version_info[:2] == (3, 11), sys.version"
           python -m venv components\AstralProjection\windows-client\.venv-release-a
           python -m venv components\AstralProjection\windows-client\.venv-release-b
-          & components\AstralProjection\windows-client\.venv-release-a\Scripts\python -m pip install --require-hashes -r components\AstralProjection\windows-client\requirements-release.lock.txt
-          & components\AstralProjection\windows-client\.venv-release-b\Scripts\python -m pip install --require-hashes -r components\AstralProjection\windows-client\requirements-release.lock.txt
-          & components\AstralProjection\windows-client\.venv-release-a\Scripts\python -m pip check
-          & components\AstralProjection\windows-client\.venv-release-b\Scripts\python -m pip check
+
+      - name: Install release runtime A from locked exact sources
+        uses: ./components/AstralProjection/.github/actions/presentation
+        with:
+          projection-root: components/AstralProjection
+          python: components/AstralProjection/windows-client/.venv-release-a/Scripts/python.exe
+          output: build/presentation-a
+
+      - name: Install release runtime B from locked exact sources
+        uses: ./components/AstralProjection/.github/actions/presentation
+        with:
+          projection-root: components/AstralProjection
+          python: components/AstralProjection/windows-client/.venv-release-b/Scripts/python.exe
+          output: build/presentation-b
 
       - name: Prove the clean runtime sets are identical
         shell: pwsh
@@ -115,6 +125,8 @@ jobs:
       - name: Build the unsigned executable exactly once
         working-directory: components/AstralProjection/windows-client
         shell: pwsh
+        env:
+          ASTRAL_PRESENTATION_OUTPUT: build/presentation-a
         run: |
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true

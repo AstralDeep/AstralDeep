@@ -1,6 +1,7 @@
 """Exposes the orchestrator as an A2A agent: an anonymous agent-card endpoint
 advertising only the public owner-safe catalog, and a bearer-authenticated JSON-RPC
-endpoint routing into the orchestrator's tool dispatch. Gated by FF_A2A_SERVER.
+endpoint routing into the orchestrator's tool dispatch, on which a personal node refuses
+every bearer unread and takes only an owner-minted caller ticket that covers a2a.message. Gated by FF_A2A_SERVER.
 """
 
 import asyncio
@@ -24,10 +25,7 @@ from a2a.types import (
     AgentProvider,
     Message as A2AMessage,
     Role,
-    SecurityScheme,
     SecurityRequirement,
-    StringList,
-    OpenIdConnectSecurityScheme,
 )
 from a2a.utils.constants import PROTOCOL_VERSION_1_0
 
@@ -40,6 +38,9 @@ from shared.a2a_bridge import (
 )
 from shared.a2a_publication import A2APublicationRegistry
 from shared.a2a_security import A2ASecurityValidator
+from orchestrator import a2a_publication_signing as publication_signing
+from orchestrator import caller_tickets
+from orchestrator.auth import NODE_BEARER_REFUSED, node_caller_challenge
 from orchestrator.a2a_publication_policy import A2APublicationPolicy
 from orchestrator.a2a_publication_wiring import attach_publication_registry, owner_lookup
 from orchestrator.local_agents import FIRST_PARTY_PUBLIC_AGENT_IDS
@@ -52,6 +53,7 @@ STATE_SUBJECT_TOKEN = "astral_subject_token"
 
 TOOL_UNAVAILABLE = "Tool is unavailable or not authorized"
 BEARER_REQUIRED = "A valid bearer token is required"
+A2A_BODY_LIMIT = 1024 * 1024
 
 
 class A2APrincipal(User):
@@ -70,7 +72,8 @@ class A2APrincipal(User):
     @property
     def user_name(self) -> str:
         # Namespaced so it can't collide with the SDK's shared '' owner
-        return f"sub:{self.sub}"
+        caller = self.claims.get(caller_tickets.CALLER_ID)
+        return f"caller:{caller}" if caller else f"sub:{self.sub}"
 
 
 def a2a_task_owner(context: ServerCallContext) -> str:
@@ -112,44 +115,6 @@ def bearer_from_headers(headers) -> str:
     return token.strip()
 
 
-def _a2a_framework_resolver(orchestrator):
-    try:
-        from shared.feature_flags import flags
-
-        if not flags.is_enabled("framework_credentials"):
-            return None
-    except Exception:
-        return None
-    service = getattr(orchestrator, "framework_credentials", None)
-    if service is None:
-        return None
-    return service.resolve_bearer
-
-
-async def authenticate_a2a_request(
-    validator: A2ASecurityValidator, headers, *, resolve_framework_bearer=None,
-) -> Optional[A2APrincipal]:
-    token = bearer_from_headers(headers)
-    if not token:
-        return None
-    if resolve_framework_bearer is not None and token.startswith("afk_"):
-        caller = await asyncio.to_thread(resolve_framework_bearer, token)
-        if caller is None:
-            return None
-        claims = {
-            "sub": caller.owner_id, "iss": "astral-framework", "aud": "astral-a2a",
-            "realm_access": {"roles": ["user"]},
-            "_framework_credential_id": caller.credential_id,
-            "_framework_scopes": sorted(caller.scopes),
-            "_framework_caller": caller,
-        }
-        return A2APrincipal(claims, token)
-    claims = await validator.validate_token(token)
-    if not isinstance(claims, dict) or not isinstance(claims.get("sub"), str):
-        return None
-    return A2APrincipal(claims, token)
-
-
 class OrchestratorA2AExecutor(AgentExecutor):
     def __init__(self, orchestrator):
         self.orchestrator = orchestrator
@@ -179,6 +144,10 @@ class OrchestratorA2AExecutor(AgentExecutor):
             claims, subject_token = identity
 
             mcp_request = a2a_message_to_mcp_request(message)
+            if (mcp_request is not None and mcp_request.method == "tools/call"
+                    and caller_tickets.covered(claims) is not None):
+                await updater.failed(message=self._msg(TOOL_UNAVAILABLE, context.task_id))
+                return
             if mcp_request is not None and mcp_request.method == "tools/call":
                 await self._execute_direct_tool(
                     mcp_request,
@@ -222,7 +191,7 @@ class OrchestratorA2AExecutor(AgentExecutor):
             isinstance(claims, dict)
             and isinstance(claims.get("sub"), str)
             and isinstance(subject_token, str)
-            and subject_token
+            and (subject_token or caller_tickets.covered(claims) is not None)
         ):
             return claims, subject_token
 
@@ -343,6 +312,9 @@ class OrchestratorA2AExecutor(AgentExecutor):
         policy = await asyncio.to_thread(_publication_policy, self.orchestrator)
         if policy is not None:
             projected = await asyncio.to_thread(policy.filter_projected_tools, projected)
+        listed = caller_tickets.covered(claims)
+        if listed is not None:
+            projected = [tool for tool in projected if tool.name in listed]
         tools = []
         for tool in projected:
             card = self.orchestrator.agent_cards.get(tool.agent_id)
@@ -426,10 +398,17 @@ def _public_url() -> str:
 
 
 def build_orchestrator_a2a_card(orchestrator) -> A2AAgentCard:
-    authority = os.getenv("KEYCLOAK_AUTHORITY", "")
-    registry = _publication_registry(orchestrator)
     policy = _publication_policy(orchestrator)
-    if policy is not None:
+    signer = None
+    try:
+        signer = publication_signing.signer_for(orchestrator)
+    except publication_signing.PublicationSigningError as error:
+        logger.error("A2A card will list no capabilities because it cannot be signed: %s", error)
+    unsignable = signer is None and publication_signing.is_personal_profile()
+    publications: tuple = ()
+    if unsignable:
+        published_ids = []
+    elif policy is not None:
         publications = policy.published_records()
         published_ids = list(dict.fromkeys(record.agent_id for record in publications))
     else:
@@ -448,33 +427,14 @@ def build_orchestrator_a2a_card(orchestrator) -> A2AAgentCard:
         ))
     skills.append(A2AAgentSkill(
         id="chat", name="chat",
-        description="Send a natural language message for LLM-powered routing "
-                    "(authenticated; tools are listed per caller)",
+        description="Send a natural language message for LLM-powered routing. "
+                    + "Requires an owner-minted caller ticket that covers a2a.message. Tools are listed per ticket.",
         tags=["routing"],
     ))
 
     security_schemes = {}
     security_requirements: List[SecurityRequirement] = []
-    if authority:
-        security_schemes["keycloak_oidc"] = SecurityScheme(
-            open_id_connect_security_scheme=OpenIdConnectSecurityScheme(
-                open_id_connect_url=f"{authority}/.well-known/openid-configuration",
-            )
-        )
-        if policy is not None:
-            advertised = list(dict.fromkeys(scope for record in publications
-                             for scope in record.audiences
-                             if scope in policy._registered_scopes(record.agent_id)))
-        elif registry is not None:
-            advertised = list(registry.advertised_audiences()) if registry.available else []
-        else:
-            advertised = ["tools:read", "tools:write", "tools:search", "tools:system"]
-        if advertised:
-            security_requirements.append(SecurityRequirement(schemes={
-                "keycloak_oidc": StringList(list=advertised),
-            }))
-
-    return A2AAgentCard(
+    card = A2AAgentCard(
         name="AstralDeep Orchestrator",
         description="Multi-agent orchestrator with LLM-powered tool routing. Routes requests to specialized agents.",
         version="1.0.0",
@@ -496,20 +456,32 @@ def build_orchestrator_a2a_card(orchestrator) -> A2AAgentCard:
         security_schemes=security_schemes or None,
         security_requirements=security_requirements,
     )
+    if signer is not None:
+        card = publication_signing.sign_card(card, publication_signing.publication_list(publications), signer)
+    return card
 
 
-def _unauthenticated_response():
+def _unauthenticated_response(message="Authentication required", *, status=401, error=NODE_BEARER_REFUSED, reason=None):
     from starlette.responses import JSONResponse
 
     return JSONResponse(
         {
             "jsonrpc": "2.0",
             "id": None,
-            "error": {"code": -32001, "message": "Authentication required"},
+            "error": {"code": -32001, "message": message,
+                      **({"data": {"code": error, "reason": reason}} if reason else {})},
         },
-        status_code=401,
-        headers={"WWW-Authenticate": 'Bearer realm="astral-a2a"'},
+        status_code=status,
+        headers={"WWW-Authenticate": node_caller_challenge("astral-a2a", error)},
     )
+
+
+async def _caller_principal(request) -> A2APrincipal:
+    body = await caller_tickets.read_bounded(request, A2A_BODY_LIMIT)
+    claims = await caller_tickets.verify(
+        request, body, tool=caller_tickets.A2A_MESSAGE, audience="astral-a2a",
+    )
+    return A2APrincipal(claims, "")
 
 
 def setup_orchestrator_a2a(app, orchestrator):
@@ -527,20 +499,16 @@ def setup_orchestrator_a2a(app, orchestrator):
         task_store=InMemoryTaskStore(owner_resolver=a2a_task_owner),
         agent_card=initial_card,
     )
-    validator = executor.security_validator
-
     async def refresh_card(_card):
         return await asyncio.to_thread(build_orchestrator_a2a_card, orchestrator)
 
     def _gated(endpoint):
         async def gated_endpoint(request):
-            # Must run before the SDK parses a method, or tasks/* bypass this
-            principal = await authenticate_a2a_request(
-                validator, request.headers,
-                resolve_framework_bearer=_a2a_framework_resolver(orchestrator),
-            )
-            if principal is None:
-                return _unauthenticated_response()
+            try:
+                principal = await _caller_principal(request)
+            except caller_tickets.CallerRefused as exc:
+                return _unauthenticated_response(
+                    exc.code, status=exc.status, error=exc.code, reason=caller_tickets.reason_for(exc.code))
             request.scope[PRINCIPAL_SCOPE_KEY] = principal
             return await endpoint(request)
 

@@ -5,7 +5,6 @@ honoring FF_PHI_WARM.
 
 from __future__ import annotations
 
-import asyncio
 import sys
 import threading
 from pathlib import Path
@@ -27,81 +26,6 @@ def _bare_orch():
 
 class _LoopStopped(BaseException):
     pass
-
-
-async def test_jwks_warm_skips_under_mock_auth(monkeypatch):
-    from shared import jwks_cache
-    monkeypatch.setenv("USE_MOCK_AUTH", "true")
-    monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://idp.example/realms/x")
-    calls = []
-
-    async def _fake_get(url, **kw):
-        calls.append(url)
-        raise _LoopStopped
-
-    monkeypatch.setattr(jwks_cache, "get_jwks", _fake_get)
-    await _bare_orch()._jwks_warm_loop()
-    assert calls == []
-
-
-async def test_jwks_warm_skips_without_authority(monkeypatch):
-    from shared import jwks_cache
-    monkeypatch.delenv("USE_MOCK_AUTH", raising=False)
-    monkeypatch.delenv("KEYCLOAK_AUTHORITY", raising=False)
-    calls = []
-
-    async def _fake_get(url, **kw):
-        calls.append(url)
-        raise _LoopStopped
-
-    monkeypatch.setattr(jwks_cache, "get_jwks", _fake_get)
-    await _bare_orch()._jwks_warm_loop()
-    assert calls == []
-
-
-async def test_jwks_warm_fetches_then_refreshes(monkeypatch):
-    from shared import jwks_cache
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
-    monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://idp.example/realms/x")
-    monkeypatch.setenv("JWKS_REFRESH_SECONDS", "0.01")
-    warm_calls, refresh_calls = [], []
-
-    async def _fake_get(url, **kw):
-        warm_calls.append(url)
-        return {"keys": []}
-
-    async def _fake_fetch(url):
-        refresh_calls.append(url)
-        raise _LoopStopped
-
-    monkeypatch.setattr(jwks_cache, "get_jwks", _fake_get)
-    monkeypatch.setattr(jwks_cache, "_fetch", _fake_fetch)
-    with pytest.raises(_LoopStopped):
-        await _bare_orch()._jwks_warm_loop()
-    expected = "https://idp.example/realms/x/protocol/openid-connect/certs"
-    assert warm_calls == [expected]
-    assert refresh_calls == [expected]
-
-
-async def test_jwks_warm_failure_backs_off_without_crashing(monkeypatch):
-    from shared import jwks_cache
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
-    monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://idp.example/realms/x")
-    attempts, attempted = [], asyncio.Event()
-
-    async def _fake_get(url, **kw):
-        attempts.append(url)
-        attempted.set()
-        raise ConnectionError("idp down")
-
-    monkeypatch.setattr(jwks_cache, "get_jwks", _fake_get)
-    task = asyncio.create_task(_bare_orch()._jwks_warm_loop())
-    await attempted.wait()
-    assert not task.done(), "loop must keep retrying, not die"
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
-    assert len(attempts) == 1
 
 
 async def test_phi_warm_does_not_block_startup(monkeypatch):

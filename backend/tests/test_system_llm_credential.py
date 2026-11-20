@@ -1,7 +1,7 @@
 """Tests for the admin-managed system LLM credential in
 orchestrator/projection_surfaces/llm_system.py: admin-only save/clear with scoped
-audit rows, the web-only menu carve-out, and scheduler jobs failing when no system
-credential is configured.
+audit rows, the web-only menu carve-out, and the system and user credentials never
+resolving each other.
 """
 
 from __future__ import annotations
@@ -235,124 +235,6 @@ def test_menu_model_web_admin_sees_system_llm_natives_never_do():
     assert "llm_system" not in _surfaces(web_user)
 
 
-async def test_run_scheduled_turn_raises_llm_unavailable_without_system_row(
-        orch, clean_system_row):
-    with pytest.raises(orch._LLMUnavailable):
-        await orch.run_scheduled_turn(
-            user_id=_uid(), chat_id=None, instruction="do the thing",
-            agent_id=None, access_token="tok", allowed_scopes=[],
-            correlation_id="corr-1")
-
-    assert orch._record_llm_unconfigured.await_count == 1
-    assert orch._record_llm_unconfigured.call_args.kwargs["feature"] == "scheduled_job"
-
-
-async def test_run_scheduled_turn_proceeds_with_system_row(
-        orch, clean_system_row, monkeypatch):
-    await _seed_system(orch)
-    ran = {}
-
-    async def fake_handle_chat_message(websocket, message, chat_id, **kwargs):
-        ran.update(message=message, chat_id=chat_id, user_id=kwargs.get("user_id"))
-
-    monkeypatch.setattr(orch, "handle_chat_message", fake_handle_chat_message)
-    uid = _uid()
-
-    summary = await orch.run_scheduled_turn(
-        user_id=uid, chat_id="sched-chat-1", instruction="summarize inbox",
-        agent_id=None, access_token="tok", allowed_scopes=[],
-        correlation_id="corr-2")
-
-    assert ran == {"message": "summarize inbox", "chat_id": "sched-chat-1",
-                   "user_id": uid}
-    assert summary == "Your scheduled task finished."
-    assert orch._record_llm_unconfigured.await_count == 0
-
-
-class _RunnerStore:
-    def __init__(self):
-        self.finished = []
-        self.statuses = []
-        self.updated = []
-
-    def start_run(self, job_id, user_id, correlation_id):
-        return "run-1"
-
-    def finish_run(self, run_id, *, outcome, summary=None, auth_ref=None):
-        self.finished.append({"run_id": run_id, "outcome": outcome,
-                              "summary": summary})
-
-    def set_status(self, user_id, job_id, status):
-        self.statuses.append((job_id, status))
-
-    def update_after_run(self, job_id, *, last_run_at, next_run_at, completed):
-        self.updated.append((job_id, completed))
-
-
-class _RunnerGrants:
-    def is_valid(self, grant_id, *, user_id):
-        return True
-
-    async def mint_access_token(self, grant_id, *, user_id):
-        return "minted-token"
-
-
-async def test_job_runner_records_honest_failure_and_error_notification():
-    from llm_config import LLMUnavailable
-    from scheduler.runner import JobRunner
-
-    notifications = []
-
-    async def notify_user(user_id, payload):
-        notifications.append((user_id, payload))
-
-    async def run_scheduled_turn(**kwargs):
-        raise LLMUnavailable("no system LLM credential configured")
-
-    fake_orch = SimpleNamespace(
-        run_scheduled_turn=run_scheduled_turn,
-        notify_user=notify_user,
-        tool_permissions=SimpleNamespace(get_agent_scopes=lambda u, a: {}),
-    )
-    store = _RunnerStore()
-    runner = JobRunner(fake_orch, store, _RunnerGrants())
-    job = {
-        "id": "job-1", "user_id": "u1", "name": "Morning brief",
-        "instruction": "brief me", "schedule_kind": "one_shot",
-        "schedule_expr": "2020-01-01T00:00:00Z", "timezone": "UTC",
-        "consented_scopes": [], "agent_id": None, "target_chat_id": None,
-        "offline_grant_id": "grant-1",
-    }
-
-    outcome = await runner.run_job(job)
-
-    assert outcome == "failure"
-    assert store.finished == [{"run_id": "run-1", "outcome": "failure",
-                               "summary": "llm_unavailable: no system AI "
-                                          "credential configured"}]
-    assert "llm_unavailable" in store.finished[0]["summary"]
-    assert len(notifications) == 1
-    user_id, payload = notifications[0]
-    assert user_id == "u1"
-    assert payload["level"] == "error"
-    assert "AI was unavailable" in payload["body"]
-    assert "failed" in payload["title"]
-
-
-async def test_mid_clear_race_is_honest_failure_not_success(
-        orch, clean_system_row):
-    await _seed_system(orch)
-    assert await orch._llm_store.get_system() is not None
-
-    assert await orch._llm_store.clear_system() is True
-
-    with pytest.raises(orch._LLMUnavailable):
-        await orch.run_scheduled_turn(
-            user_id=_uid(), chat_id=None, instruction="x", agent_id=None,
-            access_token="tok", allowed_scopes=[], correlation_id="corr-3")
-    assert orch._record_llm_unconfigured.call_args.kwargs["feature"] == "scheduled_job"
-
-
 async def test_user_socket_never_resolves_system_record(
         orch, clean_system_row, user_skills_disabled):
     await _seed_system(orch)
@@ -362,22 +244,6 @@ async def test_user_socket_never_resolves_system_record(
     assert await orch.llm_configured_for(uid) is False
     with pytest.raises(orch._LLMUnavailable):
         await orch._resolve_llm_client_for(ws)
-
-    called = {"n": 0}
-
-    async def fake_call_llm(*args, **kwargs):
-        called["n"] += 1
-        return None, None
-
-    orch._call_llm = fake_call_llm
-    await orch.handle_chat_message(
-        ws, "hello there", f"sysgate-{uuid.uuid4().hex[:8]}", user_id=uid)
-    assert called["n"] == 0, "no LLM call may run for a gated user"
-    assert orch._record_llm_unconfigured.call_args.kwargs["feature"] == "chat_dispatch"
-    alerts = [c for call in orch.send_ui_render.call_args_list
-              for c in (call.args[1] if len(call.args) > 1 else [])
-              if isinstance(c, dict) and c.get("type") == "alert"]
-    assert alerts and "Set up your AI provider" in alerts[-1]["message"]
 
 
 async def test_system_context_never_resolves_a_user_record(

@@ -25,6 +25,12 @@ BUILT_IN_AGENT_DIRS = (
     "web_research",
 )
 
+FIRST_PARTY_AGENT_DIRS = frozenset({
+    *BUILT_IN_AGENT_DIRS,
+    "artifacts", "computer_use", "cresco", "evidence", "fhir", "gaiakeep", "remote_compute", "remote_control",
+    "remote_mcp", "remote_observe", "terminal_shell",
+})
+
 _REMOTE_COMPUTE_AGENT_DIRS = (
     "remote_compute",
 )
@@ -63,7 +69,6 @@ FIRST_PARTY_PUBLIC_AGENT_IDS = (
     "fhir-1",
     "evidence-1",
     "cresco-1",
-    "sandbox-qualification-runner",
     "artifacts-1",
 )
 
@@ -213,11 +218,6 @@ async def register_built_ins(orch) -> List[str]:
                     dirs.append(name)
     except Exception:  # noqa: BLE001
         logger.debug("FHIR flag check failed; agent remains disabled", exc_info=True)
-    try:
-        if flags.is_enabled("sandbox_qualification") and flags.is_enabled("inprocess_agents"):
-            dirs.append("sandbox_qualification")
-    except Exception:
-        logger.debug("Sandbox qualification flag check failed; agent remains disabled", exc_info=True)
     try:
         from shared.feature_flags import flags
         if flags.is_enabled("artifact_frame") and flags.is_enabled("inprocess_agents"):

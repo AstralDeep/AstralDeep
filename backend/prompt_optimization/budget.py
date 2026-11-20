@@ -91,13 +91,12 @@ def estimate_tokens(text: str) -> int:
     return len((text or "").encode("utf-8")) + 64
 
 
-@dataclass
+@dataclass(frozen=True)
 class _Reservation:
     kind: str
     phase: str
     subject: str
     reserved_tokens: int
-    released: bool = False
 
 
 @dataclass
@@ -111,6 +110,7 @@ class Budget:
     records: List[CallRecord] = field(default_factory=list)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _sequence: int = 0
+    _pending: dict[int, _Reservation] = field(default_factory=dict, init=False, repr=False)
 
     def remaining(self) -> int:
         return self.limits.max_total_tokens - self.spent_tokens - self.reserved_tokens
@@ -145,12 +145,14 @@ class Budget:
             else:
                 self.evaluation_calls += 1
             self._sequence += 1
-            return _Reservation(
+            reservation = _Reservation(
                 kind=kind,
                 phase=phase,
                 subject=subject,
                 reserved_tokens=estimated_tokens,
             )
+            self._pending[id(reservation)] = reservation
+            return reservation
 
     def reconcile(
         self,
@@ -167,9 +169,9 @@ class Budget:
         if type(attempts) is not int or attempts not in (0, 1):
             raise ValueError("a reservation covers a single attempt")
         with self._lock:
-            if reservation.released:
-                raise ValueError("reservation already reconciled")
-            reservation.released = True
+            if self._pending.get(id(reservation)) is not reservation:
+                raise ValueError("reservation is foreign or already reconciled")
+            del self._pending[id(reservation)]
             self.reserved_tokens -= reservation.reserved_tokens
             charge = (
                 actual_tokens

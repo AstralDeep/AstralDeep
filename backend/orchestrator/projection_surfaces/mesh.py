@@ -1,6 +1,6 @@
 """Renders the shared mesh-enrollment surface: owner member inventory, invitation
 states, and sanitized provenance consumed from the completed workflows in
-orchestrator/mesh_api.py and orchestrator/mesh_enrollment.py.
+orchestrator/mesh_enrollment.py.
 """
 
 from __future__ import annotations

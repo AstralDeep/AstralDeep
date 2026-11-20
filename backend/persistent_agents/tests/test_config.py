@@ -1,5 +1,5 @@
 """Tests for persistent_agents/config.py: disabled by default, operator bounds are
-honored, and invalid concurrency values are refused.
+honored, and invalid polling intervals are refused.
 """
 
 import pytest
@@ -13,15 +13,14 @@ def test_disabled_by_default(monkeypatch):
 
 
 def test_operator_bounds(monkeypatch):
-    for name in ("TICK_SECONDS", "CONCURRENCY", "LEASE_SECONDS"):
-        monkeypatch.delenv("PERSISTENT_AGENTS_" + name, raising=False)
+    monkeypatch.delenv("PERSISTENT_AGENTS_TICK_SECONDS", raising=False)
     assert RunnerConfig.from_environment() == RunnerConfig()
-    monkeypatch.setenv("PERSISTENT_AGENTS_CONCURRENCY", "25")
-    assert RunnerConfig.from_environment().concurrency == 25
+    monkeypatch.setenv("PERSISTENT_AGENTS_TICK_SECONDS", "25")
+    assert RunnerConfig.from_environment().tick_seconds == 25
 
 
-@pytest.mark.parametrize("value", ["", "no", "0", "26", "1.5"])
-def test_invalid_concurrency_refused(monkeypatch, value):
-    monkeypatch.setenv("PERSISTENT_AGENTS_CONCURRENCY", value)
-    with pytest.raises(ValueError, match="PERSISTENT_AGENTS_CONCURRENCY"):
+@pytest.mark.parametrize("value", ["", "no", "0", "31", "1.5"])
+def test_invalid_poll_interval_refused(monkeypatch, value):
+    monkeypatch.setenv("PERSISTENT_AGENTS_TICK_SECONDS", value)
+    with pytest.raises(ValueError, match="PERSISTENT_AGENTS_TICK_SECONDS"):
         RunnerConfig.from_environment()

@@ -345,7 +345,10 @@ async def _h_bypass_set(orch, websocket, user_id, roles, payload):
             or payload.get("host_id") != host.host_id or host.owner_sub != user_id
             or not attended(orch, websocket, user_id)):
         return (SURFACE_KEY, {}, notice_block("error", "Bypass is not available here."))
-    await orch.computer_sessions.set_bypass(host, payload["enabled"])
+    try:
+        await orch.computer_sessions.set_bypass(host, payload["enabled"])
+    except ComputerHostError as exc:
+        return (SURFACE_KEY, {}, notice_block("error", esc(exc.message)))
     return (SURFACE_KEY, {}, notice_block("success", "Bypass on." if payload["enabled"] else "Bypass off."))
 
 

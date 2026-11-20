@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-PLANE_SOURCE = ROOT / "components" / "AstralPlane" / "src"
+PLANE_SOURCE = ROOT / "plane" / "src"
 if str(PLANE_SOURCE) not in sys.path:
     sys.path.insert(0, str(PLANE_SOURCE))
 

@@ -105,6 +105,7 @@ def test_real_contract_declarations_are_exact_without_private_checkout() -> None
     )
     assert [component.key for component in contract.components] == [
         "astral-primitives",
+        "astral-kernel",
         "astral-projection",
         "astral-plane",
         "lets",
@@ -118,7 +119,8 @@ def test_real_initialized_sources_match_the_declarations() -> None:
         (REPOSITORY_ROOT / relative / "pyproject.toml").is_file()
         for relative in (
             "components/AstralProjection",
-            "components/AstralPlane",
+            "components/AstralKernel/python/rote",
+            "plane",
             "components/AstralPrimitives",
             "components/LETS",
         )
@@ -129,7 +131,7 @@ def test_real_initialized_sources_match_the_declarations() -> None:
         require_sources=True,
         require_gitlinks=True,
     )
-    assert len(contract.components) == 4
+    assert len(contract.components) == 5
 
 
 def test_build_and_install_use_offline_no_resolver_commands_in_order(
@@ -391,7 +393,7 @@ def _minimal_declaration(tmp_path: Path, *, installer_name: str = "pip-wheel/v1"
         "wheel-lock-format = 'astraldeep.component-wheel-lock/v1'\n"
         "install-order = ['demo']\n"
         "build-tools = ['setuptools==83.0.0', 'wheel==0.45.1', "
-        "'hatchling==1.27.0', 'uv_build==0.12.23']\n"
+        "'hatchling==1.27.0', 'uv_build==0.13.6']\n"
         "[tool.astraldeep.local-components.demo]\n"
         "distribution = 'demo-package'\n"
         "version = '1.2.3'\n"
@@ -442,6 +444,35 @@ def test_contract_mutations_fail_closed(tmp_path: Path) -> None:
 
     with pytest.raises(installer.ComponentInstallError, match="duplicate"):
         installer._string_list(["demo", "demo"], field="install-order")
+
+
+def _kernel_declaration() -> dict:
+    metadata = installer._read_toml(REPOSITORY_ROOT / "pyproject.toml")
+    return dict(metadata["tool"]["astraldeep"]["local-components"]["astral-kernel"])
+
+
+def test_package_root_places_the_wheel_source_below_the_component_path() -> None:
+    spec = installer._component_spec("astral-kernel", _kernel_declaration())
+    assert spec.package_root == "python/rote"
+    assert spec.package_path == "components/AstralKernel/python/rote"
+    assert spec.source_root(Path("/checkout")) == Path("/checkout/components/AstralKernel/python/rote")
+    plain = {key: value for key, value in _kernel_declaration().items() if key != "package-root"}
+    spec = installer._component_spec("astral-kernel", plain)
+    assert spec.package_root == ""
+    assert spec.source_root(Path("/checkout")) == Path("/checkout/components/AstralKernel")
+
+
+@pytest.mark.parametrize("value", ["../escape", "/absolute", "", "a/../../b"])
+def test_package_root_must_stay_inside_the_component(value: str) -> None:
+    declaration = {**_kernel_declaration(), "package-root": value}
+    with pytest.raises(installer.ComponentInstallError):
+        installer._component_spec("astral-kernel", declaration)
+
+
+def test_unknown_component_fields_are_still_rejected() -> None:
+    declaration = {**_kernel_declaration(), "package_root": "python/rote"}
+    with pytest.raises(installer.ComponentInstallError, match="invalid fields"):
+        installer._component_spec("astral-kernel", declaration)
 
 
 @pytest.mark.parametrize(
@@ -606,3 +637,92 @@ def test_main_routes_commands_and_reports_typed_errors(
     )
     assert installer.main(["validate", "--root", str(tmp_path)]) == 2
     assert "typed failure" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("names", [[], ["missing"], ["demo", "demo"]])
+def test_component_selection_rejects_invalid_names(tmp_path, names):
+    contract = _contract(tmp_path)
+    with pytest.raises(installer.ComponentInstallError, match="selection"):
+        installer.select_components(contract, names)
+
+
+def test_component_selection_keeps_canonical_order_and_default_contract(tmp_path):
+    contract = _contract(tmp_path)
+    selected = installer.select_components(contract, [component.key for component in reversed(contract.components)])
+    assert selected.components == contract.components
+    assert selected.manifest_path == contract.manifest_path
+    assert installer._parser().parse_args(["validate"]).components is None
+
+
+def test_component_selection_validates_only_selected_sources(tmp_path, monkeypatch):
+    contract = _contract(tmp_path)
+    observed = []
+    monkeypatch.setattr(installer, "_validate_component_sources", observed.append)
+    selected = installer.select_components(contract, [contract.components[0].key], require_sources=True)
+    assert observed == [selected]
+    assert len(contract.components) > len(selected.components)
+
+
+def _real_manifest() -> dict[str, Any]:
+    return json.loads((REPOSITORY_ROOT / "config/astral-composition.json").read_text("utf-8"))
+
+
+def _real_contract() -> Any:
+    return installer.load_contract(REPOSITORY_ROOT, require_sources=False)
+
+
+def test_plane_is_declared_in_tree_and_builds_from_the_plane_folder() -> None:
+    plane = next(item for item in _real_contract().components if item.key == "astral-plane")
+    assert plane.in_tree is True
+    assert plane.relative_path == "plane"
+    assert plane.source_root(REPOSITORY_ROOT) == REPOSITORY_ROOT / "plane"
+    assert all(not item.in_tree for item in _real_contract().components if item.key != "astral-plane")
+
+
+def test_manifest_key_set_counts_the_in_tree_keys() -> None:
+    contract = _real_contract()
+    manifest = _real_manifest()
+    installer._validate_manifest(contract, manifest)
+    for mutate in (
+        lambda document: document["components"].update({"astral-plane": document["in_tree"]["astral-plane"]}),
+        lambda document: document["in_tree"].clear(),
+        lambda document: document["in_tree"].update({"extra": {}}),
+        lambda document: document["components"].pop("lets"),
+    ):
+        broken = json.loads(json.dumps(manifest))
+        mutate(broken)
+        with pytest.raises(installer.ComponentInstallError):
+            installer._validate_manifest(contract, broken)
+
+
+def test_in_tree_identity_must_name_exactly_the_folder_and_contract() -> None:
+    contract = _real_contract()
+    manifest = _real_manifest()
+    for field, value in (("path", "elsewhere"), ("contract_version", "astralplane.contract/v2"), ("commit", "a" * 40)):
+        broken = json.loads(json.dumps(manifest))
+        broken["in_tree"]["astral-plane"][field] = value
+        with pytest.raises(installer.ComponentInstallError):
+            installer._validate_manifest(contract, broken)
+
+
+@pytest.mark.parametrize("format_value", ["astral.composition/v1", "astral.composition/v3", None])
+def test_earlier_manifest_formats_are_refused_with_a_format_error(format_value: Any) -> None:
+    broken = _real_manifest()
+    broken["format"] = format_value
+    with pytest.raises(installer.ComponentInstallError, match="no longer supported"):
+        installer._validate_manifest(_real_contract(), broken)
+
+
+def test_in_tree_plane_must_keep_its_folder_name(tmp_path: Path) -> None:
+    with pytest.raises(installer.ComponentInstallError, match="repository folder"):
+        installer._component_spec("astral-plane", {
+            "distribution": "astralplane", "version": "0.1.13", "path": "components/AstralPlane",
+            "contract": "c", "availability": "required-embedded", "import": "astralplane",
+            "extras": [], "build-inputs": ["pyproject.toml"], "required-wheel-paths": ["a"],
+        })
+
+
+def test_declarations_check_covers_only_the_pinned_gitlinks() -> None:
+    contract = _real_contract()
+    installer._validate_git_declarations(contract, _real_manifest(), require_gitlinks=False)
+    assert "plane" not in installer._parse_gitmodules(REPOSITORY_ROOT / ".gitmodules")

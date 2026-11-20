@@ -1,5 +1,5 @@
 """Authenticated owner REST boundary for notification routing preferences, quiet
-hours, and the durable inbox: Keycloak-authenticated via verify_user, delegating all
+hours, and the durable inbox: authenticated via verify_user, delegating all
 policy and persistence decisions to notification_routing.NotificationRoutingCoordinator.
 Mounted by orchestrator.py alongside the other routers.
 """

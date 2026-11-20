@@ -401,9 +401,11 @@ def deploy(args: argparse.Namespace) -> dict[str, Any]:
     image_plane = run([
         "docker", "run", *APP_LIMITS, "--rm", "--network", "none", "--entrypoint", "python3",
         args.candidate_image, "-c",
-        "import json; print(json.load(open('/app/config/astral-composition.json'))"
-        "['components']['astral-plane']['commit'])",
+        "import json; c = json.load(open('/app/config/astral-composition.json')); "
+        "print(c['components']['astral-plane']['commit'] if 'astral-plane' in c['components'] else 'in-tree')",
     ]).stdout.strip()
+    if image_plane == "in-tree":
+        image_plane = args.candidate_sha
     if image_plane != args.plane_commit:
         raise QualificationError("candidate image Plane pin differs from the qualified import source")
     run([

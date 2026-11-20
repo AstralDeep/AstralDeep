@@ -7,6 +7,8 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
@@ -20,6 +22,7 @@ class _FakeRepo:
     def __init__(self):
         self.memory = []
         self.signals = []
+        self.superseded = []
 
     def create_memory(self, user_id, category, value, *, source="explicit",
                        salience=0.0, keywords=None, project_id=None):
@@ -34,6 +37,16 @@ class _FakeRepo:
         if project_id is None:
             return rows
         return ps.filter_to_project(rows, project_id, include_global=include_global)
+
+    def delete_memory(self, user_id, mem_id):
+        before = len(self.memory)
+        self.memory = [item for item in self.memory
+                       if not (item["id"] == mem_id and item["user_id"] == user_id)]
+        return len(self.memory) < before
+
+    def supersede_memory(self, user_id, old_id, new_id=None):
+        self.superseded.append(old_id)
+        return True
 
     def add_signal(self, user_id, category, value):
         self.signals.append((category, value))
@@ -61,9 +74,73 @@ def _fake_orch(repo, gate):
     return orch
 
 
-def test_definitions_expose_three_tools():
+def test_definitions_offer_only_supported_memory_tools():
     names = {d["function"]["name"] for d in memory_chat.meta_tool_definitions()}
     assert names == {"remember", "memory_search", "memory_get"}
+
+
+_FACT_ID = "7f1c2a7e-3b1d-4c55-9a0e-2d5b8f4e6a11"
+
+
+def _repo_with_fact(owner="u1"):
+    repo = _FakeRepo()
+    repo.memory.append({"id": _FACT_ID, "user_id": owner, "category": "preference",
+                        "value": "favorite tea is oolong"})
+    return repo
+
+
+@pytest.fixture
+def audits(monkeypatch):
+    events = []
+
+    class _Recorder:
+        async def record(self, event):
+            events.append(event)
+
+    monkeypatch.setattr("audit.recorder.get_recorder", lambda: _Recorder())
+    return events
+
+
+def test_forget_normalizes_the_id_before_it_reaches_the_repository():
+    repo = _repo_with_fact()
+    tools = MemoryTools(repo, phi_gate=_Gate())
+    assert tools.forgettable("u1", f"urn:uuid:{_FACT_ID.upper()}")["id"] == _FACT_ID
+    assert tools.forget("u1", "favorite tea") is False
+    assert tools.forget("u1", "{" + _FACT_ID.upper() + "}") is True
+    assert repo.memory == []
+
+
+@pytest.mark.parametrize("owner", ["u1", "another-owner"])
+def test_legacy_forget_refuses_without_disclosing_or_mutating_memory(audits, owner):
+    repo = _repo_with_fact(owner)
+    resp = asyncio.run(memory_chat.handle_meta_tool(
+        _fake_orch(repo, _Gate()), "forget", {"id": _FACT_ID, "approved": True},
+        user_id="u1", chat_id="c1", websocket=object()))
+    assert resp.error["code"] == "memory.forget_requires_owner"
+    assert resp.result is None and len(repo.memory) == 1
+    assert [(e.action_type, e.outcome, e.inputs_meta) for e in audits] == [
+        ("memory.delete", "failure", {})]
+
+
+def test_a_refused_remember_is_audited_as_a_failure(audits):
+    repo = _FakeRepo()
+    asyncio.run(memory_chat.handle_meta_tool(
+        _fake_orch(repo, _Gate(phi=True)), "remember", {"value": "MRN 4471"},
+        user_id="u1", chat_id="c1", websocket=None))
+    assert [(e.action_type, e.outcome) for e in audits] == [("memory.remember_refused", "failure")]
+
+
+def test_a_reconcile_delete_supersedes_instead_of_erasing():
+    repo = _repo_with_fact()
+
+    async def decide(messages):
+        return '{"action": "DELETE", "target": 1}'
+
+    res = asyncio.run(MemoryTools(repo, phi_gate=_Gate()).remember_reconciled(
+        "u1", "preference", "no longer likes oolong tea", llm_call=decide))
+    assert res["action"] == "delete"
+    assert repo.superseded == [_FACT_ID]
+    assert [item["id"] for item in repo.memory] == [_FACT_ID]
 
 
 def test_should_inject_respects_draft_and_flag():

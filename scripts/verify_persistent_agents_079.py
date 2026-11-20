@@ -32,7 +32,7 @@ METRICS = ("model_calls", "tool_calls", "tokens", "elapsed_ms", "spend_micro_uni
 _RUNTIME_SUFFIXES = {".py", ".json", ".js", ".css", ".html", ".svg", ".sh", ".txt", ".woff", ".woff2", ".ttf"}
 _EXCLUDED = {"tests", "__pycache__", "data", "tmp", "knowledge", "node_modules"}
 _PACKAGES = {
-    "components/AstralPlane/src/astralplane": "astralplane",
+    "plane/src/astralplane": "astralplane",
     "components/AstralProjection/src/astralprojection": "astralprojection",
     "components/AstralProjection/backend/webrender": "webrender",
     "components/AstralProjection/backend/rote": "rote",
@@ -286,7 +286,7 @@ def git(root, *arguments):
 
 
 def runtime_manifest(root=ROOT):
-    repos = [root, *(root / "components" / name for name in ("AstralPlane", "AstralProjection", "AstralPrimitives", "LETS"))]
+    repos = [root, *(root / "components" / name for name in ("AstralProjection", "AstralPrimitives", "LETS"))]
     identities = {}
     selected = set()
     for repo in repos:

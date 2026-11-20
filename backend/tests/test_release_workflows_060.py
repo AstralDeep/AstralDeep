@@ -55,15 +55,6 @@ PROJECTION_WORKFLOWS = (
     REPO_ROOT / "components" / "AstralProjection" / ".github" / "workflows"
 )
 APPLE_CI = PROJECTION_WORKFLOWS / "apple-ci.yml"
-CONTINUITY_UI_TESTS = (
-    REPO_ROOT
-    / "components"
-    / "AstralProjection"
-    / "apple-clients"
-    / "AstralApp"
-    / "AstralAppUITests"
-    / "ConversationContinuityUITests.swift"
-)
 RELAUNCH_PROOF = "testDeterministicProcessRelaunchRestoresSemanticConversation"
 READINESS = WORKFLOWS / "release-readiness.yml"
 PROTECTED_QUALIFICATION = WORKFLOWS / "backend-web-qualification-protected.yml"
@@ -130,9 +121,7 @@ PRODUCER_JOBS = (
 IOS_LANES = ("core", "unit", "ui")
 BUILD_SIGN_PUBLISH_JOBS = {
     ("android-release.yml", "release-bundle"),
-    ("apple-release.yml", "release"),
     ("build-windows-candidate.yml", "windows-candidate"),
-    ("publish-image.yml", "publish"),
     ("release-macos.yml", "release"),
     ("release-windows.yml", "build-sign-release"),
     ("release-windows-publisher.yml", "publish"),
@@ -725,7 +714,7 @@ def test_release_readiness_component_consumers_verify_exact_initialized_gitlinks
 def test_release_readiness_backend_producer_mounts_plane_source_read_only() -> None:
     backend = _workflow_job(_workflow_text(READINESS), "backend-producer")
     assert (
-        '-v "$PWD/components/AstralPlane:/app/components/AstralPlane:ro"'
+        '-v "$PWD/plane:/app/plane:ro"'
         in backend
     )
 
@@ -1260,7 +1249,7 @@ def test_release_windows_signing_identity_surface_matches_the_shipped_client() -
     # Must trigger on tag push — branch push would change the cert SAN
     assert re.search(r'(?m)^on:$', head)
     assert re.search(r'(?m)^  push:$', head)
-    assert re.search(r'(?m)^    tags: \["v\*"\]$', head)
+    assert re.search(r'(?m)^    tags: \["v\[0-9\]\*"\]$', head)
 
     identity = (
         "https://github.com/AstralDeep/AstralDeep/.github/workflows/"
@@ -1780,7 +1769,7 @@ def test_ci_has_no_stale_composed_or_client_release_claims() -> None:
 
     job_ids = set(_job_ids(workflow))
     assert job_ids == {
-        "backend-image", "backend-boot", "backend-web", "backend-changed-coverage",
+        "kernel-binding", "backend-image", "backend-boot", "backend-web", "backend-changed-coverage",
         "projection-backend-web", "plane-postgres", "ui-v2-contracts",
         "lint",
         "sdk",
@@ -1789,6 +1778,19 @@ def test_ci_has_no_stale_composed_or_client_release_claims() -> None:
         "composition-declarations",
         "voice-worker-test",
         "secret-scan",
+        "no-keycloak",
+        "node-pack-linux",
+        "node-pack-linux-arm64",
+        "node-pack-macos",
+        "no-docker-macos",
+        "no-docker-linux",
+        "plane-quality",
+        "plane-package-compatibility",
+        "vessel-kernel-binding",
+        "vessel-lint",
+        "vessel-test",
+        "vessel-isolation",
+        "vessel-docs",
         "gates",
     }
     assert not job_ids & {
@@ -1915,7 +1917,7 @@ def test_every_workflow_job_is_bounded_by_thirty_minutes_unless_it_builds_signs_
     ("candidate.yml", {"timeout-minutes": 0}, None),
     ("candidate.yml", {"timeout-minutes": 90}, None),
     ("publish-image.yml", {"timeout-minutes": 90}, None),
-    ("publish-image.yml", {"job": "publish", "timeout-minutes": 60}, {("publish-image.yml", "publish")}),
+    ("publish-image.yml", {"job": "publish", "timeout-minutes": 60}, None),
     ("candidate.yml", {"uses": "./.github/workflows/release-trusted-builder.yml"}, set()),
     ("candidate.yml", {"uses": "./.github/workflows/release-trusted-builder.yml", "timeout-minutes": 30}, None),
     ("candidate.yml", {"uses": "./.github/workflows/absent.yml"}, None),
@@ -2062,20 +2064,31 @@ def test_privileged_manual_dispatch_jobs_refuse_candidate_refs() -> None:
     assert "workflow_dispatch:" not in _workflow_head(_workflow_text(READINESS))
 
 
-def test_mac_store_resource_repair_uses_exported_package_before_upload() -> None:
+def test_iphone_store_upload_requires_qualified_inputs_and_never_archives_mac_store() -> None:
     workflow = _workflow_text(WORKFLOWS / "apple-release.yml")
-    helper = "components/AstralProjection/apple-clients/Scripts/repair_macos_store_package.py"
-    assert workflow.index(f"test -f {helper}") < workflow.index("- name: Require signing material")
-    export = workflow.index("- name: Export both archives for the App Store")
-    repair = workflow.index(f"python3 {helper}")
-    retain = workflow.index('echo "PKG=$PKG" >> "$GITHUB_ENV"')
-    assert export < repair < retain
-    repair_body = workflow[repair:retain].replace("\\\n", " ")
-    command = shlex.split(repair_body.split("\n", 1)[0])
-    assert command[2:6] == ["--input", "$PKG", "--output", "$REPAIRED_PKG"]
-    assert 'PKG="$REPAIRED_PKG"' in repair_body
-    assert "macos-store-signature-receipt.json" in repair_body
-    assert "--deep" not in repair_body
+    jobs = _workflow_jobs(WORKFLOWS / "apple-release.yml")
+    assert set(jobs) == {"gate", "release"}
+    assert jobs["release"]["environment"] == "release-publisher"
+    assert jobs["release"]["needs"] == "gate"
+    assert jobs["release"]["permissions"] == {"contents": "read", "actions": "read"}
+    assert all(job["timeout-minutes"] <= 30 for job in jobs.values())
+    assert "push:" not in _workflow_head(workflow)
+    assert "cancel-in-progress: false" in workflow
+    assert "pip install --require-hashes --only-binary=:all: -r scripts/requirements-ios-release.txt" in workflow
+    for forbidden in ("generic/platform=macOS", "APPLE_PROFILE_MACOS", "APPLE_INSTALLER_CERT", ".pkg", "notarytool", "GITHUB_RUN_NUMBER"):
+        assert forbidden not in workflow
+    commands = [str(step.get("run", "")) for step in jobs["release"]["steps"]]
+    restore = next(index for index, cmd in enumerate(commands) if "ios_store_upload.py restore" in cmd)
+    preflight = next(index for index, cmd in enumerate(commands) if "ios_store_upload.py preflight" in cmd)
+    archive = next(index for index, cmd in enumerate(commands) if "xcodebuild archive" in cmd)
+    upload = next(index for index, cmd in enumerate(commands) if "--upload-app" in cmd)
+    assert restore < preflight < archive < upload
+    assert "artifact_manifest.py verify" in commands[restore]
+    assert "MARKETING_VERSION=\"$VERSION\" CURRENT_PROJECT_VERSION=\"$BUILD\"" in commands[archive]
+    assert "ios_store_upload.py verify-app" in commands[archive]
+    assert "altool_strict.sh" in commands[upload]
+    assert commands[upload].index("--validate-app") < commands[upload].index("--upload-app")
+    assert "upload-receipt.txt" in commands[upload]
 
 
 def _diagnostic_argv(
@@ -2532,11 +2545,7 @@ def _continuity_selectors(job: str) -> list[str]:
 
 def test_release_continuity_lane_selects_the_pinned_single_relaunch_proof() -> None:
     readiness = _workflow_job(_workflow_text(READINESS), "ios-lane")
-    projection = _workflow_job(_workflow_text(APPLE_CI), "first-login-ui")
     assert _continuity_selectors(readiness) == [RELAUNCH_PROOF]
-    assert set(_continuity_selectors(projection)) == {RELAUNCH_PROOF}
-    suite = CONTINUITY_UI_TESTS.read_text(encoding="utf-8")
-    assert re.findall(r"(?m)^    func (test\w+)\(\)", suite).count(RELAUNCH_PROOF) == 1
     artifacts = _load_module(
         "release_workflows_apple_artifacts_060",
         REPO_ROOT / "scripts" / "apple_coverage_artifacts.py",
@@ -2853,3 +2862,24 @@ def test_result_bundle_refusals_stop_an_errexit_step_only_when_the_path_is_taken
             assert completed.stdout.startswith("::error::"), guard
             assert completed.stdout.rstrip("\n").endswith(" already exists"), guard
             assert "proceeded" not in completed.stdout, guard
+
+
+def test_ci_builds_the_linux_arm64_node_pack_and_keeps_evidence_when_it_fails() -> None:
+    pack = _workflow_jobs(CI_WORKFLOW)["node-pack-linux-arm64"]
+    assert pack["runs-on"] == "ubuntu-24.04-arm" and pack["timeout-minutes"] <= 30
+    assert "needs" not in pack
+    runs = "\n".join(step.get("run", "") for step in pack["steps"])
+    assert "build_kernel_binding.py --root . --output build/kernel-binding --platform linux-aarch64" in runs
+    assert "install_kernel_binding.py verify --artifacts build/kernel-binding --platform linux-aarch64" in runs
+    assert "build_linux.py --platform linux-aarch64" in runs
+    evidence = [step for step in pack["steps"] if str(step.get("uses", "")).startswith("actions/upload-artifact@")]
+    assert len(evidence) == 1
+    assert evidence[0]["if"] == "${{ always() }}"
+    assert evidence[0]["uses"].startswith("actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02")
+    assert evidence[0]["with"]["retention-days"] <= 7
+    assert "build/kernel-binding" in evidence[0]["with"]["path"] and "runner.temp" in evidence[0]["with"]["path"]
+
+    gates = _workflow_job(_workflow_text(CI_WORKFLOW), "gates")
+    assert "- node-pack-linux-arm64" in gates
+    assert "needs.node-pack-linux-arm64.result }}' == 'success'" in gates
+    assert "node-pack-linux-aarch64" in _workflow_jobs(WORKFLOWS / "release-macos.yml")["release"]["needs"]

@@ -377,31 +377,3 @@ async def test_cancelled_cpu_keeps_admission_until_worker_finishes_and_never_que
     assert (await post(host)).status_code == 200
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("transport", ["cookie", "bearer"])
-async def test_original_iam_rechecked_after_render_without_profile_write(host, monkeypatch, transport):
-    from jose import JWTError
-    from orchestrator import web_auth
-    monkeypatch.setattr(auth, "get_web_or_bearer_user_payload", REAL_AUTHENTICATE)
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
-    monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-frontend")
-    monkeypatch.setattr(auth, "_get_keycloak_config", lambda: ("https://iam.example/realms/test", "astral-frontend", ""))
-    monkeypatch.setattr("shared.jwks_cache.get_jwks", AsyncMock(return_value={"keys": []}))
-    session = AsyncMock(return_value={"access_token": "fixture.access.token"})
-    monkeypatch.setattr(web_auth, "ensure_session", session)
-    decode = Mock(return_value={"sub": "owner", "realm_access": {"roles": ["user"]}})
-    monkeypatch.setattr("jose.jwt.decode", decode)
-    headers = TOKEN_HEADERS if transport == "bearer" else {"content-type": "application/json", "origin": "https://test"}
-    assert (await post(host, headers=headers)).status_code == 200
-    assert decode.call_count == 2 and session.call_count == (2 if transport == "cookie" else 0)
-    original = export.render_presentation
-    def expire(payload):
-        value = original(payload)
-        decode.side_effect = JWTError("fixture expired")
-        if transport == "cookie":
-            session.return_value = None
-        return value
-    monkeypatch.setattr(export, "render_presentation", expire)
-    assert_error(await post(host, headers=headers), 401, "presentation_authentication_required")
-    host.orch._save_user_profile.assert_not_called()
-    assert host.repository.get.call_count == 3

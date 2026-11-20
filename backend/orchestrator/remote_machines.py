@@ -251,9 +251,6 @@ def retrust_host_key(db, owner_user_id: str, machine_id: str) -> None:
 
 
 def build_target(db, credmgr, owner_user_id: str, machine_id: str) -> MachineTarget:
-    from orchestrator.remote_effect_execution import selection_requires_target
-    if selection_requires_target(owner_user_id):
-        return build_effect_target(db, credmgr, owner_user_id, machine_id)
     row = get_machine(db, owner_user_id, machine_id)
     if row is None:
         raise MachineNotFound(machine_id)
@@ -265,24 +262,3 @@ def build_target(db, credmgr, owner_user_id: str, machine_id: str) -> MachineTar
         secret=cred["secret"], passphrase=cred["passphrase"],
         host_key_fingerprint=row.get("host_key_fingerprint"))
 
-
-def build_effect_target(db, credmgr, owner_user_id: str, machine_id: str) -> MachineTarget:
-    from orchestrator.remote_effect_authority import authority_digest
-    context = _remote_context(db)
-    with context.transaction() as transaction:
-        lock_owner(context.plane_runtime, transaction, owner_user_id)
-        record = context.repository.get_machine(transaction, owner_id=owner_user_id, machine_id=machine_id)
-        if record is None:
-            raise MachineNotFound(machine_id)
-        row = _machine_dict(record)
-        cred = credmgr.get_machine_credential(machine_id, owner_user_id, transaction=transaction)
-        if cred is None:
-            raise CredentialNotConfigured(machine_id)
-        authority = (authority_digest(context.plane_runtime, transaction, owner_user_id, machine_id)
-                     if row.get("host_key_fingerprint") else None)
-    return MachineTarget(
-        machine_id=row["machine_id"], label=row["label"], address=row["address"],
-        port=int(row["port"]), username=row["username"], cred_type=cred["cred_type"],
-        secret=cred["secret"], passphrase=cred["passphrase"],
-        host_key_fingerprint=row.get("host_key_fingerprint"), authority_digest=authority,
-    )

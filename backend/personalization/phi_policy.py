@@ -1,7 +1,5 @@
-"""Per-user PHI protection policy: redaction and chat reminders stay off until the user turns the
-preference on. Reads the AstralPlane preferences repository through the bound orchestrator with a
-short cache so tool-output paths pay no query per call; chat_notices, chat_steps, mcp_tools, api,
-write_review and persistent_agents consult it.
+"""Reads the owner’s PHI preferences from AstralPlane for redaction and chat notices.
+Tool-output handlers share the short-lived cache in this module.
 """
 
 from __future__ import annotations

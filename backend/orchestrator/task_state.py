@@ -1,6 +1,6 @@
 """Legacy synchronous Task/TaskManager DTOs projected from durable operation state owned
 by WorkAdmissionCoordinator, never performing Postgres work on the event loop itself.
-Task IDs are operation UUIDs. Used by coordinator.py and orchestrator.py.
+Task IDs are operation UUIDs. Orchestrator uses these records for task lifecycle updates.
 """
 
 from __future__ import annotations
@@ -14,14 +14,11 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 
 from orchestrator.work_admission import (
-    AdmissionClass,
     ExecutionFence,
     OperationNotFoundError,
     OperationOwner,
     OperationRecord,
-    OperationRequest,
     OperationState,
-    OwnerScope,
     PurgeResult,
     SafeOperationProjection,
     StaleExecutionFenceError,
@@ -73,16 +70,6 @@ def _validate_execution_fence(
 
 class TaskManagerNotBoundError(RuntimeError):
     pass
-
-
-class TaskAdmissionError(RuntimeError):
-    def __init__(
-        self, code: str, *, retryable: bool, retry_after_ms: int | None
-    ) -> None:
-        super().__init__(f"task admission refused: {code}")
-        self.code = code
-        self.retryable = retryable
-        self.retry_after_ms = retry_after_ms
 
 
 def _project_task_state(operation: OperationProjection) -> TaskState:
@@ -267,241 +254,6 @@ class TaskManager:
                 "bind an explicit WorkAdmissionCoordinator before querying retention"
             )
         return self._coordinator
-
-    async def admit_task(
-        self,
-        chat_id: str,
-        user_id: str,
-        message: str = "",
-        *,
-        operation: OperationProjection | None = None,
-        owner: OperationOwner | None = None,
-        execution_fence: ExecutionFence | None = None,
-    ) -> Task:
-        lock = self._chat_locks.setdefault(chat_id, asyncio.Lock())
-        async with lock:
-            return await self._admit_task_locked(
-                chat_id,
-                user_id,
-                message,
-                operation=operation,
-                owner=owner,
-                execution_fence=execution_fence,
-            )
-
-    async def _admit_task_locked(
-        self,
-        chat_id: str,
-        user_id: str,
-        message: str = "",
-        *,
-        operation: OperationProjection | None = None,
-        owner: OperationOwner | None = None,
-        execution_fence: ExecutionFence | None = None,
-    ) -> Task:
-        existing = self.get_active_task(chat_id)
-        if (
-            existing is not None
-            and operation is not None
-            and existing.task_id == str(operation.operation_id)
-        ):
-            if execution_fence is not None:
-                existing._apply_operation(
-                    operation, execution_fence=execution_fence
-                )
-            existing.message = message
-            return existing
-        if existing is not None:
-            await self.transition_task(existing, TaskState.CANCELLED)
-            if existing._canonical_state() not in _TERMINAL_TASK_STATES:
-                raise TaskManagerNotBoundError(
-                    "existing task cancellation is awaiting its current executor"
-                )
-
-        if operation is not None or owner is not None or execution_fence is not None:
-            if operation is None or owner is None:
-                raise TaskManagerNotBoundError(
-                    "operation context requires both operation and owner"
-                )
-            return self.create_task(
-                chat_id,
-                user_id,
-                message,
-                operation=operation,
-                owner=owner,
-                execution_fence=execution_fence,
-            )
-
-        coordinator = self._require_coordinator()
-        owner = OperationOwner(
-            owner_scope=OwnerScope.USER,
-            owner_user_id=user_id,
-            connection_scope_id=None,
-        )
-        request = OperationRequest(
-            operation_kind="react_task",
-            admission_class=AdmissionClass.INTERACTIVE,
-            owner=owner,
-            submission_id=uuid.uuid4(),
-            idempotency_namespace=None,
-            idempotency_key=None,
-            normalized_input_digest=None,
-            chat_id=chat_id,
-            parent_operation_id=None,
-            connection_generation=None,
-            request_generation=None,
-        )
-        admitted = await asyncio.to_thread(coordinator.submit, request)
-        if not admitted.accepted:
-            raise TaskAdmissionError(
-                admitted.code,
-                retryable=admitted.retryable,
-                retry_after_ms=admitted.retry_after_ms,
-            )
-        claim = None
-        if admitted.state is OperationState.RUNNING:
-            claim = await asyncio.to_thread(
-                coordinator.claim_operation,
-                AdmissionClass.INTERACTIVE,
-                admitted.operation_id,
-            )
-        if claim is None:
-            await asyncio.to_thread(
-                coordinator.cancel,
-                owner=owner,
-                operation_id=admitted.operation_id,
-                terminal_code="compatibility_queue_unavailable",
-            )
-            raise TaskAdmissionError(
-                "compatibility_queue_unavailable",
-                retryable=True,
-                retry_after_ms=admitted.queue_deadline_at and 1000,
-            )
-        try:
-            return self.create_task(
-                chat_id,
-                user_id,
-                message,
-                operation=claim.operation,
-                owner=owner,
-                execution_fence=claim.fence,
-            )
-        except BaseException:
-            await asyncio.to_thread(
-                coordinator.terminalize,
-                claim.fence,
-                state=OperationState.CANCELLED,
-                terminal_code="compatibility_projection_failed",
-                safe_summary="Task projection cancelled",
-                retry_after_ms=None,
-            )
-            raise
-
-    @staticmethod
-    def _apply_metadata(task: Task, metadata: Dict[str, Any]) -> None:
-        for key, value in metadata.items():
-            if key in {
-                "turn_count",
-                "max_turns",
-                "tool_calls_made",
-                "current_tool",
-                "error",
-                "message",
-            }:
-                setattr(task, key, value)
-
-    async def transition_task(
-        self, task: Task, new_state: TaskState, **metadata: Any
-    ) -> Task:
-        coordinator = self._require_coordinator()
-        requested = TaskState(new_state)
-        if task._operation is None or task._owner is None:
-            raise TaskManagerNotBoundError("task has no coordinator operation")
-
-        if requested in {
-            TaskState.PENDING,
-            TaskState.RUNNING,
-            TaskState.AWAITING_TOOL,
-        }:
-            if task._execution_fence is None:
-                raise TaskManagerNotBoundError("task has no current execution fence")
-            try:
-                operation = await asyncio.to_thread(
-                    coordinator.update_phase,
-                    task._execution_fence,
-                    requested.value,
-                )
-            except StaleExecutionFenceError:
-                task._execution_fence = None
-                await self.refresh_task(task.task_id)
-                raise
-            self._apply_transition(task, requested, operation, **metadata)
-            return task
-
-        if requested is TaskState.CANCELLED:
-            operation = await asyncio.to_thread(
-                coordinator.cancel,
-                owner=task._owner,
-                operation_id=task._operation.operation_id,
-                terminal_code="cancelled_by_user",
-            )
-            task._apply_operation(operation)
-            if (
-                operation.state is OperationState.RUNNING
-                and task._execution_fence is not None
-            ):
-                try:
-                    await asyncio.to_thread(
-                        coordinator.assert_current_execution,
-                        task._execution_fence,
-                    )
-                    operation = await asyncio.to_thread(
-                        coordinator.terminalize,
-                        task._execution_fence,
-                        state=OperationState.CANCELLED,
-                        terminal_code="cancelled_by_user",
-                        safe_summary="Cancelled",
-                        retry_after_ms=None,
-                    )
-                except StaleExecutionFenceError:
-                    task._execution_fence = None
-                    self._apply_metadata(task, metadata)
-                    return task
-            if operation.state is OperationState.CANCELLED:
-                self._apply_transition(task, requested, operation, **metadata)
-            else:
-                task._apply_operation(operation)
-                self._apply_metadata(task, metadata)
-            return task
-
-        if task._execution_fence is None:
-            raise TaskManagerNotBoundError("task has no current execution fence")
-        terminal_state = OperationState(requested.value)
-        terminal_code = None
-        safe_summary = "Completed"
-        retry_after_ms = None
-        if requested is TaskState.FAILED:
-            terminal_code = "operation_failed"
-            safe_summary = "Task failed"
-        elif requested is TaskState.RETRYABLE:
-            terminal_code = "operation_retryable"
-            safe_summary = "Task retryable"
-            retry_after_ms = 1000
-        try:
-            operation = await asyncio.to_thread(
-                coordinator.terminalize,
-                task._execution_fence,
-                state=terminal_state,
-                terminal_code=terminal_code,
-                safe_summary=safe_summary,
-                retry_after_ms=retry_after_ms,
-            )
-        except StaleExecutionFenceError:
-            task._execution_fence = None
-            await self.refresh_task(task.task_id)
-            raise
-        self._apply_transition(task, requested, operation, **metadata)
-        return task
 
     async def assert_current_execution(self, task: Task) -> Task:
         coordinator = self._require_coordinator()

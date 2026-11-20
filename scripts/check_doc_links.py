@@ -125,7 +125,7 @@ def tracked_markdown_files(
 def maintained_markdown_files(
     tracked_files: Iterable[PurePosixPath],
 ) -> tuple[PurePosixPath, ...]:
-    excluded_roots = frozenset({".agents", ".specify", "specs"})
+    excluded_roots = frozenset({"specs"})
     return tuple(
         path
         for path in tracked_files

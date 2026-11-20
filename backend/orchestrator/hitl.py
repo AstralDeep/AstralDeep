@@ -1,16 +1,12 @@
-"""Classifies a pending tool call's risk (egress, cross-principal, irreversible,
-untrusted-tainted) and builds the confirmation card and escalation signal shown
-before high-risk calls run; used by hitl_confirmation.py.
-"""
+"""Classifies tool risks for the orchestrator review gate."""
 
 from __future__ import annotations
 
 import os
 import ipaddress
 import re
-from dataclasses import dataclass, field
 from importlib import import_module
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional
 from urllib.parse import parse_qsl, unquote, urlsplit
 
 EGRESS, CROSS_PRINCIPAL, IRREVERSIBLE, UNTRUSTED_TAINTED = (
@@ -119,14 +115,6 @@ def public_read_arguments(agent_id: str, tool_name: str, args: Optional[dict]) -
             return False
     return True
 
-_RISK_PHRASES = {
-    EGRESS: "send data off this system",
-    IRREVERSIBLE: "make an irreversible change",
-    CROSS_PRINCIPAL: "act on another account",
-    UNTRUSTED_TAINTED: "use untrusted data",
-}
-
-
 def hitl_enabled() -> bool:
     return os.getenv("FF_HITL_HIGHRISK", "false").strip().lower() in (
         "1",
@@ -177,41 +165,6 @@ def is_high_risk(risks: List[str]) -> bool:
         IRREVERSIBLE in risks
         or CROSS_PRINCIPAL in risks
         or len(risks) >= 2
-    )
-
-
-@dataclass(frozen=True)
-class ConfirmationRequest:
-    tool: str
-    risks: Tuple[str, ...]
-    summary: str
-    provenance: Dict = field(default_factory=dict)
-
-
-def _summarize(risks: List[str]) -> str:
-    phrases = [_RISK_PHRASES[r] for r in risks if r in _RISK_PHRASES]
-    if not phrases:
-        return "This will run a sensitive action — confirm?"
-    if len(phrases) == 1:
-        joined = phrases[0]
-    elif len(phrases) == 2:
-        joined = " and ".join(phrases)
-    else:
-        joined = ", ".join(phrases[:-1]) + ", and " + phrases[-1]
-    return f"This will {joined} — confirm?"
-
-
-def confirmation_request(
-    tool_name: str,
-    risks: List[str],
-    *,
-    provenance: Optional[dict] = None,
-) -> ConfirmationRequest:
-    return ConfirmationRequest(
-        tool=tool_name,
-        risks=tuple(risks),
-        summary=_summarize(risks),
-        provenance=dict(provenance) if provenance else {},
     )
 
 

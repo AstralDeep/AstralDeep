@@ -2,6 +2,7 @@
 -r ../python-ci/requirements.in
 -c ../python-ci/requirements.lock.txt
 jsonschema==4.25.1
+referencing==0.36.2
 PyYAML==6.0.3
 openapi-spec-validator==0.7.2
 pytest-xdist==3.8.0

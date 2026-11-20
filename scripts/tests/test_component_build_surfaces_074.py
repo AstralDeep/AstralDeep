@@ -37,8 +37,9 @@ def test_docker_builds_locked_component_wheels_before_backend_copy() -> None:
         local = tomllib.load(stream)["tool"]["astraldeep"]["local-components"]
     for key in local["install-order"]:
         component = local[key]
+        package_path = "/".join(filter(None, (component["path"], component.get("package-root"))))
         for build_input in component["build-inputs"]:
-            assert f"{component['path']}/{build_input}" in dockerfile
+            assert f"{package_path}/{build_input}" in dockerfile
     assert dockerfile.index("install_local_components.py build") < dockerfile.index(
         "COPY backend/requirements.txt"
     )
@@ -67,7 +68,7 @@ def test_make_bootstrap_and_lifecycle_require_full_composition_preflight() -> No
     assert "git submodule update --init --recursive" in makefile
     assert "setuptools==83.0.0" in makefile
     assert "hatchling==1.27.0" in makefile
-    assert "uv_build==0.12.23" in makefile
+    assert "uv_build==0.13.6" in makefile
     assert "-r backend/requirements.txt" in makefile
     assert "composition-preflight:" in makefile
     assert "scripts/verify_composition.py" in makefile
@@ -89,7 +90,7 @@ def test_public_ci_contains_only_repository_owned_qualification() -> None:
         )
     )
     assert job_ids == {
-        "backend-image", "backend-boot", "backend-web", "backend-changed-coverage",
+        "kernel-binding", "backend-image", "backend-boot", "backend-web", "backend-changed-coverage",
         "projection-backend-web", "plane-postgres",
         "lint",
         "ui-v2-contracts",
@@ -100,6 +101,10 @@ def test_public_ci_contains_only_repository_owned_qualification() -> None:
         "voice-worker-test",
         "secret-scan",
         "gates",
+        "no-keycloak", "no-docker-linux", "no-docker-macos",
+        "node-pack-linux", "node-pack-linux-arm64", "node-pack-macos",
+        "plane-package-compatibility", "plane-quality",
+        "vessel-kernel-binding", "vessel-lint", "vessel-test", "vessel-isolation", "vessel-docs",
     }
     assert not (REPOSITORY_ROOT / ".github/workflows/android-ci.yml").exists()
     assert not (REPOSITORY_ROOT / ".github/workflows/apple-ci.yml").exists()
@@ -154,6 +159,14 @@ def test_public_ci_contains_only_repository_owned_qualification() -> None:
     assert "secrets." not in workflow
     assert "actions/download-artifact" in _workflow_job(workflow, "backend-boot")
     assert "docker save" in _workflow_job(workflow, "backend-image")
+    kernel = _workflow_job(workflow, "kernel-binding")
+    assert "submodules: recursive" in kernel
+    assert "scripts/build_kernel_binding.py" in kernel
+    assert "name: kernel-binding" in kernel and "if-no-files-found: error" in kernel
+    image = _workflow_job(workflow, "backend-image")
+    assert "needs: [kernel-binding]" in image
+    assert "--build-context kernel-artifacts=build/kernel-binding" in image
+    assert "scripts/install_kernel_binding.py verify" in image
     assert "org.opencontainers.image.revision" in _workflow_job(workflow, "backend-web")
     assert "docker push" not in workflow
     assert "docker/login-action" not in workflow
@@ -161,8 +174,12 @@ def test_public_ci_contains_only_repository_owned_qualification() -> None:
     assert "name: voice-worker-image" not in workflow
     for job_id in ("projection-backend-web", "plane-postgres"):
         component_job = _workflow_job(workflow, job_id)
-        assert '[[ "$base_component" == "$candidate_component" ]]' in component_job
-        assert '"status":"not-applicable","reason":"identical-component-commit"' in component_job
+        if job_id == "plane-postgres":
+            assert '[[ "$PLANE_BASE_TREE" == "$PLANE_CANDIDATE_TREE" ]]' in component_job
+            assert '"status":"not-applicable","reason":"identical-plane-tree"' in component_job
+        else:
+            assert '[[ "$base_component" == "$candidate_component" ]]' in component_job
+            assert '"status":"not-applicable","reason":"identical-component-commit"' in component_job
         assert "--fail-under" in component_job and "90" in component_job
 
 
@@ -178,7 +195,6 @@ def test_public_ci_contains_only_repository_owned_qualification() -> None:
         "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
         "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38",
         "astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9",
-        "openai/fence@f9751ca5d767dc0199e88733c2b286bd4800a008",
     }
     assert all(re.fullmatch(r"[^@]+@[0-9a-f]{40}", value) for value in external_actions)
 
@@ -202,26 +218,24 @@ def test_public_ci_contains_only_repository_owned_qualification() -> None:
     assert "--ignore" not in component_tests
 
 
-def test_apple_archives_preserve_the_qualified_project_version() -> None:
+def test_apple_archive_uses_explicit_candidate_version_and_pinned_toolchain() -> None:
     workflow = (REPOSITORY_ROOT / ".github/workflows/apple-release.yml").read_text(
         encoding="utf-8"
     )
     release = _workflow_job(workflow, "release")
     assert "runs-on: macos-26" in release
-    assert 'XCODE_VERSION: "26.6"' in workflow
-    assert 'XCODE_BUILD: "17F113"' in workflow
-    assert "Select exact Xcode" in release
-    assert "Build version ${XCODE_BUILD}" in release
+    assert "Select exact Xcode 26.6 (17F113)" in release
+    assert "components/AstralKernel/scripts/select-xcode.sh" in release
     assert "sort -V | tail -1" not in release
     archive_commands = re.findall(
         r"(?m)^          xcodebuild archive (?:[^\n]*\\\n)*[^\n]*", release
     )
-    assert len(archive_commands) == 2
+    assert len(archive_commands) == 1
     for command in archive_commands:
         arguments = command.replace("\\\n", " ")
         assert "-configuration Release" in arguments
-        assert "CURRENT_PROJECT_VERSION=" not in arguments
-        assert "MARKETING_VERSION=" not in arguments
+        assert 'MARKETING_VERSION="$VERSION"' in arguments
+        assert 'CURRENT_PROJECT_VERSION="$BUILD"' in arguments
         assert "GITHUB_RUN_NUMBER" not in arguments
 
 
@@ -253,16 +267,19 @@ def test_store_and_signing_workflows_require_explicit_release_events() -> None:
         encoding="utf-8"
     )
     apple_triggers = apple.partition("\npermissions:\n")[0]
-    assert 'tags: ["apple-v*"]' in apple_triggers
     assert "workflow_dispatch:" in apple_triggers
+    assert "push:" not in apple_triggers
     assert "branches:" not in apple_triggers
     assert "pull_request:" not in apple_triggers
+    for input_name in ("version", "build", "producer_run_id", "artifact_id"):
+        assert f"      {input_name}:" in apple_triggers
+        assert "        required: true" in apple_triggers
 
     windows = (REPOSITORY_ROOT / ".github/workflows/release-windows.yml").read_text(
         encoding="utf-8"
     )
     windows_triggers = windows.partition("\npermissions:\n")[0]
-    assert 'tags: ["v*"]' in windows_triggers
+    assert 'tags: ["v[0-9]*"]' in windows_triggers
     assert "workflow_dispatch:" in windows_triggers
     assert "branches:" not in windows_triggers
     assert "pull_request:" not in windows_triggers
@@ -322,6 +339,11 @@ def test_publish_image_workflow_publishes_only_after_green_main_ci() -> None:
     assert "secrets.GITHUB_TOKEN" in publish
     assert "secrets." not in publish.replace("secrets.GITHUB_TOKEN", "")
     assert "app-token" not in workflow
+    assert "actions: read" in publish
+    assert "run-id: ${{ github.event.workflow_run.id }}" in publish
+    assert "name: backend-image" in publish
+    assert "docker load" in publish and re.search(r"\bdocker build\s", publish) is None
+    assert "timeout-minutes: 30" in publish
 
     external_actions = {
         value
@@ -331,6 +353,7 @@ def test_publish_image_workflow_publishes_only_after_green_main_ci() -> None:
     assert external_actions == {
         "actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd",
         "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1",
+        "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
     }
 
 
@@ -383,3 +406,11 @@ def test_android_release_workflow_is_manual_pinned_and_composition_owned() -> No
             r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+@[0-9a-f]{40}\s+# v\d+(?:\.\d+)*",
             value,
         ), value
+
+
+def test_macos_kernel_builds_pin_the_dylib_install_name_so_no_checkout_path_is_embedded():
+    flag = "-C link-arg=-Wl,-install_name,@rpath/libastral_kernel_ffi.dylib"
+    for name in ("ci.yml", "release-macos.yml"):
+        text = (REPOSITORY_ROOT / ".github/workflows" / name).read_text()
+        exports = [line for line in text.splitlines() if 'export RUSTFLAGS="' in line and "remap-path-prefix" in line]
+        assert exports and all(flag in line for line in exports), name

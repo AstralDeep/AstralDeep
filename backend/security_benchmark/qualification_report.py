@@ -19,7 +19,7 @@ from security_benchmark.qualification import (
 )
 
 SCHEMA = "astraldeep.security-qualification/v1"
-REAL_LABEL = "real_dispatch_scripted_proposer"
+REAL_LABEL = "real_dispatch_scripted_provider"
 
 
 def candidate_identity(root: Path) -> dict[str, str]:

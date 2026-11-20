@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import asyncio
 import json
 import os
@@ -11,11 +10,14 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey  # noqa: E402
+
+from orchestrator.a2a_publication_signing import NodeKeySigner, verify_publication_list  # noqa: E402
 from shared.a2a_publication import (  # noqa: E402
     A2APublicationRegistry,
     AlreadyWithdrawnError,
@@ -87,26 +89,19 @@ def _publish(registry, agent_id="weather-1", audiences=None, lifetime="24h", act
     )
 
 
-def _jwt(claims: dict) -> str:
-    body = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
-    return f"eyJhbGciOiJub25lIn0.{body}.sig"
+PRINCIPAL_HEADER = "x-test-principal"
+
+
+def _principal_headers(sub: str, roles) -> dict:
+    return {PRINCIPAL_HEADER: json.dumps({"sub": sub, "realm_access": {"roles": list(roles)}})}
 
 
 def _admin_headers() -> dict:
-    claims = {"sub": ADMIN, "realm_access": {"roles": ["admin"]}}
-    return {"Authorization": f"Bearer {_jwt(claims)}"}
+    return _principal_headers(ADMIN, ("admin",))
 
 
 def _user_headers(admin: bool = False) -> dict:
-    claims = {
-        "sub": "plain-sub",
-        "preferred_username": "plain",
-        "iss": "https://iam.example/realms/astral",
-        "azp": "astral-frontend",
-        "aud": ["astral-agent-service", "account"],
-        "realm_access": {"roles": ["admin"] if admin else ["user"]},
-    }
-    return {"Authorization": f"Bearer {_jwt(claims)}"}
+    return _principal_headers("plain-sub", ("admin",) if admin else ("user",))
 
 
 def _skill(skill_id: str, scope: str = "tools:read"):
@@ -156,6 +151,7 @@ def _orchestrator():
             return agent_id in self._safe
 
     orch.tool_permissions = _Permissions()
+    orch.publication_signer = NodeKeySigner(Ed25519PrivateKey.generate())
     from shared.protocol import MCPResponse
 
     orch.execute_authorized_tool = AsyncMock(return_value=MCPResponse(result={"temp": 21}))
@@ -428,7 +424,6 @@ def test_card_advertises_published_capability_with_chosen_audience(monkeypatch, 
         build_orchestrator_a2a_card,
     )
 
-    monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://iam.example/realms/astral")
     orch = publication_host()
     registry = attach_publication_registry(orch)
     _publish(registry, audiences=["tools:read"])
@@ -439,8 +434,10 @@ def test_card_advertises_published_capability_with_chosen_audience(monkeypatch, 
     assert "chat" in ids
     blob = repr(card.skills)
     assert "draft-secret-9" not in blob
-    requirements = repr(card.security_requirements)
-    assert "tools:read" in requirements
+    extension = next(item for item in card.capabilities.extensions
+                     if item.params and "list" in item.params)
+    entries = verify_publication_list(extension.params["list"], orch.publication_signer.public_jwk())
+    assert [(entry["capability"], entry["audiences"]) for entry in entries] == [("weather-1", ["tools:read"])]
 
 
 def test_card_drops_withdrawn_capability(publication_host):
@@ -484,72 +481,56 @@ def test_card_intersection_keeps_unsafe_agents_unadvertised(publication_host):
     assert "chat" in ids
 
 
-def _executor_client(orch):
-    from orchestrator.a2a_orchestrator_executor import setup_orchestrator_a2a
+async def test_ticket_discovery_requires_current_publication_and_direct_calls_never_dispatch(tmp_path, monkeypatch, publication_host):
+    from orchestrator.a2a_publication_wiring import attach_publication_registry
+    from shared import node_identity
+    from tests.test_caller_tickets import AGENT, Host, a2a_tools, served
 
-    app = FastAPI()
-    setup_orchestrator_a2a(app, orch)
-    client = TestClient(app)
-    client.orch = orch  # type: ignore[attr-defined]
-    return client
-
-
-def _tool_call(client, name="get_weather", headers=None, rpc_id="c1"):
-    claims = {
-        "sub": "caller-sub", "iss": "https://iam.example/realms/astral",
-        "azp": "astral-frontend", "realm_access": {"roles": ["user"]},
-    }
-    message = {
-        "message_id": f"m-{rpc_id}", "role": "ROLE_USER",
-        "parts": [{"data": {
-            "method": "tools/call", "name": name, "arguments": {},
-        }}],
-    }
-    return client.post(
-        "/a2a",
-        json={"jsonrpc": "2.0", "id": rpc_id, "method": "SendMessage",
-              "params": {"message": message}},
-        headers={"A2A-Version": "1.0", **(headers or {"Authorization": f"Bearer {_jwt(claims)}"})},
-    )
-
-
-def test_dispatch_requires_current_publication_after_withdrawal(monkeypatch, publication_host):
-    monkeypatch.setenv("USE_MOCK_AUTH", "true")
-    monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://iam.example/realms/astral")
-    monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-frontend")
-    orch = publication_host()
-    registry = orch.a2a_publications
-    record = _publish(registry)
-    client = _executor_client(orch)
-    response = _tool_call(client)
-    assert response.status_code == 200
-    result = response.json()["result"]
-    assert result.get("task", result)["status"]["state"] == "TASK_STATE_COMPLETED"
-    orch.execute_authorized_tool.assert_awaited_once()
-    registry.withdraw(publication_id=record.publication_id, actor=ADMIN)
-    response = _tool_call(client, rpc_id="c2")
-    assert response.status_code == 200
-    result = response.json()["result"]
-    assert result.get("task", result)["status"]["state"] == "TASK_STATE_FAILED"
-    orch.execute_authorized_tool.assert_awaited_once()
-    rows, _ = orch.audit_repo.list_for_user("caller-sub")
-    assert any(row.action_type == "a2a_publication.invocation_denied" for row in rows)
+    reference = publication_host()
+    host = Host()
+    host.plane_repository_source = reference.plane_repository_source
+    host.audit_repo = reference.audit_repo
+    host.publication_signer = reference.publication_signer
+    del host.a2a_publications
+    registry = attach_publication_registry(host)
+    call = [{"data": {"method": "tools/call", "name": "read_value", "arguments": {}}}]
+    async with served(tmp_path, monkeypatch, host=host) as door:
+        owner = node_identity.bound_mesh_owner()
+        ticket = door.mint(["read_value"], a2a=True)
+        before = await door.send_a2a(ticket)
+        assert before.status_code == 200, before.text
+        assert a2a_tools(before) == set()
+        record = _publish(registry, agent_id=AGENT, actor=owner)
+        published = await door.send_a2a(ticket)
+        assert a2a_tools(published) == {"read_value"}
+        direct = await door.send_a2a(ticket, call)
+        assert direct.status_code == 200, direct.text
+        assert "unavailable" in direct.text
+        registry.withdraw(publication_id=record.publication_id, actor=owner)
+        withdrawn = await door.send_a2a(ticket)
+        assert a2a_tools(withdrawn) == set()
+        host.execute_authorized_tool.assert_not_called()
 
 
 # --- real startup wiring -----------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_startup_mounts_a2a_and_publication_routes_when_server_enabled(monkeypatch, publication_host):
-    from orchestrator import session_store
+@pytest.mark.parametrize(("configured", "expected"), [(None, "127.0.0.1"), ("192.168.1.5", "192.168.1.5"), ("::1", "::1")])
+async def test_startup_serves_a2a_discovery_and_ticket_requests(tmp_path, monkeypatch, publication_host, configured, expected):
+    from orchestrator import boot_posture
     from orchestrator import orchestrator as module
     from shared.a2a_publication import A2APublicationRegistry
+    from tests.test_caller_tickets import a2a_tools, code_of, served
     from tests.test_evidence_entry import lifetime_host
 
     monkeypatch.setenv("ASTRAL_ENV", "development")
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
     monkeypatch.delenv("A2A_EXTERNAL_AGENTS", raising=False)
-    monkeypatch.setattr(session_store, "assert_production_posture", lambda: None)
+    monkeypatch.delenv("ORCHESTRATOR_HOST", raising=False)
+    monkeypatch.setenv("ASTRAL_NODE_PROFILE", "personal")
+    if configured:
+        monkeypatch.setenv("ORCHESTRATOR_HOST", configured)
+    monkeypatch.setattr(boot_posture, "assert_production_posture", lambda: None)
     monkeypatch.setattr(
         module.flags, "is_enabled", lambda name: name == "a2a_server"
     )
@@ -585,35 +566,55 @@ async def test_startup_mounts_a2a_and_publication_routes_when_server_enabled(mon
 
     def capture(config):
         captured["app"] = config.app
+        captured["host"] = config.host
         return SimpleNamespace(serve=serving)
 
     monkeypatch.setattr(module.uvicorn, "Server", capture)
-    await host._run_started_server()
-    serving.assert_awaited_once()
-    assert isinstance(host.a2a_publications, A2APublicationRegistry)
-    route_paths = set()
-    for route in captured["app"].router.routes:
-        route_paths.add(getattr(route, "path", ""))
-        original = getattr(route, "original_router", None)
-        for sub in getattr(original, "routes", []) or []:
-            route_paths.add(getattr(sub, "path", ""))
-    assert "/a2a" in route_paths
-    assert "/a2a/.well-known/agent-card.json" in route_paths
-    assert "/api/a2a/publications" in route_paths
-    assert "/api/a2a/publications/catalog" in route_paths
-    await host._close_started_services()
+    try:
+        await host._run_started_server()
+        serving.assert_awaited_once()
+        assert captured["host"] == expected
+        assert isinstance(host.a2a_publications, A2APublicationRegistry)
+        async with served(tmp_path, monkeypatch, app=captured["app"]) as door:
+            card = await door.client.get("/a2a/.well-known/agent-card.json")
+            assert card.status_code == 200
+            assert "chat" in {skill["id"] for skill in card.json()["skills"]}
+            headers = {"Authorization": "Bearer retired"}
+            denied = await door.client.post("/a2a", headers=headers, json={})
+            assert (denied.status_code, code_of(denied)) == (401, "node.bearer_refused")
+            ticket = door.mint([], a2a=True)
+            listed = await door.send_a2a(ticket)
+            assert listed.status_code == 200 and a2a_tools(listed) == set()
+            for method, path in (
+                ("GET", "/api/a2a/publications"),
+                ("GET", "/api/a2a/publications/catalog"),
+                ("POST", "/api/a2a/publications/intents"),
+            ):
+                assert (await door.client.request(method, path, headers=headers)).status_code == 404
+    finally:
+        await host._close_started_services()
 
 
 # --- admin REST API ----------------------------------------------------------
 
 
+def _principal_dependency(request: Request):
+    from fastapi import HTTPException
+
+    raw = request.headers.get(PRINCIPAL_HEADER)
+    if not raw:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return json.loads(raw)
+
+
 def _api_client(monkeypatch, orch):
-    monkeypatch.setenv("USE_MOCK_AUTH", "true")
     from orchestrator.a2a_publication_api import publication_router
+    from orchestrator.auth import get_current_user_payload
 
     app = FastAPI()
     app.include_router(publication_router)
     app.state.orchestrator = orch
+    app.dependency_overrides[get_current_user_payload] = _principal_dependency
     return TestClient(app)
 
 
@@ -786,11 +787,13 @@ def test_api_withdraw_twice_conflict_and_stale_confirm(monkeypatch, publication_
 
 
 def test_api_orchestrator_unavailable_returns_503(monkeypatch):
-    monkeypatch.setenv("USE_MOCK_AUTH", "true")
     from orchestrator.a2a_publication_api import publication_router
+
+    from orchestrator.auth import get_current_user_payload
 
     app = FastAPI()
     app.include_router(publication_router)
+    app.dependency_overrides[get_current_user_payload] = _principal_dependency
     client = TestClient(app)
     response = client.get("/api/a2a/publications", headers=_admin_headers())
     assert response.status_code == 503

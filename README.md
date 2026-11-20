@@ -2,10 +2,10 @@
 
 [![CI](https://github.com/AstralDeep/AstralDeep/actions/workflows/ci.yml/badge.svg)](https://github.com/AstralDeep/AstralDeep/actions/workflows/ci.yml)
 
-AstralDeep is a clinical-AI, multi-agent platform. A single FastAPI orchestrator with a
-PostgreSQL backend coordinates first-party, user-authored, and remote agents. It serves the REST
-API, the WebSocket/A2A agent transport, the web client, and static assets on one port (8001). The
-same server-owned user interface is rendered for the web, Windows, Android, and Apple clients.
+AstralDeep is a clinical-AI, multi-agent platform. Its FastAPI service is a node
+in the owner's mesh. It exposes the node API and optional MCP, A2A and worker
+transports on port 8001. The shared Kernel runs turns on Apple devices and on
+the node. AstralPlane supplies SQLite or PostgreSQL for durable state.
 
 The design rule throughout is **"LLM proposes, code decides"**. Models may draft layouts,
 plans, or artifacts, but deterministic code validates, authorizes, bounds, and renders them.
@@ -30,43 +30,25 @@ plans, or artifacts, but deterministic code validates, authorizes, bounds, and r
 
 The user interface is server-driven along one pipeline:
 
-**AstralPrimitives defines → AstralProjection renders and adapts → AstralDeep orchestrates.**
+**AstralPrimitives defines → the base authorizes and adapts → AstralProjection renders.**
 
-There is no single-page application. AstralDeep composes responses from typed UI primitives.
-AstralProjection renders them to sanitized HTML for the web, or to structured frames for the
-native clients, and its ROTE layer adapts them to each device's declared capabilities. Durable
-state flows through AstralPlane, and agent authority can be enforced by an external LETS warden.
+Mac and iPhone clients render structured UI from their local signed mesh log.
+The watch uses its paired iPhone. AstralKernel runs turns and validates tool
+authority. AstralDeep answers mesh requests, runs protected tool dispatch,
+and uses AstralPlane for durable state. ROTE adapts the UI to device
+capabilities. The node exposes discovery, pairing and operator controls,
+and can serve MCP, A2A and authenticated worker connections.
 
 ```mermaid
 flowchart LR
-    subgraph Clients
-        Web[Web browser]
-        Win[Windows]
-        And[Android]
-        Apple[iOS / macOS / watchOS]
-    end
-    subgraph Deep[AstralDeep orchestrator :8001]
-        API[REST + WebSocket]
-        Orch[Orchestration, auth,<br/>permissions, delegation]
-        Agents[Bundled agents<br/>in-process]
-    end
-    Prims[AstralPrimitives<br/>primitive definitions]
-    Proj[AstralProjection<br/>renderer, ROTE, clients]
-    Plane[AstralPlane<br/>durable state]
-    PG[(PostgreSQL)]
-    LETS[LETS warden<br/>external, optional]
-    KC[Keycloak]
-    Remote[BYO and remote<br/>compute agents]
-
-    Clients --> API
-    API --> Orch
-    Orch --> Agents
-    Orch --> Remote
-    Orch -- composes --> Prims
-    Orch -- renders through --> Proj
-    Orch --> Plane --> PG
-    Orch -. receipts .-> LETS
-    Orch -. tokens .-> KC
+    Owner[Mac or iPhone] <-->|Signed mesh log| Kernel[Kernel on the node]
+    Watch[Watch] <--> Owner
+    Caller[MCP or A2A caller] -->|Caller ticket| Deep[AstralDeep]
+    Kernel -->|Verified tool call| Deep
+    Deep --> Agents[First-party agents]
+    Deep --> Vessel[Vessel executor]
+    Deep --> Plane[AstralPlane]
+    Deep -. Delegated authority .-> LETS[LETS]
 ```
 
 Bundled first-party agents run in-process by default. External, draft, and user-authored agents
@@ -76,19 +58,20 @@ at the server boundary.
 ## Components
 
 AstralDeep composes four independently released component repositories, pinned as Git
-submodules under `components/`. Each pin records an exact commit plus its contract version and
-compatibility digests in [`config/astral-composition.json`](config/astral-composition.json).
-Each component has its own constitution at `.specify/memory/constitution.md` in its repository,
-and that constitution governs work inside the component.
+submodules under `components/`, and carries AstralPlane in its own `plane/` folder. Each
+submodule pin records an exact commit plus its contract version and compatibility digests in
+[`config/astral-composition.json`](config/astral-composition.json). Plane's schema revision and
+migration digest are recorded there too and checked against `plane/`.
 
 | Component | Role | Availability |
 |---|---|---|
 | [AstralPrimitives](https://github.com/AstralDeep/AstralPrimitives) | Defines the UI primitives and their JSON serialization (published to PyPI as `astralprims`). | Required, embedded |
-| [AstralProjection](https://github.com/AstralDeep/AstralProjection) | Renders and sanitizes primitives, adapts them per device (ROTE), owns the UI protocol manifest and the web, Windows, Android, and Apple clients. | Required, embedded |
-| [AstralPlane](https://github.com/AstralDeep/AstralPlane) | Durable-state library: PostgreSQL pool, guarded migration registry, repositories, blob stores, and recovery. | Required, embedded |
+| [AstralProjection](https://github.com/AstralDeep/AstralProjection) | Renders and sanitizes primitives, owns the UI protocol manifest and the web, Windows, Android, and Apple clients. | Required, embedded |
+| [AstralKernel](https://github.com/AstralDeep/AstralKernel) | The base library. Deep installs its `python/rote/` package as `astral-rote`, which adapts primitives per device (ROTE). | Required, embedded |
+| AstralPlane, in [`plane/`](plane/) | Durable-state library: PostgreSQL pool, guarded migration registry, repositories, blob stores, and recovery. | Required, in this repository |
 | [LETS](https://github.com/AstralDeep/LETS) | Lineage Escrow Transition Systems: an external warden that conserves and attenuates agent authority and issues verifiable receipts. | External, feature-gated |
 
-A component change always lands in its own repository first. AstralDeep adopts it by moving the
+A submodule component change lands in its own repository first. AstralDeep adopts it by moving the
 submodule pin and the matching manifest entries together, and `scripts/verify_composition.py`
 fails closed when an installed component does not match its pin. See
 [docs/component-composition.md](docs/component-composition.md).
@@ -100,8 +83,11 @@ fails closed when an installed component does not match its pin. See
 | `backend/orchestrator/` | The orchestrator: dispatch, authentication, permissions, delegation, agent lifecycle, workspace, streaming, scheduling, UI design, and chrome events. `orchestrator.py` is the central runtime hub. |
 | `backend/orchestrator/projection_surfaces/` | Host-authorized adapters that feed AstralProjection's reusable chrome surfaces. |
 | `backend/orchestrator/plane_composition.py` | The fail-closed binding to the AstralPlane runtime. |
+| `plane/` | The `astralplane` package: durable state, the guarded migration registry, and recovery. It has its own manifest, tests, and lint. |
+| `vessel/` | The `astralvessel` package and command: the sandbox executor for agent tools. It has its own manifest, tests, lint, and release tags. |
+| `examples/` | Small runnable examples, such as an MCP server that streams progress. |
 | `backend/agents/` | Bundled first-party agents. |
-| `backend/persistent_agents/` | Durable, lease-based assignment runtime for long-running work. |
+| `backend/persistent_agents/` | Historical assignment reads, owner controls and recovery for retired Python episodes. |
 | `backend/shared/` | Shared protocol structures (`protocol.py`), the approved outbound HTTP path (`external_http.py`), and other cross-cutting helpers. |
 | `backend/llm_config/`, `backend/personalization/`, `backend/scheduler/`, `backend/voice_agent/`, `backend/audit/` | Per-user LLM configuration, memory and personalization, scheduled jobs, conversational voice, and the audit trail. |
 | `backend/tests/` and `*/tests/` | Backend test suites. |
@@ -112,7 +98,7 @@ fails closed when an installed component does not match its pin. See
 | `docs/` | Operator documentation (see [Documentation](#documentation)). |
 | `scripts/` | Build, verification, release-evidence, and qualification tooling. |
 | `sdk/` | The Astral agent SDK, built and tested outside the product image. |
-| `specs/` | Numbered Spec Kit feature specifications, plans, and tasks. |
+| `specs/` | Numbered feature specifications, plans, and tasks. |
 | `tooling/` | Locked CI tool manifests. |
 
 ## Getting started
@@ -138,39 +124,43 @@ cd AstralDeep && cp .env.example .env
 make up
 ```
 
-`make up` verifies that every component submodule matches its pin, builds the images, and starts
+`make up` verifies that every component submodule matches its pin, prepares the pinned Kernel
+wheel and mailbox in `build/kernel-binding`, builds the images, and starts
 PostgreSQL, LiveKit, and the application. The Makefile invokes `python`. If your host only
 provides `python3`, run `make up PYTHON=python3`.
 
-When the container reports healthy, open <http://localhost:8001>. Useful endpoints:
+`make kernel-artifacts` prepares or verifies that artifact directory independently. A direct
+Docker build must supply it with `--build-context kernel-artifacts=build/kernel-binding`.
+Missing bindings or a digest mismatch fail the build; the real-Kernel tests require both the
+native binding and mailbox.
+
+When the container reports healthy, check the node at <http://localhost:8001/docs>.
+The following endpoints are available for installation checks.
 
 | Endpoint | Purpose |
 |---|---|
 | `/healthz` | Liveness |
 | `/readyz` | Readiness (the compose health check) |
 | `/docs` | Interactive API documentation |
+| `/api/node/descriptor` | Node identity, capabilities and mesh status |
 
-The example environment runs in development mode (`ASTRAL_ENV=development`) with mock
-authentication (`USE_MOCK_AUTH=true`), so no Keycloak realm is needed for local work. Mock
-authentication is refused outside development.
+The example environment runs in development mode (`ASTRAL_ENV=development`).
+For a seeded development mesh, `python scripts/dev_mesh.py --help` lists the
+commands for creating an owner device, pairing and minting a caller ticket.
 
 ### First connection and service verification
 
-After signing in, the app guides the first connection: it shows the endpoint you reached
-and whether it matches an address this deployment publishes, real readiness for the
-database, authentication, voice workers, agent publication, and the optional LETS warden
-(each with an actionable fix when not ready), and the sign-in/key rules — sign-in is
-completed by you on the server's own sign-in page, and provider keys are entered only in
-the encrypted in-product LLM setup, never typed by agents. The same report is available
-at `GET /api/connection/status` (HTTP 503 when a required service is not ready), and the
-server pushes this guide when a required service is down at registration.
+Check `/readyz` for persistence and LETS readiness. On the node host, request
+a pairing offer and approve it on your Mac or iPhone. After pairing, check
+`mesh.state`, `mesh.mesh_id` and `mesh.member_id` in the node descriptor.
+See [Pair a device](docs/personal-node.md#pair-a-device).
 
 ### Diagnose an installation
 
 Run `make doctor` (or `make doctor PYTHON=python3`) for a read-only diagnosis of a
 Linux, macOS or Windows source/Compose installation. The doctor checks Python, Git and
 Docker Compose v2, exact local component pins/contracts, required `.env` configuration,
-production exit-78 posture, and configured application, PostgreSQL, LiveKit and Keycloak
+production exit-78 posture, and configured application, PostgreSQL and LiveKit
 health. It reports `ready` (exit 0), `repair` (exit 1) or `unsupported` (exit 2), with
 redacted findings and suggested repairs. `python scripts/install_doctor.py --json` emits
 the same report as JSON. It never starts containers, changes configuration or signs in.
@@ -185,11 +175,9 @@ candidate-bound staging qualification.
 
 ### Connect a language model
 
-The product ships with no LLM credential. Each user connects their own provider through the
-first-run dialog (later under Settings → LLM settings). The key is stored per user and
-encrypted under `CREDENTIAL_ENCRYPTION_KEY`. Administrators separately configure a System LLM
-for background work such as scheduled jobs and knowledge synthesis. Provider keys are never
-read from the environment.
+Add the model provider on your Mac or iPhone. Pasted keys sync sealed to the
+owner's devices. A credential obtained by signing in stays in the keystore
+of the device where you signed in. See the [credential item contract](specs/106-sign-in-free-clients/contracts/credential-items.md).
 
 ## Configuration
 
@@ -198,15 +186,15 @@ Compose. [`.env.example`](.env.example) documents every setting, including the `
 feature flags that gate optional subsystems.
 
 - **Production is the default.** An unset `ASTRAL_ENV` means production. Production refuses to
-  start with missing or placeholder secrets or with mock authentication, exiting with the
+  start with missing or placeholder secrets, exiting with the
   documented configuration-error code 78.
-- **Secrets stay out of Git.** The Keycloak client secret, `CREDENTIAL_ENCRYPTION_KEY`, the
+- **Secrets stay out of Git.** `CREDENTIAL_ENCRYPTION_KEY`, the
   agent API key, and similar values are supplied at deploy time only.
 - **Image and environment are separate.** The published image bakes in no configuration. A
   changed `.env` takes effect only when the container is recreated (`make apply-config`), not on
   a restart.
 
-For a full production setup (Keycloak, TLS, secrets, voice, backups), follow the
+For a full production setup (a personal node, TLS, secrets, voice, backups), follow the
 [production deployment guide](docs/production-deployment.md).
 
 ## Development workflow
@@ -233,7 +221,7 @@ Frequently used targets (`make help` lists them all):
 | `make secret-scan` | Scan the full Git history with the pinned Gitleaks. |
 | `make bootstrap` | Initialize the submodules and install the pinned component wheels into the host Python environment. |
 
-Engineering rules that apply to every change (see [AGENTS.md](AGENTS.md) and the constitution):
+Engineering rules that apply to every change (see [AGENTS.md](AGENTS.md)):
 
 - Backend code is Python compatible with the production Python 3.11 image (ruff targets `py311`).
 - Source files carry a header of at most three sentences and otherwise document themselves; the only other comments allowed are rare one-line explanations of *why*.
@@ -254,7 +242,7 @@ docker exec astraldeep bash -c "cd /app/backend && python -m pytest -q"
 Every pull request and every push to `main` runs the required gates:
 
 1. **Lint:** ruff for Python and ESLint for the maintained JavaScript.
-2. **Tests:** the complete backend suite against an isolated PostgreSQL, run as whole-suite groups (`tests`, `persistent_agents`, `modules`), plus the AstralPlane and AstralProjection suites at their pinned revisions.
+2. **Tests:** the complete backend suite against an isolated PostgreSQL, run as whole-suite groups (`tests`, `persistent_agents`, `modules`), plus the Plane suite in `plane/` and the AstralProjection suite at its pinned revision.
 3. **Changed-code coverage:** at least 90% of changed executable lines. A change with no measurable lines is recorded as not applicable.
 4. **Image build:** the production image builds from a clean checkout.
 5. **Boot smoke:** the image answers its probes in development posture, and a production boot with missing secrets exits with the configuration-error code.
@@ -268,20 +256,19 @@ production image to the GitHub Container Registry with an immutable commit tag.
 
 | Client | Technology | Source |
 |---|---|---|
-| Web | Server-rendered HTML with vanilla JavaScript and CSS, served by AstralDeep | AstralProjection `backend/webrender/` |
-| Windows | Python and PySide6 | AstralProjection `windows-client/` |
-| Android | Kotlin and Jetpack Compose | AstralProjection `android-client/` |
+| Web renderer | HTML, vanilla JavaScript and CSS for a future application-layer client | AstralProjection `backend/webrender/` |
+| Windows (paused) | Python and PySide6 | AstralProjection `windows-client/` |
+| Android (paused) | Kotlin and Jetpack Compose | AstralProjection `android-client/` |
 | iOS, macOS, watchOS | Swift and SwiftUI | AstralProjection `apple-clients/` |
 
-Every client renders the same server-owned chrome, settings surfaces, and theme. A change to
-the UI protocol, chrome, theme, or layout lands on every in-scope client in the same feature,
-guarded by the protocol manifest and each client's drift tests. The native clients sign in to
-Keycloak with PKCE (or, on watchOS, the device-authorization grant).
+Mac and iPhone pair with the owner's mesh and render from their local signed
+logs. The watch connects through its paired iPhone. Android and Windows show
+the availability screen while their Kernel ports await qualification.
 
-Client releases run from protected workflows in this repository over the pinned AstralProjection
-revision. Windows releases are cut from `v*` tags, Apple releases from `apple-v*` tags, and
-Android releases are started manually. Signing and publication run only in separately
-protected jobs.
+The macOS release workflow runs after successful CI on a push to `main`. It
+builds from the exact Deep commit and pinned components, then publishes a
+signed direct download under a `macos-v*` tag. See the
+[macOS release workflow](.github/workflows/release-macos.yml).
 
 ## Agents
 
@@ -312,8 +299,8 @@ Beyond the bundled set:
 
 ## Security model
 
-- **Identity:** Keycloak is the only user identity provider, with authorization enforced at the API layer.
-- **Delegation:** agents act on RFC 8693 delegated tokens with attenuated scopes. Recursive delegation, off by default behind a feature flag, preserves monotonic attenuation, a complete actor chain, and a depth bound.
+- **Identity:** the owner's mesh keys. A node authenticates a caller only by a roster-listed device key with a mesh ticket, or by an owner-minted caller ticket.
+- **Delegation:** agents act on attenuated mesh tickets. Recursive delegation, off by default behind a feature flag, preserves monotonic attenuation, a complete actor chain, and a depth bound.
 - **Runtime gates:** per-user tool permissions, a policy engine, PHI gates, confirmation gates, and egress validation apply to every agent, including in-process first-party agents.
 - **Isolation:** data is owner-scoped end to end, and external or user-authored agents are untrusted at the server boundary.
 - **Audit:** security-relevant actions, including delegated-authority use, append to a per-owner hash-chained audit trail.
@@ -322,14 +309,11 @@ Beyond the bundled set:
 
 ## Spec-driven development and governance
 
-AstralDeep uses [Spec Kit](https://github.com/github/spec-kit). Each feature has a numbered
-directory under `specs/` holding its specification, plan, tasks, contracts, and
-verification records.
+Each feature has a numbered directory under `specs/` holding its specification, plan, tasks,
+contracts, and verification records.
 
-- **Constitution:** [`.specify/memory/constitution.md`](.specify/memory/constitution.md) is the highest-authority engineering policy for this repository and for how AstralDeep consumes its components.
-- **Agent guide:** [AGENTS.md](AGENTS.md) is the shared guide for coding agents (Claude, Codex, and others). It covers repository routing, rules, the feature-ownership preflight, and build and verification commands.
-- **Feature flow:** specify → clarify → plan → tasks → analyze → implement, using the Spec Kit skills installed in `.agents/skills/` for Codex (and per machine in `.claude/skills/` for Claude).
-- **Database schema changes:** these land only in AstralPlane's guarded migration registry. AstralDeep then moves its exact schema pin; it never runs ad-hoc SQL.
+- **Agent guide:** [AGENTS.md](AGENTS.md) is the shared guide for coding agents (Claude, Codex, and others). It covers repository routing, rules, and build and verification commands.
+- **Database schema changes:** these land only in the guarded migration registry under `plane/`. The same commit moves the exact schema pin in the composition manifest; it never runs ad-hoc SQL.
 
 ## Documentation
 
@@ -342,13 +326,9 @@ improvement, use the [issue template](https://github.com/AstralDeep/AstralDeep/i
 | Guide | Covers |
 |---|---|
 | [Production deployment](docs/production-deployment.md) | Deploying and operating AstralDeep in production |
+| [Run your own node](docs/personal-node.md) | Installing, pairing and operating a personal node |
 | [Component composition](docs/component-composition.md) | Component pins, verification, and recovery |
-| [Keycloak realm settings](docs/keycloak-realm-settings.md) | Realm configuration for AstralDeep |
-| [Keycloak agent delegation](docs/keycloak_agent_delegation_setup.md) | Token exchange for agent delegation |
-| [Keycloak: Android client](docs/keycloak-android-client-setup.md) | The `astral-mobile` client |
-| [Keycloak: Windows client](docs/keycloak-windows-client-setup.md) | The `astral-desktop` client |
-| [ORCID identity](docs/keycloak-orcid-identity.md) | Direct ORCID identity for restricted external agents |
-| [Bring-your-own client agents](docs/byo-client-agents.md) | Operating personal agents |
+| [Bring-your-own client agents](docs/byo-client-agents.md) | Legacy desktop tunnel and feature-flag reference |
 | [Your own agents and skills](docs/your-own-agents-and-skills.md) | Authoring agents and skills |
 | [Remote compute agents](docs/remote-compute-agents.md) | Operating remote-compute agents |
 | [Remote computer control](docs/remote-computer-control.md) | Controlling a remote computer |

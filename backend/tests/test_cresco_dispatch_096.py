@@ -124,18 +124,19 @@ async def test_executor_is_system_blocked_in_the_real_gate_stack(orch, monkeypat
 
 
 @pytest.mark.asyncio
-async def test_dispatch_requires_a_confirmation_card_through_the_real_gate_stack(orch, monkeypatch):
+async def test_dispatch_requires_consent_through_the_real_gate_stack(orch, monkeypatch):
     monkeypatch.setitem(flags._flags, "cresco", True)
     orch.tool_permissions.register_tool_scopes(
         "cresco-1", {name: info["scope"] for name, info in mcp_tools.TOOL_REGISTRY.items()})
+    socket = object()
+    orch.ui_sessions[socket] = {"sub": "u1"}
     response = await orch.execute_single_tool(
-        MagicMock(), _tc("cresco_dispatch_work",
+        socket, _tc("cresco_dispatch_work",
                          {"target": "r1_a1", "work_kind": "status", "work_payload": "hello"}),
         {"cresco_dispatch_work": "cresco-1"}, "chat-1", user_id="u1")
-    assert response.result is not None
-    assert response.result["_data"]["status"] == "confirmation_required"
-    assert response.result["_data"]["message"].startswith("confirmation_required")
-    assert response.ui_components and response.ui_components[0]["type"] in ("alert", "card", "container")
+    assert response.result is None and response.error["retryable"] is False
+    assert "attended authorization" in response.error["message"]
+    assert not response.ui_components
 
 
 @pytest.mark.asyncio

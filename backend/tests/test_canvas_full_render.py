@@ -1,4 +1,4 @@
-"""Tests for Orchestrator._canvas_components and _push_canvas
+"""Tests for Orchestrator._canvas_components
 (backend/orchestrator/orchestrator.py): every live keyed component is materialized or
 appended flat, so a render never silently drops one.
 """
@@ -8,7 +8,6 @@ from __future__ import annotations
 import types
 from typing import Any, Dict, List
 
-import pytest
 
 from orchestrator.orchestrator import Orchestrator
 
@@ -39,7 +38,6 @@ class FakeWorkspace:
 def _orch(workspace: FakeWorkspace) -> Any:
     orch = types.SimpleNamespace(workspace=workspace)
     orch._canvas_components = types.MethodType(Orchestrator._canvas_components, orch)
-    orch._push_canvas = types.MethodType(Orchestrator._push_canvas, orch)
     return orch
 
 
@@ -103,33 +101,3 @@ def test_stale_layout_ref_never_drops_a_live_component():
     out = _orch(ws)._canvas_components("chat", "user")
     assert _collect_ids(out) == {"c1", "c2", "c3"}, "no live component lost to a stale ref"
     assert "GONE" not in _collect_ids(out)
-
-
-@pytest.mark.asyncio
-async def test_push_canvas_sends_the_full_canvas_to_matching_sockets():
-    ws_state = FakeWorkspace(
-        rows=[_comp("c1", 0), _comp("c2", 1), _comp("c3", 2)],
-        layouts=[{"layout": _grid_layout("c1", "c2"), "position": 0,
-                  "layout_key": "chat|turn1"}],
-    )
-    orch = _orch(ws_state)
-    sends: List[Any] = []
-
-    async def _capture_send(sock, components, target="canvas", speak=True):
-        sends.append((sock, list(components), target))
-
-    orch.send_ui_render = _capture_send
-    sock_match = object()
-    sock_other_chat = object()
-    sock_other_user = object()
-    orch.ui_clients = [sock_match, sock_other_chat, sock_other_user]
-    orch._get_user_id = lambda s: "user" if s is not sock_other_user else "other"
-    orch._ws_active_chat = {id(sock_match): "chat", id(sock_other_chat): "elsewhere"}
-
-    await orch._push_canvas("chat", "user")
-
-    assert len(sends) == 1, "only the matching socket receives the canvas"
-    sock, comps, target = sends[0]
-    assert sock is sock_match and target == "canvas"
-    assert _collect_ids(comps) == {"c1", "c2", "c3"}
-    assert comps == orch._canvas_components("chat", "user")

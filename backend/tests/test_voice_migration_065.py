@@ -26,7 +26,7 @@ from astralplane.repositories.voice import VoiceRepository
 from orchestrator.voice_sessions import VoiceSessionRepository
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-EMBEDDED_PLANE_SOURCE = (REPO_ROOT / "components/AstralPlane/src").resolve()
+EMBEDDED_PLANE_SOURCE = (REPO_ROOT / "plane/src").resolve()
 _EXPECTED_VOICE_RECORD_OPERATIONS = {
     "abandon_chat_turns",
     "abandon_unaccepted_session_turns",
@@ -78,7 +78,7 @@ def _require_embedded_plane_source(module_file: str | None) -> Path:
 
 def test_voice_schema_authority_is_pinned_to_current_plane_evidence() -> None:
     _require_embedded_plane_source(astralplane.__file__)
-    assert CURRENT_DATA_PLANE_REVISION.schema_revision == "089.014"
+    assert CURRENT_DATA_PLANE_REVISION.schema_revision == "089.022"
     assert CURRENT_DATA_PLANE_REVISION.migration_digest == MIGRATION_REGISTRY.digest
     migration_075 = getattr(plane_migrations, "PLANE_SCHEMA_075_MIGRATION", None)
     assert migration_075 is not None
@@ -122,10 +122,10 @@ def test_voice_schema_authority_is_pinned_to_current_plane_evidence() -> None:
         "79485a63e1afa858075ea52fbb088c701e83f1d621b0f57ff2e50a6fbde510d5"
     )
     assert MIGRATION_REGISTRY.digest == (
-        "5a03a9f11a22530ae80a11036d0ddaf72d084797546285a71ebdbc3fd741bb06"
+        "dde302967743cf8f6f5d55e82f8355ef405823dfee638909c3a2f11b85f5cb27"
     )
     assert CURRENT_SCHEMA_VERIFIER_CHECKSUM == (
-        "0292ecd07549047e50ed79896a632e10b241b23a5ca0e688dc1daaeda9a9004d"
+        "2aba6eb28dcfcea86eb53f704719332ff5dc3a8dcee37f26dae267f32e761d9c"
     )
     assert LEGACY_BASELINE_SOURCE_BLOB == "39cdc1d328f17840305b88158a892f5fd09c96dd"
     assert {"voice_session", "voice_turn"} <= BASELINE_REQUIRED_TABLES

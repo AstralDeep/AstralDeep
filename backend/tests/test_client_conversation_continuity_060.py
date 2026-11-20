@@ -102,14 +102,12 @@ def test_shared_tab_account_switch_cannot_reuse_prior_principal_token(
 ) -> None:
     bootstrap = re.search(r"var token = ([^;]+);", client_source)
     assert bootstrap is not None
-    expression = bootstrap.group(1)
-    assert expression.index("window.__ASTRAL_TOKEN__") < expression.index(
-        "sessionStorage.getItem(TOKEN_KEY)"
-    )
+    assert bootstrap.group(1) == 'window.__ASTRAL_TOKEN__ || ""'
+    assert "TOKEN_KEY" not in client_source.replace("ACCOUNT_SESSION_KEY", "")
     clear = 'clearActiveChatLocator("definitive_sign_out", activeChatId)'
     logout_end = client_source.index(clear) + len(clear)
     logout = client_source[client_source.rindex("accountSignedOut = true;", 0, logout_end) : logout_end]
-    assert "sessionStorage.removeItem(TOKEN_KEY)" in logout
+    assert 'token = "";' in logout and 'window.__ASTRAL_TOKEN__ = "";' in logout
     assert "sessionStorage.removeItem(ACCOUNT_SESSION_KEY)" in logout
 
 

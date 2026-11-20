@@ -3,7 +3,7 @@
 # These packages are used ONLY by the harness runner and adapters. They are
 # NEVER imported by product runtime code (backend/orchestrator, backend/agents,
 # backend/shared) — the isolation_check guard asserts this and gates CI.
-# DO NOT add any of these to backend/requirements.txt (Constitution V).
+# DO NOT add any of these to backend/requirements.txt.
 #
 # The legacy diagnostic runner needs no packages here. The external corpus
 # mapping is not qualified; requesting it currently fails closed.

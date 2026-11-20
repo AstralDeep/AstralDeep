@@ -115,11 +115,6 @@ def _ordinal_of(component_id: str) -> int:
     return int(m.group(0)[1:]) if m else 0
 
 
-def layout_key_for(chat_id: str, turn_marker: str) -> str:
-    basis = f"{chat_id or ''}|{turn_marker or ''}"
-    return "ly_" + hashlib.sha1(basis.encode()).hexdigest()[:16]
-
-
 def iter_layout_refs(node: Any):
     if isinstance(node, list):
         for item in node:

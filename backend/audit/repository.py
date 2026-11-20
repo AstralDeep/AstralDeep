@@ -179,6 +179,7 @@ class AuditRepository:
         from_ts: Optional[datetime] = None,
         to_ts: Optional[datetime] = None,
         keyword: Optional[str] = None,
+        conversation_id: Optional[str] = None,
         availability_resolver=None,
     ) -> Tuple[List[AuditEventDTO], Optional[str]]:
         typed_cursor = None
@@ -200,6 +201,7 @@ class AuditRepository:
             from_ts=from_ts,
             to_ts=to_ts,
             keyword=keyword,
+            conversation_id=conversation_id,
             cursor=typed_cursor,
             limit=limit,
         )

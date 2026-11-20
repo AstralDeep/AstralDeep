@@ -1,5 +1,5 @@
 """Tests for delegated chaining's flag-off equivalence
-(backend/orchestrator/delegation.py): hop requests refuse before any authority work,
+(backend/orchestrator/agent_authority.py): hop requests refuse before any authority work,
 emit no audit rows, and the direct single-hop token path is untouched.
 """
 
@@ -17,7 +17,7 @@ import pytest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import audit.recorder as audit_recorder  # noqa: E402
-from orchestrator import delegation as dg  # noqa: E402
+from orchestrator import agent_authority as dg  # noqa: E402
 from shared.feature_flags import flags  # noqa: E402
 from shared.protocol import AgentHopRequest, MCPResponse  # noqa: E402
 

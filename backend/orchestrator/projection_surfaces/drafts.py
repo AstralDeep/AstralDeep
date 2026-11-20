@@ -285,7 +285,7 @@ async def _h_draft_create(orch, websocket, user_id, roles, payload):
     status = (res.result or {}).get("status")
     draft_id = (res.result or {}).get("draft_id")
     if status in ("created", "duplicate") and draft_id:
-        kind = "Staged and self-tested" if status == "created" else "Already staged"
+        kind = "Staged" if status == "created" else "Already staged"
         return ("drafts", {"draft_id": draft_id}, notice_block("success", f"{kind} — decide below."))
     return ("drafts", {}, notice_block("error", f"Creation did not complete ({status})."))
 

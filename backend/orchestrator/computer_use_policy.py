@@ -6,7 +6,6 @@ gate so they cannot drift apart.
 from __future__ import annotations
 
 import ipaddress
-import json
 import math
 from pathlib import PurePosixPath
 import posixpath
@@ -24,6 +23,7 @@ BROWSER_VERBS: FrozenSet[str] = frozenset({
     "browser_navigate", "browser_click", "browser_fill", "browser_press", "browser_scroll",
     "browser_dialog", "browser_find", "browser_hover", "browser_zoom", "browser_console",
     "browser_network", "browser_evaluate", "browser_resize", "browser_tabs",
+    "browser_request_login", "browser_fill_login",
 })
 ACCESSIBILITY_VERBS: FrozenSet[str] = frozenset({"list_apps", "ax_tree", "ax_find", "ax_action", "menu", "zoom"})
 
@@ -40,12 +40,14 @@ INPUT_VERBS: FrozenSet[str] = frozenset({
     "browser_navigate", "browser_click", "browser_fill", "browser_press", "browser_scroll",
     "browser_dialog", "interrupt_command",
     "ax_action", "menu", "browser_hover", "browser_resize", "browser_tabs", "browser_batch",
+    "browser_request_login",
 })
 CONSEQUENTIAL_VERBS: FrozenSet[str] = frozenset({
     "write_file", "delete_path", "run_command", "project_preview", "browser_evaluate",
+    "browser_fill_login",
 })
 SESSION_VERBS: FrozenSet[str] = frozenset({
-    "list_computers", "start_session", "end_session", "resume_session", "confirm_action",
+    "list_computers", "start_session", "end_session", "resume_session",
 })
 DE_ESCALATION_VERBS: FrozenSet[str] = frozenset({"end_session"})
 
@@ -70,23 +72,23 @@ SCOPES: Dict[str, str] = {
     "write_file": "tools:files",
     "delete_path": "tools:files",
     "browser_evaluate": "tools:write",
+    "browser_fill_login": "tools:write",
     "list_computers": "tools:read",
     "start_session": "tools:write",
     "end_session": "tools:write",
     "resume_session": "tools:write",
-    "confirm_action": "tools:write",
 }
 
 DESTRUCTIVE_CLASSIFICATION: Dict[str, Any] = {
     "write_file": "always",
     "delete_path": "always",
-    "confirm_action": "always",
     "open_app": {"by_shell_app": True},
     "run_command": "always",
     "project_preview": "always",
     "browser_navigate": "always",
     "browser_evaluate": "always",
     "browser_tabs": "always",
+    "browser_fill_login": "always",
 }
 
 SHELL_APPS: FrozenSet[str] = frozenset({
@@ -278,9 +280,10 @@ TIMEOUTS: Dict[str, float] = {
     "list_apps": 5.0, "ax_tree": 8.0, "ax_find": 8.0, "ax_action": 10.0, "menu": 10.0, "zoom": 15.0,
     "browser_find": 5.0, "browser_hover": 5.0, "browser_zoom": 5.0, "browser_console": 5.0,
     "browser_network": 5.0, "browser_evaluate": 15.0, "browser_resize": 5.0, "browser_tabs": 15.0,
+    "browser_request_login": 630.0, "browser_fill_login": 15.0,
     "browser_batch": 120.0,
     "list_computers": 5.0, "start_session": 10.0, "end_session": 5.0,
-    "resume_session": 5.0, "confirm_action": 5.0,
+    "resume_session": 5.0,
 }
 
 MAX_TEXT_CHARS = 4000
@@ -288,27 +291,12 @@ MAX_CLIPBOARD_CHARS = 16 * 1024
 MAX_WRITE_BYTES = 256 * 1024
 MAX_READ_BYTES = 262_144
 DEFAULT_READ_BYTES = 65_536
-MAX_SUMMARY_CHARS = 400
 MAX_WAIT_SECONDS = 10.0
 RESUME_SETTLE_SECONDS = 1.5
-APPROVAL_RETRY_GRACE_S = 180.0
 MIN_SCREENSHOT_WIDTH = 320
 MAX_SCREENSHOT_WIDTH = 1920
 DEFAULT_SCREENSHOT_WIDTH = 1280
 MAX_SCROLL_NOTCHES = 20
-TERMINAL_GRANT_S = 180
-
-REFUSAL_TEXT = (
-    "confirmation_required: the user has been asked to approve this action on their device. "
-    "STOP NOW: end your turn with one short sentence telling the user what needs their approval. "
-    "Do not call this or any other tool, do not retry, and do not ask again — the task resumes "
-    "automatically after they tap Approve."
-)
-
-CARD_TITLE = "Confirm an action on {host}"
-CARD_CAPTION = ("This runs on your computer exactly as shown and I can't undo it. "
-                "Approve to continue, or decline.")
-
 
 MAX_BROWSER_URL_CHARS = 2048
 _BROWSER_HOST = re.compile(r"[a-z0-9_][a-z0-9._-]*")
@@ -343,48 +331,50 @@ def canonical_browser_url(raw: Any) -> Optional[str]:
     return urlunsplit((scheme, netloc, parts.path, parts.query, parts.fragment))
 
 
-def _origin_label(url: Any) -> str:
-    canonical = canonical_browser_url(url)
+WAIT_ON_OWNER_VERBS: FrozenSet[str] = frozenset({"browser_request_login"})
+LOCAL_CONFIRM_VERBS: FrozenSet[str] = frozenset({"browser_fill_login"})
+FILL_LOGIN_ORIGIN_CHARS = MAX_BROWSER_URL_CHARS
+MAX_FILL_LOGIN_FIELDS = 20
+FILL_LOGIN_ALLOWED_ARGS = frozenset({"computer", "origin", "refs", "snapshot_id", "user_id", "session_id"})
+
+
+def fill_login_origin(value: Any) -> Optional[str]:
+    if not isinstance(value, str) or not value or len(value) > FILL_LOGIN_ORIGIN_CHARS:
+        return None
+    canonical = canonical_browser_url(value)
     if canonical is None:
-        return ""
+        return None
     parts = urlsplit(canonical)
+    if parts.path not in ("", "/") or parts.query or parts.fragment:
+        return None
     return f"{parts.scheme}://{parts.netloc}"
+
+
+def fill_login_preflight(args: Any) -> str:
+    if not isinstance(args, Mapping):
+        return "browser_fill_login takes only origin, refs and snapshot_id and never a value"
+    extra = sorted(str(key) for key in args
+                   if not str(key).startswith("_") and str(key) not in FILL_LOGIN_ALLOWED_ARGS)
+    if extra:
+        return ("browser_fill_login takes only origin, refs and snapshot_id; refused arguments: "
+                + ", ".join(extra[:8]))
+    if fill_login_origin(args.get("origin")) is None:
+        return ("origin must be the bare http or https origin of the page in the browser pane, "
+                "such as https://example.org")
+    refs = args.get("refs")
+    if (not isinstance(refs, list) or not 1 <= len(refs) <= MAX_FILL_LOGIN_FIELDS
+            or any(not isinstance(ref, str) or not re.fullmatch(r"e[0-9]{1,9}", ref) for ref in refs)
+            or len(set(refs)) != len(refs)):
+        return f"refs must be 1-{MAX_FILL_LOGIN_FIELDS} unique field references from browser_snapshot, such as e12"
+    if not isinstance(args.get("snapshot_id"), str) or not re.fullmatch(r"s[0-9]{1,9}", args["snapshot_id"]):
+        return "snapshot_id must be the snapshot_id of the browser_snapshot the references came from"
+    return ""
 
 
 def _one_line(value: Any, limit: int) -> str:
     text = "".join(" " if unicodedata.category(ch) in ("Cc", "Zl", "Zp") else "" if unicodedata.category(ch) == "Cf"
                    else ch for ch in str(value or ""))
     return " ".join(text.split())[:limit]
-
-
-HIDDEN_CHARACTERS_NOTE = "Contains hidden, control or direction-changing characters, shown as \\u{…} escapes."
-_HIDDEN_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp", "Zs"})
-_INVISIBLE_LETTERS = frozenset({0x034F, 0x115F, 0x1160, 0x17B4, 0x17B5, 0x180B, 0x180C, 0x180D, 0x180E, 0x2800,
-                                0x3164, 0xFFA0})
-_BODY_FIELDS = frozenset({"content", "script", "stdin", "text"})
-
-
-def _hidden(ch: str, block: bool) -> bool:
-    if ch == " " or (block and ch in "\n\t"):
-        return False
-    code = ord(ch)
-    return (unicodedata.category(ch) in _HIDDEN_CATEGORIES or 0xFE00 <= code <= 0xFE0F
-            or 0xE0100 <= code <= 0xE01EF or code in _INVISIBLE_LETTERS)
-
-
-def display_text(value: Any, *, block: bool = False) -> str:
-    return "".join(f"\\u{{{ord(ch):X}}}" if _hidden(ch, block) else ch for ch in str(value))
-
-
-def hidden_characters(value: Any, *, block: bool = False) -> bool:
-    if isinstance(value, str):
-        return any(_hidden(ch, block) for ch in value)
-    if isinstance(value, Mapping):
-        return any(hidden_characters(key) or hidden_characters(item, block=block or key in _BODY_FIELDS)
-                   for key, item in value.items() if not str(key).startswith("_"))
-    if isinstance(value, (list, tuple)):
-        return any(hidden_characters(item, block=block) for item in value)
-    return False
 
 
 DEFAULT_COMMAND_TIMEOUT_S = 60
@@ -395,6 +385,80 @@ MAX_ARGV_ITEMS = 256
 MAX_ARG_CHARS = 4096
 MAX_ENV_VARS = 32
 MAX_STDIN_BYTES = 16 * 1024
+MAX_ALLOWED_DOMAINS = 64
+MAX_DOMAIN_CHARS = 253
+SANDBOX_MODES = ("default", "escalated")
+
+
+def validate_allowed_domains(value: Any) -> List[str]:
+    if not isinstance(value, list) or len(value) > MAX_ALLOWED_DOMAINS:
+        raise ValueError(f"allowed_domains must be a list of at most {MAX_ALLOWED_DOMAINS} hostnames")
+    out: List[str] = []
+    seen = set()
+    for item in value:
+        if (not isinstance(item, str) or not item.strip() or "\\x00" in item
+                or any(ord(ch) < 32 or ord(ch) == 127 for ch in item)):
+            raise ValueError("allowed_domains entries must be printable hostnames like example.com or *.example.com")
+        lowered = item.strip().lower()
+        if len(lowered) > MAX_DOMAIN_CHARS:
+            raise ValueError(f"each allowed domain is at most {MAX_DOMAIN_CHARS} characters")
+        body = lowered[2:] if lowered.startswith("*.") else lowered
+        if (not body or body.startswith(".") or body.endswith(".") or ".." in body
+                or any(label == "" for label in body.split("."))):
+            raise ValueError(f"{item[:80]} is not a valid hostname or *.wildcard")
+        labels = body.split(".")
+        if len(labels) < 2 or any(len(label) > 63 for label in labels):
+            raise ValueError(f"{item[:80]} is not a valid hostname or *.wildcard")
+        for label in labels:
+            if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", label):
+                raise ValueError(f"{item[:80]} is not a valid hostname or *.wildcard")
+        try:
+            ipaddress.ip_address(body)
+        except ValueError:
+            pass
+        else:
+            raise ValueError("allowed_domains entries cannot be IP addresses")
+        if "localhost" in labels:
+            raise ValueError("allowed_domains entries cannot name localhost")
+        if lowered not in seen:
+            seen.add(lowered)
+            out.append(lowered)
+    return out
+
+
+def command_domains(args: Mapping[str, Any]) -> tuple:
+    value = args.get("allowed_domains")
+    return tuple(value) if isinstance(value, list) else ()
+
+
+def sandbox_mode(args: Mapping[str, Any]) -> str:
+    value = args.get("sandbox")
+    return value if value in SANDBOX_MODES else "default"
+
+
+def sandbox_exact_review_required(args: Mapping[str, Any], approved: Any = None) -> bool:
+    if sandbox_mode(args) == "escalated":
+        return True
+    domains = command_domains(args)
+    if not domains:
+        return False
+    return True if approved is None else not set(domains) <= set(approved)
+
+
+EGRESS_DENIED_CIDRS: tuple = (
+    "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16",
+    "172.16.0.0/12", "192.0.0.0/24", "192.0.2.0/24", "192.88.99.0/24", "192.168.0.0/16",
+    "198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24", "224.0.0.0/4", "240.0.0.0/4",
+    "255.255.255.255/32",
+    "::/128", "::1/128", "::ffff:0:0/96", "64:ff9b:1::/48", "100::/64",
+    "2001:db8::/32", "fc00::/7", "fe80::/10", "ff00::/8",
+)
+
+
+def proxy_policy(domains: Sequence[str]) -> Dict[str, Any]:
+    return {"allowed_domains": list(domains), "denied_cidrs": list(EGRESS_DENIED_CIDRS)}
+
+
 COMMAND_DEADLINE_MARGIN_S = 10
 BACKGROUND_START_S = 30.0
 HOST_DEADLINE_GRACE_S = 15.0
@@ -431,7 +495,6 @@ _WRAPPERS = frozenset({"env", "command", "exec", "nohup", "time", "nice", "xargs
 _SHELLS = frozenset({"sh", "bash", "zsh", "dash", "ksh", "fish", "csh", "tcsh"})
 _INTERPRETERS = frozenset({"perl", "ruby", "node", "osascript", "php"})
 _DOWNLOADERS = frozenset({"curl", "wget"})
-_LABEL_TEXT = 60
 
 
 def _program(word: str) -> str:
@@ -717,7 +780,7 @@ WINDOW_INPUT_VERBS: FrozenSet[str] = frozenset({
     "click", "double_click", "right_click", "move", "drag", "scroll", "type_text", "press_keys", "focus_window",
 })
 BYPASS_VERBS: FrozenSet[str] = (OBSERVE_VERBS | INPUT_VERBS | CONSEQUENTIAL_VERBS
-                                | frozenset({"list_computers", "start_session", "end_session", "resume_session", "confirm_action"}))
+                                | frozenset({"list_computers", "start_session", "end_session", "resume_session"}))
 
 
 def is_astral_app(value: Any) -> bool:
@@ -733,7 +796,8 @@ def is_secure_input_app(bundle: Any) -> bool:
     return folded in SECURE_INPUT_BUNDLES or folded.startswith(_SECURE_INPUT_PREFIXES)
 
 
-def bypass_floor(tool: str, args: Mapping[str, Any], window_bundle: Optional[str]) -> bool:
+def bypass_floor(tool: str, args: Mapping[str, Any], window_bundle: Optional[str],
+                 approved: Any = None) -> bool:
     if "terminal_app" in args and tool in WINDOW_INPUT_VERBS:
         try:
             terminal = mac_terminal_application(args["terminal_app"])
@@ -744,7 +808,8 @@ def bypass_floor(tool: str, args: Mapping[str, Any], window_bundle: Optional[str
     if tool == "run_command":
         argv = args.get("argv")
         text = " ".join(str(word) for word in argv) if isinstance(argv, list) else str(args.get("command") or "")
-        return is_privilege_escalation(args) or bool(_ASTRAL_TEXT.search(text))
+        return (is_privilege_escalation(args) or bool(_ASTRAL_TEXT.search(text))
+                or sandbox_exact_review_required(args, approved))
     if tool in {"write_file", "delete_path"}:
         return bool(_ASTRAL_TEXT.search(str(args.get("path") or "")))
     if tool == "open_app":
@@ -829,102 +894,6 @@ def command_grant(args: Mapping[str, Any], roots: Any = ()) -> Optional[Dict[str
             or not _grantable_invocation(words) or is_destructive_command(args, roots)):
         return None
     return {"argv0": words[0], "root": root["path"], "folder": root["name"]}
-
-
-def _label_text(value: Any) -> str:
-    text = display_text(" ".join(_CTRL_TEXT.sub("", str(value or "")).split()))
-    return text if len(text) <= _LABEL_TEXT else text[:_LABEL_TEXT - 1] + "…"
-
-
-_CTRL_TEXT = re.compile(r"[\x00-\x1f\x7f]")
-
-
-def application_name(bundle_id: Any) -> str:
-    return _label_text(str(bundle_id or "").rsplit(".", 1)[-1]) or "this application"
-
-
-def input_grant_label(app_name: str, window_title: Optional[str] = None) -> str:
-    title = _label_text(window_title) if window_title else ""
-    return f'Allow for this task in window "{title}"' if title else f"Allow for this task in {_label_text(app_name)}"
-
-
-def window_grant_label(app_name: str, window_title: Optional[str]) -> str:
-    if _label_text(window_title):
-        return input_grant_label(app_name, window_title)
-    return f"Allow for this task in this {_label_text(app_name)} window"
-
-
-def command_grant_label(argv0: str, folder: str) -> str:
-    return f"Allow {_label_text(argv0)} in {_label_text(folder)} for this task"
-
-
-def _command_summary(args: Mapping[str, Any], host: str) -> str:
-    argv = args.get("argv")
-    shown = (f"Arguments: {display_text(json.dumps(argv, ensure_ascii=False))}" if isinstance(argv, list)
-             else f"Command: {display_text(args.get('command'))}")
-    timeout = display_text(args.get("timeout_s", DEFAULT_COMMAND_TIMEOUT_S))
-    env = args.get("env") if isinstance(args.get("env"), Mapping) else {}
-    lines = [f"Run a command on {host}", shown, f"Folder: {display_text(args.get('cwd'))}", f"Timeout: {timeout} s",
-             "Environment: " + (", ".join(f"{display_text(key)}={display_text(value)}" for key, value in env.items())
-                                if env else "none"),
-             "Background: " + ("yes" if args.get("background") else "no")]
-    if isinstance(args.get("stdin"), str):
-        lines.append(f"Standard input: {len(args['stdin'])} characters")
-    return "\n".join(lines)
-
-
-def summary_for(tool_name: str, args: Mapping[str, Any], host_label: str) -> str:
-    text = _summary_text(tool_name, args, display_text(host_label) if host_label else "your computer")
-    return f"{HIDDEN_CHARACTERS_NOTE}\n{text}" if hidden_characters(args) else text
-
-
-def _summary_text(tool_name: str, args: Mapping[str, Any], h: str) -> str:
-    if tool_name == "run_command":
-        return _command_summary(args, h)
-    if tool_name == "browser_navigate":
-        if args.get("url") is None:
-            action = args.get("action")
-            move = {"back": "Go back", "forward": "Go forward", "reload": "Reload the page"}.get(
-                action if isinstance(action, str) else "", "Navigate")
-            return f"{move} in the Astral browser pane on {h}"
-        canonical = canonical_browser_url(args["url"])
-        if canonical is None:
-            return (f"Navigate the Astral browser pane on {h} to an address that will be refused; "
-                    "nothing will load.")
-        parts = urlsplit(canonical)
-        rest = _one_line(display_text(parts.path), 120) + ("?…" if parts.query else "")
-        return (f"Open {_origin_label(canonical)}{rest} in the Astral browser pane on {h}. Approving this site "
-                "lets the pane load its pages; passwords and payment fields are never filled.")
-    if (tool_name in ("browser_click", "browser_fill") and isinstance(args.get("confirm_element"), str)
-            and _one_line(args["confirm_element"], 1)):
-        element = _one_line(display_text(args["confirm_element"]), 200)
-        verb = "Click" if tool_name == "browser_click" else "Fill in"
-        return (f"{verb} {element} in the Astral browser pane on {h}. This looks like a purchase, payment, "
-                "deletion or message, and I can't undo it.")
-    if tool_name == "browser_evaluate":
-        size = len(args["script"]) if isinstance(args.get("script"), str) else 0
-        return (f"Run the {size}-character script shown below in the current page of the Astral browser pane on "
-                f"{h}. It can read and change that page; its result is page data.")
-    if tool_name == "browser_tabs":
-        action = args.get("action") if args.get("action") in ("list", "create", "close", "select") else "manage"
-        if action == "create" and args.get("url") is not None:
-            canonical = canonical_browser_url(args.get("url"))
-            if canonical is None:
-                return f"Open a new tab in the Astral browser pane on {h} at an address that will be refused."
-            path = _one_line(display_text(urlsplit(canonical).path), 120)
-            return (f"Open a new tab at {_origin_label(canonical)}{path} in the "
-                    f"Astral browser pane on {h}. Approving this site lets the pane load its pages.")
-        return f"{action.capitalize()} tabs in the Astral browser pane on {h}"
-    if tool_name == "write_file":
-        mode = "overwrite" if args.get("if_exists") == "overwrite" else "create"
-        return f"Write file on {h} ({mode}): {display_text(args.get('path') or '')[:200]}"
-    if tool_name == "delete_path":
-        return f"Delete on {h}: {display_text(args.get('path') or '')[:200]}"
-    if tool_name == "confirm_action":
-        return f"On {h}: {display_text(args.get('summary') or 'the next step')[:MAX_SUMMARY_CHARS]}"
-    if tool_name == "open_app":
-        return f"Open a terminal on {h}: {display_text(args.get('app') or '')[:120]}"
-    return f"{tool_name} on {h}"
 
 
 def is_unattended_allowed(tool_name: str) -> bool:

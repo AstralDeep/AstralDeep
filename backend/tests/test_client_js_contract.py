@@ -1,7 +1,3 @@
-"""Tests for the web client's source contract (AstralProjection's client.js, shell.html,
-web_auth.py via resources.py): auth-required recovery, timeline read-only guards, no
-local-credential UI, and status reducers.
-"""
 
 import re
 from pathlib import Path
@@ -12,7 +8,6 @@ from astralprojection.resources import static_path, template_path
 BACKEND = Path(__file__).resolve().parent.parent
 CLIENT_JS = static_path("client.js")
 SHELL_HTML = template_path("shell.html")
-WEB_AUTH_PY = BACKEND / "orchestrator" / "web_auth.py"
 
 
 def _read(path: Path) -> str:
@@ -49,14 +44,6 @@ def _js_function(src: str, name: str) -> str:
     raise AssertionError(f"unbalanced braces extracting function {name}")
 
 
-def _py_function(src: str, name: str) -> str:
-    sig = f"def {name}("
-    assert sig in src, f"web_auth.py has no {sig}"
-    start = src.index(sig)
-    nxt = re.compile(r"\n(?:def |async def |class |@)").search(src, start + 1)
-    return src[start : nxt.start()] if nxt else src[start:]
-
-
 @pytest.fixture(scope="module")
 def client_js() -> str:
     return _read(CLIENT_JS)
@@ -67,38 +54,36 @@ def shell_html() -> str:
     return _read(SHELL_HTML)
 
 
-@pytest.fixture(scope="module")
-def web_auth_src() -> str:
-    return _read(WEB_AUTH_PY)
-
-
-def test_no_dev_token_literal_in_executable_code(client_js):
+def test_no_retired_bearer_literal_in_executable_code(client_js):
+    retired = "dev" + "-token"
     for lineno, line in enumerate(client_js.splitlines(), 1):
-        if "dev-token" in line:
+        if retired in line:
             assert line.lstrip().startswith("//"), (
-                f"client.js:{lineno} carries 'dev-token' outside a comment: {line.strip()!r}"
+                f"client.js:{lineno} carries the retired bearer outside a comment: {line.strip()!r}"
             )
-    assert '"dev-token"' not in client_js, "dev-token JS string literal resurfaced"
-    assert not re.search(r"""\|\|\s*['"]dev-token['"]""", client_js)
+    assert f'"{retired}"' not in client_js, "retired bearer JS string literal resurfaced"
+    assert not re.search(r"""\|\|\s*['"]""" + retired + r"""['"]""", client_js)
 
 
-def test_auth_required_case_refreshes_then_falls_back_to_login(client_js):
+def test_auth_required_case_never_redirects_and_shows_the_no_sign_in_notice(client_js):
     block = _norm(_case_block(client_js, "auth_required"))
-    assert "refreshToken(" in block, "auth_required must try a silent session refresh"
-    assert "gotoLogin()" in block, "auth_required must fall back to interactive login"
+    assert "gotoLogin" not in block and "location.href" not in block and "location.assign" not in block
     assert "authRetried" in block
-    assert "else { gotoLogin(); }" in block
-    assert block.index("refreshToken(") < block.index("gotoLogin()")
+    assert "else { showNotice(); }" in block
     assert "sendRegistration(true)" in block
     registration = _norm(_js_function(client_js, "sendRegistration"))
     assert 'type: "register_ui"' in registration and "token: token" in registration
+    notice = _norm(_js_function(client_js, "showNotice"))
+    assert 'panel.id = "astral-not-available-notice"' in notice
+    assert "Astral runs in the Mac and iPhone apps" in notice
+    assert "https://astraldeep.github.io/downloads.html" in client_js
 
 
-def test_gotologin_builds_next_from_current_location(client_js):
-    fn = _norm(_js_function(client_js, "gotoLogin"))
-    assert "encodeURIComponent(location.pathname + location.search)" in fn
-    assert '"/auth/login?next=" + next' in fn
-    assert "location.href" in fn
+def test_browser_has_no_sign_in_or_stored_bearer_token(client_js):
+    for removed in ("gotoLogin", "/auth/login", "TOKEN_KEY", "sessionStorage.getItem(\"astral_token"):
+        assert removed not in client_js, f"client.js still carries the removed sign-in path {removed!r}"
+    assert "sessionStorage.setItem(TOKEN" not in client_js
+    assert "function gotoLogin(" not in client_js
 
 
 def _astral_action_handler(client_js: str) -> str:
@@ -179,8 +164,10 @@ def test_chat_deleted_clears_canvas_when_active(client_js):
 def test_reconnect_refetches_session_before_register(client_js):
     fn = _norm(_js_function(client_js, "connect"))
     onclose = fn[fn.index("ws.onclose") :]
-    assert "refreshToken(false, function () { connect(); })" in onclose
-    assert "attempts <= 10" in onclose
+    assert "scheduleReconnect(thisSocket);" in onclose
+    assert "attempts <= 10" not in onclose, "the web client keeps retrying while the server is down"
+    retry = _norm(_js_function(client_js, "runReconnect"))
+    assert retry.index("refreshToken(true, function () {") < retry.index("connect();")
     rt = _norm(_js_function(client_js, "refreshToken"))
     assert 'fetch(API_URL + "/auth/session"' in rt
     assert '"same-origin"' in rt
@@ -188,13 +175,11 @@ def test_reconnect_refetches_session_before_register(client_js):
     assert "token = j.access_token" in rt
 
 
-def test_full_shell_load_prefers_current_server_session_over_prior_tab_token(client_js):
+def test_token_bootstrap_has_no_tab_storage_fallback(client_js):
     bootstrap = re.search(r"var token = ([^;]+);", client_js)
     assert bootstrap is not None
-    expression = bootstrap.group(1)
-    assert expression.index("window.__ASTRAL_TOKEN__") < expression.index(
-        "sessionStorage.getItem(TOKEN_KEY)"
-    )
+    assert bootstrap.group(1).strip() == 'window.__ASTRAL_TOKEN__ || ""'
+    assert "sessionStorage" not in bootstrap.group(1)
 
 
 def test_definitive_sign_out_clears_cached_token_and_account_marker(client_js):
@@ -202,7 +187,7 @@ def test_definitive_sign_out_clears_cached_token_and_account_marker(client_js):
     end = client_js.index(clear) + len(clear)
     handler = client_js[client_js.rindex("accountSignedOut = true;", 0, end) : end]
     assert "token = \"\"" in handler
-    assert "sessionStorage.removeItem(TOKEN_KEY)" in handler
+    assert "TOKEN_KEY" not in handler
     assert "sessionStorage.removeItem(ACCOUNT_SESSION_KEY)" in handler
     assert 'clearActiveChatLocator("definitive_sign_out", activeChatId)' in handler
 
@@ -219,30 +204,6 @@ def test_shell_injects_token_and_resumed_placeholders(shell_html):
 
 
 FORBIDDEN_FR010 = ("remember me", "remember-me", "biometric", "webauthn")
-
-
-@pytest.mark.parametrize(
-    "path", [CLIENT_JS, SHELL_HTML, WEB_AUTH_PY], ids=lambda p: p.name
-)
-def test_fr010_no_local_credential_ui(path):
-    low = _read(path).lower()
-    for term in FORBIDDEN_FR010:
-        assert term not in low, f"{path.name} contains forbidden FR-010 term {term!r}"
-
-
-def test_fr010_error_pages_offer_no_local_credential_capture(web_auth_src):
-    no_access = _py_function(web_auth_src, "_no_access_page")
-    error_page = _py_function(web_auth_src, "_error_page")
-    assert "No access" in no_access
-    assert "Sign-in problem" in error_page
-    for name, fn in (("_no_access_page", no_access), ("_error_page", error_page)):
-        low = fn.lower()
-        for term in FORBIDDEN_FR010:
-            assert term not in low, f"{name} contains forbidden FR-010 term {term!r}"
-        assert "/auth/login" in fn, f"{name} must route recovery through /auth/login"
-        assert "<input" not in low and "<form" not in low, (
-            f"{name} must not render local credential inputs"
-        )
 
 
 def test_operation_status_reducer_is_scoped_monotonic_and_first_terminal(client_js):

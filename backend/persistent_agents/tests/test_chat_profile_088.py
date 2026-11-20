@@ -60,15 +60,6 @@ def test_chat_result_value_refuses_unusable_text(text):
         chat_result_value(text)
 
 
-def test_unsent_attempt_requires_a_pre_send_transport_code():
-    from persistent_agents.research_input import PRE_SEND_FAILURE_CODES, UnsentAttempt
-    assert PRE_SEND_FAILURE_CODES == frozenset({"egress_blocked"})
-    assert UnsentAttempt("egress_blocked").code == "egress_blocked"
-    for code in ("unreachable", "deadline", "cleanup_uncertain", "child_failure", "authentication"):
-        with pytest.raises(ValueError):
-            UnsentAttempt(code)
-
-
 LOCAL = profile.LOCAL_PROFILE.bind(
     model="qualified-local-test", base_url="http://127.0.0.1:1234/v1")
 

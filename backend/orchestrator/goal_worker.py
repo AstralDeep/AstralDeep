@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any, Mapping, Sequence
 
@@ -21,21 +20,12 @@ _CATEGORY_GUIDANCE = {
     "tests": "run meaningful tests and fix failures",
     "startup": "verify startup with a bounded smoke check",
 }
-_DENIED_CODES = frozenset({
-    "approval_required", "confirmation_required", "forbidden", "permission_denied",
-    "policy_denied", "security_blocked", "user_denied",
-})
+
+
 _DEFAULT_TIMEOUT_S = 600
 _DEFAULT_MACOS_CODEX = "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex"
 _MAX_OBJECTIVE_CHARS = MAX_STDIN_BYTES
 _MAX_ERROR_TEXT = 512
-
-
-@dataclass(frozen=True)
-class WorkerResult:
-    status: str
-    exit_code: int | None = None
-    message: str = ""
 
 
 def build_worker_prompt(
@@ -62,12 +52,6 @@ def build_worker_prompt(
     if len(prompt.encode("utf-8")) > MAX_STDIN_BYTES:
         raise ValueError("worker prompt exceeds the bounded stdin size")
     return prompt
-
-
-def worker_configured(environ: Mapping[str, str] | None = None) -> bool:
-    env = os.environ if environ is None else environ
-    path = env.get("GOAL_CODEX_WORKER_PATH")
-    return path is None or (isinstance(path, str) and os.path.isabs(path) and "\x00" not in path)
 
 
 def build_worker_command(
@@ -118,32 +102,6 @@ def build_worker_command(
         "stdin": prompt,
         "background": False,
     }
-
-
-def classify_worker_result(result: Any) -> WorkerResult:
-    """Classify command dispatch and process outcomes without trusting worker prose."""
-    error = getattr(result, "error", None)
-    data = getattr(result, "result", result)
-    if isinstance(data, Mapping) and isinstance(data.get("_data"), Mapping):
-        data = data["_data"]
-    if isinstance(error, Mapping):
-        code = str(error.get("code", "")).lower()
-        message = _bounded_text(error.get("message"))
-        return WorkerResult("denied" if code in _DENIED_CODES else "launch_error", message=message)
-    if not isinstance(data, Mapping):
-        return WorkerResult("launch_error", message="The host returned no command result.")
-    code = str(data.get("code", data.get("status", ""))).lower()
-    message = _bounded_text(data.get("message"))
-    if code in _DENIED_CODES:
-        return WorkerResult("denied", message=message)
-    if data.get("timed_out") is True:
-        return WorkerResult("timeout", message=message or "The worker command reached its time limit.")
-    exit_code = data.get("exit_code")
-    if isinstance(exit_code, bool) or not isinstance(exit_code, int):
-        return WorkerResult("launch_error", message=message or "The host returned no process exit code.")
-    if exit_code != 0:
-        return WorkerResult("nonzero", exit_code=exit_code, message=message)
-    return WorkerResult("success", exit_code=0, message=message)
 
 
 def _canonical_root(value: Any) -> str | None:

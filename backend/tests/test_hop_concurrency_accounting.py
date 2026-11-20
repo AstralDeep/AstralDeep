@@ -66,11 +66,13 @@ async def test_missing_or_invalid_effect_reserves_no_hop_slots(orch, declaration
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("scope", ["tools:write", "tools:execute", "tools:system"])
-async def test_effectful_hop_without_attended_review_reserves_no_slots(orch, scope):
+async def test_effectful_hop_without_owner_approval_reserves_no_slots(orch, scope):
     orch.tool_permissions.register_tool_scopes("callee", {"long_tool": scope})
     out = await _auth_hop(orch)
     assert isinstance(out, GateRefusal)
-    assert "interactive signed-in conversation" in out.response.error["message"]
+    assert out.response.error["code"] == "source_bound_approval_required"
+    assert out.response.error["effect_state"] == "not_started"
+    assert out.response.error["retryable"] is False
     assert orch.concurrency_cap.inflight_count("u1", "callee") == 0
     assert orch.concurrency_cap.inflight_count("u1", "initiator") == 0
     assert not orch._pending_cap_entries and not orch._hop_cap_entries

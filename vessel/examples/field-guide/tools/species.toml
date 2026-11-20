@@ -1,0 +1,9 @@
+name = "species"
+description = "List every species in the guide with its family, habitats and length, as JSON."
+command = ["python3", "{package}/tools/species.py"]
+scope = "tools:read"
+[parameters]
+type = "object"
+[parameters.properties.habitat]
+type = "string"
+description = "Only species with this habitat (optional)"

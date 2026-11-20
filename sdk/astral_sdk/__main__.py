@@ -38,7 +38,7 @@ def _dump(value: Any) -> str:
 
 def _add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--base-url", default=None, help="Deep base URL (or $ASTRAL_BASE_URL)")
-    parser.add_argument("--token", default=None, help="Bearer token (or $ASTRAL_TOKEN); emergency resume requires a current Keycloak owner access token")
+    parser.add_argument("--token", default=None, help="Bearer token (or $ASTRAL_TOKEN); emergency resume requires a current owner access token")
     parser.add_argument("--timeout", type=float, default=30.0)
 
 
@@ -49,7 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
     tools = sub.add_parser("tools", help="List the credential's projected Work tools")
     _add_common(tools)
 
-    submit = sub.add_parser("submit", help="Submit one chat-kind Work operation")
+    submit = sub.add_parser("submit", help="Replay a previously accepted Work submission")
     _add_common(submit)
     submit.add_argument("--idempotency-key", required=True)
     submit.add_argument("--name", required=True)

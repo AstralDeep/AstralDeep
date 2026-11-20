@@ -103,7 +103,7 @@ async def test_push_browser_mandatory_modal_no_close_with_signout(orch):
     html = frame["html"]
     assert 'data-mandatory="1"' in html
     assert "astral-modal-close" not in html
-    assert "/auth/logout" in html
+    assert "/auth/logout" not in html and "Sign out" not in html
     assert "Set up your AI provider" in html
     assert 'data-ui-action="chrome_llm_save"' in html
     assert orch._ws_llm_gated.get(id(ws)) is True
@@ -409,7 +409,7 @@ def test_render_modal_shell_mandatory_variant():
                               "llm", mandatory=True)
     assert 'data-mandatory="1"' in html
     assert "astral-modal-close" not in html
-    assert '<a href="/auth/logout"' in html and "Sign out" in html
+    assert "/auth/logout" not in html and "Sign out" not in html
     assert 'data-surface="llm"' in html
 
 

@@ -3,7 +3,7 @@ It reuses web landing visibility and display identity without creating client au
 """
 
 from orchestrator import web_landing
-from orchestrator.web_auth import identity_from_claims
+from orchestrator.identity_display import identity_from_claims
 from rote.console import watch_availability
 from webrender.chrome.console_model import CONSOLE_CONTRACT, build_console_model
 

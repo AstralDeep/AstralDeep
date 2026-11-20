@@ -53,14 +53,13 @@ RETIRED_KNOWLEDGE_STEMS = frozenset({
 DEFAULT_KNOWLEDGE_DIR = os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "knowledge"
 )
-AUTHORED_KNOWLEDGE_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(__file__)), "knowledge_packs"
-)
+
+
 DEFAULT_SYNTHESIS_INTERVAL = 1800
 DEFAULT_MIN_INTERACTIONS = 20
-ROUTING_HINTS_MAX_CHARS = 1500
+
+
 GENERATION_CONTEXT_MAX_CHARS = 2000
-STALENESS_DAYS = 7
 
 
 def _fsync_parent_directory(path: Path) -> None:
@@ -1326,47 +1325,6 @@ class KnowledgeIndex:
         self._cache.clear()
         self._mtimes.clear()
 
-    def get_techniques_for_agent(self, agent_id: str) -> str:
-        slug = agent_id.replace("-", "_").rstrip("_1234567890")
-        authored = os.path.join(AUTHORED_KNOWLEDGE_DIR, "techniques", f"{slug}.md")
-        content = self._read_content(authored)
-        if content:
-            return content
-        filepath = os.path.join(self.knowledge_dir, "techniques", f"{slug}.md")
-        return self._read_content(filepath)
-
-    def get_routing_hints(self) -> str:
-        cap_dir = os.path.join(self.knowledge_dir, "capabilities")
-        if not os.path.isdir(cap_dir):
-            return ""
-
-        lines = ["## Agent Performance Notes"]
-        total_chars = 0
-
-        for fname in sorted(os.listdir(cap_dir)):
-            if not fname.endswith(".md"):
-                continue
-            fpath = os.path.join(cap_dir, fname)
-            fm = KnowledgeSynthesizer._read_frontmatter(fpath)
-
-            updated = fm.get("updated_at", "")
-            if self._is_stale(updated):
-                continue
-
-            content = self._read_content(fpath)
-            if not content:
-                continue
-
-            summary_lines = [line for line in content.strip().split("\n") if line.strip()][:4]
-            summary = "\n".join(summary_lines)
-
-            if total_chars + len(summary) > ROUTING_HINTS_MAX_CHARS:
-                break
-            lines.append(summary)
-            total_chars += len(summary)
-
-        return "\n\n".join(lines) if len(lines) > 1 else ""
-
     def get_generation_context(self, description: str) -> str:
         parts = []
         total_chars = 0
@@ -1415,18 +1373,6 @@ class KnowledgeIndex:
         except Exception as e:
             logger.error(f"Failed to read knowledge file {filepath}: {e}")
             return ""
-
-    @staticmethod
-    def _is_stale(updated_at: str) -> bool:
-        if not updated_at:
-            return True
-        try:
-            updated = datetime.fromisoformat(updated_at)
-            age = datetime.now(timezone.utc) - updated
-            return age.days > STALENESS_DAYS
-        except (ValueError, TypeError):
-            return True
-
 
 async def _refine_proposal_via_llm(synth: "KnowledgeSynthesizer", base_markdown: str) -> Optional[str]:
     if not synth._available or synth.client is None:

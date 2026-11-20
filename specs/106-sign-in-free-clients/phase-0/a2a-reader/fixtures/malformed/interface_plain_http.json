@@ -1,0 +1,49 @@
+{
+  "card": {
+    "capabilities": {
+      "streaming": true
+    },
+    "defaultInputModes": [
+      "text/plain"
+    ],
+    "defaultOutputModes": [
+      "text/plain"
+    ],
+    "description": "Fixture card for the reader tests.",
+    "name": "Fixture Agent",
+    "securityRequirements": [
+      {
+        "schemes": {
+          "key": {
+            "list": []
+          }
+        }
+      }
+    ],
+    "securitySchemes": {
+      "key": {
+        "apiKeySecurityScheme": {
+          "location": "header",
+          "name": "X-Api-Key"
+        }
+      }
+    },
+    "skills": [
+      {
+        "description": "Echoes text.",
+        "id": "echo",
+        "name": "Echo",
+        "tags": [
+          "echo"
+        ]
+      }
+    ],
+    "supportedInterfaces": [
+      {
+        "url": "http://agent.example.org/a2a"
+      }
+    ],
+    "version": "1.0.0"
+  },
+  "expectedRefusal": "insecure_url"
+}

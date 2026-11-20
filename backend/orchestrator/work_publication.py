@@ -6,7 +6,6 @@ one Plane transaction. Used by work_api.py.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid5
 
@@ -14,7 +13,6 @@ from astralplane.repositories.assignment_models import (
     AssignmentActionDecision, AssignmentActionRecord, AssignmentRecord,
 )
 from astralplane.repositories.assignments import digest as plane_digest
-from astralplane.repositories.history import SessionExecutionObservation
 from astralplane.repositories.result_publication_models import (
     ResultPublicationContent, ResultPublicationPreparation, ResultPublicationProposal,
     ResultPublicationReceipt,
@@ -23,8 +21,7 @@ from astralplane.repositories.result_publications import result_publication_stag
 from astralplane.repositories.workspaces import PublicationRebaseComponent, PublicationRebaseLayout
 from pydantic import Field, field_validator
 
-from orchestrator import session_authority
-from orchestrator.session_authority import SessionAuthorityUnavailable, _same_operation
+from orchestrator.session_authority import _same_operation
 from orchestrator.work_control_authority import WorkCallerAuthority
 from orchestrator.work_continuations import _prepared, _request
 from orchestrator.work_controls import WorkControlRequest, WorkControlService, _method, _owned_operation
@@ -142,17 +139,6 @@ def precondition_digest(record, *, result_action_id, result_digest, conversation
                    "base_publication_id": base_publication_id})
 
 
-def _completed_context(value, owner_id, assignment_id):
-    selected = session_authority._operation_reference(value, owner_id, assignment_id)
-    record = selected[0]
-    if (record.lifecycle != "completed" or value.disposition != "completed"
-            or value.terminal_outcome != "completed"
-            or record.operation.get("terminal_outcome") != "completed"
-            or record.operation.get("source_retention") != "operation"):
-        session_authority._unavailable()
-    return selected
-
-
 def _stored_proposal(action):
     request = thaw(action.intent.request)
     if (type(request) is not dict or request.get("kind") != KIND or request.get("version") != 1
@@ -183,34 +169,7 @@ class WorkPublicationService(WorkControlService):
         return owner
 
     async def _original(self, caller, record):
-        consent = caller.require_session()
-        binding = caller._binding
-        reference = record.operation["authority"]["reference_id"]
-        same = reference == consent.credential.incarnation_id
-        expected = consent.credential if same else None
-        runtime = binding.runtime
-        try:
-            result = await session_authority._refresh_operation_session(
-                owner_id=record.owner_id, assignment_id=record.assignment_id,
-                sessions=binding.sessions, plane_runtime=runtime,
-                operation_context=_completed_context, expected_record=record,
-                request_expires_at=caller.context.principal_expires_at,
-                request_check=lambda now: caller.context.assert_current(runtime, now=now),
-                expected_session_credential=expected)
-        except SessionAuthorityUnavailable:
-            raise AssignmentError("work_authority_unavailable", 403) from None
-        observation = result.observation
-        if (type(observation) is not SessionExecutionObservation
-                or observation.credential.owner_id != record.owner_id
-                or observation.credential.incarnation_id != reference):
-            _unauthenticated()
-        if same:
-            if observation.credential.session_id != consent.credential.session_id:
-                _unauthenticated()
-            consent = replace(consent, credential=observation.credential,
-                              valid_until=min(consent.valid_until, observation.valid_until))
-        cutoff = min(consent.valid_until, observation.valid_until)
-        return replace(caller, caller=consent), observation, cutoff
+        raise AssignmentError("work_authority_unavailable", 403)
 
     async def _scopes(self, owner, claims, record):
         source = SourceSelection.model_validate(thaw(record.definition.source))

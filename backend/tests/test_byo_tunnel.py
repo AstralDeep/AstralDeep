@@ -6,7 +6,6 @@ host-only delivery, and soft delete.
 from __future__ import annotations
 
 import asyncio
-import base64
 from dataclasses import dataclass
 import json
 import os
@@ -29,21 +28,14 @@ async def _t(fn, *a, **k):
     return await asyncio.to_thread(fn, *a, **k)
 
 
-def _isolated_mock_identity(prefix: str) -> tuple[str, str]:
-    user_id = f"{prefix}-{uuid.uuid4().hex}"
-    claims = {
-        "sub": user_id,
-        "preferred_username": user_id,
-        "email": f"{user_id}@invalid.example",
-        "realm_access": {"roles": ["admin", "user"]},
-        "resource_access": {
-            "astral-frontend": {"roles": ["admin", "user"]}
-        },
-    }
-    payload = base64.b64encode(
-        json.dumps(claims, separators=(",", ":")).encode("utf-8")
-    ).decode("ascii").rstrip("=")
-    return user_id, f"mock.{payload}.signature"
+def _signed_identity(identity, prefix: str) -> tuple[str, str]:
+    subject = f"{prefix}-{uuid.uuid4().hex}"
+    token = identity.token(
+        subject,
+        roles=("admin", "user"),
+        email=f"{subject}@invalid.example",
+    )
+    return identity.owner(subject), token
 
 
 class FakeUI:
@@ -281,52 +273,6 @@ async def test_bundle_is_never_pushed_to_a_browser_tab(orch, tunnel_ids):
     ) == 1
     assert _code_frames(tab) == []
     assert len(_code_frames(host)) == 1
-
-
-async def test_register_ui_marks_only_a_declared_host(monkeypatch, tunnel_ids):
-    import asyncio as _asyncio
-    import uuid as _uuid
-    monkeypatch.setenv("USE_MOCK_AUTH", "true")
-    from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
-    o = await _t(Orchestrator)
-    user_id, token = _isolated_mock_identity("pytest-byo-host")
-
-    async def _register(**extra):
-        ws = VirtualWebSocket(BackgroundTask(task_id=_uuid.uuid4().hex, chat_id="",
-                                             user_id=""))
-        o._registered_events[id(ws)] = _asyncio.Event()
-        register_tasks = []
-        real_create_task = _asyncio.create_task
-
-        def _capture_register_task(coro, *args, **kwargs):
-            task = real_create_task(coro, *args, **kwargs)
-            register_tasks.append(task)
-            return task
-
-        with monkeypatch.context() as register_patch:
-            register_patch.setattr(_asyncio, "create_task", _capture_register_task)
-            await o.handle_ui_message(ws, json.dumps(
-                {"type": "register_ui", "token": token, "device": {}, **extra}))
-        if register_tasks:
-            await _asyncio.gather(*register_tasks)
-        return ws
-
-    try:
-        await _t(o._llm_store.set_sync, user_id, provider="custom",
-                 base_url="http://t.invalid/v1", model="m", api_key="k")
-        tab = await _register()
-        host = await _register(
-            agent_host=True,
-            host_session_id=tunnel_ids.host_session_id,
-        )
-        assert o.is_agent_host_socket(tab) is False
-        assert o.is_agent_host_socket(host) is True
-        assert o._agent_host_sockets[id(host)] == tunnel_ids.host_session_id
-    finally:
-        try:
-            await _t(o._llm_store.clear_sync, user_id)
-        finally:
-            await asyncio.wait_for(o._close_started_services(), timeout=15.0)
 
 
 async def test_delete_user_agent_soft_deletes_and_stops_host(orch, tunnel_ids):

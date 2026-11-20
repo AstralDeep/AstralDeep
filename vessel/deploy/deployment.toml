@@ -1,0 +1,25 @@
+# An example deployment: a personal node and two agents over a small sample field guide, each with its own sandbox.
+# Run `astralvessel deploy` here to write compose.generated.yml, then start it. The node image must exist locally.
+
+[node]
+image = "astralvessel-node:local"
+
+[[agents]]
+id = "field-guide"
+package = "../examples/field-guide"
+[agents.sandbox]
+memory = "1g"
+cpus = 2
+pids = 256
+scratch = "64m"
+mounts = [{ target = "/data", source = "../examples/sample-data" }]
+
+[[agents]]
+id = "field-guide-reader"
+package = "../examples/field-guide-reader"
+[agents.sandbox]
+memory = "512m"
+cpus = 1
+pids = 128
+scratch = "32m"
+mounts = [{ target = "/data", source = "../examples/sample-data" }]

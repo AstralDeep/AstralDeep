@@ -1,7 +1,5 @@
-"""Manages consent-gated remote-control sessions between an owner's client and a
-computer host, with idle/duration caps, heartbeat watchdog, task grants from computer_grants.py,
-the in-memory per-host bypass permissions switch, and audit logging; built on computer_hosts.py
-and used by orchestrator.py and the agent tools.
+"""Manages consent-gated computer sessions with host and controller authority, timeouts and audit logging.
+The orchestrator and agent tools use this manager with computer_hosts.py and computer_grants.py.
 """
 
 from __future__ import annotations
@@ -24,6 +22,11 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from orchestrator.computer_grants import EVENT_CREATED, EVENT_EXPIRED, EVENT_REVOKED, EVENT_USED, GrantStore
 from orchestrator.computer_hosts import ComputerHost, ComputerHostError, ComputerHostRegistry
+from orchestrator.computer_managed_policy import (
+    PolicyCeilings,
+    evaluate as evaluate_ceilings,
+    refusal_message,
+)
 
 logger = logging.getLogger("ComputerSessions")
 
@@ -89,15 +92,20 @@ class ComputerSession:
     read_digests: Dict[str, Tuple[str, int, int]] = field(default_factory=dict)
     terminal_ok_until: float = 0.0
     authority_generation: int = 0
-    approval_pause_authority: Any = field(default=None, repr=False, compare=False)
     project_origin: Any = field(default=None, repr=False, compare=False)
     acked: asyncio.Event = field(default_factory=asyncio.Event)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     verbs_run: int = 0
+    approved_domains: set = field(default_factory=set)
 
     @property
     def active(self) -> bool:
         return self.state == ACTIVE
+
+    def note_approved_domains(self, domains) -> None:
+        for domain in list(domains)[:64]:
+            if isinstance(domain, str) and domain.strip() and len(self.approved_domains) < 64:
+                self.approved_domains.add(domain.strip().lower()[:253])
 
     @property
     def terminal_ok(self) -> bool:
@@ -240,15 +248,33 @@ class ComputerSessionManager:
         self._sweeper: Optional[asyncio.Task] = None
         self._audit_tasks: set = set()
         self._push_pending: set = set()
-        self.review_generations: dict[tuple[str, str], int] = {}
         self._bypass: Dict[Tuple[str, str], ComputerHost] = {}
+        self._role_ceilings: Dict[str, PolicyCeilings] = {}
         self.grants = GrantStore(events=self._grant_event)
+
+    def effective_ceilings(self, host: ComputerHost, websocket=None,
+                           ui_sessions=None) -> Tuple[PolicyCeilings, Dict[str, str]]:
+        return evaluate_ceilings(self, host, websocket, ui_sessions)
+
+    def require_ceilings(self, host: ComputerHost, switches: Sequence[str], websocket=None,
+                         ui_sessions=None) -> None:
+        ceilings, sources = evaluate_ceilings(self, host, websocket, ui_sessions)
+        for switch in switches:
+            if not getattr(ceilings, switch):
+                raise ComputerHostError("managed_policy",
+                                        refusal_message(switch, host.name, sources.get(switch, "")))
 
     def bypass_on(self, owner_sub: str, host_id: str) -> bool:
         host = self._bypass.get((owner_sub, host_id))
         return host is not None and self._registry.get(owner_sub, host_id) is host
 
     async def set_bypass(self, host: ComputerHost, enabled: bool, reason: str = "owner") -> None:
+        if enabled:
+            ceilings, sources = evaluate_ceilings(self, host)
+            if not ceilings.bypass:
+                self._audit_bypass_refusal(host, sources.get("bypass", ""))
+                raise ComputerHostError("managed_policy",
+                                        refusal_message("bypass", host.name, sources.get("bypass", "")))
         key = (host.owner_sub, host.host_id)
         was = self.bypass_on(*key)
         if enabled:
@@ -275,11 +301,6 @@ class ComputerSessionManager:
         return True
 
     async def _bypass_changed(self, owner_sub: str, host_id: str, name: str, enabled: bool, reason: str) -> None:
-        if enabled:
-            from orchestrator.approval_receipts import withdraw_computer_reviews
-            key = (owner_sub, host_id)
-            self.review_generations[key] = self.review_generations.get(key, 0) + 1
-            await withdraw_computer_reviews(self._orch, owner_sub, host_id)
         try:
             from datetime import datetime, timezone
 
@@ -297,6 +318,26 @@ class ComputerSessionManager:
             logger.warning("102: bypass audit failed for host %s", host_id[:8], exc_info=True)
         for session in [s for s in self._sessions.values() if (s.owner_sub, s.host_id) == (owner_sub, host_id)]:
             await self._push(session)
+
+    def _audit_bypass_refusal(self, host: ComputerHost, source: str) -> None:
+        try:
+            from datetime import datetime, timezone
+
+            from audit.recorder import get_recorder
+            from audit.schemas import AuditEventCreate
+            recorder = get_recorder()
+            if recorder is None:
+                return
+            recorder.record_blocking(AuditEventCreate(
+                actor_user_id=host.owner_sub, auth_principal=host.owner_sub,
+                event_class="agent_lifecycle", action_type="remote_op.refused",
+                description=f"refused bypass permissions on {host.name} by managed policy"[:1024],
+                correlation_id=host.host_id, outcome="failure",
+                inputs_meta={"reason": "managed_policy", "host_id": host.host_id,
+                             "verb": "bypass_enable", "source": source},
+                started_at=datetime.now(timezone.utc)))
+        except Exception:  # noqa: BLE001
+            logger.debug("102: bypass refusal audit failed for host %s", host.host_id[:8], exc_info=True)
 
     def get(self, session_id: str) -> Optional[ComputerSession]:
         return self._sessions.get(session_id)
@@ -346,6 +387,7 @@ class ComputerSessionManager:
     async def start(self, owner_sub: str, host: ComputerHost, websocket, chat_id: Optional[str],
                     *, wait_for_ack: bool = True, caller_guard=None) -> ComputerSession:
         from orchestrator.project_authority import resolve_project_origin, origin_current, ProjectSessionWitness
+        self.require_ceilings(host, ("computer_use",), websocket)
         previous = self.live_for_host(owner_sub, host.host_id)
         witness = ProjectSessionWitness.capture(self._orch, previous) if previous and host.project_mode else None
         origin = await resolve_project_origin(self._orch, owner_sub, chat_id, host)
@@ -441,7 +483,6 @@ class ComputerSessionManager:
     async def pause(self, session: ComputerSession, reason: str, *, push: bool = True) -> None:
         if session.state == ENDED or session.state == PAUSED and session.pause_reason == reason:
             return
-        session.approval_pause_authority = None
         session.state = PAUSED
         session.terminal_ok_until = 0.0
         session.authority_generation += 1
@@ -463,7 +504,6 @@ class ComputerSessionManager:
                               outcome="failure", meta={"reason": refusal, "pause_reason": session.pause_reason})
             raise ComputerHostError(refusal, f"{session.host_name} was paused at the computer; only its own Resume "
                                              "control can continue the session")
-        session.approval_pause_authority = None
         session.state = ACTIVE
         session.authority_generation += 1
         session.pause_reason = None
@@ -477,7 +517,6 @@ class ComputerSessionManager:
             return
         if reason not in END_REASONS:
             reason = "user_stop"
-        session.approval_pause_authority = None
         session.state = ENDED
         session.terminal_ok_until = 0.0
         session.authority_generation += 1
@@ -571,6 +610,60 @@ class ComputerSessionManager:
         elif event == "approval_activity":
             await self._audit(session, "computer_session.approval_activity",
                               "input on the controlled host acted on an approval card")
+
+    async def on_sandbox_violation(self, owner_sub: str, host_id: str, session_id: str,
+                                   payload: Optional[dict]) -> None:
+        session = self._sessions.get(session_id or "")
+        if session is None or session.owner_sub != owner_sub or session.host_id != host_id:
+            return
+        if not isinstance(payload, dict):
+            return
+        violations = payload.get("violations")
+        summary = {key: payload.get(key) for key in ("source", "operation", "target", "detail", "blocked")
+                   if payload.get(key) is not None}
+        meta: Dict[str, Any] = {
+            "violation": summary or ("bounded" if violations is None else ""),
+            "job_id": str(payload.get("job_id") or "")[:64]}
+        sandbox_block = payload.get("sandbox")
+        if isinstance(sandbox_block, dict):
+            digest = sandbox_block.get("profile_digest")
+            if isinstance(digest, str) and digest:
+                meta["profile_digest"] = digest[:128]
+            mode = sandbox_block.get("mode")
+            if isinstance(mode, str) and mode:
+                meta["mode"] = mode[:32]
+        await self._audit(session, "command.sandbox_violation", "the command sandbox reported a violation",
+                          meta=meta)
+
+    def note_sandbox_result(self, session, job_id: str, sandbox: dict, loop=None) -> None:
+        """Record the host-reported sandbox block (mode, profile digest, violation count)
+        for a finished job. Safe to call from the sync tool path: it schedules the audit
+        onto the given orchestrator loop, or the running loop when called from async code."""
+        if not isinstance(sandbox, dict) or not sandbox:
+            return
+        meta: Dict[str, Any] = {"job_id": str(job_id or "")[:64]}
+        digest = sandbox.get("profile_digest")
+        if isinstance(digest, str) and digest:
+            meta["profile_digest"] = digest[:128]
+        mode = sandbox.get("mode")
+        if isinstance(mode, str) and mode:
+            meta["mode"] = mode[:32]
+        violations = sandbox.get("violations")
+        if isinstance(violations, list):
+            meta["violation_count"] = len(violations)
+        target = loop
+        if target is None:
+            try:
+                target = asyncio.get_running_loop()
+            except RuntimeError:
+                return
+        coro = self._audit(session, "command.sandbox_result",
+                           "the command sandbox reported its result for the job", meta=meta)
+        try:
+            asyncio.run_coroutine_threadsafe(coro, target)
+        except RuntimeError:
+            coro.close()
+            return
 
     def _device_id(self, websocket) -> str:
         try:

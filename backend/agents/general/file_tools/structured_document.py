@@ -138,9 +138,12 @@ def _scratch(worker: bytes, profile_raw: bytes) -> Iterator[tuple[Path, Path]]:
         profile_path.chmod(0o400)
         runtime.chmod(0o500)
         if hasattr(os, "geteuid") and os.geteuid() == 0:
-            root.chmod(0o711)
-            runtime.chmod(0o555)
-            work.chmod(0o777)
+            os.chown(root, -1, _NON_ROOT_GID)
+            os.chown(runtime, -1, _NON_ROOT_GID)
+            for path in (worker_path, profile_path, work):
+                os.chown(path, _NON_ROOT_UID, _NON_ROOT_GID)
+            root.chmod(0o710)
+            runtime.chmod(0o510)
         yield runtime, work
     finally:
         try:
@@ -411,15 +414,15 @@ def _execute_worker(
         input_path = work / "input.bin"
         request_path = work / "request.json"
         output_path = work / "output.json"
-        input_mode = (
-            0o644 if hasattr(os, "geteuid") and os.geteuid() == 0 else 0o600
-        )
-        _write_file(input_path, payload, input_mode)
+        _write_file(input_path, payload, 0o600)
         _write_file(
             request_path,
             json.dumps(request, sort_keys=True, separators=(",", ":")).encode("utf-8"),
-            input_mode,
+            0o600,
         )
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            for path in (input_path, request_path):
+                os.chown(path, _NON_ROOT_UID, _NON_ROOT_GID)
         process_id = uuid.uuid4()
         try:
             child = supervisor.spawn(

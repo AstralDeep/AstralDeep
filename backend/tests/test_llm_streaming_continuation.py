@@ -4,8 +4,11 @@ orchestrator's stream accumulator, message reconstruction, and next-request wire
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
+import threading
+import time
 import types
 from pathlib import Path
 
@@ -23,8 +26,6 @@ from llm_config.tool_continuation import (  # noqa: E402
     ContinuationStateError,
 )
 from llm_config.types import CredentialSource, LLMUnavailable  # noqa: E402
-from orchestrator.compaction import compact_messages  # noqa: E402
-from orchestrator.context_engineering import TOMBSTONE, edit_context  # noqa: E402
 from orchestrator.orchestrator import Orchestrator  # noqa: E402
 
 pytestmark = pytest.mark.asyncio
@@ -627,87 +628,89 @@ async def test_cancelled_stream_discards_state_and_emits_no_signature():
         assert SIG_A not in json.dumps(frame)
 
 
-async def test_context_editing_keeps_current_turn_signature_state():
-    big_tool_output = "x" * 4000
-    messages = [
-        {"role": "system", "content": "sys"},
-        {"role": "user", "content": "q1"},
-        {"role": "assistant", "tool_calls": [
-            {"id": "call_1", "type": "function",
-             "function": {"name": "get_weather", "arguments": "{}"},
-             "extra_content": {"google": {"thought_signature": "SIG_1"}}}]},
-        {"role": "tool", "tool_call_id": "call_1", "content": big_tool_output},
-        {"role": "assistant", "tool_calls": [
-            {"id": "call_2", "type": "function",
-             "function": {"name": "get_weather", "arguments": "{}"},
-             "extra_content": {"google": {"thought_signature": "SIG_2"}}}]},
-        {"role": "tool", "tool_call_id": "call_2", "content": big_tool_output},
-        {"role": "assistant", "tool_calls": [
-            {"id": "call_3", "type": "function",
-             "function": {"name": "get_weather", "arguments": "{}"},
-             "extra_content": {"google": {"thought_signature": "SIG_3"}}}]},
-        {"role": "tool", "tool_call_id": "call_3", "content": big_tool_output},
-        {"role": "assistant", "tool_calls": [
-            {"id": "call_4", "type": "function",
-             "function": {"name": "get_weather", "arguments": "{}"},
-             "extra_content": {"google": {"thought_signature": "SIG_4"}}}]},
-        {"role": "tool", "tool_call_id": "call_4", "content": big_tool_output},
-        {"role": "user", "content": "q2"},
-        {"role": "assistant", "tool_calls": [
-            {"id": "call_a", "type": "function",
-             "function": {"name": "get_weather", "arguments": "{}"},
-             "extra_content": {"google": {"thought_signature": SIG_A}}}]},
-        {"role": "tool", "tool_call_id": "call_a", "content": "21C"},
-    ]
-    edited, n = edit_context(messages)
-    current = edited[11]
-    assert current["tool_calls"][0]["extra_content"] == {
-        "google": {"thought_signature": SIG_A}}
-    assert current["tool_calls"][0]["function"]["arguments"] == "{}"
-    assert edited[12]["content"] != big_tool_output
-    tombstoned = [m for m in edited
-                  if isinstance(m, dict) and m.get("content") == TOMBSTONE]
-    assert n == len(tombstoned) == 2
-    for message in edited:
-        if isinstance(message, dict) and message.get("tool_calls"):
-            for call in message["tool_calls"]:
-                extra = call.get("extra_content")
-                assert extra is None or extra == {
-                    "google": {"thought_signature": {"call_1": "SIG_1",
-                                                     "call_2": "SIG_2",
-                                                     "call_3": "SIG_3",
-                                                     "call_4": "SIG_4",
-                                                     "call_a": SIG_A}[call["id"]]}}
+async def test_cancelling_a_streamed_call_closes_the_provider_stream():
+    first_chunk = threading.Event()
+    closed = threading.Event()
+
+    class _Stream:
+        delivered = 0
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            if closed.is_set() or self.delivered >= 500:
+                raise StopIteration
+            self.delivered += 1
+            first_chunk.set()
+            time.sleep(0.01)
+            delta = types.SimpleNamespace(content="word ", tool_calls=None)
+            return types.SimpleNamespace(
+                usage=None, choices=[types.SimpleNamespace(delta=delta, finish_reason=None)])
+
+        def close(self):
+            closed.set()
+
+    stream = _Stream()
+    client = types.SimpleNamespace(chat=types.SimpleNamespace(
+        completions=types.SimpleNamespace(create=lambda **_kwargs: stream)))
+    orch = _orch(client)
+
+    async def invoke(_websocket, _chat, _purpose, _model, call, **_kwargs):
+        return await call()
+
+    orch._context_model_call = invoke
+    turn = asyncio.create_task(orch._call_llm_streamed(object(), client, {"model": "m"}, "chat-1"))
+    assert await asyncio.to_thread(first_chunk.wait, 5)
+    turn.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await turn
+    assert await asyncio.to_thread(closed.wait, 5)
+    assert stream.delivered < 500
 
 
-async def test_compaction_keeps_recent_turn_signature_state():
-    filler = "y" * 30000
-    messages = [
-        {"role": "system", "content": "sys"},
-        {"role": "user", "content": "q1 " + filler},
-        {"role": "assistant", "content": "a1 " + filler},
-        {"role": "user", "content": "q2 " + filler},
-        {"role": "assistant", "content": "a2 " + filler},
-        {"role": "user", "content": "q3 " + filler},
-        {"role": "assistant", "content": "a3 " + filler},
-        {"role": "user", "content": "weather?"},
-        {"role": "assistant", "tool_calls": [
-            {"id": "call_a", "type": "function",
-             "function": {"name": "get_weather", "arguments": '{"city": "Rome"}'},
-             "extra_content": {"google": {"thought_signature": SIG_A}}}]},
-        {"role": "tool", "tool_call_id": "call_a", "content": "21C"},
-    ]
+async def test_cancelling_a_streamed_call_closes_the_narrative_stream():
+    released = threading.Event()
 
-    async def _summary_llm(ws, prompt):
-        return types.SimpleNamespace(content="summary"), None
+    class _Stream:
+        sent = False
 
-    compacted, was_compacted = await compact_messages(
-        messages, "default", _summary_llm)
-    assert was_compacted
-    survivors = [m for m in compacted
-                 if isinstance(m, dict) and m.get("role") == "assistant"
-                 and m.get("tool_calls")]
-    assert len(survivors) == 1
-    assert survivors[0]["tool_calls"][0]["extra_content"] == {
-        "google": {"thought_signature": SIG_A}}
-    assert survivors[0]["tool_calls"][0]["function"]["arguments"] == '{"city": "Rome"}'
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            if not self.sent:
+                self.sent = True
+                delta = types.SimpleNamespace(content="word ", tool_calls=None)
+                return types.SimpleNamespace(
+                    usage=None, choices=[types.SimpleNamespace(delta=delta, finish_reason=None)])
+            released.wait(5)
+            raise StopIteration
+
+        def close(self):
+            released.set()
+
+    client = types.SimpleNamespace(chat=types.SimpleNamespace(
+        completions=types.SimpleNamespace(create=lambda **_kwargs: _Stream())))
+    orch = _orch(client)
+    first_frame = asyncio.Event()
+    capture = orch._safe_send
+
+    async def send(ws, payload):
+        first_frame.set()
+        return await capture(ws, payload)
+
+    async def invoke(_websocket, _chat, _purpose, _model, call, **_kwargs):
+        return await call()
+
+    orch._safe_send = send
+    orch._context_model_call = invoke
+    turn = asyncio.create_task(orch._call_llm_streamed(object(), client, {"model": "m"}, "chat-1"))
+    await asyncio.wait_for(first_frame.wait(), 5)
+    turn.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await turn
+    released.set()
+    first, last = orch._sent_frames[0], orch._sent_frames[-1]
+    assert first["terminal"] is False and last["terminal"] is True
+    assert last["stream_id"] == first["stream_id"]

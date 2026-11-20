@@ -1,6 +1,7 @@
-"""Renders the Audit Trail surface: a filterable, cursor-paginated event list and a
-per-event detail view. Reads reuse the same orch.audit_repo internals as the GET
-/api/audit REST routes in backend/audit/api.py, scoped to the authenticated user.
+"""Renders the Audit Trail surface: a filterable, cursor-paginated event list, optionally
+scoped to one chat, and a per-event detail view. Reads reuse the same orch.audit_repo
+internals as the GET /api/audit REST routes in backend/audit/api.py, scoped to the
+authenticated user, and orch.history names the scoped chat.
 """
 
 from __future__ import annotations
@@ -8,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from datetime import date, datetime, time, timedelta, timezone
 from itertools import groupby
 
@@ -23,9 +25,10 @@ TITLE = "Audit log"
 _SURFACE_KEY = "audit"
 _PAGE_LIMIT = 50
 _SNIPPET_CHARS = 120
-_LIST_KEYS = ("event_class", "outcome", "q", "cursor", "from", "to", "history")
-_VALUE_LIMITS = {"event_class": 64, "outcome": 32, "q": 256, "cursor": 512,
-                 "from": 10, "to": 10}
+_LIST_KEYS = ("conversation_id", "event_class", "outcome", "q", "cursor", "from", "to", "history")
+_VALUE_LIMITS = {"conversation_id": 256, "event_class": 64, "outcome": 32, "q": 256,
+                 "cursor": 512, "from": 10, "to": 10}
+_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 
 class _FilterError(ValueError):
@@ -57,6 +60,10 @@ def _list_params(value) -> dict[str, str]:
             raise ValueError("Audit filters cannot contain null characters.")
         if key == "history":
             result[key] = json.dumps(_history(item))
+        elif key == "conversation_id" and (
+            len(item) > _VALUE_LIMITS[key] or _CONTROL_RE.search(item)
+        ):
+            raise ValueError("Choose a valid chat for the audit log.")
         elif len(item) > _VALUE_LIMITS[key]:
             raise ValueError(
                 "Choose valid dates with From no later than Through." if key in ("from", "to")
@@ -75,6 +82,16 @@ def _date_bound(value, *, end=False):
         raise ValueError("date must be YYYY-MM-DD")
     start = datetime.combine(parsed, time.min, tzinfo=timezone.utc)
     return start + timedelta(days=1) if end else start
+
+
+def _chat_title(orch, user_id, conversation_id):
+    if not conversation_id:
+        return None
+    try:
+        record = orch.history.get_conversation_record(conversation_id, user_id)
+    except ValueError:
+        return None
+    return None if record is None else (record.title or "New Chat")
 
 
 def _nav_button(label, fields) -> str:
@@ -122,18 +139,19 @@ def _valid_or_none(value, allowed):
     return value if value in allowed else None
 
 
-def _select(name: str, label: str, options, current) -> str:
-    opts = ['<option value="">All</option>']
+def _select(name: str, label: str, options, current, *, empty_label="All") -> str:
+    opts = [f'<option value="">{esc(empty_label)}</option>']
     for option in options:
-        sel = " selected" if option == current else ""
-        opts.append(f'<option value="{esc(option)}"{sel}>{esc(option)}</option>')
+        value, text = option if isinstance(option, tuple) else (option, option)
+        sel = " selected" if value == current else ""
+        opts.append(f'<option value="{esc(value)}"{sel}>{esc(text)}</option>')
     return (
         f'<label class="flex flex-col gap-1 text-xs text-astral-muted">{esc(label)}'
         f'<select name="{esc(name)}" class="{_INPUT_CLS}">{"".join(opts)}</select></label>'
     )
 
 
-def _filter_bar(event_class, outcome, q, params=None) -> str:
+def _filter_bar(event_class, outcome, q, params=None, chat_title=None) -> str:
     q_input = (
         f'<label class="flex flex-col gap-1 text-xs text-astral-muted flex-1 min-w-[10rem]">Search'
         f'<input type="text" name="q" maxlength="256" value="{esc(q)}" '
@@ -146,6 +164,16 @@ def _filter_bar(event_class, outcome, q, params=None) -> str:
         "Apply</button>"
     )
     params = params or {}
+    chat_id = params.get("conversation_id") or ""
+    scope = {"conversation_id": chat_id} if chat_id else {}
+    chat_label = chat_title or chat_id
+    chat_select = (
+        _select("conversation_id", "Chat", [(chat_id, chat_label)], chat_id,
+                empty_label="All chats") if chat_id else ""
+    )
+    heading = (
+        f'<h3 class="text-sm font-semibold">Chat: {esc(chat_label)}</h3>' if chat_id else ""
+    )
     dates = "".join(
         f'<label class="flex flex-col gap-1 text-xs text-astral-muted">{label} (UTC)'
         f'<input type="date" name="{key}" value="{esc(params.get(key, ""))}" '
@@ -153,20 +181,22 @@ def _filter_bar(event_class, outcome, q, params=None) -> str:
         for key, label in (("from", "From"), ("to", "Through"))
     )
     return (
-        '<div data-ui-form class="flex flex-wrap items-end gap-3 bg-white/5 '
+        heading
+        + '<div data-ui-form class="flex flex-wrap items-end gap-3 bg-white/5 '
         'border border-white/10 rounded-lg p-3">'
+        + chat_select
         + _select("event_class", "Event class", EVENT_CLASSES, event_class)
         + _select("outcome", "Outcome", OUTCOMES, outcome)
         + q_input
         + dates
         + apply_btn
-        + _nav_button("Reset", {})
+        + _nav_button("Reset", scope)
         + "</div>"
         + '<div class="flex flex-wrap gap-2" aria-label="Quick audit filters">'
         + _nav_button("All activity", {})
-        + _nav_button("Failures", {"outcome": "failure"})
-        + _nav_button("Tool calls", {"event_class": "agent_tool_call"})
-        + _nav_button("Sign ins", {"event_class": "auth"})
+        + _nav_button("Failures", {**scope, "outcome": "failure"})
+        + _nav_button("Tool calls", {**scope, "event_class": "agent_tool_call"})
+        + _nav_button("Sign ins", {**scope, "event_class": "auth"})
         + "</div>"
     )
 
@@ -255,7 +285,7 @@ def _pointers_block(pointers) -> str:
 
 
 async def _record_list_view(user_id, event_class, outcome, q, cursor, returned_count,
-                            from_ts=None, to_ts=None) -> None:
+                            from_ts=None, to_ts=None, conversation_id=None) -> None:
     recorder = get_recorder()
     if recorder is None:
         return
@@ -271,6 +301,7 @@ async def _record_list_view(user_id, event_class, outcome, q, cursor, returned_c
             inputs_meta={
                 "limit": _PAGE_LIMIT,
                 "filters": {
+                    **({"conversation_id": conversation_id} if conversation_id else {}),
                     "event_class": [event_class] if event_class else [],
                     "outcome": [outcome] if outcome else [],
                     "from": from_ts.isoformat() if from_ts else None,
@@ -315,6 +346,7 @@ async def _read_list(orch, user_id, params):
     outcome = _valid_or_none(params.get("outcome"), OUTCOMES)
     q = str(params.get("q") or "").strip()
     cursor = str(params.get("cursor") or "").strip() or None
+    conversation_id = params.get("conversation_id") or None
     params = {key: str(params[key]) for key in _LIST_KEYS if params.get(key)}
     params.update(event_class=event_class or "", outcome=outcome or "", q=q,
                   cursor=cursor or "", history=json.dumps(_history(params.get("history"))))
@@ -334,6 +366,7 @@ async def _read_list(orch, user_id, params):
         "event_classes": [event_class] if event_class else None,
         "outcomes": [outcome] if outcome else None,
         "keyword": q or None,
+        "conversation_id": conversation_id,
         "from_ts": from_ts,
         "to_ts": to_ts,
         "availability_resolver": _availability_resolver(orch, user_id),
@@ -353,7 +386,8 @@ async def _read_list(orch, user_id, params):
         items, next_cursor = await asyncio.to_thread(
             orch.audit_repo.list_for_user, user_id, **kwargs)
 
-    await _record_list_view(user_id, event_class, outcome, q, cursor, len(items), from_ts, to_ts)
+    await _record_list_view(user_id, event_class, outcome, q, cursor, len(items), from_ts, to_ts,
+                            conversation_id)
 
     return params, event_class, outcome, q, items, next_cursor, notices
 
@@ -366,11 +400,15 @@ async def _render_list(orch, user_id, params) -> str:
             params = _list_params(params)
         except ValueError:
             params = {}
+        chat_title = await asyncio.to_thread(
+            _chat_title, orch, user_id, params.get("conversation_id"))
         return (notice_block("error", str(exc)) + _filter_bar(
             _valid_or_none(params.get("event_class"), EVENT_CLASSES),
             _valid_or_none(params.get("outcome"), OUTCOMES), params.get("q", ""), params,
+            chat_title,
         ))
     notices = [notice_block("error", message) for message in notices]
+    chat_title = await asyncio.to_thread(_chat_title, orch, user_id, params.get("conversation_id"))
 
     if items:
         groups = []
@@ -401,7 +439,7 @@ async def _render_list(orch, user_id, params) -> str:
         f"entr{'y' if len(items) == 1 else 'ies'}</div>"
     )
     pager = _pager(next_cursor, params)
-    return ("".join(notices) + _filter_bar(event_class, outcome, q, params)
+    return ("".join(notices) + _filter_bar(event_class, outcome, q, params, chat_title)
             + count_line + pager + rows_html + pager)
 
 
@@ -495,11 +533,15 @@ async def components(orch, user_id, roles, params):
             active = _list_params(params)
         except ValueError:
             active = {}
-        view = build_audit_view(event_classes=EVENT_CLASSES, filters=active, loaded=False)
+        chat_title = await asyncio.to_thread(
+            _chat_title, orch, user_id, active.get("conversation_id"))
+        view = build_audit_view(event_classes=EVENT_CLASSES, filters=active, loaded=False,
+                                chat_title=chat_title)
         return [_sdui.alert(str(exc), "error"), *[item.to_dict() for item in view.components]]
+    chat_title = await asyncio.to_thread(_chat_title, orch, user_id, active.get("conversation_id"))
     view = build_audit_view(
         [_entry_snapshot(dto) for dto in items], filters=active,
-        event_classes=EVENT_CLASSES, next_cursor=next_cursor,
+        event_classes=EVENT_CLASSES, next_cursor=next_cursor, chat_title=chat_title,
     )
     return [*[_sdui.alert(message, "error") for message in notices],
             *[item.to_dict() for item in view.components]]

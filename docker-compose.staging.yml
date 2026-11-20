@@ -111,7 +111,10 @@ services:
       DB_USER: ${STAGING_DB_USER:?set the staging database user}
       DB_PASSWORD: ${STAGING_DB_PASSWORD:?set the staging database password}
       DB_NAME: ${STAGING_DB_NAME:?set the staging database name}
+      ASTRAL_NODE_PROFILE: personal
       KEYCLOAK_INTERNAL_URL: http://keycloak:8080
+      AGENT_KEY_TRUSTED_HOSTS: host.docker.internal,gateway.docker.internal,${AGENT_KEY_TRUSTED_HOSTS:-}
+      ASTRAL_FRAME_TRACE_DIR: /app
       FF_BG_CONTINUITY: "true"
       FF_SCHEDULER_EXECUTION: "true"
       OPENAI_BASE_URL: ""

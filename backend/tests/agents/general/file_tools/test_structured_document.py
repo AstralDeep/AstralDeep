@@ -10,6 +10,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import zipfile
@@ -394,11 +395,20 @@ def test_structured_owner_denial_happens_before_worker(repo, upload_root, monkey
     assert "text" not in out
 
 
+@pytest.fixture
+def worker_record_dir():
+    with tempfile.TemporaryDirectory(prefix="astral-worker-record-") as directory:
+        path = Path(directory)
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            os.chown(path, structured_document._NON_ROOT_UID, structured_document._NON_ROOT_GID)
+        yield path
+
+
 def test_structured_cancellation_terminates_the_worker_and_descendants(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, worker_record_dir
 ):
     _profile_variant(tmp_path, monkeypatch, processes=1024)
-    pid_file = tmp_path / "cancel-child.pid"
+    pid_file = worker_record_dir / "cancel-child.pid"
     worker = tmp_path / "slow_worker.py"
     worker.write_text(
         "import subprocess, sys, time\n"
@@ -422,11 +432,11 @@ def test_structured_cancellation_terminates_the_worker_and_descendants(
 
 
 def test_structured_timeout_terminates_the_worker_and_descendants(
-    repo, upload_root, monkeypatch, tmp_path
+    repo, upload_root, monkeypatch, tmp_path, worker_record_dir
 ):
     _enable(monkeypatch)
     _profile_variant(tmp_path, monkeypatch, deadline_seconds=0.5, processes=1024)
-    pid_file = tmp_path / "timeout-child.pid"
+    pid_file = worker_record_dir / "timeout-child.pid"
     worker = tmp_path / "timeout_worker.py"
     worker.write_text(
         "import subprocess, sys, time\n"

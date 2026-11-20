@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Diffs each of the five Astral repositories against a recorded baseline commit and
+"""Diffs each of the four Astral repositories against a recorded baseline commit and
 fails when a changed path touches a native client directory or a .github/workflows/
 file; authorizes nothing, a local diagnostic only.
 """
@@ -16,7 +16,6 @@ from typing import Iterable, Sequence
 
 DEFAULT_BASELINES: dict[str, str] = {
     "AstralDeep": "e92db75d95719602228b5b41f179cfcbeeadc3bd",
-    "AstralPlane": "65cbaedbbda4c5f9adfcb05becf02377a29caeee",
     "AstralPrimitives": "4056df95acd992a9f84d883e572760f6da24c88e",
     "AstralProjection": "dd93dfb30b89b9966682e117a76952f8429a24b0",
     "LETS": "f53f3f329541ad34161ec9aaaad075e80ccb01d1",
@@ -175,13 +174,13 @@ def _render_text(results: list[RepoResult]) -> str:
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Feature 089 scope guard across the five Astral repositories."
+        description="Feature 089 scope guard across the four Astral repositories."
     )
     parser.add_argument(
         "--repo-parent",
         type=Path,
         default=DEFAULT_REPO_PARENT,
-        help="directory holding the five sibling checkouts (default: AstralDeep's parent)",
+        help="directory holding the four sibling checkouts (default: AstralDeep's parent)",
     )
     parser.add_argument(
         "--repo-path",

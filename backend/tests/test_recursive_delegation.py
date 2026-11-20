@@ -1,4 +1,4 @@
-"""Property tests for backend/orchestrator/delegation.py: scope attenuation is monotonic
+"""Property tests for backend/orchestrator/agent_authority.py: scope attenuation is monotonic
 and never escalates across generated scope sets, actor chains stay complete and
 tamper-evident, and minting is bounded by a maximum depth.
 """
@@ -10,7 +10,7 @@ import time
 
 import pytest
 
-from orchestrator import delegation as D
+from orchestrator import agent_authority as D
 
 SCOPE_POOL = [
     "tools:read", "tools:write", "tools:search", "tools:system",
@@ -35,7 +35,7 @@ def base_token(sub="human:U1", agent="A", scopes=None, exp_in=300, now=None) -> 
         "sub": sub,
         "act": {"sub": f"agent:{agent}"},
         "scope": " ".join(scopes),
-        "iss": "mock-astral-delegation",
+        "iss": "astral-delegation",
         "aud": "astral-agent-service",
         "iat": now,
         "exp": now + exp_in,

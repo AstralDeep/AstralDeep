@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 from types import MethodType, SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from orchestrator.agent_identity import (
@@ -184,6 +185,7 @@ def test_shared_dispatch_gate_denies_a_missing_identity_before_permissions():
         agent_cards={PANATLAS_ID: _card()},
         ui_sessions={websocket: {"sub": "sam"}},
         tool_permissions=_AllowAllPermissions(),
+        _audit_gate_denial=AsyncMock(),
     )
     orch._run_project_bound_gate_stack = MethodType(Orchestrator._run_project_bound_gate_stack, orch)
     result = asyncio.run(Orchestrator._run_gate_stack(

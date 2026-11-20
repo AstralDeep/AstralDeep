@@ -1,450 +1,254 @@
-# Feature 053 — build, sign, upload and submit the Apple clients to the App Store.
-#
-# Produces TWO archives and uploads both into the SINGLE Universal Purchase App
-# Store Connect record they share (bundle id com.personalailabs.astraldeep):
-#   * iOS   — carries the embedded watchOS app (Embed Watch Content phase)
-#   * macOS — Mac App Store (.pkg)
-#
-# There is deliberately NO notarytool step. Developer notarization is the
-# Developer-ID / outside-the-store path. App Store builds (including Mac App
-# Store) are processed and signed-checked by Apple after upload.
-#
-# TAG NAMESPACE: `apple-v*`, NOT `v-apple-*`. release-windows.yml triggers on
-# `v*`, and a GitHub Actions `*` matches any character except `/` — so a
-# `v-apple-1.0.0` tag WOULD also match `v*` and double-fire the Windows release
-# (whose tag-vs-__version__ guard then fails the run). Only a namespace that does
-# not begin with `v` is provably disjoint. Do not "fix" this back to `v-apple-*`.
-#
-# Separate from ci.yml by design: the six backend gates are untouched.
+# Uploads only the iPhone app and its embedded Watch app using qualified source-bound inputs.
+name: Upload iPhone App Store build
 
-name: Release Apple clients
-
-# Triggers:
-#   * apple-v* tag push       — versioned release (guard asserts tag==MARKETING_VERSION)
-#   * workflow_dispatch       — manual release from the main/default ref only
-# Merging a composition never submits to the App Store. A tag or a guarded manual
-# dispatch is a separate, explicit release decision.
 on:
-  push:
-    tags: ["apple-v*"]
   workflow_dispatch:
+    inputs:
+      version:
+        description: Marketing version for both iPhone and Watch
+        required: true
+        type: string
+      build:
+        description: Integer 1..9999 exceeding every uploaded iOS build (checked against App Store Connect)
+        required: true
+        type: string
+      producer_run_id:
+        description: Successful main release-macos run with exact Kernel and verified Projection compatibility
+        required: true
+        type: string
+      artifact_id:
+        description: Source-bound macos-apple-artifacts artifact ID from that run
+        required: true
+        type: string
 
-# The macOS job only checks out; publish-assets elevates to contents: write on its own.
 permissions:
   contents: read
+
+concurrency:
+  group: iphone-app-store-upload
+  cancel-in-progress: false
 
 env:
   PROJECT: components/AstralProjection/apple-clients/AstralApp/AstralApp.xcodeproj
   SCHEME: AstralApp
-  XCODE_VERSION: "26.6"
-  XCODE_BUILD: "17F113"
 
 jobs:
-  # Cheap Linux gate: a tag push or main-ref manual dispatch is the only release
-  # activation surface. Ordinary main merges cannot reach this workflow.
   gate:
-    name: Decide whether to release
+    name: Verify native qualification and framework provenance
     if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
-    outputs:
-      release: ${{ steps.decide.outputs.release }}
+    permissions:
+      contents: read
+      actions: read
     steps:
-      - id: decide
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify approved producer and exact source qualification
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRODUCER_RUN_ID: ${{ inputs.producer_run_id }}
+          ARTIFACT_ID: ${{ inputs.artifact_id }}
         run: |
-          echo "release=true" >> "$GITHUB_OUTPUT"
-          echo "release: explicit event=${{ github.event_name }} ref=${{ github.ref }}"
+          set -euo pipefail
+          python3 scripts/ios_store_upload.py producer --run-id "$PRODUCER_RUN_ID" \
+            --artifact-id "$ARTIFACT_ID" --receipt "$RUNNER_TEMP/producer.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ios-producer-receipt
+          path: ${{ runner.temp }}/producer.json
+          if-no-files-found: error
+          retention-days: 14
 
   release:
-    name: Archive, sign and upload
+    name: Sign, validate and upload iPhone with embedded Watch
     needs: gate
-    if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && (needs.gate.outputs.release == 'true') }}
+    if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && (needs.gate.result == 'success') }}
     runs-on: macos-26
-    timeout-minutes: 90
+    timeout-minutes: 30
+    environment: release-publisher
+    permissions:
+      contents: read
+      actions: read
+    env:
+      VERSION: ${{ inputs.version }}
+      BUILD: ${{ inputs.build }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
           submodules: recursive
           persist-credentials: false
-
-      - name: Select exact Xcode
-        shell: bash
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.11'
+      - name: Install App Store API dependencies
+        run: |
+          python3 -m pip install --require-hashes --only-binary=:all: -r scripts/requirements-ios-release.txt
+      - name: Select exact Xcode 26.6 (17F113)
+        run: bash components/AstralKernel/scripts/select-xcode.sh
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ios-producer-receipt
+          path: ${{ runner.temp }}/evidence
+      - name: Restore provider- and source-verified Apple framework
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ inputs.artifact_id }}
         run: |
           set -euo pipefail
-          selected=""
-          for candidate in /Applications/Xcode_26.6.app /Applications/Xcode_26.6*.app /Applications/Xcode.app; do
-            [[ -d "$candidate" ]] || continue
-            if [[ "$("$candidate/Contents/Developer/usr/bin/xcodebuild" -version | sed -n '1p')" == "Xcode ${XCODE_VERSION}" ]] && \
-               [[ "$("$candidate/Contents/Developer/usr/bin/xcodebuild" -version | sed -n '2p')" == "Build version ${XCODE_BUILD}" ]]; then
-              selected="$candidate"
-              break
-            fi
-          done
-          [[ -n "$selected" ]] || { echo "Xcode ${XCODE_VERSION} (${XCODE_BUILD}) is required" >&2; exit 1; }
-          sudo xcode-select --switch "$selected/Contents/Developer"
-          [[ "$(xcodebuild -version | sed -n '1p')" == "Xcode ${XCODE_VERSION}" ]]
-          [[ "$(xcodebuild -version | sed -n '2p')" == "Build version ${XCODE_BUILD}" ]]
-
-      - name: Require the pinned Mac Store package signer
-        run: test -f components/AstralProjection/apple-clients/Scripts/repair_macos_store_package.py
-
-      # Fail before any signing step if the operator has not provisioned the
-      # secrets. Names only ever reach the log — never values.
-      - name: Require signing material
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" > "$RUNNER_TEMP/apple-input.zip"
+          python3 scripts/ios_store_upload.py restore --input "$RUNNER_TEMP/apple-input.zip" \
+            --receipt "$RUNNER_TEMP/evidence/producer.json" \
+            --destination components/AstralProjection/apple-clients/AstralKernel
+          python3 components/AstralKernel/scripts/artifact_manifest.py verify \
+            --root components/AstralProjection/apple-clients/AstralKernel/Artifacts \
+            --kind apple --expected-source "$(git -C components/AstralKernel rev-parse HEAD)"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          manifest = json.loads(Path('components/AstralProjection/apple-clients/AstralKernel/Artifacts/apple-build-manifest.json').read_text())
+          assert manifest['toolchain']['xcode'] == 'Xcode 26.6\nBuild version 17F113'
+          assert manifest['toolchain']['rustc'].startswith('rustc 1.99.1 ')
+          PY
+      - name: Require signing and App Store material
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_DISTRIBUTION_CERT_P12_BASE64: ${{ secrets.APPLE_DISTRIBUTION_CERT_P12_BASE64 }}
           APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
           APPLE_PROVISION_PROFILE_BASE64: ${{ secrets.APPLE_PROVISION_PROFILE_BASE64 }}
+          APPLE_PROFILE_IOS: ${{ secrets.APPLE_PROFILE_IOS }}
+          APPLE_PROFILE_WATCH: ${{ secrets.APPLE_PROFILE_WATCH }}
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_KEY_P8_BASE64: ${{ secrets.ASC_KEY_P8_BASE64 }}
         run: |
-          missing=()
-          for k in APPLE_TEAM_ID APPLE_DISTRIBUTION_CERT_P12_BASE64 APPLE_CERT_PASSWORD \
-                   APPLE_PROVISION_PROFILE_BASE64 ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_P8_BASE64; do
-            [ -n "${!k}" ] || missing+=("$k")
+          set -euo pipefail
+          for name in APPLE_TEAM_ID APPLE_DISTRIBUTION_CERT_P12_BASE64 APPLE_CERT_PASSWORD \
+            APPLE_PROVISION_PROFILE_BASE64 APPLE_PROFILE_IOS APPLE_PROFILE_WATCH ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_P8_BASE64; do
+            [[ -n "${!name}" ]] || { echo "::error::Missing $name"; exit 1; }
           done
-          if [ ${#missing[@]} -ne 0 ]; then
-            echo "::error::missing signing material: ${missing[*]}"
-            echo "No archive is produced without it. Configure these repository secrets."
-            exit 1
-          fi
-          echo "all required secrets are present"
-
-      # The pushed tag must be apple-v<MARKETING_VERSION>. Without this a stale
-      # version constant ships under a tag that claims otherwise. Tag pushes only:
-      # workflow_dispatch runs from a branch ref and has no tag to compare.
-      - name: Tag matches MARKETING_VERSION
-        if: startsWith(github.ref, 'refs/tags/')
+          umask 077
+          mkdir -p "$HOME/.appstoreconnect/private_keys"
+          printf '%s' "$ASC_KEY_P8_BASE64" | base64 --decode > "$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8"
+      - name: Refuse colliding or nonmonotonic iOS build
         env:
-          TAG: ${{ github.ref_name }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
         run: |
-          version=$(xcodebuild -project "$PROJECT" -scheme "$SCHEME" \
-                      -configuration Release -showBuildSettings 2>/dev/null \
-                    | awk '/ MARKETING_VERSION /{print $3; exit}')
-          want="apple-v${version}"
-          if [ "$TAG" != "$want" ]; then
-            echo "::error::tag '$TAG' != '$want' — bump MARKETING_VERSION before tagging."
-            exit 1
-          fi
-          echo "tag $TAG matches MARKETING_VERSION $version"
-
-      - name: Import signing material into an ephemeral keychain
+          set -euo pipefail
+          python3 scripts/ios_store_upload.py preflight --version "$VERSION" --build "$BUILD" \
+            --input "$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8" \
+            --receipt "$RUNNER_TEMP/evidence/app-store-preflight.json"
+      - name: Import Apple Distribution identity into ephemeral keychain
         env:
           APPLE_DISTRIBUTION_CERT_P12_BASE64: ${{ secrets.APPLE_DISTRIBUTION_CERT_P12_BASE64 }}
-          APPLE_INSTALLER_CERT_P12_BASE64: ${{ secrets.APPLE_INSTALLER_CERT_P12_BASE64 }}
           APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
-          APPLE_INSTALLER_CERT_PASSWORD: ${{ secrets.APPLE_INSTALLER_CERT_PASSWORD }}
-          APPLE_PROVISION_PROFILE_BASE64: ${{ secrets.APPLE_PROVISION_PROFILE_BASE64 }}
         run: |
-          KEYCHAIN="$RUNNER_TEMP/astral-signing.keychain-db"
-          PASSWORD="$(uuidgen)"
-          security create-keychain -p "$PASSWORD" "$KEYCHAIN"
-          security set-keychain-settings -lut 3600 "$KEYCHAIN"
-          security unlock-keychain -p "$PASSWORD" "$KEYCHAIN"
-
-          echo "$APPLE_DISTRIBUTION_CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
-          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$APPLE_CERT_PASSWORD" \
-            -T /usr/bin/codesign -T /usr/bin/security -T /usr/bin/productbuild
-          rm -f "$RUNNER_TEMP/cert.p12"
-
-          # A Mac App Store .pkg is signed by a SECOND identity ("3rd Party Mac
-          # Developer Installer"). It may travel inside the same .p12 as the
-          # Apple Distribution identity; if it does not, supply it separately.
-          if [ -n "$APPLE_INSTALLER_CERT_P12_BASE64" ]; then
-            echo "$APPLE_INSTALLER_CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/installer.p12"
-            security import "$RUNNER_TEMP/installer.p12" -k "$KEYCHAIN" \
-              -P "${APPLE_INSTALLER_CERT_PASSWORD:-$APPLE_CERT_PASSWORD}" \
-              -T /usr/bin/codesign -T /usr/bin/security -T /usr/bin/productbuild
-            rm -f "$RUNNER_TEMP/installer.p12"
-          fi
-
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$PASSWORD" "$KEYCHAIN"
-          security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
-
-      # Fail in seconds with an actionable message rather than 20 minutes into an
-      # archive. A .p12 only yields a usable identity if it carries the PRIVATE
-      # KEY; a bare .cer imports "successfully" and then signs nothing.
-      - name: Verify the imported identities
-        run: |
-          echo "identities in the ephemeral keychain:"
-          security find-identity -v -p codesigning "$RUNNER_TEMP/astral-signing.keychain-db" || true
-
-          have_app=$(security find-identity -v -p codesigning "$RUNNER_TEMP/astral-signing.keychain-db" \
-                       | grep -c "Apple Distribution" || true)
-          have_pkg=$(security find-identity -v "$RUNNER_TEMP/astral-signing.keychain-db" \
-                       | grep -c "3rd Party Mac Developer Installer" || true)
-
-          fail=0
-          if [ "$have_app" -eq 0 ]; then
-            echo "::error::No 'Apple Distribution' identity after import. The .p12 in"
-            echo "::error::APPLE_DISTRIBUTION_CERT_P12_BASE64 must contain the certificate AND its"
-            echo "::error::private key (export the identity from Keychain Access as .p12 -- a bare"
-            echo "::error::.cer from the developer portal will not work). A 'Developer ID Application'"
-            echo "::error::certificate is for distribution OUTSIDE the App Store and cannot be used here."
-            fail=1
-          fi
-          if [ "$have_pkg" -eq 0 ]; then
-            echo "::error::No '3rd Party Mac Developer Installer' identity. The Mac App Store .pkg is"
-            echo "::error::signed by this SECOND certificate. Either include it in the same .p12 as the"
-            echo "::error::Apple Distribution identity, or add secrets APPLE_INSTALLER_CERT_P12_BASE64"
-            echo "::error::(and APPLE_INSTALLER_CERT_PASSWORD if its password differs)."
-            fail=1
-          fi
-          [ "$fail" -eq 0 ] || exit 1
-          echo "both signing identities present"
-
-      # A .mobileprovision is per bundle-id AND platform, so three profiles are
-      # needed: iOS + macOS (both com.personalailabs.astraldeep, different
-      # platforms) and watchOS (…​.watch). Accept whatever container the operator
-      # produced -- tar, zip, or a single raw profile -- rather than demanding one.
-      - name: Install provisioning profiles
+          set -euo pipefail
+          umask 077
+          keychain="$RUNNER_TEMP/astral-ios-signing.keychain-db"
+          password="$(uuidgen)"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          printf '%s' "$APPLE_DISTRIBUTION_CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/ios-cert.p12"
+          security import "$RUNNER_TEMP/ios-cert.p12" -k "$keychain" -P "$APPLE_CERT_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          rm -f "$RUNNER_TEMP/ios-cert.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain" login.keychain-db
+          security find-identity -v -p codesigning "$keychain" | grep -q 'Apple Distribution:'
+      - name: Install only matching iPhone and Watch distribution profiles
         env:
           APPLE_PROVISION_PROFILE_BASE64: ${{ secrets.APPLE_PROVISION_PROFILE_BASE64 }}
-        run: |
-          IOS_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
-          MAC_DIR="$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"
-          SRC="$RUNNER_TEMP/profiles"
-          mkdir -p "$SRC" "$IOS_DIR" "$MAC_DIR"
-
-          echo "$APPLE_PROVISION_PROFILE_BASE64" | base64 --decode > "$RUNNER_TEMP/profiles.blob"
-          kind=$(file -b --mime-type "$RUNNER_TEMP/profiles.blob")
-          echo "provision blob type: $kind"
-          case "$kind" in
-            application/x-tar|application/gzip|application/x-gzip)
-              tar -xf "$RUNNER_TEMP/profiles.blob" -C "$SRC" ;;
-            application/zip)
-              unzip -qq "$RUNNER_TEMP/profiles.blob" -d "$SRC" ;;
-            *)
-              # A single profile is CMS (DER) or XML; keep it as-is and let the
-              # count check below explain that three are required.
-              cp "$RUNNER_TEMP/profiles.blob" "$SRC/profile-1.mobileprovision" ;;
-          esac
-          rm -f "$RUNNER_TEMP/profiles.blob"
-
-          count=0
-          while IFS= read -r prof; do
-            cp "$prof" "$IOS_DIR/"; cp "$prof" "$MAC_DIR/"
-            name=$(security cms -D -i "$prof" 2>/dev/null | plutil -extract Name raw - 2>/dev/null || echo "?")
-            appid=$(security cms -D -i "$prof" 2>/dev/null | plutil -extract Entitlements.application-identifier raw - 2>/dev/null \
-                    || security cms -D -i "$prof" 2>/dev/null | plutil -extract 'Entitlements.com\.apple\.application-identifier' raw - 2>/dev/null \
-                    || echo "?")
-            plat=$(security cms -D -i "$prof" 2>/dev/null | plutil -extract Platform.0 raw - 2>/dev/null || echo "?")
-            echo "  installed: $name  [$appid, platform=$plat]"
-            count=$((count + 1))
-          done < <(find "$SRC" \( -name '*.mobileprovision' -o -name '*.provisionprofile' \))
-
-          if [ "$count" -lt 3 ]; then
-            echo "::error::found $count provisioning profile(s); three are required --"
-            echo "::error::iOS App Store + macOS App Store (both com.personalailabs.astraldeep)"
-            echo "::error::and watchOS App Store (com.personalailabs.astraldeep.watch)."
-            echo "::error::Pack all three into one tar or zip and base64 that:"
-            echo "::error::  tar -cf profiles.tar *.mobileprovision *.provisionprofile"
-            echo "::error::  base64 -i profiles.tar | pbcopy"
-            exit 1
-          fi
-          echo "installed $count profile(s)"
-
-      - name: Render export options from secrets
-        env:
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_PROFILE_IOS: ${{ secrets.APPLE_PROFILE_IOS }}
-          APPLE_PROFILE_MACOS: ${{ secrets.APPLE_PROFILE_MACOS }}
-          APPLE_PROFILE_WATCH: ${{ secrets.APPLE_PROFILE_WATCH }}
-        run: |
-          # `envsubst` (gettext) is not guaranteed on a macOS runner; python3 is.
-          for f in ios macos; do
-            python3 components/AstralProjection/apple-clients/Scripts/render_export_options.py \
-              "components/AstralProjection/apple-clients/ExportOptions-$f.plist" "$RUNNER_TEMP/ExportOptions-$f.plist"
-            plutil -lint "$RUNNER_TEMP/ExportOptions-$f.plist"
-          done
-
-      # The iOS archive carries the embedded watch app; the macOS archive must not.
-      # Manual signing needs a profile per target AND per platform. A value passed
-      # on the command line hits every target, so the names go in as variables and
-      # project.pbxproj maps each target/sdk to the right one. The iOS archive also
-      # builds the embedded watch app, hence both names here.
-      - name: Archive iOS (with the embedded watch app)
-        env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_PROFILE_IOS: ${{ secrets.APPLE_PROFILE_IOS }}
           APPLE_PROFILE_WATCH: ${{ secrets.APPLE_PROFILE_WATCH }}
         run: |
+          set -euo pipefail
+          umask 077
+          printf '%s' "$APPLE_PROVISION_PROFILE_BASE64" | base64 --decode > "$RUNNER_TEMP/profiles.blob"
+          python3 scripts/ios_store_upload.py profiles --input "$RUNNER_TEMP/profiles.blob" \
+            --destination "$HOME/Library/MobileDevice/Provisioning Profiles" \
+            --receipt "$RUNNER_TEMP/evidence/producer.json"
+          python3 components/AstralProjection/apple-clients/Scripts/render_export_options.py \
+            components/AstralProjection/apple-clients/ExportOptions-ios.plist "$RUNNER_TEMP/ExportOptions-ios.plist"
+          plutil -lint "$RUNNER_TEMP/ExportOptions-ios.plist"
+      - name: Prepare exact-certificate production push profile for iPhone
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_PROFILE_IOS: ${{ secrets.APPLE_PROFILE_IOS }}
+          APPLE_PROFILE_WATCH: ${{ secrets.APPLE_PROFILE_WATCH }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 scripts/ios_store_profile.py \
+            --keychain "$RUNNER_TEMP/astral-ios-signing.keychain-db" \
+            --profiles-dir "$HOME/Library/MobileDevice/Provisioning Profiles" \
+            --key "$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8" \
+            --receipt "$RUNNER_TEMP/evidence/ios-push-profile.json" \
+            --name-file "$RUNNER_TEMP/ios-profile-name.txt"
+          APPLE_PROFILE_IOS="$(cat "$RUNNER_TEMP/ios-profile-name.txt")"
+          export APPLE_PROFILE_IOS
+          python3 components/AstralProjection/apple-clients/Scripts/render_export_options.py \
+            components/AstralProjection/apple-clients/ExportOptions-ios.plist "$RUNNER_TEMP/ExportOptions-ios.plist"
+          plutil -lint "$RUNNER_TEMP/ExportOptions-ios.plist"
+          printf 'IOS_RELEASE_PROFILE_NAME=%s\n' "$APPLE_PROFILE_IOS" >> "$GITHUB_ENV"
+      - name: Archive and export iPhone with embedded Watch
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_PROFILE_IOS: ${{ env.IOS_RELEASE_PROFILE_NAME }}
+          APPLE_PROFILE_WATCH: ${{ secrets.APPLE_PROFILE_WATCH }}
+        run: |
+          set -euo pipefail
+          git rev-parse HEAD > "$RUNNER_TEMP/evidence/candidate-sha.txt"
           xcodebuild archive -project "$PROJECT" -scheme "$SCHEME" \
             -destination 'generic/platform=iOS' -configuration Release \
             -archivePath "$RUNNER_TEMP/AstralDeep-ios.xcarchive" \
+            MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$BUILD" \
             ASTRAL_DEVELOPMENT_TEAM="$APPLE_TEAM_ID" CODE_SIGN_STYLE=Manual \
             ASTRAL_PROFILE_IOS="$APPLE_PROFILE_IOS" ASTRAL_PROFILE_WATCH="$APPLE_PROFILE_WATCH"
-          test -d "$RUNNER_TEMP/AstralDeep-ios.xcarchive/Products/Applications/AstralDeep.app/Watch/AstralWatch.app" \
-            || { echo "::error::iOS archive is missing the embedded watch app"; exit 1; }
-
-      - name: Archive macOS (Mac App Store)
+          xcodebuild -exportArchive -archivePath "$RUNNER_TEMP/AstralDeep-ios.xcarchive" \
+            -exportPath "$RUNNER_TEMP/export-ios" -exportOptionsPlist "$RUNNER_TEMP/ExportOptions-ios.plist"
+          ipas=("$RUNNER_TEMP/export-ios/"*.ipa)
+          [[ ${#ipas[@]} -eq 1 && -f "${ipas[0]}" ]]
+          mkdir -p "$RUNNER_TEMP/ipa-check"
+          ditto -x -k "${ipas[0]}" "$RUNNER_TEMP/ipa-check"
+          python3 scripts/ios_store_upload.py verify-app \
+            --input "$RUNNER_TEMP/ipa-check/Payload/AstralDeep.app" --version "$VERSION" --build "$BUILD" \
+            --receipt "$RUNNER_TEMP/evidence/producer.json"
+          cp "${ipas[0]}" "$RUNNER_TEMP/evidence/AstralDeep-$VERSION-$BUILD.ipa"
+          cp "$RUNNER_TEMP/ExportOptions-ios.plist" "$RUNNER_TEMP/evidence/ExportOptions-ios.plist"
+          (cd "$RUNNER_TEMP/evidence" && shasum -a 256 ./*.ipa > SHA256SUMS)
+          echo "IPA=$RUNNER_TEMP/evidence/AstralDeep-$VERSION-$BUILD.ipa" >> "$GITHUB_ENV"
+      - name: Validate then upload the exact verified iPhone IPA
         env:
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_PROFILE_MACOS: ${{ secrets.APPLE_PROFILE_MACOS }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
         run: |
-          xcodebuild archive -project "$PROJECT" -scheme "$SCHEME" \
-            -destination 'generic/platform=macOS' -configuration Release \
-            -archivePath "$RUNNER_TEMP/AstralDeep-macos.xcarchive" \
-            ASTRAL_DEVELOPMENT_TEAM="$APPLE_TEAM_ID" CODE_SIGN_STYLE=Manual \
-            ASTRAL_PROFILE_MACOS="$APPLE_PROFILE_MACOS"
-          # A macOS app must not contain a watchOS app. The embed phase is
-          # platform-filtered to iOS; assert the filter actually held.
-          if find "$RUNNER_TEMP/AstralDeep-macos.xcarchive" -name 'AstralWatch.app' | grep -q .; then
-            echo "::error::the macOS archive embeds a watch app — the iOS platform filter regressed"
-            exit 1
-          fi
-
-      - name: Export both archives for the App Store
-        run: |
-          xcodebuild -exportArchive \
-            -archivePath "$RUNNER_TEMP/AstralDeep-ios.xcarchive" \
-            -exportPath "$RUNNER_TEMP/export-ios" \
-            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions-ios.plist"
-          xcodebuild -exportArchive \
-            -archivePath "$RUNNER_TEMP/AstralDeep-macos.xcarchive" \
-            -exportPath "$RUNNER_TEMP/export-macos" \
-            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions-macos.plist"
-
-          echo "--- export-ios ---";   ls -la "$RUNNER_TEMP/export-ios"
-          echo "--- export-macos ---"; ls -la "$RUNNER_TEMP/export-macos"
-
-          # `xcodebuild` can report EXPORT SUCCEEDED and still not emit the artifact
-          # (e.g. a macOS App Store export whose installer identity never matched).
-          # Assert both exist here; otherwise altool is handed an empty path, exits 0,
-          # and the whole job goes green having uploaded nothing.
-          IPA=$(find "$RUNNER_TEMP/export-ios"   -name '*.ipa' | head -1)
-          PKG=$(find "$RUNNER_TEMP/export-macos" -name '*.pkg' | head -1)
-          [ -f "$IPA" ] || { echo "::error::iOS export produced no .ipa"; exit 1; }
-          [ -f "$PKG" ] || {
-            echo "::error::macOS export produced no .pkg. A Mac App Store submission must be a"
-            echo "::error::signed installer package. Check installerSigningCertificate in"
-            echo "::error::components/AstralProjection/apple-clients/ExportOptions-macos.plist against the identity actually"
-            echo "::error::present in the keychain ('3rd Party Mac Developer Installer: …')."
-            exit 1; }
-          # Validate the exported Distribution leaf, repair SwiftPM resource
-          # bundles inside-out, then verify the actual repackaged payload.
-          # Selecting the pre-export archive's leaf could select Development.
-          REPAIRED_PKG="$RUNNER_TEMP/AstralDeep-macos-store-verified.pkg"
-          python3 components/AstralProjection/apple-clients/Scripts/repair_macos_store_package.py \
-            --input "$PKG" --output "$REPAIRED_PKG" \
-            > "$RUNNER_TEMP/macos-store-signature-receipt.json"
-          PKG="$REPAIRED_PKG"
-          echo "IPA=$IPA" >> "$GITHUB_ENV"
-          echo "PKG=$PKG" >> "$GITHUB_ENV"
-
-      # The App Store stays the install channel, but the exact bundles that
-      # were validated and uploaded are also kept as downloadable release
-      # assets (evidence + sideload for Apple-registered devices). Staged as a
-      # workflow artifact so the publish job can run with `contents: write`
-      # on a Linux runner while this signing job keeps `contents: read`.
-      - name: Stage the exported bundles for the release assets
-        run: |
-          STAGE="$RUNNER_TEMP/release-assets"
-          mkdir -p "$STAGE"
-          cp "$IPA" "$STAGE/AstralDeep-ios-${GITHUB_REF_NAME}.ipa"
-          cp "$PKG" "$STAGE/AstralDeep-macos-${GITHUB_REF_NAME}.pkg"
-          ( cd "$STAGE" && shasum -a 256 *.ipa *.pkg > SHA256SUMS && cat SHA256SUMS )
-          echo "ASSET_STAGE=$STAGE" >> "$GITHUB_ENV"
-
+          set -euo pipefail
+          bash components/AstralProjection/apple-clients/Scripts/altool_strict.sh 'validate iPhone' \
+            --validate-app -f "$IPA" -t ios --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID" \
+            2>&1 | tee "$RUNNER_TEMP/evidence/validation-receipt.txt"
+          bash components/AstralProjection/apple-clients/Scripts/altool_strict.sh 'upload iPhone' \
+            --upload-app -f "$IPA" -t ios --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID" \
+            2>&1 | tee "$RUNNER_TEMP/evidence/upload-receipt.txt"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: ${{ !cancelled() }}
         with:
-          name: apple-release-assets
-          path: ${{ env.ASSET_STAGE }}
+          name: ios-app-store-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/evidence
           if-no-files-found: error
           retention-days: 14
-
-      - name: Materialize the App Store Connect API key
-        env:
-          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
-          ASC_KEY_P8_BASE64: ${{ secrets.ASC_KEY_P8_BASE64 }}
-        run: |
-          mkdir -p ~/.appstoreconnect/private_keys
-          echo "$ASC_KEY_P8_BASE64" | base64 --decode \
-            > ~/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8
-
-      - name: Validate both builds
-        env:
-          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
-          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
-        run: |
-          # altool exits 0 even when it prints "VERIFY FAILED"; the wrapper refuses that.
-          bash components/AstralProjection/apple-clients/Scripts/altool_strict.sh "validate iOS" \
-            --validate-app -f "$IPA" -t ios   --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
-          bash components/AstralProjection/apple-clients/Scripts/altool_strict.sh "validate macOS" \
-            --validate-app -f "$PKG" -t macos --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
-
-      - name: Upload both builds to the single Universal Purchase record
-        env:
-          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
-          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
-        run: |
-          bash components/AstralProjection/apple-clients/Scripts/altool_strict.sh "upload iOS" \
-            --upload-app -f "$IPA" -t ios   --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
-          bash components/AstralProjection/apple-clients/Scripts/altool_strict.sh "upload macOS" \
-            --upload-app -f "$PKG" -t macos --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
-
-      # Submitting for review requires a COMPLETE store listing (screenshots for
-      # iPhone 6.9", iPad 13", Mac and Apple Watch; description; privacy policy
-      # URL; age rating). Apple's own submission API refuses an incomplete
-      # listing, so this step is the honest place for that gate to bite.
-      # NOT automated, and deliberately not pretending to be. Submitting a
-      # version requires a COMPLETE store listing (screenshots for iPhone 6.9",
-      # iPad 13", Mac and Apple Watch; description; privacy-policy URL; age
-      # rating) which only the operator can author, and Apple's submission API
-      # refuses an incomplete listing. The builds are uploaded and validated
-      # above; the operator presses Submit for Review, or this step is replaced
-      # with an App Store Connect API call once the listing is finalized.
-      - name: Report next step (submission is operator-performed)
-        if: startsWith(github.ref, 'refs/tags/')
-        run: |
-          echo "::notice::Both builds uploaded to the Universal Purchase record."
-          echo "::notice::Submit the version for review in App Store Connect."
-
-      - name: Tear down the ephemeral keychain
+      - name: Remove signing material
         if: always()
         run: |
-          security delete-keychain "$RUNNER_TEMP/astral-signing.keychain-db" 2>/dev/null || true
-          rm -f ~/.appstoreconnect/private_keys/*.p8 2>/dev/null || true
-
-  # Tag pushes only: attach the validated bundles to the GitHub Release for the
-  # tag. The release job above keeps `contents: read`; this Linux job is the
-  # only step that writes to the repository (the release object).
-  publish-assets:
-    name: Attach bundles to the GitHub Release
-    needs: release
-    if: ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') && (startsWith(github.ref, 'refs/tags/')) }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: apple-release-assets
-          path: release-assets
-
-      - name: Verify the staged checksums
-        working-directory: release-assets
-        run: |
-          ls -la
-          sha256sum -c SHA256SUMS
-
-      - name: Create / update the GitHub Release
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
-        with:
-          files: |
-            release-assets/*.ipa
-            release-assets/*.pkg
-            release-assets/SHA256SUMS
-          generate_release_notes: true
-          fail_on_unmatched_files: true
-          body: |
-            Apple clients ${{ github.ref_name }} (iOS + embedded watchOS, and macOS).
-
-            **Install channel: App Store / TestFlight.** Both bundles were validated
-            and uploaded to the Universal Purchase record by this run. The attached
-            `.ipa` / `.pkg` are the exact App-Store-signed bundles (not Developer-ID
-            notarized), kept here as evidence and for Apple-registered devices;
-            `SHA256SUMS` covers both.
+          rm -f "$RUNNER_TEMP/ios-cert.p12" "$RUNNER_TEMP/ios-profile-name.txt" "$RUNNER_TEMP/profiles.blob" "$RUNNER_TEMP"/decoded-profile-*.mobileprovision
+          rm -f "$HOME/.appstoreconnect/private_keys/"*.p8
+          rm -f "$HOME/Library/MobileDevice/Provisioning Profiles/astral-ios-"*.mobileprovision
+          if [[ -f "$RUNNER_TEMP/astral-ios-signing.keychain-db" ]]; then
+            security delete-keychain "$RUNNER_TEMP/astral-ios-signing.keychain-db"
+          fi

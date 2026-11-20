@@ -140,7 +140,7 @@ def test_guide_admin_section_filtered_for_non_admin():
 
 def test_guide_components_lead_with_section_content_not_toc():
     from webrender.chrome.surfaces import guide
-    comps = run(guide.components(_orch(), "u1", ["user"], {"section": "signing-in"}))
+    comps = run(guide.components(_orch(), "u1", ["user"], {"section": "dashboard"}))
     assert comps[0]["type"] == "text" and comps[0].get("variant") == "h2"
     types_ = [c.get("type") for c in comps]
     assert all(t == "text" for t in types_[: types_.index("container")])

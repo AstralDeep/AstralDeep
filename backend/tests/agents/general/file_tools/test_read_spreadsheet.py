@@ -4,6 +4,7 @@ CSV/TSV parsing and row truncation, and XLS/ODS structural handling.
 
 from __future__ import annotations
 
+import datetime
 import io
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -11,6 +12,7 @@ from unittest.mock import MagicMock
 from agents.general.file_tools import read_spreadsheet as spreadsheet_module
 from agents.general.file_tools.read_spreadsheet import read_spreadsheet
 from conftest import _persist, make_csv, make_xlsx
+from shared.protocol import MCPResponse
 
 
 def test_read_xlsx_default_sheet(repo, upload_root):
@@ -28,6 +30,23 @@ def test_read_xlsx_default_sheet(repo, upload_root):
     assert out["columns"] == ["patient_id", "age", "diagnosis"]
     assert out["rows"][0] == ["P001", 47, "A"]
     assert "Notes" in out["sheet_names"]
+
+
+def test_read_xlsx_date_and_time_cells_survive_the_tool_response(repo, upload_root):
+    aid = _persist(repo, user_id="alice", filename="data.xlsx",
+                   category="spreadsheet", extension="xlsx",
+                   content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                   upload_root=upload_root,
+                   payload=make_xlsx([
+                       ["month", "start", "elapsed", "total"],
+                       [datetime.date(2026, 1, 1), datetime.time(9, 30),
+                        datetime.timedelta(hours=2), 5],
+                   ]))
+    out = read_spreadsheet(attachment_id=aid, user_id="alice")
+    assert out["rows"][0][0].startswith("2026-01-01")
+    assert out["rows"][0][1] == "09:30:00"
+    assert out["rows"][0][3] == 5
+    assert "2026-01-01" in MCPResponse(request_id="r", result=out).to_json()
 
 
 def test_read_xlsx_pick_sheet(repo, upload_root):

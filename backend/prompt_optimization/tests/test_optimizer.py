@@ -57,7 +57,7 @@ def _limits(**overrides) -> budget_module.BudgetLimits:
 
 
 def _task_prompt() -> task_module.TaskPrompt:
-    return task_module.load_task_prompt(REPO_ROOT)
+    return task_module.load_task_prompt(REPO_ROOT, task_module.SYNTHETIC_TASK_ID)
 
 
 def _scripted_run(**overrides):

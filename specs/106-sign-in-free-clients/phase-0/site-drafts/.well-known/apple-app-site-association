@@ -1,0 +1,21 @@
+{
+  "applinks": {
+    "details": [
+      {
+        "appIDs": [
+          "593LGH35GS.com.personalailabs.astraldeep"
+        ],
+        "components": [
+          {
+            "/": "/oauth/callback"
+          }
+        ]
+      }
+    ]
+  },
+  "webcredentials": {
+    "apps": [
+      "593LGH35GS.com.personalailabs.astraldeep"
+    ]
+  }
+}

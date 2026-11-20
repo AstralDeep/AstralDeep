@@ -1,16 +1,16 @@
 # Security qualification and diagnostic ablations
 
-The required local fixture gate drives scripted proposals through signed human turns, registered agents, the ordinary orchestrator dispatch, an observable effect sink, and the audit chain. It is a **dispatch-boundary check**. The scripted proposer deliberately attempts the forbidden action; the result does not measure how often a real model would take the bait.
+The required local fixture gate runs scripted model turns as real turns on a personal development node. A development owner device on the real kernel binding sends each request over loopback, and the node answers it on the Kernel turn engine. A scripted OpenAI-compatible provider, installed in the Kernel's provider book, stands in for the model. The Kernel sends each proposed tool call to the node as a ticketed self-call, which runs through mesh admission, the vessel executor, protected dispatch and the audit chain. Sandboxed fixture tools count their physical effects. It is a **dispatch-boundary check**. The scripted provider deliberately proposes the forbidden action; the result does not measure how often a real model would take the bait. An attack's effect is refused when the Kernel withholds it for owner consent, which the driver records and declines.
 
-From a clean exact candidate checkout with the repository's isolated PostgreSQL test service:
+From a clean exact candidate checkout, with the pinned kernel wheel and mailbox binary installed and `ASTRAL_ENV=development`:
 
 ```bash
 cd backend
-python -m pytest security_benchmark/tests/test_real_dispatch.py -q
+python -m pytest security_benchmark/tests/test_personal_dispatch.py -q
 python -m security_benchmark --qualify-real-dispatch --out security_benchmark/_artifacts
 ```
 
-The first command is part of the backend module test group. The second writes `real-dispatch-qualification.json` and exits nonzero if any case, control, audit, candidate identity, or teardown condition is incomplete. It requires the same local Plane and signed fixture identity as the repository's backend verification harness. The test uses a test-only signed identity and a local signed token-exchange fixture. The product's permission and delegation request path runs, while the external Keycloak response is supplied in-process. Production Keycloak availability is not claimed.
+The first command is part of the backend module test group. The second writes `real-dispatch-qualification.json` and exits nonzero if any case, control, audit, candidate identity, or teardown condition is incomplete. It needs no sign-in, bearer token or identity server: the owner is the development mesh's owner device, and a denial counts only when the node's own gate refuses the effect after the source was read. Production owner meshes are never used.
 
 The pinned local population is twelve attack/control pairs over fixture tool results, loopback remote-agent replies, and retained conversation context. The effect oracle reads the fixture server's physical effect ledger, while the independent audit oracle verifies the owner's chain. Each control must complete a read. A withheld effect with a failed control is indeterminate, not a pass. The cases establish the host's deterministic gate; they are not a statistical prompt-injection success rate or an external benchmark score.
 

@@ -1,4 +1,4 @@
-"""Tests for orchestrator/session_store.py and sandbox.py: legacy OpenAI and TypeSafe
+"""Tests for orchestrator/boot_posture.py and sandbox.py: legacy OpenAI and TypeSafe
 env vars configure nothing at runtime, a source-tree guard confirms no live read
 remains, and production refuses to boot with them set.
 """
@@ -75,7 +75,7 @@ _FORBIDDEN_TYPESAFE_READ = re.compile(
     r"os\.(?:getenv|environ(?:\.get)?)\s*[\(\[]\s*['\"]TYPESAFE_[A-Z_]*['\"]"
 )
 _TYPESAFE_DECLARATION_PATHS = {
-    os.path.join("orchestrator", "session_store.py"),
+    os.path.join("orchestrator", "boot_posture.py"),
     os.path.join("orchestrator", "sandbox.py"),
     os.path.join("verification", "config.py"),
 }
@@ -187,25 +187,24 @@ def test_typesafe_env_vars_produce_zero_typesafe_requests(monkeypatch, orchestra
 
 
 def test_production_posture_refuses_typesafe_environment(monkeypatch):
-    from orchestrator import session_store
+    from orchestrator import boot_posture
 
     monkeypatch.setenv("ASTRAL_ENV", "production")
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
     monkeypatch.setenv("WEB_SESSION_ENC_KEY", "x" * 44)
     monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEY", "y" * 44)
     monkeypatch.setenv("AUDIT_HMAC_SECRET", "z" * 44)
     monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://idp.example/realms/a")
     monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral")
     monkeypatch.setenv("KEYCLOAK_CLIENT_SECRET", "s" * 32)
-    for name in session_store.TYPESAFE_ENV_NAMES:
+    for name in boot_posture.TYPESAFE_ENV_NAMES:
         monkeypatch.delenv(name, raising=False)
 
-    session_store.assert_production_posture()
+    boot_posture.assert_production_posture()
 
-    for name in session_store.TYPESAFE_ENV_NAMES:
+    for name in boot_posture.TYPESAFE_ENV_NAMES:
         monkeypatch.setenv(name, "set-by-an-operator")
         with pytest.raises(SystemExit) as exit_info:
-            session_store.assert_production_posture()
+            boot_posture.assert_production_posture()
         assert exit_info.value.code == 78
         monkeypatch.delenv(name)
 
@@ -213,13 +212,13 @@ def test_production_posture_refuses_typesafe_environment(monkeypatch):
 def test_development_posture_warns_instead_of_refusing(monkeypatch, caplog):
     import logging
 
-    from orchestrator import session_store
+    from orchestrator import boot_posture
 
     monkeypatch.setenv("ASTRAL_ENV", "development")
     monkeypatch.setenv("TYPESAFE_API_KEY", TYPESAFE_VARS["TYPESAFE_API_KEY"])
 
     with caplog.at_level(logging.WARNING):
-        session_store.assert_production_posture()
+        boot_posture.assert_production_posture()
 
     warnings = "\n".join(record.getMessage() for record in caplog.records)
     assert "TYPESAFE_API_KEY" in warnings
@@ -255,11 +254,11 @@ def test_no_live_typesafe_environment_reads_remain_in_source_tree():
 
 
 def test_the_declaring_files_name_the_variables_without_reading_them():
-    from orchestrator import sandbox, session_store
+    from orchestrator import sandbox, boot_posture
 
-    assert session_store.TYPESAFE_ENV_NAMES == (
+    assert boot_posture.TYPESAFE_ENV_NAMES == (
         "TYPESAFE_API_KEY",
         "TYPESAFE_BASE_URL",
         "TYPESAFE_DEFAULT_MODEL",
     )
-    assert set(session_store.TYPESAFE_ENV_NAMES) <= set(sandbox._SECRET_ENV_DENYLIST)
+    assert set(boot_posture.TYPESAFE_ENV_NAMES) <= set(sandbox._SECRET_ENV_DENYLIST)

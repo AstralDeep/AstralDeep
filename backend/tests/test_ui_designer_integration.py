@@ -1,6 +1,5 @@
-"""Tests for orchestrator/ui_designer.py bound onto a real orchestrator over
-Postgres-backed workspace.py: the designed delivery path, fallback triggers, in-place
-refresh, retired/merged source guards, and the contextual chat narrative.
+"""Tests for the orchestrator's component action guards over Postgres-backed
+workspace.py: retired/merged source guards and the contextual chat narrative.
 """
 
 from __future__ import annotations
@@ -18,9 +17,8 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
-from orchestrator import ui_designer  # noqa: E402
 from orchestrator.orchestrator import Orchestrator  # noqa: E402
-from orchestrator.workspace import WorkspaceManager, layout_key_for  # noqa: E402
+from orchestrator.workspace import WorkspaceManager  # noqa: E402
 from tests.helpers.voice_plane_runtime import isolated_plane_runtime  # noqa: E402
 
 
@@ -94,9 +92,7 @@ def _make_fake(history, user_id, llm_content=None, llm_exc=None, llm_delay=0.0):
         send_ui_render=send_ui_render,
         _call_llm=_call_llm,
     )
-    for name in ("_deliver_round_components", "_send_or_replace_components",
-                 "send_ui_upsert", "_push_canvas", "_canvas_components",
-                 "_run_designer", "_typesafe_style_layout"):
+    for name in ("_send_or_replace_components", "send_ui_upsert", "_canvas_components"):
         setattr(fake, name, types.MethodType(getattr(Orchestrator, name), fake))
     fake._sent = sent
     fake._renders = renders
@@ -121,150 +117,11 @@ def _run(coro):
     return asyncio.run(_wrapper())
 
 
-def _design_json_for(fake, chat_id, user_id, comps):
-    from orchestrator.workspace import fingerprint
-
-    ids = [fingerprint(c["_source_agent"], c["_source_tool"], c["_source_params"])
-           for c in comps]
-    return json.dumps({"layout": [
-        {"type": "metric", "title": "Headline", "value": "2 results"},
-        {"type": "grid", "columns": 2, "children": [
-            {"type": "ref", "component_id": ids[0]},
-            {"type": "ref", "component_id": ids[1]},
-        ]},
-    ]}), ids
-
-
-def test_designed_round_persists_layout_and_renders_canvas(chat_env, audit_events, monkeypatch):
-    monkeypatch.delenv("FF_UI_DESIGNER", raising=False)
-    # A host .env can re-leak this flag past conftest's strip
-    monkeypatch.delenv("FF_UI_DESIGNER_TASKMODEL", raising=False)
-    monkeypatch.delenv("UI_DESIGNER_MAX_ROUNDS", raising=False)
-    history, user_id, chat_id = chat_env
-    comps = [_comp("agent-x", "tool_a", {"p": 1}, title="A"),
-             _comp("agent-y", "tool_b", {"q": 2}, title="B")]
-    design, ids = _design_json_for(None, chat_id, user_id, comps)
-    fake = _make_fake(history, user_id, llm_content=design)
-    ws = _FakeWS("origin")
-    fake._ws_active_chat[id(ws)] = chat_id
-
-    ops = _run(fake._deliver_round_components(ws, comps, chat_id, user_id,
-                                              user_request="compare things"))
-    assert [op["component_id"] for op in ops] == ids
-    assert {c["feature"] for c in fake._llm_calls} == {"ui_designer"}
-    assert len(fake._llm_calls) == min(2, ui_designer.designer_max_rounds())
-    live = fake.workspace.live_layouts(chat_id, user_id)
-    assert len(live) == 1
-    expected_key = layout_key_for(
-        chat_id, str(history.get_latest_message_id(chat_id, user_id=user_id)))
-    assert live[0]["layout_key"] == expected_key
-    assert any(m.get("type") == "ui_upsert" for _, m in fake._sent), \
-        "flat ui_upsert must precede the design pass (FR-013)"
-    assert len(fake._renders) == 1
-    _, rendered, target = fake._renders[0]
-    assert target == "canvas"
-    rendered_json = json.dumps(rendered)
-    for cid in ids:
-        assert cid in rendered_json, "every round component present in the designed render"
-    assert rendered[0]["type"] == "metric", "garnish leads the arrangement"
-    assert {e["action"] for e in audit_events} == {"component_added"}
-
-
-def test_canvas_components_materializes_and_orders(chat_env, monkeypatch):
-    monkeypatch.delenv("FF_UI_DESIGNER", raising=False)
-    history, user_id, chat_id = chat_env
-    fake0 = _make_fake(history, user_id)
-    old_ops = fake0.workspace.upsert(chat_id, user_id, [_comp("agent-z", "old_tool", {})])
-    comps = [_comp("agent-x", "tool_a", {"p": 1}), _comp("agent-y", "tool_b", {"q": 2})]
-    design, ids = _design_json_for(None, chat_id, user_id, comps)
-    fake = _make_fake(history, user_id, llm_content=design)
-    _run(fake._deliver_round_components(_FakeWS(), comps, chat_id, user_id))
-
-    canvas = fake._canvas_components(chat_id, user_id)
-    assert canvas[0]["component_id"] == old_ops[0]["component_id"], "unclaimed first (position order)"
-    assert canvas[1]["type"] == "metric"
-    grid = canvas[2]
-    assert grid["type"] == "grid"
-    nested_ids = [c.get("component_id") for c in grid["children"]]
-    assert nested_ids == ids
-    assert grid["children"][0]["attributes"]["data-component-id"] == ids[0]
-
-
-def test_refresh_inside_arrangement_morphs_in_place(chat_env, monkeypatch):
-    monkeypatch.delenv("FF_UI_DESIGNER", raising=False)
-    history, user_id, chat_id = chat_env
-    comps = [_comp("agent-x", "tool_a", {"p": 1}), _comp("agent-y", "tool_b", {"q": 2})]
-    design, ids = _design_json_for(None, chat_id, user_id, comps)
-    fake = _make_fake(history, user_id, llm_content=design)
-    _run(fake._deliver_round_components(_FakeWS(), comps, chat_id, user_id))
-
-    refreshed = _comp("agent-x", "tool_a", {"p": 1}, rows=[["FRESH"]])
-    fake.workspace.upsert(chat_id, user_id, [refreshed], force_component_id=ids[0])
-    canvas = fake._canvas_components(chat_id, user_id)
-    grid = next(c for c in canvas if c.get("type") == "grid")
-    assert grid["children"][0]["rows"] == [["FRESH"]], "leaf morphed inside the designed layout"
-    assert len(fake.workspace.live_layouts(chat_id, user_id)) == 1
-
-
 def _assert_flat_fallback(fake, chat_id, user_id, expect_layouts=0):
     assert len(fake.workspace.live_layouts(chat_id, user_id)) == expect_layouts
     upserts = [m for _, m in fake._sent if m.get("type") == "ui_upsert"]
     assert upserts, "legacy ui_upsert delivery used"
     assert fake._renders == [], "no designed canvas render"
-
-
-def test_flag_off_restores_legacy_path(chat_env, audit_events, monkeypatch):
-    monkeypatch.setenv("FF_UI_DESIGNER", "false")
-    history, user_id, chat_id = chat_env
-    comps = [_comp("agent-x", "tool_a", {}), _comp("agent-y", "tool_b", {})]
-    fake = _make_fake(history, user_id, llm_content="{}")
-    ops = _run(fake._deliver_round_components(_FakeWS(), comps, chat_id, user_id))
-    assert len(ops) == 2
-    assert fake._llm_calls == [], "designer LLM never invoked when disabled"
-    _assert_flat_fallback(fake, chat_id, user_id)
-
-
-def test_single_component_round_skips_designer(chat_env, audit_events, monkeypatch):
-    monkeypatch.delenv("FF_UI_DESIGNER", raising=False)
-    history, user_id, chat_id = chat_env
-    fake = _make_fake(history, user_id, llm_content="{}")
-    ops = _run(fake._deliver_round_components(
-        _FakeWS(), [_comp("agent-x", "tool_a", {})], chat_id, user_id))
-    assert len(ops) == 1
-    assert fake._llm_calls == []
-    _assert_flat_fallback(fake, chat_id, user_id)
-
-
-def test_llm_error_falls_back_with_components_intact(chat_env, audit_events, monkeypatch):
-    monkeypatch.delenv("FF_UI_DESIGNER", raising=False)
-    history, user_id, chat_id = chat_env
-    comps = [_comp("agent-x", "tool_a", {}), _comp("agent-y", "tool_b", {})]
-    fake = _make_fake(history, user_id, llm_exc=RuntimeError("LLM down"))
-    ops = _run(fake._deliver_round_components(_FakeWS(), comps, chat_id, user_id))
-    assert len(ops) == 2, "components persisted despite designer failure"
-    _assert_flat_fallback(fake, chat_id, user_id)
-
-
-def test_timeout_falls_back(chat_env, audit_events, monkeypatch):
-    monkeypatch.delenv("FF_UI_DESIGNER", raising=False)
-    monkeypatch.setenv("UI_DESIGNER_TIMEOUT_SECONDS", "0.05")
-    history, user_id, chat_id = chat_env
-    comps = [_comp("agent-x", "tool_a", {}), _comp("agent-y", "tool_b", {})]
-    fake = _make_fake(history, user_id, llm_content="{}", llm_delay=0.5)
-    ops = _run(fake._deliver_round_components(_FakeWS(), comps, chat_id, user_id))
-    assert len(ops) == 2
-    _assert_flat_fallback(fake, chat_id, user_id)
-
-
-def test_timeline_mode_never_designs(chat_env, audit_events, monkeypatch):
-    monkeypatch.delenv("FF_UI_DESIGNER", raising=False)
-    history, user_id, chat_id = chat_env
-    comps = [_comp("agent-x", "tool_a", {}), _comp("agent-y", "tool_b", {})]
-    fake = _make_fake(history, user_id, llm_content="{}")
-    ws = _FakeWS()
-    fake._ws_timeline_mode[id(ws)] = True
-    _run(fake._deliver_round_components(ws, comps, chat_id, user_id))
-    assert fake._llm_calls == []
 
 
 def test_merged_source_remap():

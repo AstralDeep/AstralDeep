@@ -27,6 +27,18 @@ def command(*arguments: str) -> subprocess.CompletedProcess[bytes]:
     return result
 
 
+def approved_entitlements(team_id: str) -> dict[str, object]:
+    return {
+        "com.apple.application-identifier": f"{team_id}.com.personalailabs.astraldeep",
+        "com.apple.developer.team-identifier": team_id,
+        "com.apple.developer.associated-domains": [
+            "applinks:astraldeep.github.io", "webcredentials:astraldeep.github.io",
+        ],
+        "com.apple.security.device.audio-input": True,
+        "keychain-access-groups": [f"{team_id}.com.personalailabs.astraldeep"],
+    }
+
+
 def inspect_app(app: Path, team_id: str) -> dict[str, object]:
     if not re.fullmatch(r"[A-Z0-9]{10}", team_id):
         raise CandidateError("Expected Apple team ID must contain ten uppercase letters or digits")
@@ -59,7 +71,7 @@ def inspect_app(app: Path, team_id: str) -> dict[str, object]:
         raise CandidateError("App requires the expected timestamped Developer ID and hardened runtime")
     entitlement_result = command("codesign", "--display", "--entitlements", "-", "--xml", str(app))
     entitlements = plistlib.loads(entitlement_result.stdout)
-    if entitlements != {"com.apple.security.device.audio-input": True}:
+    if entitlements != approved_entitlements(team_id):
         raise CandidateError("App entitlements differ from the approved direct-download profile")
     architectures = set(command("lipo", "-archs", str(binary)).stdout.decode().split())
     architecture = {

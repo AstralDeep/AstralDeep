@@ -1,14 +1,12 @@
 """Builds short, deterministic tool-failure notices for chat, deduplicated per turn, so
 provider bodies/exception strings/URLs never reach the UI though the fuller
-diagnostic stays available to audit. Used by coordinator.py and orchestrator.py.
+diagnostic stays available to audit. Orchestrator dispatch uses these notices.
 """
 
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import Mapping
-from contextlib import contextmanager
 from contextvars import ContextVar
 
 from astralprims import Alert
@@ -52,15 +50,6 @@ _NOTICES: ContextVar[set[str] | None] = ContextVar("tool_failure_notices", defau
 _MAX_NOTICES = 64
 
 
-@contextmanager
-def turn_tool_notices():
-    token = _NOTICES.set(set())
-    try:
-        yield
-    finally:
-        _NOTICES.reset(token)
-
-
 def tool_failure_message(tool_name: object, error: object) -> str:
     code = error.get("code") if isinstance(error, Mapping) else None
     message = PUBLIC_ERRORS.get(code) if isinstance(code, str) else None
@@ -77,40 +66,6 @@ _CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 
 def _bounded(value: object, limit: int) -> str | None:
     return _CONTROL.sub("", value)[:limit] if isinstance(value, str) and value.strip() else None
-
-
-def first_party_error_content(error: object) -> str | None:
-    if not isinstance(error, Mapping):
-        return None
-    code, message = _bounded(error.get("code"), 64), _bounded(error.get("message"), 600)
-    if code is None or message is None or code in PUBLIC_ERRORS:
-        return None
-    detail: dict[str, object] = {"status": "error", "code": code, "message": message,
-                                 "retryable": error.get("retryable") is True}
-    for key in ("next_action", "effect_state"):
-        text = _bounded(error.get(key), 300)
-        if text is not None:
-            detail[key] = text
-    data = error.get("data")
-    if isinstance(data, Mapping):
-        hints = {str(key)[:64]: value for key, value in list(data.items())[:8]
-                 if isinstance(value, (int, bool)) or _bounded(value, 120) is not None}
-        if hints:
-            detail["data"] = {key: (_bounded(value, 120) if isinstance(value, str) else value)
-                              for key, value in hints.items()}
-    return json.dumps(detail, ensure_ascii=False)
-
-
-def tool_failure_content(tool_name: object, error: object) -> str:
-    error = error if isinstance(error, Mapping) else {}
-    code = error.get("code")
-    code = code if isinstance(code, str) and code in PUBLIC_ERRORS else "TOOL_FAILED"
-    return json.dumps({
-        "status": "error",
-        "code": code,
-        "message": tool_failure_message(tool_name, error),
-        "retryable": error.get("retryable") is True,
-    })
 
 
 def tool_failure_notice(tool_name: object, error: object) -> dict | None:

@@ -1,0 +1,16 @@
+{
+  "client_id": "https://astraldeep.github.io/oauth/client-metadata.json",
+  "client_name": "Astral",
+  "client_uri": "https://astraldeep.github.io",
+  "redirect_uris": [
+    "https://astraldeep.github.io/oauth/callback"
+  ],
+  "grant_types": [
+    "authorization_code",
+    "refresh_token"
+  ],
+  "response_types": [
+    "code"
+  ],
+  "token_endpoint_auth_method": "none"
+}

@@ -1,4 +1,4 @@
-"""Tests for delegated-hop audit provenance (backend/orchestrator/delegation.py,
+"""Tests for delegated-hop audit provenance (backend/orchestrator/agent_authority.py,
 audit/recorder.py): paired hop mint/enforce records share the tool call's correlation
 id, exclude token bytes, and cover gate refusals.
 """
@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 import audit.hooks as audit_hooks  # noqa: E402
 import audit.recorder as audit_recorder  # noqa: E402
-from orchestrator import delegation as dg  # noqa: E402
+from orchestrator import agent_authority as dg  # noqa: E402
 from shared.feature_flags import flags  # noqa: E402
 from shared.protocol import AgentHopRequest, MCPResponse  # noqa: E402
 
@@ -97,7 +97,7 @@ def orch():
 def _parent(scope="tools:read tool:peer_tool"):
     now = int(time.time())
     return {"sub": "u1", "act": {"sub": "agent:initiator-1"}, "scope": scope,
-            "iss": "mock-astral-delegation", "aud": "agent-svc",
+            "iss": "astral-delegation", "aud": "agent-svc",
             "iat": now, "exp": now + 300, "delegation": True}
 
 

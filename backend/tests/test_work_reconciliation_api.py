@@ -4,40 +4,39 @@ typed error mapping, with the reconciliation service boundary kept fake-backed.
 
 from __future__ import annotations
 
-import base64
-import json
 import os
 import sys
-from unittest.mock import MagicMock, AsyncMock
 from types import SimpleNamespace
+from unittest.mock import MagicMock, AsyncMock
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
-os.environ["USE_MOCK_AUTH"] = "true"
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from orchestrator.api import async_task_router  # noqa: E402
+from orchestrator.auth import refuse_node_bearer, require_user_id  # noqa: E402
 from orchestrator.work_reconciliation import (  # noqa: E402
     ReconciliationRefused,
 )
 
-OWNER = "owner-user-id"
-STRANGER = "stranger-user-id"
-
-
-def _token(sub: str) -> str:
-    body = base64.b64encode(json.dumps({
-        "sub": sub,
-        "preferred_username": sub,
-        "realm_access": {"roles": ["user"]},
-    }).encode()).decode().rstrip("=")
-    return f"header.{body}.signature"
+OWNER_SUBJECT = "owner-user-id"
+STRANGER_SUBJECT = "stranger-user-id"
+OWNER = OWNER_SUBJECT
+STRANGER = STRANGER_SUBJECT
+SUBJECT_HEADER = "x-test-subject"
 
 
 def _auth(sub: str) -> dict:
-    return {"Authorization": f"Bearer {_token(sub)}"}
+    return {SUBJECT_HEADER: sub}
+
+
+async def _subject(request: Request) -> str:
+    subject = request.headers.get(SUBJECT_HEADER)
+    if not subject:
+        refuse_node_bearer()
+    return subject
 
 
 BODY = {
@@ -74,7 +73,15 @@ def _app(service) -> TestClient:
     app = FastAPI()
     app.state.orchestrator = orch
     app.include_router(async_task_router)
+    app.dependency_overrides[require_user_id] = _subject
     return TestClient(app)
+
+
+def test_route_refuses_an_unsigned_token():
+    response = _app(_service()).post(
+        "/api/async-tasks/task-1/effect-reconcile", json=BODY,
+        headers={"Authorization": "Bearer e30.e30.sig"})
+    assert response.status_code == 401
 
 
 def test_route_requires_authentication():

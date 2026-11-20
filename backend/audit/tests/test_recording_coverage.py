@@ -49,6 +49,18 @@ def test_record_ws_action_writes_a_row(wired_recorder, repo):
     assert target.inputs_meta["message_length"] == len("hello there")
 
 
+@pytest.mark.parametrize("action,event_class", [
+    ("side_question", "conversation"), ("chat_steer", "conversation"), ("load_chat", "conversation"),
+    ("theme_change", "settings"),
+])
+def test_record_ws_action_classifies_conversation_actions(wired_recorder, repo, action, event_class):
+    from audit.hooks import record_ws_action
+    user = f"u-{uuid.uuid4().hex[:8]}"
+    asyncio.run(record_ws_action(claims={"sub": user}, action=action, chat_id="chat-1"))
+    items, _ = repo.list_for_user(user, limit=10)
+    assert [i.event_class for i in items if i.action_type == f"ws.{action}"] == [event_class]
+
+
 def test_tool_dispatch_audit_emits_paired_rows(wired_recorder, repo):
     from audit.hooks import ToolDispatchAudit
     user = f"u-{uuid.uuid4().hex[:8]}"

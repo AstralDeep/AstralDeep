@@ -31,7 +31,7 @@ def result():
         "list.\n"
     )
     adapter = model_io.ProviderDouble(variants=variants)
-    prompt = task_module.load_task_prompt(REPO_ROOT)
+    prompt = task_module.load_task_prompt(REPO_ROOT, task_module.SYNTHETIC_TASK_ID)
     run = optimizer_module.OptimizationRun(
         holdout_seals=holdout_seals,
         fixture=build_fixture(),
@@ -103,7 +103,7 @@ def test_candidate_validation_rejects_wrong_field_and_status(result):
 def test_report_contains_candidate_bound_evidence(result):
     report = report_module.build_report(result)
     assert report["schema_version"] == report_module.REPORT_SCHEMA_VERSION
-    assert report["task"]["source_path"] == "backend/orchestrator/coordinator.py"
+    assert report["task"]["source_path"] == "backend/prompt_optimization/synthetic_planning_prompt.txt"
     assert report["task"]["allowlisted_fields"] == ["rules"]
     assert report["fixture"]["digest"]
     assert set(report["fixture"]["partition_digests"]) == {
@@ -119,6 +119,15 @@ def test_report_contains_candidate_bound_evidence(result):
     assert report["selected_holdout"]["mean"] is not None
     assert report["proposal_errors"] == []
     assert report_module.validate_report(report) == []
+
+
+def test_completed_reports_and_proposals_for_the_retired_task_remain_readable(result):
+    report = report_module.build_report(result)
+    report["task"].update(task_id="coordinator_planning", source_path="backend/orchestrator/coordinator.py")
+    candidate = report_module.candidate_artifact(result)
+    candidate["task_id"] = "coordinator_planning"
+    assert report_module.validate_report(report) == []
+    assert report_module.validate_candidate(candidate) == []
 
 
 def test_report_adopt_requires_qualified_completed_run(result):
@@ -247,6 +256,25 @@ def test_export_enforces_size_bound(result, tmp_path, monkeypatch):
         report_module.export_artifacts(result, tmp_path / "small")
     assert "exceeds" in str(excinfo.value)
     assert not (tmp_path / "small" / "candidate_prompt.json").exists()
+
+
+def test_export_bounds_final_digest_bound_report(result, tmp_path, monkeypatch):
+    unbound = report_module._serialize(report_module.build_report(result))
+    monkeypatch.setattr(report_module, "MAX_ARTIFACT_BYTES", len(unbound))
+    out_dir = tmp_path / "bounded"
+    with pytest.raises(report_module.ArtifactError, match="optimization_report.json exceeds"):
+        report_module.export_artifacts(result, out_dir)
+    assert not out_dir.exists()
+
+
+def test_export_accepts_exact_final_report_bound(result, tmp_path, monkeypatch):
+    candidate = report_module._serialize(report_module.candidate_artifact(result))
+    report = report_module.build_report(result)
+    report["candidate_artifact_sha256"] = hashlib.sha256(candidate).hexdigest()
+    encoded = report_module._serialize(report)
+    monkeypatch.setattr(report_module, "MAX_ARTIFACT_BYTES", len(encoded))
+    paths = report_module.export_artifacts(result, tmp_path / "exact")
+    assert paths["report"].read_bytes() == encoded
 
 
 def test_export_fails_closed_on_invalid_result(result, tmp_path):

@@ -1,0 +1,4 @@
+# These recovery inputs are attested by exact bytes on every host.
+*.py text eol=lf
+tests/fixtures/pre_split/** text eol=lf
+tests/fixtures/session_incarnation_088001.json text eol=lf

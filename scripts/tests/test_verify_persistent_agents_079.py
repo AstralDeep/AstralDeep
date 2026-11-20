@@ -139,7 +139,7 @@ def test_private_session_target_expiry_token_and_permission_denials(workspace, t
     assert driver.load_session(path, BASE, ASSIGNMENT, "live-monitor", root=workspace, now=NOW)["owner_sub"] == "private-owner"
     for changes, code in [({"schema_version": 2}, "schema"), ({"base_url": "https://other.example"}, "target"),
             ({"allowed_scenarios": []}, "owner_selected"), ({"expires_at": (NOW - timedelta(seconds=1)).isoformat()}, "expired"),
-            ({"expires_at": (NOW + timedelta(hours=2)).isoformat()}, "short_lived"), ({"access_token": "dev-token"}, "token_invalid"),
+            ({"expires_at": (NOW + timedelta(hours=2)).isoformat()}, "short_lived"), ({"access_token": "not-a-token"}, "token_invalid"),
             ({"owner_sub": "someone-else"}, "owner_mismatch")]:
         private_json(path, session_data(**changes))
         with pytest.raises(driver.EvidenceError, match=code):
@@ -224,7 +224,7 @@ def test_manifest_includes_dirty_firstparty_components_excludes_user_generated_s
     files = {"backend/persistent_agents/runner.py": "runtime", "backend/orchestrator/projection_surfaces/assignments.py": "adapter",
              "backend/agents/user_generated.py": "private-user-code", "backend/data/private.py": "private-data",
              "backend/tests/test_private.py": "test", "config/astral-composition.json": "{}",
-             "components/AstralPlane/src/astralplane/assignments.py": "plane",
+             "plane/src/astralplane/assignments.py": "plane",
              "components/AstralProjection/backend/webrender/runtime.js": "render"}
     for relative, value in files.items():
         path = workspace / relative
@@ -239,13 +239,14 @@ def test_manifest_includes_dirty_firstparty_components_excludes_user_generated_s
         prefix = root.relative_to(workspace).as_posix() + "/" if root != workspace else ""
         selected = [name[len(prefix):] for name in files if name.startswith(prefix) and
                     (prefix or not name.startswith("components/"))]
-        chosen = [name for name in selected if ("config/" not in name if "--others" in args else "config/" in name)]
+        tracked = [name for name in selected if "config/" in name or name.startswith("plane/")]
+        chosen = [name for name in selected if (name not in tracked if "--others" in args else name in tracked)]
         return ("\0".join(chosen) + "\0").encode()
 
     monkeypatch.setattr(driver, "git", git)
     candidate, manifest = driver.runtime_manifest(workspace)
     assert candidate["runtime_file_count"] == 5
-    assert manifest["components/AstralPlane/src/astralplane/assignments.py"]["package"] == "astralplane"
+    assert manifest["plane/src/astralplane/assignments.py"]["package"] == "astralplane"
     assert "private" not in json.dumps(manifest)
     assert "backend/agents/user_generated.py" not in manifest
 

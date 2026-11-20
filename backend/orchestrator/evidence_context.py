@@ -353,7 +353,7 @@ class EvidenceContext:
                               conversation_id=chat, audience_id=f"user:{owner}")
 
     def _source_stamp(self, websocket, owner, chat, observation, parent):
-        from orchestrator import delegation, policy
+        from orchestrator import agent_authority, policy
         from orchestrator.tool_permissions import turn_permission_memo
         from personalization.phi_gate import get_phi_gate
 
@@ -366,7 +366,7 @@ class EvidenceContext:
                 raise EvidenceDenied()
         if parent is not None:
             scope = self.orchestrator.tool_permissions.get_tool_scope(observation.source_agent, observation.source_tool)
-            allowed, _reason = delegation.authorize_chained_tool_call(parent, observation.source_tool, scope)
+            allowed, _reason = agent_authority.authorize_chained_tool_call(parent, observation.source_tool, scope)
             if parent.get("sub") != owner or not allowed:
                 raise EvidenceDenied()
         blocked = self.orchestrator.security_flags.get(observation.source_agent, {}).get(observation.source_tool, {})
@@ -388,8 +388,6 @@ class EvidenceContext:
                 raise ValueError
         except (TypeError, ValueError):
             raise EvidenceDenied() from None
-        pending = {key: asdict(call) for key, call in getattr(self.orchestrator, "_hitl_pending_calls", {}).items()
-                   if call.owner == owner and call.chat == chat}
         privacy_gate = get_phi_gate()
         analyzer = getattr(privacy_gate, "_analyzer", None)
         analyze = getattr(analyzer, "analyze", None)
@@ -403,7 +401,7 @@ class EvidenceContext:
             memo.current(self, observation)
             privacy["delivery_policy"] = _privacy_snapshot()[0]
         return _digest({"card": card.to_dict(), "security": blocked, "policy": raw,
-                        "pending": pending, "privacy": privacy,
+                        "privacy": privacy,
                         "claims": {key: value for key, value in session.items() if not key.startswith("_")}})
 
     async def _persist(self, event):
@@ -1069,58 +1067,6 @@ class EvidenceContext:
             raise EvidenceDenied()
         return current
 
-    async def summary_view(self, text, messages, *, websocket, owner, chat):
-        captured = None
-        try:
-            adapter_binding = self._view_adapter()
-            await self._owner(websocket, owner, chat)
-            self._view_adapter(adapter_binding)
-            references = sorted(set(_REFERENCE_TOKENS.findall(_json(messages))))
-            if not references or any(_REFERENCE.fullmatch(reference) is None for reference in references):
-                raise EvidenceDenied()
-            dependencies, stamps = [], {}
-            for reference in references:
-                observation = self.archive.inspect(reference, owner_id=owner,
-                    conversation_id=chat, audience_id=f"user:{owner}")
-                await self._source_authorized(websocket, owner, chat, observation)
-                self._view_adapter(adapter_binding)
-                dependencies.append(self._dependency(observation))
-                stamps[reference] = self._source_stamp(websocket, owner, chat, observation, None)
-            permitted = await self._permitted_text(text)
-            self._view_adapter(adapter_binding)
-            if not permitted.strip():
-                raise EvidenceDenied()
-            await self._owner(websocket, owner, chat)
-            self._view_adapter(adapter_binding)
-            self._view_sources_current(tuple(dependencies), websocket=websocket, owner=owner, chat=chat, stamps=stamps)
-            if len(self._retained_views) >= self.views.max_records:
-                raise EvidenceCaptureError("context_view_cleanup_limit")
-            captured = self.views.capture(permitted, owner_id=owner, conversation_id=chat,
-                                          audience_id=f"user:{owner}", dependencies=tuple(dependencies))
-            self._retained_views[captured.reference] = (copy.deepcopy(captured), None, None, [None])
-            self._view_adapter(adapter_binding)
-            await self._audit(owner, chat, "view_capture", extra={
-                "view_digest": _digest(captured.reference), "bytes": captured.size_bytes,
-                "source_count": len(dependencies),
-            })
-            self._view_adapter(adapter_binding)
-            await self._owner(websocket, owner, chat)
-            self._view_adapter(adapter_binding)
-            self._view_sources_current(tuple(dependencies), websocket=websocket, owner=owner, chat=chat, stamps=stamps)
-            self.views.inspect(captured.reference, owner_id=owner, conversation_id=chat,
-                               audience_id=f"user:{owner}", dependencies=tuple(dependencies))
-            return captured.reference
-        except BaseException as exc:
-            if captured is not None:
-                try:
-                    self.views.delete(captured.reference, owner_id=owner, conversation_id=chat, audience_id=f"user:{owner}")
-                except Exception as cleanup_error:
-                    logger.warning("Temporary context view cleanup refused: %s", type(cleanup_error).__name__)
-            if not isinstance(exc, Exception):
-                raise
-            logger.warning("Temporary context view refused: %s", type(exc).__name__)
-            return None
-
     async def _view_content(self, view_id, *, websocket, owner, chat, parent=None, initiator=None, adapter_binding=None):
         adapter_binding = self._view_adapter(adapter_binding)
         await self._owner(websocket, owner, chat)
@@ -1244,14 +1190,9 @@ class EvidenceContext:
         from orchestrator.context_authority import current_context_authority
         from persistent_agents.dispatch_context import current_dispatch
 
-        origin = asyncio.current_task()
-        reservation = current_dispatch()
-        authority = None
-        if reservation is None:
-            authority = current_context_authority(orchestrator=self.orchestrator, websocket=websocket, chat_id=chat)
-        elif (reservation.kind != "model" or reservation.owner_id != owner
-              or reservation.conversation_id != chat or not reservation.consumed):
+        if current_dispatch() is not None:
             raise EvidenceDenied()
+        authority = current_context_authority(orchestrator=self.orchestrator, websocket=websocket, chat_id=chat)
         adapter_binding = (self._view_adapter(tool="recall_observation")
                            if type(request) is dict and has_references(request.get("messages", [])) else None)
         capture = await self.orchestrator._llm_store.capture_user(owner)
@@ -1291,28 +1232,17 @@ class EvidenceContext:
                 await self._verify_observation_text(observation, grant)
                 source_stamps.append((observation, self._source_stamp(websocket, owner, chat, observation, None)))
             self._check_sources(request.get("messages", []), owner, chat)
-            if reservation is not None:
-                if origin.done() or origin.cancelling() or current_dispatch() is not reservation:
-                    raise EvidenceDenied()
-                await reservation.authorize()
-                if origin.done() or origin.cancelling():
-                    raise EvidenceDenied()
-                if reservation.research_input is not None:
-                    reservation.research_input.assert_body(owner, request)
-            else:
-                proof = await authority.verify(orchestrator=self.orchestrator, websocket=websocket, chat_id=chat)
-                if proof.owner_id != owner:
-                    raise EvidenceDenied()
+            if current_dispatch() is not None:
+                raise EvidenceDenied()
+            proof = await authority.verify(orchestrator=self.orchestrator, websocket=websocket, chat_id=chat)
+            if proof.owner_id != owner:
+                raise EvidenceDenied()
             current = await self.orchestrator._llm_store.capture_user(owner)
             ack = await self.orchestrator._data_sharing_store.state(owner)
             if (current is None or not capture.matches(current._record) or not ack.acknowledged
                     or not enabled() and not has_references(request.get("messages", []))):
                 raise EvidenceDenied()
-            if reservation is not None:
-                if origin.done() or origin.cancelling():
-                    raise EvidenceDenied()
-            else:
-                authority.assert_current(orchestrator=self.orchestrator, websocket=websocket, chat_id=chat)
+            authority.assert_current(orchestrator=self.orchestrator, websocket=websocket, chat_id=chat)
             if _digest(request) != request_identity or load_budget(
                     os.getenv("ASTRAL_CONTEXT_BUDGET_POLICY", ""), owner_id=owner,
                     provider=capture._record.provider, base_url=base_url, model=model) != budget:
@@ -1364,8 +1294,6 @@ class EvidenceContext:
                 task_projections.append({"operation": current_task._operation, "fence": current_task._execution_fence,
                                          "message": current_task.message, "tools": current_task.tool_calls_made,
                                          "current_tool": current_task.current_tool})
-            pending = {key: asdict(call) for key, call in getattr(self.orchestrator, "_hitl_pending_calls", {}).items()
-                       if call.owner == owner and call.chat == chat}
             jobs = {key: value for key, value in self.orchestrator._job_context.items()
                     if value.get("user_id") == owner and value.get("chat_id") == chat}
             from orchestrator.tool_permissions import turn_permission_memo
@@ -1388,7 +1316,7 @@ class EvidenceContext:
                 )
             }
             return {"authorized": True, "authority": _digest({
-                "conversation": record, "pending": pending, "jobs": jobs, "tasks": task_projections,
+                "conversation": record, "jobs": jobs, "tasks": task_projections,
                 "publication": publication, "manifests": {key: card.to_dict() for key, card in self.orchestrator.agent_cards.items()},
                 "permissions": permissions, "security": self.orchestrator.security_flags,
                 "policy": os.getenv("POLICY_RULES"), "retention": self._source_states(owner, chat),

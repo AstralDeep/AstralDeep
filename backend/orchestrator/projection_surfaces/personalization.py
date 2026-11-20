@@ -16,6 +16,8 @@ from typing import Optional
 from audit.hooks import record_generic
 from dreaming.consolidation import run_sweep
 from personalization.chat_notices import notices_enabled, set_notices_enabled
+from personalization.atlas_pages import parse_envelope
+from personalization.memory_tools import ATLAS_ENVELOPE_REFUSAL, editable_memory, is_atlas_page_row
 from personalization.phi_gate import get_phi_gate
 from personalization.schemas import PersonalitySpec, ProfileUpdateRequest
 from pydantic import ValidationError
@@ -291,7 +293,8 @@ async def _render_memory(orch, user_id: str) -> str:
     svc = _svc(orch)
     if svc is None:
         return _unavailable("Personalization subsystem is not available.")
-    items = await asyncio.to_thread(svc.repo.list_memory, user_id)
+    items = [item for item in await asyncio.to_thread(svc.repo.list_memory, user_id)
+             if not is_atlas_page_row(item)]
     await record_generic(
         claims={"sub": user_id}, event_class="memory", action_type="memory.view",
         description="Viewed durable memory", outputs_meta={"count": len(items)},
@@ -627,7 +630,8 @@ async def _components_memory(orch, user_id):
     svc = _svc(orch)
     if svc is None:
         return [_sdui.alert("Personalization subsystem is not available.", "warning")]
-    items = await asyncio.to_thread(svc.repo.list_memory, user_id)
+    items = [item for item in await asyncio.to_thread(svc.repo.list_memory, user_id)
+             if not is_atlas_page_row(item)]
     await record_generic(
         claims={"sub": user_id}, event_class="memory", action_type="memory.view",
         description="Viewed durable memory", outputs_meta={"count": len(items)},
@@ -894,13 +898,16 @@ async def _handle_memory_update(orch, websocket, user_id, roles, payload):
                 notice_block("error", "Memory value cannot be empty."))
     if await asyncio.to_thread(_contains_phi, value):
         return (SURFACE_KEY, _params("memory"), _phi_notice("value"))
-    if not await asyncio.to_thread(svc.repo.update_memory_value, user_id, mem_id, value):
+    if parse_envelope(value) is not None:
+        return (SURFACE_KEY, _params("memory"), notice_block("error", ATLAS_ENVELOPE_REFUSAL))
+    row = await asyncio.to_thread(editable_memory, svc.repo, user_id, mem_id)
+    if row is None or not await asyncio.to_thread(svc.repo.update_memory_value, user_id, row["id"], value):
         return (SURFACE_KEY, _params("memory"),
                 notice_block("error", "Memory item not found."))
     await record_generic(
         claims=_claims(orch, websocket, user_id), event_class="memory",
         action_type="memory.update", description="Updated a memory item",
-        outputs_meta={"id": mem_id},
+        outputs_meta={"id": row["id"]},
     )
     return (SURFACE_KEY, _params("memory"), notice_block("success", "Memory updated."))
 
@@ -914,13 +921,14 @@ async def _handle_memory_delete(orch, websocket, user_id, roles, payload):
     if not mem_id:
         return (SURFACE_KEY, _params("memory"),
                 notice_block("error", "Missing memory item id."))
-    if not await asyncio.to_thread(svc.repo.delete_memory, user_id, mem_id):
+    row = await asyncio.to_thread(editable_memory, svc.repo, user_id, mem_id)
+    if row is None or not await asyncio.to_thread(svc.repo.delete_memory, user_id, row["id"]):
         return (SURFACE_KEY, _params("memory"),
                 notice_block("error", "Memory item not found."))
     await record_generic(
         claims=_claims(orch, websocket, user_id), event_class="memory",
         action_type="memory.delete", description="Deleted a memory item",
-        outputs_meta={"id": mem_id},
+        outputs_meta={"id": row["id"]},
     )
     return (SURFACE_KEY, _params("memory"), notice_block("success", "Memory deleted."))
 
@@ -1253,7 +1261,7 @@ async def _handle_dreaming_trigger(orch, websocket, user_id, roles, payload):
     return (SURFACE_KEY, _params("dreaming"), notice_block("success", msg))
 
 
-_ASSIGNMENT_CONTROLS = ("create", "revise", "pause", "resume", "stop", "revoke", "run_now", "approval_decide")
+_ASSIGNMENT_CONTROLS = ("pause", "stop", "revoke", "approval_decide")
 _ASSIGNMENT_ACTIONS = tuple(f"chrome_assignment_{suffix}" for suffix in _ASSIGNMENT_CONTROLS)
 _ASSIGNMENT_METRICS = ("model_calls", "tool_calls", "tokens", "elapsed_ms")
 _ASSIGNMENT_LIMITS = ("cadence_seconds", "max_retries", "max_concurrent_tasks", "max_depth", "max_tasks", "step_timeout_ms")
@@ -1282,26 +1290,6 @@ def _assignment_access(orch, websocket, user_id):
     return service, claims
 
 
-def _assignment_tool_options(orch, service, user_id, claims):
-    from persistent_agents.models import AssignmentError
-
-    from orchestrator.tool_visibility import eligible_tool_pairs
-    permissions = orch.tool_permissions
-    pairs = eligible_tool_pairs(orch, user_id,
-        disabled_agents=permissions.list_disabled_agents(user_id), identity_claims=claims)
-    tools, sources = [], []
-    for agent, skill in pairs:
-        identity = f"{agent}:{skill.id}"
-        try:
-            service.tool_bound(identity)
-        except AssignmentError:
-            continue
-        tools.append(identity)
-        if permissions.get_tool_scope(agent, skill.id) in ("tools:read", "tools:search"):
-            sources.append("public_page" if identity == "web-research-1:fetch_page" else identity)
-    return sources[:32], tools[:32]
-
-
 def _assignment_limits(flat=None):
     from persistent_agents.models import AssignmentLimits
     values = AssignmentLimits().model_dump()
@@ -1314,16 +1302,6 @@ def _assignment_limits(flat=None):
             values[period][name] = flat.get(prefix + name)
         values[period]["currency"] = flat.get("currency")
     return AssignmentLimits.model_validate(values).model_dump()
-
-
-def _assignment_limit_fields(limits):
-    result = [{"name": key, "label": _ASSIGNMENT_LABELS[key], "value": limits[key]}
-              for key in _ASSIGNMENT_LIMITS]
-    for period in ("daily", "lifetime"):
-        result.extend({"name": f"{period}.{key}", "label": f"{period.title()} {_ASSIGNMENT_LABELS[key]}",
-                       "value": limits[period][key]}
-                      for key in (*_ASSIGNMENT_METRICS, "spend_micro_units"))
-    return result
 
 
 def _assignment_row(record):
@@ -1342,8 +1320,8 @@ def _assignment_row(record):
         source_arguments=json.dumps(source["arguments"], ensure_ascii=False) if source_key != "public_page" else "",
         linked_document_urls="\n".join(source.get("linked_document_urls", [])),
         currency_cap_enabled=currency is not None, currency=currency or "")
-    row["grant_summary"] = ("Revocable unattended authorization is bound; current permissions are rechecked for every action."
-        if data.get("authority", {}).get("grant_bound") else "Authorization required. Revise and approve to bind a current grant.")
+    row["grant_summary"] = ("A revocable grant remains bound to this assignment."
+        if data.get("authority", {}).get("grant_bound") else "No authorization is bound to this assignment.")
     row["currency_cap_label"] = f"{limits['lifetime']['spend_micro_units']} millionths of {currency}" if currency else "No currency cap"
     row["monetary_cost_label"] = (f"{usage.get('spent', {}).get('spend_micro_units', 0)} millionths of {currency}"
         if currency else "Unpriced/unknown")
@@ -1355,8 +1333,6 @@ def _assignment_row(record):
             "value": f"Lifetime {spent}/{limits['lifetime'][key]}; today {daily}/{limits['daily'][key]}; reserved {outstanding}; remaining {max(0, min(limits['lifetime'][key] - spent - outstanding, limits['daily'][key] - daily - outstanding))}"})
     error = data.get("safe_error_code")
     row["safe_error"] = error or ""
-    if error and row["lifecycle"] in ("active", "paused"):
-        row["safe_error"] += ". Review activity and restore authorization or revise the assignment before resuming."
     row["available_actions"] = list(_ASSIGNMENT_ACTIONS) if row["lifecycle"] in ("active", "paused") else []
     row["submission_ids"] = {action: str(uuid.uuid4()) for action in row["available_actions"]}
     row["tasks"] = [{"title": task.get("title"), "state": task.get("state"), "result": task.get("bounded_result"),
@@ -1389,7 +1365,7 @@ def _assignment_approval(action):
         "consequence": intent.get("sensitivity", "Review the exact operation"),
         "preconditions_summary": "Bound precondition " + intent["precondition_digest"],
         "interactive_only": intent.get("interactive_only", False),
-        "submission_ids": {decision: str(uuid.uuid4()) for decision in ("approve", "decline")}}
+        "submission_ids": {"decline": str(uuid.uuid4())}}
 
 
 def _assignment_review_text(request):
@@ -1420,64 +1396,37 @@ def _assignment_review_text(request):
         return None
 
 
-def _assignment_draft(params, definition):
-    from persistent_agents.models import AssignmentError, SourceSelection
-    draft = params.get("assignment_draft", {})
-    if not isinstance(draft, dict) or set(draft) - {"name", "instructions", "source_url"}:
-        raise AssignmentError("assignment_draft_invalid", 422)
-    for key, maximum in (("name", 120), ("instructions", 4096)):
-        if key in draft and (not isinstance(draft[key], str) or not 1 <= len(draft[key]) <= maximum or not draft[key].strip() or "\x00" in draft[key]):
-            raise AssignmentError("assignment_draft_invalid", 422)
-    if "source_url" in draft:
-        SourceSelection(agent_id="web-research-1", tool_name="fetch_page", arguments={"url": draft["source_url"]})
-    definition.update(draft)
-    conversation = params.get("conversation_id")
-    if conversation is not None:
-        if not isinstance(conversation, str) or not 1 <= len(conversation) <= 128 or not conversation.strip() or "\x00" in conversation:
-            raise AssignmentError("assignment_destination_invalid", 422)
-        definition["conversation_id"] = conversation
-
-
 async def _assignment_state(orch, websocket, user_id, params):
     from persistent_agents.models import AssignmentError
     from persistent_agents.service import thaw
-    state = {"enabled": flags.is_enabled("persistent_agents"),
-             "execution_enabled": getattr(orch, "persistent_assignment_runner", None) is not None}
+    state = {"enabled": flags.is_enabled("persistent_agents"), "execution_enabled": False}
     if not state["enabled"]:
         return state
     try:
         service, claims = _assignment_access(orch, websocket, user_id)
         identity = params.get("assignment_id")
         mode = params.get("assignment_mode") or ("detail" if identity else "list")
-        if mode not in ("list", "detail", "create", "revise"):
+        if mode in ("create", "revise"):
+            return {**state, "error": "New and revised ongoing assignments are unavailable because their execution engine has been retired."}
+        if mode not in ("list", "detail"):
             raise AssignmentError("assignment_view_invalid", 422)
-        state.update(mode=mode, available_actions=["chrome_assignment_create"],
-            submission_ids={"chrome_assignment_create": str(uuid.uuid4())})
+        state["mode"] = mode
         if mode == "list":
             records = await service.list(user_id, claims, limit=50, after_id=params.get("assignment_cursor"))
             state["assignments"] = [_assignment_row(item)[0] for item in records]
             if len(records) == 50:
                 state["next_cursor"] = state["assignments"][-1]["assignment_id"]
             return state
-        if mode == "create":
-            row, limits = {"definition": {"source_key": "public_page", "allowed_tools": ["web-research-1:fetch_page"], "currency_cap_enabled": False}}, _assignment_limits()
-        else:
-            row, limits = _assignment_row(await service.get(user_id, claims, identity))
+        row, _ = _assignment_row(await service.get(user_id, claims, identity))
         state["assignment"] = row
-        if mode in ("create", "revise"):
-            state["source_options"], state["tool_options"] = await asyncio.to_thread(_assignment_tool_options, orch, service, user_id, claims)
-            state["registered_reader_enabled"] = any(source != "public_page" for source in state["source_options"])
-            state["limit_fields"] = _assignment_limit_fields(limits)
-            _assignment_draft(params, row["definition"])
-        else:
-            cursor = params.get("activity_cursor", "0")
-            if not isinstance(cursor, str) or not re.fullmatch(r"[0-9]{1,19}", cursor):
-                raise AssignmentError("assignment_cursor_invalid", 422)
-            activity = await service.activity(user_id, claims, identity, after_sequence=int(cursor), limit=50)
-            row["activity"] = [{key: thaw(item).get(key) for key in ("title", "summary", "created_at")} for item in activity]
-            if len(activity) == 50:
-                row["activity_cursor"] = str(thaw(activity[-1])["sequence"])
-            row["approvals"] = [_assignment_approval(item) for item in await service.proposals(user_id, claims, identity)]
+        cursor = params.get("activity_cursor", "0")
+        if not isinstance(cursor, str) or not re.fullmatch(r"[0-9]{1,19}", cursor):
+            raise AssignmentError("assignment_cursor_invalid", 422)
+        activity = await service.activity(user_id, claims, identity, after_sequence=int(cursor), limit=50)
+        row["activity"] = [{key: thaw(item).get(key) for key in ("title", "summary", "created_at")} for item in activity]
+        if len(activity) == 50:
+            row["activity_cursor"] = str(thaw(activity[-1])["sequence"])
+        row["approvals"] = [_assignment_approval(item) for item in await service.proposals(user_id, claims, identity)]
         return state
     except (AssignmentError, ValidationError, ValueError, TypeError):
         return {**state, "error": "This assignment view is unavailable or invalid. Reload Schedule and check your authorization."}

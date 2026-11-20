@@ -75,9 +75,7 @@ LETS_EXECUTOR_RUNTIME_RETENTION_DAYS=30
 Why per-request identity: the bundled LETS authenticator accepts only EdDSA
 JWTs with a lifetime ≤ 1 h, so a static token read at boot would expire.
 `MintingLETSClient` mints a fresh token for every request under the client's
-request lock. Keycloak cannot fill this role without new code on both sides
-(RS256, no `nbf`, no `tenant_id`/`scope` claims) — see the design notes in the
-074 spec.
+request lock. See the design notes in the 074 spec.
 
 The mounted files are: the private CA that signed the warden's server
 certificate, the orchestrator's client certificate/key (the warden requires
@@ -98,8 +96,6 @@ orchestrator additions (read-only trust mount, two executor volumes,
 - `/readyz` carries a `lets` object (`mode`, `status`, `reason`,
   `governed_effects_permitted`, `observed_at_ns`). Off mode is exactly
   `{"mode":"off","status":"disabled"}`.
-- `GET /lets/health` (admin bearer) returns the full redacted projection
-  including the redacted host configuration.
 - The reachability probe (`GET /health/ready` on the warden) runs on a
   daemon thread, single-flight, cached for `LETS_HEALTH_PROBE_INTERVAL_SECONDS`.
 

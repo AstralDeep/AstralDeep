@@ -5,7 +5,6 @@ identity, and stays distinct from logout.
 
 from __future__ import annotations
 
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -68,16 +67,3 @@ async def test_async_retirement_and_status_use_verified_owner_identity() -> None
     assert coordinator.owners == ["owner-1", "owner-1:cleanup-1"]
 
 
-def test_account_purge_is_not_mapped_to_logout() -> None:
-    backend = Path(__file__).resolve().parents[2]
-    mounted_sources = (
-        backend / "orchestrator" / "api.py",
-        backend / "orchestrator" / "auth.py",
-        backend / "orchestrator" / "web_auth.py",
-        backend / "orchestrator" / "orchestrator.py",
-    )
-
-    for source in mounted_sources:
-        text = source.read_text(encoding="utf-8")
-        assert "purge_user_attachments" not in text
-        assert "initiate_account_retirement" not in text

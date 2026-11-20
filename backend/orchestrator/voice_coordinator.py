@@ -4742,27 +4742,6 @@ class VoiceCoordinator:
         await self.worker_pool.clear_suppressed_recognition(binding)
         return mutation
 
-    async def emit_transcript_accepted(
-        self,
-        turn: Any,
-        *,
-        accepted_message_id: int,
-    ) -> dict[str, Any]:
-        _positive(
-            accepted_message_id,
-            "invalid_accepted_message_id",
-            ControlProtocolError,
-        )
-        binding, reservation = await self._current_transcript_binding(turn)
-        return await self.worker_pool.send_session_command(
-            reservation,
-            "transcript_accepted",
-            {
-                **self._disposition_fields(binding),
-                "accepted_message_id": accepted_message_id,
-            },
-        )
-
     async def emit_transcript_rejected(
         self,
         turn: Any,

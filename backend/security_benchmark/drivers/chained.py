@@ -75,7 +75,7 @@ class ChainedDriver(Driver):
     async def _drive_hop(self, case: BenchmarkCase, chaining_on: bool):
         import os
 
-        from orchestrator import delegation as dg
+        from orchestrator import agent_authority as dg
         from orchestrator.orchestrator import Orchestrator
         from shared.protocol import AgentHopRequest, MCPResponse
 
@@ -200,17 +200,11 @@ class ChainedDriver(Driver):
         orch = MagicMock()
         orch.tool_permissions.get_agent_scopes = MagicMock(
             return_value={"tools:read": True})
-        grants = MagicMock()
-        grants.is_valid = MagicMock(return_value=False)
-        grants.latest_valid_for = MagicMock(return_value=None)
-        grants.mint_access_token = AsyncMock(return_value="should-never-mint")
-
-        authority = await MachineTurnAuthority(orch, grants).derive(
+        authority = await MachineTurnAuthority(orch).derive(
             user_id="human-1", agent_id="web-research-1",
             consented_scopes=["tools:read"], grant_id="revoked-grant",
             turn_class="scheduled_job")
         skipped = isinstance(authority, AuthoritySkip)
-        grants.mint_access_token.assert_not_awaited()
         executed = not skipped
         if not chaining_on:
             return False, None, False
@@ -222,7 +216,7 @@ def _tok(now: int, scope: str, *, depth: int = 0, act=None) -> dict:
         "sub": "human-1",
         "act": act or {"sub": "agent:initiator-1"},
         "scope": scope,
-        "iss": "mock-astral-delegation",
+        "iss": "astral-delegation",
         "aud": "agent-service",
         "iat": now,
         "exp": now + 300,
