@@ -2,6 +2,10 @@
 
 **Date:** 2026-11-20. Evidence behind [spec.md](spec.md). Nothing here is a decision.
 
+**Amended:** 2026-11-20, after phase 0. A statement that phase 0 contradicted keeps its original text and
+carries a "Phase 0 corrects this" note beside it. Section 10 now has the answers. The detailed results are
+in [phase-0/README.md](phase-0/README.md).
+
 Sources read:
 
 - AstralDeep `origin/main` at `256301ef`.
@@ -162,7 +166,9 @@ speak.
 - The card claims 45 languages and does not list them. The pilot exercised eight.
 - The GGUF card reports that stock llama.cpp can add a few unsaid words to short clips because it
   treats zero padding as sound. A fix was pending upstream. **Unverified** whether the pilot's pinned
-  llama.cpp revision carries it.
+  llama.cpp revision carries it. **Phase 0 answer (R2):** it does not, and no revision does. The fix is
+  not merged upstream at the pilot's revision or at master on 2026-11-20. A third-party patch exists and
+  its licence is unknown. The spec pins the pilot's revision and pads clips in the app.
 
 ### 3.2 What the pack contains
 
@@ -183,12 +189,20 @@ files.
 
 A clean install downloads 1,295,943,485 bytes and occupies 1,309,859,838 bytes.
 
+**Phase 0 note (R9).** The v1.1 manifest still lists the Piper archive, and a client that installs
+everything in it would fetch Piper. The app's own bundled manifest is the authority. It lists the three
+GGUF files, which total 1,228,712,832 bytes, and the Phonon Core ML files only (spec section 6). A new
+published manifest without Piper needs the owner's word. R9 counts 359 files in the Piper archive where
+this section says 362. Neither count was checked against the archive, which R9 did not open.
+
 ### 3.3 Runtimes in the pilot
 
 - llama.cpp at `8af68d486a9473820d24d00af8f33334ca80124d`, built with `libmtmd`, as a static library.
   Metal on device, CPU in the simulator (`VoiceTesting/Scripts/build_runtime.sh`).
 - Sherpa-ONNX with ONNX Runtime 1.17.1 as xcframeworks.
-- Slices exist for iPhone and the iPhone simulator only. There is no macOS slice.
+- Slices exist for iPhone and the iPhone simulator only. There is no macOS slice. **Phase 0 (R4)** built a
+  macOS arm64 slice at the same revision. A hardened, signed host with only the audio-input entitlement
+  ran Rumble and LFM2.5 on Metal on an Apple M5.
 - The Sherpa library references `espeak_Initialize` and related symbols. It links eSpeak NG for
   pronunciation. eSpeak NG is licensed GPL-3.0.
 
@@ -228,6 +242,11 @@ the turn over. It stops at the first non-silent output sample plus the route's r
 | Exact transcripts after normalization | 9 of 10 in each run |
 | Six more languages, 96 replies | All under 3 s. Median 1.85 s |
 
+**Phase 0 corrects the reading of one row (R8).** The 1.50 GB and 1.85 GB figures are resident size
+(`ru_maxrss`), not footprint. The system's memory limit is judged on footprint. The lab app measured the
+same kind of stack at 0.49 to 0.69 GB of footprint on the same phone. Phase 0 measured 523 to 528 MB with
+Phonon speaking (R12).
+
 Rumble misheard "sides" as "sites", "penguins" as "pendants" and one book title. The provider still
 answered correctly each time.
 
@@ -249,7 +268,8 @@ Route 2 would give the watch its own network identity. Spec 106 removed that, an
 forbids it. Route 3 is what the app uses today.
 
 **Unverified:** whether `AVAudioInputNode.setVoiceProcessingEnabled` works on watchOS. Without echo
-cancellation the watch cannot listen while it speaks.
+cancellation the watch cannot listen while it speaks. **Phase 0 answer (R7):** the API is declared for
+watchOS 6 and later and compiles at the watchOS 10 target. Whether it works on a watch needs hardware.
 
 ---
 
@@ -260,7 +280,10 @@ The kernel takes an optional `OnDeviceModel` from the host (`crates/astral-kerne
 (`crates/astral-kernel/src/turns_runtime.rs:182-189`).
 
 **Unverified:** the exact condition under which the kernel routes a turn to the on-device model when a
-provider fails, and how the host is told that the provider is unreachable.
+provider fails, and how the host is told that the provider is unreachable. **Phase 0 answer (R3):** the kernel classifies the
+failure and falls back to the on-device model inside a turn, but only the English notice sentence reaches
+the host, the provider is always tried first, and nothing probes it without sending a chat completion. A
+small additive kernel change is needed (spec section 9.3).
 
 ---
 
@@ -269,7 +292,7 @@ provider fails, and how the host is told that the provider is unreachable.
 | Component | Licence | Note |
 |---|---|---|
 | Rumble 2 Flash | Apache 2.0 | |
-| LFM2.5 1.2B Instruct | LFM Open License v1.0 | Commercial use is licensed only while the legal entity and its affiliates have annual revenue under $10 million. Qualified non-profits are exempt for non-commercial and research use. No field-of-use restriction. The shipping LFM3 manifest names the same licence. The owner confirmed on 2026-11-20 that the entity distributing Astral is under the threshold. Redistribution requires a copy of the licence and its notices. |
+| LFM2.5 1.2B Instruct | LFM Open License v1.0 | Commercial use is licensed only while the legal entity and its affiliates have annual revenue under $10 million. Qualified non-profits are exempt for non-commercial and research use. No field-of-use restriction. The shipping LFM3 manifest names the same licence. The owner confirmed on 2026-11-20 that the entity distributing Astral is under the threshold. Redistribution requires a copy of the licence and its notices. Phase 0 (R9) found wordings that need a legal reading, listed in spec section 17. |
 | llama.cpp | MIT | |
 | Sherpa-ONNX | Apache 2.0 | Links eSpeak NG |
 | eSpeak NG | GPL-3.0 | Code is linked into the app. Data is downloaded. |
@@ -305,6 +328,12 @@ read the same day. Every figure below is the publisher's own. None was measured 
 All three run through FluidAudio 0.17.7, a Swift package under Apache 2.0. Its documentation states
 "no GPL dependencies" for these paths and lists none in its third-party licence folder.
 
+**Phase 0 corrects this (R5a, R9).** The tag is `v0.17.7`, and it holds Kokoro and the 100M Pocket TTS
+only. Phonon 31m and the Pocket small models first appear in `v0.18.0`, so the pin is `v0.18.4`. "No GPL
+dependencies" is true of code and false of data. The library bundles two data files derived from eSpeak
+NG, which its own note lists as GPL-3.0-or-later. The licence folder listed none at 0.17.7 because that
+note was added at 0.18.0, and the files were already in the package.
+
 | Model | Weights | Text to sound | Published speed | Notes |
 |---|---|---|---|---|
 | Kokoro-82M (`hexgrad/Kokoro-82M`, Core ML build `FluidInference/kokoro-82m-coreml`) | Apache 2.0 | Its own Core ML pronunciation model plus a lexicon. No eSpeak at run time. | 3 to 11 times real time on Apple silicon. About 50 ms median on an M5 Pro for the newest build. | 24 kHz. Does not stream. One Mac benchmark peaked at 1.503 GB of process memory. The newest build needs iOS 18 or macOS 15, and its iPhone inference is described as unvalidated. Also speaks Spanish, French, Mandarin and Japanese. |
@@ -329,23 +358,56 @@ does not use them. Their licence file was not opened.
 Piper's **measured** median to first word on the iPhone 13 Pro was 0.539 s. The system voice's was
 1.094 s. A replacement has to land near the first figure to be worth shipping in place of the second.
 
+### 9.4 Phase 0 results (2026-11-20)
+
+Measured on one iPhone 13 Pro on iOS 27.2.1 in a Release build, with Rumble and LFM2.5 resident, in a
+bench app and not in the pilot. The bench clock runs from the synthesize call to the first non-silent
+sample, so it does not compare with the pilot's 0.539 s. Piper ran in the same bench as the reference.
+Detail is in [phase-0/R12](phase-0/R12-voice-candidates.md).
+
+| Voice | Median to first audible | Footprint peak | Licence result |
+|---|---:|---:|---|
+| Piper, reference | 0.210 s | 658 MB | Fails |
+| Phonon 31m | 0.169 s | 523 to 528 MB | Pass, Apache 2.0 |
+| Pocket TTS 18M | 0.048 s, or about 0.21 s at a speech-level threshold | 499 to 538 MB | Pass, CC-BY-4.0 |
+| Kokoro-82M | 0.522 s, or about 0.21 s with leading silence trimmed | 698 to 699 MB | Front end data not cleared |
+
+What phase 0 added to section 9.1:
+
+- Phonon's text front end, marked "Not read" above, is a rule-based normalizer and a SentencePiece
+  tokenizer with no phonemizer and no eSpeak (R9). Only the 31m English model is Apache 2.0. The 40m
+  models are CC BY-NC 4.0.
+- All three voices load from a local folder with FluidAudio's offline mode on and its registry URL at a
+  closed loopback port (R5a). Every file the app would fetch is open without accepting terms. Only
+  Kyutai's own repository is gated, and FluidAudio does not read it (R5b).
+- Kokoro's English front end rests on the Misaki dictionary, which does not state where its entries came
+  from (R9). FluidAudio's own advisory says no Core ML route is known to be safe for Kokoro on iOS 27
+  (R5a). The Spanish and French lexicons, whose licence file section 9.1 did not open, say their
+  pronunciations were generated with espeak-ng and give no licence for that output (R9).
+- The "About 171 MB" figure for Phonon is the publisher's. R9 did not check sizes. Summing the file list
+  in R5b gives 362,189,660 bytes in 148 files for the whole Phonon folder, and the app needs a subset.
+  The two figures were not reconciled.
+
+The owner listened to the recordings and picked Phonon 31m on 2026-11-20 (spec O13).
+
 ---
 
-## 10. Not verified
+## 10. Not verified, and what phase 0 found
 
-Phase 0 of [plan.md](plan.md) answers each of these.
+Phase 0 of [plan.md](plan.md) answered each of these on 2026-11-20. The question column is the original
+text. The answer column is the short result with its file in `phase-0/`.
 
-| Id | Question |
-|---|---|
-| R1 | Does re-running Rumble on a growing segment every 0.5 s keep up on an iPhone 13 Pro, with an LFM2.5 draft and a Piper sentence fitted between partials? Speculation, fillers and interruption all depend on it. |
-| R2 | Does llama.cpp at the pinned revision carry the short-clip padding fix? If it does not, which revision does? |
-| R3 | How does the host learn that the provider is unreachable, and how is a turn served by the on-device model in the same chat while it is? |
-| R4 | Does llama.cpp with `libmtmd` build and pass tests as a macOS arm64 slice under the hardened runtime? |
-| R5 | Does FluidAudio load a voice from a local folder with no network request, and can each candidate's files be downloaded without accepting terms? |
-| R6 | Does the paired-watch relay keep working when the phone app is in the background, given that the models use the GPU? |
-| R7 | Does voice processing work on watchOS? |
-| R8 | Is the 5.5 GB phone memory gate still right at a 1.85 GB peak? |
-| R9 | Do the licence files of each voice candidate, its pronunciation data and FluidAudio confirm what their cards say? |
-| R10 | How good is LFM2.5 1.2B at short acknowledgments in the seven languages other than English? |
-| R11 | How often does Rumble return words for a cough, room noise or a clip under one second? Word-confirmed interruption depends on the answer. |
-| R12 | How fast is each voice candidate to first audio on an iPhone 13 Pro with Rumble and LFM2.5 loaded, and how much memory does it add? |
+| Id | Question | Answer |
+|---|---|---|
+| R1 | Does re-running Rumble on a growing segment every 0.5 s keep up on an iPhone 13 Pro, with an LFM2.5 draft and a Piper sentence fitted between partials? Speculation, fillers and interruption all depend on it. | A partial takes 0.25 s on a 2 s segment, 0.45 s at 5 s and 0.80 s at 10 s. The draft does not fit between ticks at any length, so it runs in the silence window. [R1](phase-0/R1-rumble-partials.md) |
+| R2 | Does llama.cpp at the pinned revision carry the short-clip padding fix? If it does not, which revision does? | No revision does. Pin `8af68d48` and pad clips in the app. [R2](phase-0/R2-llama-short-clip-fix.md) |
+| R3 | How does the host learn that the provider is unreachable, and how is a turn served by the on-device model in the same chat while it is? | Partly exists. A small additive kernel change is needed. [R3](phase-0/R3-kernel-offline-routing.md) |
+| R4 | Does llama.cpp with `libmtmd` build and pass tests as a macOS arm64 slice under the hardened runtime? | It builds, and a hardened host with only the audio-input entitlement ran both models on Metal. The llama.cpp test suite, App Sandbox and notarization were not tried. [R4](phase-0/R4-macos-runtime.md) |
+| R5 | Does FluidAudio load a voice from a local folder with no network request, and can each candidate's files be downloaded without accepting terms? | Yes for all three, and every file is open without terms. Phonon needs FluidAudio `v0.18.0` or later. No packet capture was taken. [R5a](phase-0/R5a-fluidaudio-local-load.md), [R5b](phase-0/R5b-candidate-downloads.md) |
+| R6 | Does the paired-watch relay keep working when the phone app is in the background, given that the models use the GPU? | No, and it does not today either. A watch session needs the phone app in front and unlocked. [R6](phase-0/R6-watch-relay-phone-state.md) |
+| R7 | Does voice processing work on watchOS? | The API is declared for watchOS 6 and later. Whether it works on a watch needs hardware. [R7](phase-0/R7-watchos-voice-processing.md) |
+| R8 | Is the 5.5 GB phone memory gate still right at a 1.85 GB peak? | Keep it. The 1.85 GB was resident size. Footprint peaked at 0.50 to 0.70 GB. [R8](phase-0/R8-memory-gate.md) |
+| R9 | Do the licence files of each voice candidate, its pronunciation data and FluidAudio confirm what their cards say? | Rumble, llama.cpp, Phonon 31m and Pocket TTS small pass. FluidAudio fails as published and passes with its GPL data bundle removed. Kokoro's front end is not cleared. [R9](phase-0/R9-licences.md) |
+| R10 | How good is LFM2.5 1.2B at short acknowledgments in the seven languages other than English? | Usable in English, Spanish, French and German, probably in Mandarin and Arabic, and not in Japanese or Korean. The opener rule rejected most good drafts. [R10](phase-0/R10-lfm25-acknowledgments.md) |
+| R11 | How often does Rumble return words for a cough, room noise or a clip under one second? Word-confirmed interruption depends on the answer. | Stock: 39 of 169 non-speech clips. With app-side padding: 4. [R11](phase-0/R11-rumble-false-words.md) |
+| R12 | How fast is each voice candidate to first audio on an iPhone 13 Pro with Rumble and LFM2.5 loaded, and how much memory does it add? | Phonon 0.169 s, Pocket 0.048 s, Kokoro 0.522 s and Piper 0.210 s on the bench clock. None added more than about 210 MB. [R12](phase-0/R12-voice-candidates.md) |
