@@ -1,0 +1,4 @@
+Repository: https://huggingface.co/Reson8/Rumble-2-Flash
+Revision: 95bd5f9133a2398e5e48a98c089fe48e122bde97
+Files: LICENSE
+Fetched: 2026-11-20

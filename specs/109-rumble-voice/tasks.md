@@ -1,6 +1,6 @@
 # Tasks for spec 109
 
-**Date:** 2026-11-20. **Status:** draft. No task has started.
+**Date:** 2026-11-20. **Status:** phase 0 measured, see [phase-0/README.md](phase-0/README.md). T013, the voice pick, is open.
 **Companions:** [spec.md](spec.md), [plan.md](plan.md), [research.md](research.md).
 
 Each task names its repository. Projection paths are relative to `apple-clients/`. A task marked (P)
@@ -8,30 +8,30 @@ can run beside the others in its phase. Every code task includes its tests.
 
 ## Phase 0. Find out
 
-- [ ] T001 (P) Projection. Measure Rumble partial transcription every 0.5 s on the iPhone 13 Pro with
+- [x] T001 (P) Projection. Measure Rumble partial transcription every 0.5 s on the iPhone 13 Pro with
   the lab app. Record time per partial for 2, 5 and 10 second segments, and whether an LFM2.5 draft and
   one synthesized sentence fit between partials. R1.
-- [ ] T002 (P) Projection. Check the pinned llama.cpp revision for the short-clip padding fix. Name the
+- [x] T002 (P) Projection. Check the pinned llama.cpp revision for the short-clip padding fix. Name the
   revision to pin. R2.
-- [ ] T003 Kernel. Document how the host learns that the provider is unreachable and how a turn is
+- [x] T003 Kernel. Document how the host learns that the provider is unreachable and how a turn is
   served by the on-device model in the same chat. Propose a change if one is needed. R3.
-- [ ] T004 (P) Projection. Build llama.cpp with `libmtmd` for macOS arm64 and run Rumble and LFM2.5 in a
+- [x] T004 (P) Projection. Build llama.cpp with `libmtmd` for macOS arm64 and run Rumble and LFM2.5 in a
   hardened, signed host. R4.
-- [ ] T005 (P) Projection. Confirm FluidAudio loads a voice from a local folder with no network
+- [x] T005 (P) Projection. Confirm FluidAudio loads a voice from a local folder with no network
   request, and that each candidate's files download without a terms prompt. R5.
-- [ ] T006 (P) Projection. Establish what the paired-watch relay needs from the phone app's state. R6.
-- [ ] T007 (P) Projection. Check voice processing on watchOS. R7.
-- [ ] T008 (P) Projection. Review the phone memory gate against measured peaks. R8.
-- [ ] T009 Deep. Collect the licence files for LFM2.5, FluidAudio and the three voice candidates.
+- [x] T006 (P) Projection. Establish what the paired-watch relay needs from the phone app's state. R6.
+- [x] T007 (P) Projection. Check voice processing on watchOS. R7.
+- [x] T008 (P) Projection. Review the phone memory gate against measured peaks. R8.
+- [x] T009 Deep. Collect the licence files for LFM2.5, FluidAudio and the three voice candidates.
   LFM2.5 is cleared by O12. R9.
-- [ ] T010 (P) Projection. Score LFM2.5 acknowledgments in eight languages against section 8.2. R10.
-- [ ] T011 (P) Projection. Measure Rumble's false words on coughs, room noise and clips under one
+- [x] T010 (P) Projection. Score LFM2.5 acknowledgments in eight languages against section 8.2. R10.
+- [x] T011 (P) Projection. Measure Rumble's false words on coughs, room noise and clips under one
   second. R11.
-- [ ] T012 Projection. Build a small test app that runs Kokoro-82M, Phonon 31m and Pocket TTS small on
+- [x] T012 Projection. Build a small test app that runs Kokoro-82M, Phonon 31m and Pocket TTS small on
   the iPhone 13 Pro with Rumble and LFM2.5 loaded. Measure first audio and memory for ten lines. R12.
 - [ ] T013 Owner. Listen to the recordings from T012 and pick a voice, or choose the system voice. Open
   The open question.
-- [ ] T014 Deep. Write the phase 0 results into `specs/109-rumble-voice/phase-0/`.
+- [x] T014 Deep. Write the phase 0 results into `specs/109-rumble-voice/phase-0/`.
 
 ## Phase 1. Runtime and pack
 

@@ -1,0 +1,5 @@
+Repository: https://github.com/hexgrad/misaki
+Revision: fba1236595f2d2bf21d414ba6e57d25256afada3 (default branch tip at fetch)
+Files: LICENSE (Apache 2.0). The repository does not say where the us_gold.json and us_silver.json lexicon entries come from.
+Fetched: 2026-11-20
+Note: any README or card kept here is kept only because it is the sole place the licence terms or notices appear. It also contains usage code that is not needed.

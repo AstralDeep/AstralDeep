@@ -1,0 +1,5 @@
+Repository: https://huggingface.co/AtomicChat/Rumble-2-Flash-GGUF
+Revision: d036f2af3cd5229375714d7f1749792cce3c6a88
+Files: LICENSE
+Fetched: 2026-11-20
+Checked: rumble-2-flash-source/LICENSE and rumble-2-flash-gguf/LICENSE are byte-identical (cmp).

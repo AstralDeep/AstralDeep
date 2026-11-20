@@ -1,0 +1,8 @@
+Repository: https://huggingface.co/kyutai/pocket-tts (gated, auto approval)
+Revision: db04f0e653473e5c7333c69686ac92b7460b0c1d
+Files: README.md fetched anonymously through the /resolve/ URL (the /raw/ URL returns 401 and the weights return 401). kyutai-pocket-tts-gate-prompt.txt is the extra_gated_prompt field from https://huggingface.co/api/models/kyutai/pocket-tts. tts-voices-README.md is https://huggingface.co/kyutai/tts-voices at revision 323332d33f997de8394f24a193e1a76df720e01a.
+The README is byte-identical to the one in the ungated kyutai/pocket-tts-without-voice-cloning at revision a7056f505a4a8ca72d8b5fb1440071d6f1a35739.
+Fetched: 2026-11-20
+Also in this folder: CC-BY-4.0-legalcode.txt from https://creativecommons.org/licenses/by/4.0/legalcode.txt (fetched 2026-11-20, no revision, the licence text itself).
+Note: any README or card kept here is kept only because it is the sole place the licence terms or notices appear. It also contains usage code that is not needed.
+Also kept: Kyutai tts-voices README (per-voice licences).

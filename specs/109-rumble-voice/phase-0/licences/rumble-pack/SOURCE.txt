@@ -1,0 +1,5 @@
+Repository: https://huggingface.co/Kentucky-Open-Science/Rumble-2-Flash-Astral
+Revision: 573fa2b486f6e5f134f35350b3256fe8977ee826
+Files: licenses/Liquid-LFM-Open-License.txt, licenses/Rumble-Apache-2.0.txt (saved flat) and README.md. The Liquid copy has the same body as the Liquid repositories with the 'LICENSE TEXT' heading.
+Fetched: 2026-11-20
+Note: any README or card kept here is kept only because it is the sole place the licence terms or notices appear. It also contains usage code that is not needed.

@@ -1,0 +1,4 @@
+Repository: https://github.com/QwenLM/Qwen3-ASR (raw.githubusercontent.com .../7c6daf77a2421100f5fb066495372c00129d39ff/LICENSE)
+Revision: 7c6daf77a2421100f5fb066495372c00129d39ff (default branch tip at fetch)
+Note: the Hugging Face repository Qwen/Qwen3-ASR-0.6B (revision 5eb144179a02acc5e5ba31e748d22b0cf3e303b0) has no LICENSE file. Its card front matter says license: apache-2.0. The GitHub file is the only licence text found for the family. The file is not pinned to the Hugging Face weights revision.
+Fetched: 2026-11-20

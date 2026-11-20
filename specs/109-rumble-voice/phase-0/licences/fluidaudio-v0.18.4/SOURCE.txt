@@ -1,0 +1,4 @@
+Repository: https://github.com/FluidInference/FluidAudio
+Tag: v0.18.4, commit e0c6103bc87a88d25276cad491c86e757f58c865, dated 2026-11-19
+Files: ThirdPartyLicenses/LuxTtsEnglishG2P-LICENSE.md (first present at v0.18.0). Saved because it states that bundled data is GPL-3.0-or-later. It contains the full GPL v3 text.
+Fetched: 2026-11-20

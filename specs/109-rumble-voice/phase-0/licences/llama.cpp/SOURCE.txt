@@ -1,0 +1,5 @@
+Repository: https://github.com/ggml-org/llama.cpp
+Revision: 8af68d486a9473820d24d00af8f33334ca80124d (the pilot's pinned commit, dated 2026-11-19). Master tip at fetch was 184862801a8747ca9fc0a84501419581aa9d37aa.
+Files: LICENSE (the AUTHORS file it refers to is at the same revision upstream and is not copied here), licenses/LICENSE-jsonhpp, vendor/cpp-httplib/LICENSE, vendor/hash/{xxhash,sha256}/LICENSE, vendor/hash/rotate-bits/LICENSE.md. NOTICE-miniaudio.txt, NOTICE-stb_image.txt and NOTICE-subprocess.txt are excerpts of the licence blocks inside vendor/miniaudio/miniaudio.h, vendor/stb/stb_image.h and vendor/sheredom/subprocess.h at that revision.
+Scratch sparse checkout used for the GPL search: AstralDeep-wt/voice-bench-109/licences/llama.cpp (not the ui, CUDA, HIP, Vulkan, SYCL, OpenCL, CANN or other GPU backend directories).
+Fetched: 2026-11-20

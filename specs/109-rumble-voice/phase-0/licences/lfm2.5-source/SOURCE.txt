@@ -1,0 +1,4 @@
+Repository: https://huggingface.co/LiquidAI/LFM2.5-1.2B-Instruct
+Revision: b9d816ab510f9a28dca37cb182e9da8b0226e13c
+Files: LICENSE (resolve/<revision>/LICENSE)
+Fetched: 2026-11-20

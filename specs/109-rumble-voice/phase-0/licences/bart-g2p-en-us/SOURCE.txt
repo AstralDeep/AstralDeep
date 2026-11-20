@@ -1,0 +1,3 @@
+Repository: https://huggingface.co/PeterReid/graphemes_to_phonemes_en_us
+Revision: a5631b285d18d59483c32c0c3379cb9fac924f4b
+Files: none saved. The card is only the front matter 'license: apache-2.0' and the repository has no LICENSE file. This is the upstream named by FluidInference's G2P converter (mobius models/tts/kokoro/coreml/g2p/convert-to-coreml.py, model_dir). Fetched: 2026-11-20

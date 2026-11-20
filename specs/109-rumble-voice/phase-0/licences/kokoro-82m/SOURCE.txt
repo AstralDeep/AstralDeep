@@ -1,0 +1,5 @@
+Repository: https://huggingface.co/hexgrad/Kokoro-82M
+Revision: f3ff3571791e39611d31c381e3a41a3af07b4987
+Files: README.md only. The repository has no LICENSE file. The licence is the card front matter 'license: apache-2.0'.
+Fetched: 2026-11-20
+Note: any README or card kept here is kept only because it is the sole place the licence terms or notices appear. It also contains usage code that is not needed.

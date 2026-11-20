@@ -1,0 +1,5 @@
+Repository: https://huggingface.co/FluidInference/kokoro-82m-coreml
+Revision: 51c072023b254cd02368102ab88bcfbff6cad4cd
+Files: README.md, ANE/LICENSE, ANE-v3/NOTICE, ANE-v3/conversion-LICENSE, ANE-v3/mattmireles-LICENSE. The repository root has no LICENSE file.
+Fetched: 2026-11-20
+Note: any README or card kept here is kept only because it is the sole place the licence terms or notices appear. It also contains usage code that is not needed.

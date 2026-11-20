@@ -1,0 +1,4 @@
+Repository: https://github.com/FluidInference/FluidAudio
+Tag: v0.17.7 (a tag named 0.17.7 does not exist). Commit 503b4bd1bbf7220882de39fe8ae6716aae4132da, dated 2026-10-07.
+Files: LICENSE and ThirdPartyLicenses/ as at that tag. The tag has no LuxTTS G2P licence file.
+Fetched: 2026-11-20

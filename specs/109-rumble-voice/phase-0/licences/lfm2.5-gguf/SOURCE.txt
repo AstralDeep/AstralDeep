@@ -1,0 +1,4 @@
+Repository: https://huggingface.co/LiquidAI/LFM2.5-1.2B-Instruct-GGUF (the repository the pack takes LFM2.5-1.2B-Instruct-Q4_K_M.gguf from)
+Revision: 8ed288026e23958ad9dfa92d53ed773a8eee7125
+Files: LICENSE and qad/LICENSE. The body is the LFM Open License v1.0 text with a different heading (starts 'LICENSE TEXT' and has no title line).
+Fetched: 2026-11-20

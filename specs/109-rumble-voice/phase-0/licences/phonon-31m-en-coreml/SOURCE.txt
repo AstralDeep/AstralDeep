@@ -1,0 +1,5 @@
+Repository: https://huggingface.co/FluidInference/pocket-tts-coreml, folder phonon/phonon-31m-en/ (the Core ML build FluidAudio v0.18.x fetches)
+Revision: c2e998e269e4d4b51f74061faddb8450cd8f9a9a
+Files: phonon/phonon-31m-en/LICENSE and phonon/phonon-31m-en/README.md. The LICENSE is byte-identical to gradium/phonon-31m-en LICENSE.
+Fetched: 2026-11-20
+Note: any README or card kept here is kept only because it is the sole place the licence terms or notices appear. It also contains usage code that is not needed.

@@ -1,0 +1,4 @@
+Repository: https://github.com/FluidInference/text-processing-rs
+Tag: v0.3.4 (commit 2e0856474b82fd0a8b6f8d1820639b999331c7fe) is the one FluidAudio v0.18.4 pins. FluidAudio v0.17.7 Package.swift pins v0.3.1 (commit 46ebddcea5e1ff673c2cb5256a1b6b0e6c4ff527), and its ThirdPartyLicenses note says v0.3.0. LICENSE and THIRD-PARTY-LICENSES.md are byte-identical at v0.3.1 and v0.3.4.
+Files: LICENSE, THIRD-PARTY-LICENSES.md, NOTICE (if present). Cargo.lock was not read, so the licences of transitive crates are assumed permissive on the repository's say-so.
+Fetched: 2026-11-20

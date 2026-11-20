@@ -1,0 +1,5 @@
+Repository: https://huggingface.co/FluidInference/pocket-tts-coreml
+Revision: c2e998e269e4d4b51f74061faddb8450cd8f9a9a
+Files: README.md (declares CC-BY-4.0 inherited from kyutai/pocket-tts and 'Attribution to Kyutai is required'). The repository has no LICENSE file at its root.
+Fetched: 2026-11-20
+Note: any README or card kept here is kept only because it is the sole place the licence terms or notices appear. It also contains usage code that is not needed.
