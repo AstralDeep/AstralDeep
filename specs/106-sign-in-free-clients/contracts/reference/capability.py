@@ -122,18 +122,24 @@ def check_install(
     host_python: str,
     phi_excluded: bool,
     revoked: bool,
+    manifest: dict[str, Any],
 ) -> dict[str, Any]:
+    # The order is the contract's: digest, signer, host compatibility, revocation. Compatibility
+    # reads the fetched manifest, because the index entry carries no runtime or PHI fields.
     if entry.get("manifest_sha256") != fetched_manifest_sha256:
         raise CapabilityError("capability.digest")
-    if revoked:
-        raise CapabilityError("capability.revoked")
     if signer is None or (allow_signers is not None and signer not in allow_signers):
         raise CapabilityError("capability.signer")
-    runtime_python = entry.get("runtime_python")
-    if runtime_python and not host_python.startswith(runtime_python.split(".")[0] + "."):
+    runtime = manifest.get("runtime") if isinstance(manifest, dict) else None
+    if isinstance(runtime, dict):
+        required = str(runtime.get("python", ""))
+        if required and host_python != required and not host_python.startswith(required + "."):
+            raise CapabilityError("capability.incompatible")
+    permissions = manifest.get("permissions") if isinstance(manifest, dict) else None
+    if isinstance(permissions, dict) and phi_excluded and permissions.get("phi") == "reviewed":
         raise CapabilityError("capability.incompatible")
-    if phi_excluded and entry.get("phi") == "reviewed":
-        raise CapabilityError("capability.incompatible")
+    if revoked:
+        raise CapabilityError("capability.revoked")
     return {"installed": True, "id": entry["id"], "version": entry["version"]}
 
 
@@ -150,7 +156,9 @@ def resolve(uses: list[str], ledger: list[dict[str, Any]]) -> dict[str, Any]:
         ]
         if not matches:
             raise CapabilityError("capability.missing")
-        resolved.append({"id": capability_id, "version": matches[0]["version"]})
+        # Resolution is deterministic: the highest satisfying version wins.
+        best = max(matches, key=lambda entry: tuple(int(part) for part in str(entry.get("version", "")).split(".")))
+        resolved.append({"id": capability_id, "version": best["version"]})
     return {"resolved": resolved}
 
 
@@ -183,6 +191,7 @@ def run(kind: str, case: dict[str, Any]) -> dict[str, Any]:
                 case["host_python"],
                 case["phi_excluded"],
                 case["revoked"],
+                case["manifest"],
             )
         if kind == "resolve":
             return resolve(case["uses"], case["ledger"])

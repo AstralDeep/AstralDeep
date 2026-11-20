@@ -93,104 +93,6 @@
       }
     },
     {
-      "name": "digest_mismatch_refused",
-      "kind": "check_install",
-      "input": {
-        "entry": {
-          "id": "astral.cad-kernel",
-          "version": "1.0.0",
-          "kind": "kernel",
-          "manifest_sha256": "3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f2f0b134ef39cdcaac43c",
-          "phi": "none",
-          "runtime_python": "3.12"
-        },
-        "fetched_manifest_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-        "signer": "identity",
-        "allow_signers": [
-          "identity"
-        ],
-        "host_python": "3.12.1",
-        "phi_excluded": false,
-        "revoked": false
-      },
-      "expect": {
-        "code": "capability.digest"
-      }
-    },
-    {
-      "name": "unsigned_signer_refused_while_policy_set",
-      "kind": "check_install",
-      "input": {
-        "entry": {
-          "id": "astral.cad-kernel",
-          "version": "1.0.0",
-          "kind": "kernel",
-          "manifest_sha256": "3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f2f0b134ef39cdcaac43c",
-          "phi": "none",
-          "runtime_python": "3.12"
-        },
-        "fetched_manifest_sha256": "3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f2f0b134ef39cdcaac43c",
-        "signer": null,
-        "allow_signers": [
-          "identity"
-        ],
-        "host_python": "3.12.1",
-        "phi_excluded": false,
-        "revoked": false
-      },
-      "expect": {
-        "code": "capability.signer"
-      }
-    },
-    {
-      "name": "phi_reviewed_refused_on_phi_excluded_host",
-      "kind": "check_install",
-      "input": {
-        "entry": {
-          "id": "astral.cad-kernel",
-          "version": "1.0.0",
-          "kind": "kernel",
-          "manifest_sha256": "3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f2f0b134ef39cdcaac43c",
-          "phi": "reviewed",
-          "runtime_python": "3.12"
-        },
-        "fetched_manifest_sha256": "3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f2f0b134ef39cdcaac43c",
-        "signer": "identity",
-        "allow_signers": null,
-        "host_python": "3.12.1",
-        "phi_excluded": true,
-        "revoked": false
-      },
-      "expect": {
-        "code": "capability.incompatible"
-      }
-    },
-    {
-      "name": "revoked_refused",
-      "kind": "check_install",
-      "input": {
-        "entry": {
-          "id": "astral.cad-kernel",
-          "version": "1.0.0",
-          "kind": "kernel",
-          "manifest_sha256": "3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f2f0b134ef39cdcaac43c",
-          "phi": "none",
-          "runtime_python": "3.12"
-        },
-        "fetched_manifest_sha256": "3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f2f0b134ef39cdcaac43c",
-        "signer": "identity",
-        "allow_signers": [
-          "identity"
-        ],
-        "host_python": "3.12.1",
-        "phi_excluded": false,
-        "revoked": true
-      },
-      "expect": {
-        "code": "capability.revoked"
-      }
-    },
-    {
       "name": "matching_major_resolves",
       "kind": "resolve",
       "input": {
@@ -242,6 +144,399 @@
       },
       "expect": {
         "code": "capability.missing"
+      }
+    },
+    {
+      "name": "digest_mismatch_refused",
+      "kind": "check_install",
+      "input": {
+        "entry": {
+          "id": "astral.cad-kernel",
+          "version": "1.0.0",
+          "kind": "kernel",
+          "tools": [
+            "cad"
+          ],
+          "manifest_sha256": "3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f2f0b134ef39cdcaac43c",
+          "package_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "signer": "astral-release",
+          "published": "2026-11-19"
+        },
+        "fetched_manifest_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "signer": "someone-else",
+        "allow_signers": [
+          "astral-release"
+        ],
+        "host_python": "3.12",
+        "phi_excluded": false,
+        "revoked": true,
+        "manifest": {
+          "runtime": {
+            "python": "3.12",
+            "wheels": [
+              "build123d==0.13.0"
+            ]
+          },
+          "permissions": {
+            "phi": "none"
+          }
+        }
+      },
+      "expect": {
+        "code": "capability.digest"
+      }
+    },
+    {
+      "name": "unsigned_signer_refused_while_policy_set",
+      "kind": "check_install",
+      "input": {
+        "entry": {
+          "id": "astral.cad-kernel",
+          "version": "1.0.0",
+          "kind": "kernel",
+          "tools": [
+            "cad"
+          ],
+          "manifest_sha256": "3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f2f0b134ef39cdcaac43c",
+          "package_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "signer": "astral-release",
+          "published": "2026-11-19"
+        },
+        "fetched_manifest_sha256": "3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f2f0b134ef39cdcaac43c",
+        "signer": null,
+        "allow_signers": [
+          "astral-release"
+        ],
+        "host_python": "3.12",
+        "phi_excluded": false,
+        "revoked": false,
+        "manifest": {
+          "runtime": {
+            "python": "3.12",
+            "wheels": [
+              "build123d==0.13.0"
+            ]
+          },
+          "permissions": {
+            "phi": "none"
+          }
+        }
+      },
+      "expect": {
+        "code": "capability.signer"
+      }
+    },
+    {
+      "name": "unlisted_signer_refused_while_policy_set",
+      "kind": "check_install",
+      "input": {
+        "entry": {
+          "id": "astral.cad-kernel",
+          "version": "1.0.0",
+          "kind": "kernel",
+          "tools": [
+            "cad"
+          ],
+          "manifest_sha256": "3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f2f0b134ef39cdcaac43c",
+          "package_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "signer": "astral-release",
+          "published": "2026-11-19"
+        },
+        "fetched_manifest_sha256": "3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f2f0b134ef39cdcaac43c",
+        "signer": "someone-else",
+        "allow_signers": [
+          "astral-release"
+        ],
+        "host_python": "3.12",
+        "phi_excluded": false,
+        "revoked": false,
+        "manifest": {
+          "runtime": {
+            "python": "3.12",
+            "wheels": [
+              "build123d==0.13.0"
+            ]
+          },
+          "permissions": {
+            "phi": "none"
+          }
+        }
+      },
+      "expect": {
+        "code": "capability.signer"
+      }
+    },
+    {
+      "name": "python_minor_mismatch_refused",
+      "kind": "check_install",
+      "input": {
+        "entry": {
+          "id": "astral.cad-kernel",
+          "version": "1.0.0",
+          "kind": "kernel",
+          "tools": [
+            "cad"
+          ],
+          "manifest_sha256": "3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f2f0b134ef39cdcaac43c",
+          "package_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "signer": "astral-release",
+          "published": "2026-11-19"
+        },
+        "fetched_manifest_sha256": "3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f2f0b134ef39cdcaac43c",
+        "signer": "astral-release",
+        "allow_signers": [
+          "astral-release"
+        ],
+        "host_python": "3.11",
+        "phi_excluded": false,
+        "revoked": false,
+        "manifest": {
+          "runtime": {
+            "python": "3.12",
+            "wheels": [
+              "build123d==0.13.0"
+            ]
+          },
+          "permissions": {
+            "phi": "none"
+          }
+        }
+      },
+      "expect": {
+        "code": "capability.incompatible"
+      }
+    },
+    {
+      "name": "python_major_mismatch_refused",
+      "kind": "check_install",
+      "input": {
+        "entry": {
+          "id": "astral.cad-kernel",
+          "version": "1.0.0",
+          "kind": "kernel",
+          "tools": [
+            "cad"
+          ],
+          "manifest_sha256": "3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f2f0b134ef39cdcaac43c",
+          "package_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "signer": "astral-release",
+          "published": "2026-11-19"
+        },
+        "fetched_manifest_sha256": "3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f2f0b134ef39cdcaac43c",
+        "signer": "astral-release",
+        "allow_signers": [
+          "astral-release"
+        ],
+        "host_python": "4.0",
+        "phi_excluded": false,
+        "revoked": false,
+        "manifest": {
+          "runtime": {
+            "python": "3.12",
+            "wheels": [
+              "build123d==0.13.0"
+            ]
+          },
+          "permissions": {
+            "phi": "none"
+          }
+        }
+      },
+      "expect": {
+        "code": "capability.incompatible"
+      }
+    },
+    {
+      "name": "phi_reviewed_refused_on_phi_excluded_host",
+      "kind": "check_install",
+      "input": {
+        "entry": {
+          "id": "astral.cad-kernel",
+          "version": "1.0.0",
+          "kind": "kernel",
+          "tools": [
+            "cad"
+          ],
+          "manifest_sha256": "3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f2f0b134ef39cdcaac43c",
+          "package_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "signer": "astral-release",
+          "published": "2026-11-19"
+        },
+        "fetched_manifest_sha256": "3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f2f0b134ef39cdcaac43c",
+        "signer": "astral-release",
+        "allow_signers": [
+          "astral-release"
+        ],
+        "host_python": "3.12",
+        "phi_excluded": true,
+        "revoked": false,
+        "manifest": {
+          "runtime": {
+            "python": "3.12",
+            "wheels": [
+              "build123d==0.13.0"
+            ]
+          },
+          "permissions": {
+            "phi": "reviewed"
+          }
+        }
+      },
+      "expect": {
+        "code": "capability.incompatible"
+      }
+    },
+    {
+      "name": "revoked_refused",
+      "kind": "check_install",
+      "input": {
+        "entry": {
+          "id": "astral.cad-kernel",
+          "version": "1.0.0",
+          "kind": "kernel",
+          "tools": [
+            "cad"
+          ],
+          "manifest_sha256": "3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f2f0b134ef39cdcaac43c",
+          "package_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "signer": "astral-release",
+          "published": "2026-11-19"
+        },
+        "fetched_manifest_sha256": "3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f2f0b134ef39cdcaac43c",
+        "signer": "astral-release",
+        "allow_signers": [
+          "astral-release"
+        ],
+        "host_python": "3.12",
+        "phi_excluded": false,
+        "revoked": true,
+        "manifest": {
+          "runtime": {
+            "python": "3.12",
+            "wheels": [
+              "build123d==0.13.0"
+            ]
+          },
+          "permissions": {
+            "phi": "none"
+          }
+        }
+      },
+      "expect": {
+        "code": "capability.revoked"
+      }
+    },
+    {
+      "name": "valid_install_accepted",
+      "kind": "check_install",
+      "input": {
+        "entry": {
+          "id": "astral.cad-kernel",
+          "version": "1.0.0",
+          "kind": "kernel",
+          "tools": [
+            "cad"
+          ],
+          "manifest_sha256": "3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f2f0b134ef39cdcaac43c",
+          "package_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "signer": "astral-release",
+          "published": "2026-11-19"
+        },
+        "fetched_manifest_sha256": "3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f2f0b134ef39cdcaac43c",
+        "signer": "astral-release",
+        "allow_signers": [
+          "astral-release"
+        ],
+        "host_python": "3.12",
+        "phi_excluded": false,
+        "revoked": false,
+        "manifest": {
+          "runtime": {
+            "python": "3.12",
+            "wheels": [
+              "build123d==0.13.0"
+            ]
+          },
+          "permissions": {
+            "phi": "none"
+          }
+        }
+      },
+      "expect": {
+        "installed": true,
+        "id": "astral.cad-kernel",
+        "version": "1.0.0"
+      }
+    },
+    {
+      "name": "revocation_loses_to_incompatibility",
+      "kind": "check_install",
+      "input": {
+        "entry": {
+          "id": "astral.cad-kernel",
+          "version": "1.0.0",
+          "kind": "kernel",
+          "tools": [
+            "cad"
+          ],
+          "manifest_sha256": "3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f2f0b134ef39cdcaac43c",
+          "package_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "signer": "astral-release",
+          "published": "2026-11-19"
+        },
+        "fetched_manifest_sha256": "3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f2f0b134ef39cdcaac43c",
+        "signer": "astral-release",
+        "allow_signers": [
+          "astral-release"
+        ],
+        "host_python": "3.11",
+        "phi_excluded": false,
+        "revoked": true,
+        "manifest": {
+          "runtime": {
+            "python": "3.12",
+            "wheels": [
+              "build123d==0.13.0"
+            ]
+          },
+          "permissions": {
+            "phi": "none"
+          }
+        }
+      },
+      "expect": {
+        "code": "capability.incompatible"
+      }
+    },
+    {
+      "name": "resolve_picks_the_highest_satisfying_version",
+      "kind": "resolve",
+      "input": {
+        "uses": [
+          "astral.cad-kernel@^1.0"
+        ],
+        "ledger": [
+          {
+            "id": "astral.cad-kernel",
+            "version": "1.0.0"
+          },
+          {
+            "id": "astral.cad-kernel",
+            "version": "1.4.2"
+          },
+          {
+            "id": "astral.cad-kernel",
+            "version": "1.2.0"
+          }
+        ]
+      },
+      "expect": {
+        "resolved": [
+          {
+            "id": "astral.cad-kernel",
+            "version": "1.4.2"
+          }
+        ]
       }
     }
   ]

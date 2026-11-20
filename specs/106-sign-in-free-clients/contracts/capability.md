@@ -18,7 +18,7 @@ TOML with exactly these tables; unknown tables or keys are `capability.malformed
 | Table | Fields |
 |---|---|
 | `[capability]` | `id` (reverse-DNS, `[a-z0-9][a-z0-9.-]{2,63}`, unique in the registry), `version` (semver `MAJOR.MINOR.PATCH`), `kind` (`tool` or `kernel`), `description` (1 to 200 characters) |
-| `[permissions]` | `scopes` (1 to 8 dotted scopes), `output_files` (0 to 16 file extensions without the dot), `network` (`none` or `egress-proxy`), `phi` (`none` or `reviewed`) |
+| `[permissions]` | `scopes` (1 to 8 Astral scopes, the colon form `tools:read` … `tools:execute`), `output_files` (0 to 16 file extensions without the dot), `network` (`none` or `egress-proxy`), `phi` (`none` or `reviewed`) |
 | `[limits]` | `tool_timeout_seconds` (positive integer; the host clamps it to its own maximum) |
 | `[[tools]]` | Repeated 1 to 32 times: `name` (tool name per the tools contract), `script` (package-relative path, `tools/` prefix), `scope` (one of the manifest's `scopes`) |
 | `[runtime]` | `kind = "kernel"` only: `python` (major.minor), `wheels` (1 to 64 pinned `name==version` specifiers) |
@@ -57,9 +57,13 @@ An installer verifies, in this order, failing at the first failure:
 3. `capability.signer` — the signature's identity is absent from the node's `allow-signers`
    policy, or the signature does not verify. While the signing identity is undecided, an
    installer without an explicit `allow-signers` entry for the registry refuses every install
-   with `capability.signer`.
-4. `capability.incompatible` — the host cannot serve the capability (python version, backend,
-   PHI posture).
+   with `capability.signer`. Until the signature artifact format lands with that decision,
+   the recorded signer is an unverified claim and the policy entry is a conscious,
+   node-local trust statement, not cryptography.
+4. `capability.incompatible` — the host cannot serve the capability. Compatibility reads the
+   fetched manifest, not the index entry: a kernel's `[runtime].python` must equal the
+   host interpreter's major.minor, and a `phi = "reviewed"` capability is refused on
+   PHI-excluded hosts with `capability.incompatible`.
 5. `capability.revoked` — the index marks the entry revoked.
 
 ## 4. Resolution
@@ -68,8 +72,9 @@ An agent's manifest may reference capabilities: `uses = ["astral.cad-kernel@^1.0
 constraint is npm-style: `^MAJOR.MINOR` admits the same major at or above that minor;
 `@1.2.3` pins exactly. Resolution runs against the host's installed ledger and fails closed:
 a reference with no installed satisfying version refuses that agent's sandbox build with
-`capability.missing`. The builtin tools are the virtual capability `astral.core/v1`: always
-present, not installable, not removable, never listed in a registry.
+`capability.missing`, and a reference with several satisfying versions resolves to the
+highest one. The builtin tools are the virtual capability `astral.core/v1`: always present,
+not installable, not removable, never listed in a registry.
 
 ## 5. Codes
 
