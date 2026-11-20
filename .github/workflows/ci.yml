@@ -1162,14 +1162,17 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           submodules: false
-      - name: Check out the verified panel streamer for transcript replay
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
-        with:
-          ref: 80165f440b302f55f8d17cdc260eb4c1e5474ab8
-          path: .panel-streamer
-          sparse-checkout: astralvessel
-          sparse-checkout-cone-mode: false
           persist-credentials: false
+      - name: Export the verified panel streamer for transcript replay
+        shell: bash
+        env:
+          VESSEL_PANEL_STREAMER_REVISION: 80165f440b302f55f8d17cdc260eb4c1e5474ab8
+        run: |
+          git fetch --no-tags --depth=1 origin "$VESSEL_PANEL_STREAMER_REVISION"
+          test "$(git rev-parse FETCH_HEAD)" = "$VESSEL_PANEL_STREAMER_REVISION"
+          panel_source="$RUNNER_TEMP/vessel-panel-streamer"
+          mkdir -p "$panel_source"
+          git archive FETCH_HEAD astralvessel | tar -xf - -C "$panel_source"
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: ${{ matrix.python }}
@@ -1203,7 +1206,7 @@ jobs:
       - name: Run Vessel suites including panel stream replay
         working-directory: vessel
         env:
-          VESSEL_PANEL_STREAMER_SOURCE: ${{ github.workspace }}/.panel-streamer
+          VESSEL_PANEL_STREAMER_SOURCE: ${{ runner.temp }}/vessel-panel-streamer
         run: python -m pytest -q -rs
 
   vessel-isolation:
