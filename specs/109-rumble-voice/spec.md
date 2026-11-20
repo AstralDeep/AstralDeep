@@ -1,4 +1,4 @@
-# Spec 109: Rumble voice with Piper speech
+# Spec 109: Rumble voice
 
 **Date:** 2026-11-20. **Status:** draft for owner review. Nothing here is built.
 **Companions:** [plan.md](plan.md) (phases and exit criteria), [tasks.md](tasks.md),
@@ -25,9 +25,9 @@ possibly AstralKernel (one provider-state question, section 9.3). iPhone, Mac an
 | Word | Meaning |
 |---|---|
 | Rumble | Rumble 2 Flash, a speech recognition model. It turns speech into text and does nothing else. |
-| The pack | The download that holds Rumble, its audio encoder, LFM2.5 and the Piper voice. |
+| The pack | The download that holds Rumble, its audio encoder, LFM2.5 and, if one qualifies, the local English voice. |
 | LFM2.5 | LiquidAI LFM2.5 1.2B Instruct, the small local chat model inside the pack. |
-| Piper | The English voice `en_US-lessac-medium`, run by Sherpa-ONNX. |
+| Local voice | An English speech model that runs on the device, chosen in phase 0 from the shortlist in section 7.4. The pilot used Piper here. This spec does not. |
 | System voice | A voice installed on the device, reached through `AVSpeechSynthesizer`. |
 | Provider | The model the owner connected for chat, reached through the kernel. |
 | The pilot | The test app at `~/Desktop/AstralVoicePilot`. The lab is `~/Desktop/VoiceTesting`. |
@@ -44,8 +44,9 @@ acknowledgements. Voice runs inline in the composer. It speaks English only, in 
 its own screen.
 
 1. **Rumble hears.** It transcribes in eight languages.
-2. **Piper speaks English.** The seven other languages use a system voice. The owner can also choose a
-   system voice for English.
+2. **English is spoken by a local voice model with an open licence,** if one proves as fast as the
+   pilot's Piper. If none does, English uses the default system voice. The seven other languages use a
+   system voice either way.
 3. **The provider answers, through the kernel,** exactly as a typed message would.
 4. **LFM2.5 covers for the provider when it goes offline.** Astral says the provider is offline, keeps
    talking with local resources only, and says so again when the provider is back. While the provider
@@ -98,16 +99,17 @@ goal of this spec, ahead of everything else in it.
 
 | Id | Decision |
 |---|---|
-| O1 | Swap the voice model in the Apple apps for Rumble with Piper. The seven other languages use the default system voice. |
-| O2 | A system voice may speak when it is the chosen voice for that language. If Piper fails to load, the app switches English to the system voice by itself and says that it did. This changes spec 105 section 12.1. |
+| O1 | Swap the voice model in the Apple apps for Rumble. The seven languages other than English use the default system voice. |
+| O2 | A system voice may speak when it is the chosen voice for that language. If the local English voice fails to load, the app switches English to the system voice by itself and says that it did. This changes spec 105 section 12.1. |
 | O3 | Remove LFM3 entirely. Use LFM2.5 from the pack as the local model. Normal turns follow the ecosystem's normal conversation flow and go to the provider. |
 | O4 | The overlay shows a waveform and no transcript. |
 | O5 | The conversation must sound and flow as naturally as possible. The pilot's canned fillers and its interruption handling were the clunky parts. |
 | O6 | Live testing: when the build is ready, the owner connects the iPhone. The agent sideloads the app and holds the conversation through the laptop's speakers and microphone. |
-| O7 | A mic tap with no pack installed downloads Rumble from the Kentucky Open Science organization on Hugging Face and Piper from its own source. |
+| O7 | A mic tap with no pack installed downloads Rumble from the Kentucky Open Science organization on Hugging Face and the voice model from its own page. |
 | O8 | Voice works on iPhone and Mac. The watch connects to the phone, or does whatever Apple recommends. |
-| O9 | English offers two voices in Settings, Piper as the default and the system voice, each with a preview. Decided 2026-11-19 and recorded in the vault. |
+| O9 | English offers two voices in Settings, the local voice as the default and the system voice, each with a preview. Decided 2026-11-19 for Piper and carried over to its replacement. |
 | O10 | When the provider goes offline during a conversation, Astral says "Your LLM model provider is offline." and keeps talking using local resources only. Those exchanges are recorded in the text conversation. When the provider returns, Astral says "Your LLM model provider is back online." and sends queries to it as normal. The owner called this an edge case and asked that it weigh less than the rest. |
+| O11 | Piper was only part of the pilot. Use a similar model with a more open licence and similar speed if one exists. Otherwise use the default iOS English voice. |
 
 ### 4.2 This design's calls
 
@@ -120,9 +122,9 @@ goal of this spec, ahead of everything else in it.
 | C5 | An interruption counts only when Rumble hears words in it. | Stopping on sound level alone. That is what made the pilot stall on noise. |
 | C6 | Keep the shipping two-stage end of turn, with word lists for all eight languages. | The pilot's fixed 0.3 s of silence. |
 | C7 | System voices render to buffers and play through the app's own audio engine. | Letting the system play them directly. Echo cancellation and interruption would not apply. |
-| C8 | Use the published v1.1 manifest unchanged, including its Piper archive from the Sherpa-ONNX release. | Fetching from the `rhasspy/piper-voices` page. Those files lack the token table and pronunciation data the runtime needs. |
+| C8 | The local English voice is chosen in phase 0 by measuring three shortlisted models on the iPhone 13 Pro (section 7.4). If none passes, English uses the system voice and no speech model ships. | Naming a winner from published figures. None of the three has a published iPhone number. |
 | C9 | Keep the existing download sheet. The overlay opens by itself when the download finishes. | Starting a 1.3 GB transfer with no confirmation. |
-| C10 | One new local package, `AstralVoiceRuntime`, wraps llama.cpp and Sherpa-ONNX as xcframeworks built by a pinned script. | Checking binaries into Git. |
+| C10 | One new local package, `AstralVoiceRuntime`, wraps llama.cpp as an xcframework built by a pinned script. The voice model, if one qualifies, runs through the FluidAudio Swift package on Core ML. | Sherpa-ONNX, which links eSpeak NG under GPL-3.0. |
 | C11 | Delete the installed LFM3 weights on first launch of the new version. | Keeping 1.42 GB that nothing reads. |
 | C12 | In a voice session the local talker is always LFM2.5. Typed chat keeps today's order, Foundation Models first, with LFM2.5 where LFM3 was. | Foundation Models in voice too. Its speed and languages vary by device. |
 | C13 | The watch keeps the WatchConnectivity relay and stays tap-to-interrupt. | Direct networking from the watch. Spec 106 removed the watch's network identity. |
@@ -138,7 +140,7 @@ goal of this spec, ahead of everything else in it.
 ### 5.1 The first tap
 
 1. The person taps the mic in a chat.
-2. No pack is installed, so a sheet appears. It names the download and its size, 1.3 GB, before it
+2. No pack is installed, so a sheet appears. It names the download and its size, about 1.3 GB, before it
    asks for anything else.
 3. The person taps Download. On cellular or a constrained network the app asks once more.
 4. Progress shows in the sheet. The person can leave it and keep typing. The download resumes after a
@@ -204,7 +206,8 @@ Both sentences are spoken in the session's language.
 The menu at the top left lists the eight languages. Picking one sets three things together: the
 language Rumble listens for, the language Astral replies in, and the voice.
 
-English uses Piper unless the owner chose the system voice in Settings. The other seven use the
+English uses the local voice unless the owner chose the system voice in Settings, or no local voice
+qualified. The other seven use the
 default installed system voice for that language. If the device has no voice for it, the app says how
 to install one and does not start.
 
@@ -230,31 +233,34 @@ The watch listens and speaks in turns. Tapping the screen interrupts.
 
 ## 6. The pack and its download
 
-**Proposed:** the app bundles the v1.1 manifest of `Kentucky-Open-Science/Rumble-2-Flash-Astral`,
-format `astral.rumble-voice-pack/v2`, in place of today's LFM3 manifest.
+**Proposed:** the app bundles its own manifest in place of today's LFM3 manifest. It lists every file,
+with its repository, pinned revision, byte count and SHA-256.
 
-| Part | Source | Bytes |
+| Part | Source on Hugging Face | Bytes |
 |---|---|---:|
-| Rumble recognition, GGUF | Hugging Face, pinned revision | 283,424,640 |
-| Rumble audio encoder, GGUF | Hugging Face, pinned revision | 214,393,024 |
-| LFM2.5 1.2B Instruct, GGUF | Hugging Face, pinned revision | 730,895,168 |
-| Piper Lessac medium, `tar.bz2` | Sherpa-ONNX release on GitHub | 67,230,653 |
+| Rumble recognition, GGUF | `Kentucky-Open-Science/Rumble-2-Flash-Astral`, pinned revision | 283,424,640 |
+| Rumble audio encoder, GGUF | Same | 214,393,024 |
+| LFM2.5 1.2B Instruct, GGUF | Same | 730,895,168 |
+| Local English voice, Core ML | The chosen model's repository, pinned revision | 34 to 171 MB for the small candidates. Set after phase 0. |
 
-Download 1,295,943,485 bytes. Installed 1,309,859,838 bytes.
+The three GGUF files total 1,228,712,832 bytes. With no local voice the download is that and nothing
+more.
+
+The published v1.1 manifest in the Kentucky Open Science repository lists a Piper archive. The app does
+not use that manifest.
 
 The existing store keeps its behavior: one file at a time with resume, a byte count and SHA-256 for
 each, staging, an atomic swap, an install marker bound to the whole manifest, a free-space check, the
 cellular confirmation, and exclusion from backup. Digests are checked again before any model loads.
 
-Three things are new.
+Two things are new.
 
-- **Two hosts.** The manifest names both. The app contacts no other host for the pack.
-- **An archive.** The Piper entry is a `tar.bz2`. The app verifies the archive's digest, unpacks it into
-  staging, refuses any path that escapes the staging folder, and verifies all 362 files against the
-  manifest. It keeps the voice's model card.
-- **A partial outcome.** If the three GGUF files install and the Piper archive keeps failing, the sheet
-  offers one extra button: continue with the system voice for English. The app retries Piper later on
-  its own and tells the person when it arrives.
+- **Two repositories.** The manifest names both. The app contacts no other repository for the pack. The
+  voice model loads from the verified local folder, and the speech library is never allowed to fetch
+  files by itself.
+- **A partial outcome.** If the three GGUF files install and the voice files keep failing, the sheet
+  offers one extra button: continue with the system voice for English. The app retries the voice later
+  on its own and tells the person when it arrives.
 
 The mirror setting stays, with its HTTPS rule.
 
@@ -274,7 +280,7 @@ Consent given for the LFM3 download does not carry over. The person confirms the
 | Job | Implementation | Notes |
 |---|---|---|
 | Recognition | Rumble through llama.cpp with `libmtmd` | 16 kHz mono. Takes a language. Partials by re-running on the growing segment, as today. |
-| English speech | Piper through Sherpa-ONNX | 22,050 Hz. One sentence at a time. |
+| English speech | The local voice through Core ML, or the system voice | One sentence at a time. A streaming model starts playing before the sentence is finished. |
 | Other speech | `AVSpeechSynthesizer.write` | Rendered to buffers, never played by the system directly (C7). |
 | Local text | LFM2.5 through llama.cpp | Acknowledgments, local talk and the kernel's on-device model. |
 
@@ -288,7 +294,7 @@ has priority, because a late transcript delays everything after it.
 
 A new local Swift package, `AstralVoiceRuntime`, replaces `AstralVoiceModel`.
 
-- It wraps llama.cpp at a pinned revision, built with `libmtmd`, and Sherpa-ONNX with ONNX Runtime.
+- It wraps llama.cpp at a pinned revision, built with `libmtmd`. Nothing else.
 - A script in the repository builds the xcframeworks, the way the kernel's Apple build script does.
   Git ignores the outputs.
 - Slices: iPhone, iPhone simulator and Mac, all arm64. Metal on devices and Macs, CPU in the
@@ -308,6 +314,48 @@ at once under memory pressure.
 
 The device gate stays as it is until phase 0 measures it: Apple silicon, and at least 5.5 GB of memory
 on a phone.
+
+### 7.4 Choosing the English voice
+
+The owner's rule (O11): a model like Piper with a more open licence and similar speed, or else the
+system voice.
+
+Piper itself is out. Its runtime links eSpeak NG, which is GPL-3.0, and the rights to redistribute its
+Lessac voice are unclear.
+
+Three models pass the licence test on paper. All three run on Core ML through FluidAudio, an Apache-2.0
+Swift package with no GPL parts, so one integration can try all of them.
+
+| Candidate | Licence | Size | Published speed | Concern |
+|---|---|---|---|---|
+| Kokoro-82M | Apache 2.0 | 82M parameters | 3 to 11 times real time on Apple silicon. About 50 ms per utterance on an M5 Pro. | Whole sentence before audio. One Mac benchmark peaked at 1.5 GB of process memory. No iPhone figure. |
+| Phonon 31m | Apache 2.0 | About 171 MB | 19 to 25 times real time on an M5 Pro, about 20 ms to first audio. Streams. | New. English only. |
+| Pocket TTS small, 18M | CC-BY-4.0, attribution required | 34 to 145 MB | 28 times real time on an M5 Pro. Streams in 80 ms frames. | Released October 2026. Kyutai's own repository asks the downloader to accept terms. |
+
+The newer Core ML builds need iOS 18 or macOS 15. The apps still support iOS 17 and macOS 14. On those,
+English uses the system voice.
+
+**The test, in phase 0.** Each candidate speaks the pilot's ten acknowledgment lines on the iPhone 13
+Pro, with Rumble and LFM2.5 loaded. A candidate passes when all of these hold:
+
+- No GPL code and no field-of-use restriction, confirmed from the licence files.
+- Median time to first word within 0.25 s of Piper's measured 0.54 s, so the 0.8 s target in section
+  8.5 still holds.
+- The app stays inside its memory budget with all three models loaded.
+- The model loads from a local folder with no network request.
+
+The owner then listens to the ones that pass and picks. If none passes, or the owner likes none of
+them, English uses the system voice, FluidAudio is not added, and the Settings control goes away.
+
+**Considered and rejected.**
+
+- **Supertonic 3.** Fast, with 31 languages. Its OpenRAIL-M licence forbids use "to provide medical
+  advice and medical results interpretation". Astral is a clinical platform. The project was also
+  archived on 2026-09-09 with no further support.
+- **KittenTTS 2.** The small models are Apache 2.0. There is no iPhone runtime, and the one portable
+  path uses eSpeak NG data.
+- **Matcha.** Its English model needs eSpeak NG.
+- **Pocket TTS 100M.** About 1.8 times real time on a Mac. Too slow.
 
 ---
 
@@ -351,7 +399,7 @@ never get an acknowledgment.
 **Rule 3. When a filler is needed, the model writes it and code checks it.**
 
 LFM2.5 starts drafting at the speculation point, from the partial transcript, so the line is usually
-ready when the turn ends. Piper synthesizes an accepted draft at once. It sees the question, the
+ready when the turn ends. The voice synthesizes an accepted draft at once. It sees the question, the
 language and the last three openers it used.
 
 The draft runs in the gap between two Rumble partials. If the final transcript differs from the
@@ -427,12 +475,12 @@ Astral from hearing itself.
 
 ### 8.5 Targets
 
-These are targets for the live pass on an iPhone 13 Pro, warm, with Piper. CI does not gate on them
+These are targets for the live pass on an iPhone 13 Pro, warm, with the local English voice. CI does not gate on them
 (C15).
 
 | Moment | Target |
 |---|---|
-| End of the person's turn to the first audible word | Median 0.8 s or less. The pilot measured 0.54 s with no hold. This design adds a 0.3 s hold. |
+| End of the person's turn to the first audible word | Median 0.8 s or less. The pilot measured 0.54 s with Piper and 1.09 s with the system voice, both with no hold. This design adds a 0.3 s hold. |
 | The person starts talking over Astral, to lowered volume | 150 ms or less |
 | A confirmed interruption, to silence | 600 ms or less from the first word |
 | Mic tap to the overlay on screen | 300 ms or less |
@@ -537,7 +585,7 @@ The composer's inline "Listening" state goes away. The mic opens the overlay.
 
 The Voice row in Settings keeps its job and gains two controls.
 
-- **English voice.** Piper, the default, or the system voice. Each has a preview button that plays one
+- **English voice.** The local voice, the default, or the system voice. Each has a preview button that plays one
   fixed sentence, whatever the saved choice is (O9).
 - **Language.** The same list as the overlay menu.
 
@@ -545,8 +593,12 @@ It also shows the pack's status, its size, and Remove.
 
 Both choices are saved on the device. They do not sync.
 
-If Piper fails to load, the app switches English to the system voice, shows a notice in the overlay and
-in Settings, and keeps the notice until the person dismisses it or Piper loads again (O2).
+If the local voice fails to load, the app switches English to the system voice, shows a notice in the
+overlay and in Settings, and keeps the notice until the person dismisses it or the voice loads again
+(O2).
+
+If no local voice qualified in phase 0, the English voice control is absent and English uses the
+system voice.
 
 ---
 
@@ -557,7 +609,7 @@ in Settings, and keeps the notice until the person dismisses it or Piper loads a
 
 **Proposed:** keep all of it (C13). The packet format does not change.
 
-What changes on the phone side: the relay builds its pipeline on the new runtime, and Piper or
+What changes on the phone side: the relay builds its pipeline on the new runtime, and local-voice or
 system-voice output is resampled to 24 kHz before it is packed.
 
 What changes on the watch: the mic opens a waveform screen in place of today's button and label. The
@@ -594,13 +646,13 @@ watch becomes a follow-up, outside this spec.
 
 | Where | Change |
 |---|---|
-| `AGENTS.md`, Mental model | The voice sentence allows a system voice as a chosen output, with a visible notice when it replaces Piper. Hosted speech stays forbidden. |
-| Spec 105 section 12.1 | A dated amendment: the platform table names Rumble, Piper, LFM2.5 and the system voices. |
+| `AGENTS.md`, Mental model | The voice sentence allows a system voice as a chosen output, with a visible notice when it replaces the local voice. Hosted speech stays forbidden. |
+| Spec 105 section 12.1 | A dated amendment: the platform table names Rumble, LFM2.5, the local English voice and the system voices. |
 | Spec 105 section 12.5 | A dated amendment: spec 109 adds a required live pass on iPhone. Spec 105's own qualification is untouched. |
 | `apple-clients/ONDEVICE-VOICE.md` | Rewritten for the new stack. |
 | `apple-clients/README.md` | The voice lines. |
 | `tests/test_apple_no_hosted_voice.py` | `AVSpeechSynthesizer` is allowed in one named file. Every other pattern stays forbidden everywhere. |
-| App acknowledgments | Rumble, LFM2.5, llama.cpp, Sherpa-ONNX, ONNX Runtime, eSpeak NG and the Piper voice's model card. |
+| App acknowledgments | Rumble, LFM2.5, llama.cpp, and the chosen voice model with its speech library. A CC-BY voice gets its attribution line. |
 | `config/astral-composition.json` | The Projection pin, when the work merges. |
 | Vault | `synthesis-astral-conversational-voice-interface` and `project-astral`, at each checkpoint. |
 
@@ -614,7 +666,8 @@ matching change.
 **Code tests** cover every requirement that code can check, with fixture audio, fixture models, a fake
 clock and a fake provider, as spec 105 section 12.5 describes. They include:
 
-- The store: both hosts, the archive, path escapes, tampering, the partial outcome.
+- The store: both repositories, path escapes, tampering, the partial outcome, and that the speech
+  library makes no network request.
 - The acknowledgment checker: every rejection rule, opener rotation, the quick-answer window.
 - Interruption: noise, a backchannel and real words, each in at least English and one other language.
 - End of turn with continuation words in all eight languages.
@@ -624,7 +677,7 @@ clock and a fake provider, as spec 105 section 12.5 describes. They include:
 - Speech during a running job with the provider online becomes the next provider turn.
 - Local exchanges reaching the kernel log.
 - Integrity: a file or programmatic source never produces an owner turn. Saying yes approves nothing.
-- The system voice path: buffers only, the automatic switch from Piper, and its notice.
+- The system voice path: buffers only, the automatic switch from the local voice, and its notice.
 - The watch relay on the new runtime.
 - The LFM3 cleanup.
 
@@ -635,7 +688,7 @@ speech through the laptop's speakers, records the replies through its microphone
 | Part | Content |
 |---|---|
 | Clean install | Mic tap, download, overlay, first turn |
-| Ten varied questions | With Piper, then with the system voice |
+| Ten varied questions | With the local voice, then with the system voice |
 | Interruption | Real words, a cough, a backchannel, and a stop command |
 | Offline | Provider made unreachable mid-conversation, the offline sentence, three local turns that appear in the chat, provider restored, the back-online sentence, one provider turn |
 | A second language | Spanish, four turns |
@@ -658,8 +711,8 @@ Most calls in section 4.2 follow from the owner's answers. Four do more than tha
   chat during a running job. This design drops that, reading O10 to mean local talk is for the offline
   case only.
 - **C4.** Astral often says no filler at all. The pilot always said one.
-- **C8.** Piper comes from the Sherpa-ONNX release that the published manifest pins. The owner's words
-  were "the piper model page".
+- **C8.** The English voice is not picked today. Three models have clean licences, and none has a
+  published iPhone figure, so phase 0 measures them on the iPhone 13 Pro and the owner listens.
 - **C16.** Only the iPhone needs the owner's ears.
 
 ---
@@ -668,9 +721,8 @@ Most calls in section 4.2 follow from the owner's answers. Four do more than tha
 
 | # | Question | Who answers | Needed by |
 |---|---|---|---|
-| 1 | Sherpa-ONNX links eSpeak NG, which is GPL-3.0, to pronounce words for Piper. Is that acceptable in the App Store and direct-download builds? | The owner | End of phase 0. If the answer is no, English ships with the system voice until a different pronouncer is found. |
-| 2 | Is the Sherpa-ONNX release the right source for Piper (C8)? | The owner | Before phase 1 |
-| 3 | LFM2.5 ships under the LFM Open License with commercial-use terms. The shipping LFM3 model names the same licence. Does anything change for this use? | The owner | End of phase 0 |
+| 1 | LFM2.5 ships under the LFM Open License v1.0. Commercial use is licensed only while the legal entity, counted with every entity it controls or is controlled by, has annual revenue under $10 million. A qualified non-profit is exempt for non-commercial and research use. Which entity distributes Astral, and does it fit? | The owner | End of phase 0. If the answer is no, the local model needs a commercial licence from Liquid AI or a replacement. |
+| 2 | Which shortlisted voice sounds right? | The owner, by ear, from phase 0 recordings | End of phase 0 |
 
 ---
 

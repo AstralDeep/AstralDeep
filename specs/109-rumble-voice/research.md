@@ -13,7 +13,7 @@ Sources read:
 - Three Hugging Face model cards and two Apple documentation pages, fetched 2026-11-20.
 
 A line marked **measured** comes from a pilot or lab report on a physical iPhone 13 Pro. A line marked
-**unverified** was not checked and has a matching item in section 9.
+**unverified** was not checked and has a matching item in section 10.
 
 ---
 
@@ -269,12 +269,14 @@ provider fails, and how the host is told that the provider is unreachable.
 | Component | Licence | Note |
 |---|---|---|
 | Rumble 2 Flash | Apache 2.0 | |
-| LFM2.5 1.2B Instruct | LFM Open License v1.0 | Has commercial-use terms. The shipping LFM3 manifest names the same licence. |
+| LFM2.5 1.2B Instruct | LFM Open License v1.0 | Commercial use is licensed only while the legal entity and its affiliates have annual revenue under $10 million. Qualified non-profits are exempt for non-commercial and research use. No field-of-use restriction. The shipping LFM3 manifest names the same licence. |
 | llama.cpp | MIT | |
 | Sherpa-ONNX | Apache 2.0 | Links eSpeak NG |
 | eSpeak NG | GPL-3.0 | Code is linked into the app. Data is downloaded. |
 | ONNX Runtime | MIT | |
 | Piper Lessac medium voice | See its model card | The Piper project names Lessac and CSTR as the contact for redistribution. The app downloads it and does not bundle it. |
+
+The Sherpa-ONNX, eSpeak NG and Piper rows describe the pilot. Spec 109 ships none of them.
 
 ---
 
@@ -293,7 +295,43 @@ system-voice buffers need one resampling step into that path.
 
 ---
 
-## 9. Not verified
+## 9. English voice candidates
+
+The owner ruled on 2026-11-20 that Piper was only part of the pilot. Model cards and project pages were
+read the same day. Every figure below is the publisher's own. None was measured for this spec.
+
+### 9.1 Shortlist
+
+All three run through FluidAudio 0.17.7, a Swift package under Apache 2.0. Its documentation states
+"no GPL dependencies" for these paths and lists none in its third-party licence folder.
+
+| Model | Weights | Text to sound | Published speed | Notes |
+|---|---|---|---|---|
+| Kokoro-82M (`hexgrad/Kokoro-82M`, Core ML build `FluidInference/kokoro-82m-coreml`) | Apache 2.0 | Its own Core ML pronunciation model plus a lexicon. No eSpeak at run time. | 3 to 11 times real time on Apple silicon. About 50 ms median on an M5 Pro for the newest build. | 24 kHz. Does not stream. One Mac benchmark peaked at 1.503 GB of process memory. The newest build needs iOS 18 or macOS 15, and its iPhone inference is described as unvalidated. Also speaks Spanish, French, Mandarin and Japanese. |
+| Phonon 31m (Gradium) | Apache 2.0 | Not read | 19 to 25 times real time on an M5 Pro. About 20 ms to first audio. | Streams. English only. About 171 MB. Needs iOS 18 or macOS 15. |
+| Pocket TTS small, 18M, 7M and 2M (Kyutai, October 2026) | CC-BY-4.0 | Raw text | 28 to 47 times real time on an M5 Pro. | Streams in 80 ms frames. 34 to 145 MB. Needs iOS 18 or macOS 15. Kyutai's own repository is gated behind accepting terms. The terms forbid voice cloning without consent. |
+
+The Spanish and French lexicons in FluidAudio's Kokoro path were built from eSpeak NG output. English
+does not use them. Their licence file was not opened.
+
+### 9.2 Rejected
+
+| Model | Why |
+|---|---|
+| Piper Lessac medium | Sherpa-ONNX links eSpeak NG, GPL-3.0. The Piper project names Lessac and CSTR as the contact for redistribution rights. |
+| Supertonic 3 | OpenRAIL-M. Attachment A forbids use "to provide medical advice and medical results interpretation". The repository was archived on 2026-09-09 with "Development and support have ended". No Mandarin. |
+| KittenTTS 2 mini, nano, pico | Apache 2.0, with their own pronunciation files. No iPhone runtime. The Sherpa-ONNX path for the older model passes eSpeak NG data. The 1.7B model has a separate licence with a $1 million revenue cap. |
+| Matcha | The English model passes eSpeak NG data in Sherpa-ONNX. |
+| Pocket TTS 100M | About 1.8 times real time on a Mac in FluidAudio's figures. 549 to 766 MB. |
+
+### 9.3 The bar
+
+Piper's **measured** median to first word on the iPhone 13 Pro was 0.539 s. The system voice's was
+1.094 s. A replacement has to land near the first figure to be worth shipping in place of the second.
+
+---
+
+## 10. Not verified
 
 Phase 0 of [plan.md](plan.md) answers each of these.
 
@@ -302,11 +340,12 @@ Phase 0 of [plan.md](plan.md) answers each of these.
 | R1 | Does re-running Rumble on a growing segment every 0.5 s keep up on an iPhone 13 Pro, with an LFM2.5 draft and a Piper sentence fitted between partials? Speculation, fillers and interruption all depend on it. |
 | R2 | Does llama.cpp at the pinned revision carry the short-clip padding fix? If it does not, which revision does? |
 | R3 | How does the host learn that the provider is unreachable, and how is a turn served by the on-device model in the same chat while it is? |
-| R4 | Do llama.cpp with `libmtmd`, Sherpa-ONNX and ONNX Runtime build and pass tests as macOS arm64 slices under the hardened runtime? |
-| R5 | Can the app unpack a `tar.bz2` archive with system libraries alone, with every path checked? |
+| R4 | Does llama.cpp with `libmtmd` build and pass tests as a macOS arm64 slice under the hardened runtime? |
+| R5 | Does FluidAudio load a voice from a local folder with no network request, and can each candidate's files be downloaded without accepting terms? |
 | R6 | Does the paired-watch relay keep working when the phone app is in the background, given that the models use the GPU? |
 | R7 | Does voice processing work on watchOS? |
 | R8 | Is the 5.5 GB phone memory gate still right at a 1.85 GB peak? |
-| R9 | Which licence terms apply to shipping eSpeak NG code in an App Store build, and to LFM2.5 under its commercial-use terms? |
+| R9 | Do the licence files of each voice candidate, its pronunciation data and FluidAudio confirm what their cards say? Does LFM2.5's revenue threshold fit the entity that distributes Astral? |
 | R10 | How good is LFM2.5 1.2B at short acknowledgments in the seven languages other than English? |
 | R11 | How often does Rumble return words for a cough, room noise or a clip under one second? Word-confirmed interruption depends on the answer. |
+| R12 | How fast is each voice candidate to first audio on an iPhone 13 Pro with Rumble and LFM2.5 loaded, and how much memory does it add? |

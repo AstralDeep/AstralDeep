@@ -10,53 +10,62 @@ can run beside the others in its phase. Every code task includes its tests.
 
 - [ ] T001 (P) Projection. Measure Rumble partial transcription every 0.5 s on the iPhone 13 Pro with
   the lab app. Record time per partial for 2, 5 and 10 second segments, and whether an LFM2.5 draft and
-  one Piper sentence fit between partials. R1.
+  one synthesized sentence fit between partials. R1.
 - [ ] T002 (P) Projection. Check the pinned llama.cpp revision for the short-clip padding fix. Name the
   revision to pin. R2.
 - [ ] T003 Kernel. Document how the host learns that the provider is unreachable and how a turn is
   served by the on-device model in the same chat. Propose a change if one is needed. R3.
-- [ ] T004 (P) Projection. Build llama.cpp with `libmtmd`, Sherpa-ONNX and ONNX Runtime for macOS arm64
-  and run both models in a hardened, signed host. R4.
-- [ ] T005 (P) Projection. Prototype the `tar.bz2` unpacker with path checks against the real Piper
-  archive. R5.
+- [ ] T004 (P) Projection. Build llama.cpp with `libmtmd` for macOS arm64 and run Rumble and LFM2.5 in a
+  hardened, signed host. R4.
+- [ ] T005 (P) Projection. Confirm FluidAudio loads a voice from a local folder with no network
+  request, and that each candidate's files download without a terms prompt. R5.
 - [ ] T006 (P) Projection. Establish what the paired-watch relay needs from the phone app's state. R6.
 - [ ] T007 (P) Projection. Check voice processing on watchOS. R7.
 - [ ] T008 (P) Projection. Review the phone memory gate against measured peaks. R8.
-- [ ] T009 Deep. Collect licence texts and put open questions 1 and 3 to the owner. R9.
+- [ ] T009 Deep. Collect the licence files for LFM2.5, FluidAudio and the three voice candidates. Put
+  open question 1 to the owner. R9.
 - [ ] T010 (P) Projection. Score LFM2.5 acknowledgments in eight languages against section 8.2. R10.
 - [ ] T011 (P) Projection. Measure Rumble's false words on coughs, room noise and clips under one
   second. R11.
-- [ ] T012 Deep. Write the phase 0 results into `specs/109-rumble-piper-voice/phase-0/`.
+- [ ] T012 Projection. Build a small test app that runs Kokoro-82M, Phonon 31m and Pocket TTS small on
+  the iPhone 13 Pro with Rumble and LFM2.5 loaded. Measure first audio and memory for ten lines. R12.
+- [ ] T013 Owner. Listen to the recordings from T012 and pick a voice, or choose the system voice. Open
+  question 2.
+- [ ] T014 Deep. Write the phase 0 results into `specs/109-rumble-voice/phase-0/`.
 
 ## Phase 1. Runtime and pack
 
-- [ ] T020 Projection. Add `scripts/build-voice-runtime.sh`, pinned by revision, producing
-  xcframeworks for iPhone, simulator and Mac. Ignore the outputs in Git.
+- [ ] T020 Projection. Add `scripts/build-voice-runtime.sh`, pinned by revision, producing the
+  llama.cpp xcframework for iPhone, simulator and Mac. Ignore the outputs in Git.
 - [ ] T021 Projection. Create the `AstralVoiceRuntime` package with binary targets and a C shim.
 - [ ] T022 Projection. Recognition: load Rumble and its encoder, transcribe 16 kHz audio with a
   language, stream tokens, cancel.
-- [ ] T023 (P) Projection. Piper: load the voice, synthesize one sentence to 22,050 Hz buffers, cancel.
+- [ ] T023 (P) Projection. The chosen voice behind a speech protocol: load from the verified folder,
+  synthesize one sentence to buffers, stream if the model streams, cancel. Skipped if T013 chose the
+  system voice.
 - [ ] T024 (P) Projection. Text generation: load LFM2.5, generate with a token limit, stream, cancel.
 - [ ] T025 Projection. One scheduler so recognition and generation never use the GPU together, with
   recognition first.
 - [ ] T026 Projection. Fixture models and audio small enough to commit, with tests that run in the
   simulator on CPU.
-- [ ] T027 Projection. Parse manifest format `astral.rumble-voice-pack/v2`, including `archives`.
-- [ ] T028 Projection. Extend `VoiceModelStore` to two hosts and to archive download, digest check,
-  safe unpack and per-file verification.
-- [ ] T029 Projection. The partial outcome: GGUF files installed, Piper pending, with later retry.
-- [ ] T030 Projection. Bundle the v1.1 manifest. Keep the mirror setting and its HTTPS rule.
+- [ ] T027 Projection. Define and parse the app's own pack manifest: repository, revision, path, bytes
+  and SHA-256 for each file.
+- [ ] T028 Projection. Extend `VoiceModelStore` to two repositories. Block the speech library from
+  fetching files by itself.
+- [ ] T029 Projection. The partial outcome: GGUF files installed, voice pending, with later retry.
+- [ ] T030 Projection. Bundle the manifest. Keep the mirror setting and its HTTPS rule.
 
 ## Phase 2. Swap the models
 
 - [ ] T040 Projection. Split `VoiceModelInference` into recognition, speech and local text.
 - [ ] T041 Projection. `RumbleTranscriber` implementing `VoiceStreamingTranscriber` with partials.
-- [ ] T042 (P) Projection. `PiperSpeech` feeding the duplex engine through one resampler.
+- [ ] T042 (P) Projection. `LocalVoiceSpeech` feeding the duplex engine through one resampler. On
+  iOS 17 and macOS 14 it reports unavailable and English uses the system voice.
 - [ ] T043 (P) Projection. `SystemVoiceSpeech` using `AVSpeechSynthesizer.write` only. Pick the default
   installed voice for the locale. Exclude personal and novelty voices.
 - [ ] T044 Projection. `ConversationLanguage` with the eight languages and their locales. Save the
   choice per device.
-- [ ] T045 Projection. The automatic switch from Piper to the system voice, with its notice.
+- [ ] T045 Projection. The automatic switch from the local voice to the system voice, with its notice.
 - [ ] T046 Projection. `LFM25OnDeviceModel` replacing `VerifiedLFM3OnDeviceModel` at
   `Mesh/MeshAppMode.swift`.
 - [ ] T047 Projection. Load on overlay open, warm the voice in parallel, unload after 60 s or on
@@ -113,7 +122,7 @@ can run beside the others in its phase. Every code task includes its tests.
 ## Phase 5. Watch
 
 - [ ] T100 Projection. Build the paired-watch pipeline on the new runtime.
-- [ ] T101 Projection. Resample Piper and system-voice speech to 24 kHz before packing.
+- [ ] T101 Projection. Resample local-voice and system-voice speech to 24 kHz before packing.
 - [ ] T102 Projection. The watch waveform screen with its states and tap to interrupt.
 - [ ] T103 Projection. Notices for an unreachable phone, a missing pack and a closed mesh.
 - [ ] T104 Projection. Update `PairedWatchVoiceTests`, `PhoneCompanionRelayTests` and the watch tests.
@@ -140,4 +149,4 @@ can run beside the others in its phase. Every code task includes its tests.
   holds mesh keys.
 - [ ] T123 Owner and agent. The live iPhone pass in spec section 15.
 - [ ] T124 Owner. The verdict on naturalness.
-- [ ] T125 Deep. Store the report and recordings under `specs/109-rumble-piper-voice/evidence/`.
+- [ ] T125 Deep. Store the report and recordings under `specs/109-rumble-voice/evidence/`.
