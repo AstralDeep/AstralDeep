@@ -1,4 +1,0 @@
-failed=False
-output=
-built
-outbox=['bracket.stl']
