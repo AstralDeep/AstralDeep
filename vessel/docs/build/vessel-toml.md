@@ -41,7 +41,7 @@ The agent's id in `deployment.toml` is what callers use, not `name`.
 
 | Key | Meaning |
 |---|---|
-| `builtin` | Any of `read`, `grep`, `glob`, `list`, `bash`. See [Built-in tools](builtin-tools.md). |
+| `builtin` | Any of `read`, `grep`, `glob`, `list`, `bash`, `cad`. See [Built-in tools](builtin-tools.md). |
 | `declared` | Paths to declared tool files, relative to the agent folder. See [Declared tools](declared-tools.md). |
 
 ## [sandbox]
@@ -85,7 +85,7 @@ of the agent's profile fingerprint, so editing them marks the sandbox stale unti
 
 | Key | Meaning |
 |---|---|
-| `files` | File types tools may return: any of `png`, `svg`, `csv`, `pdf`. See [Workspaces and files](workspaces-and-files.md). |
+| `files` | File types tools may return: any of `png`, `svg`, `csv`, `pdf`, `step`, `stl`, `3mf`, `glb`. See [Workspaces and files](workspaces-and-files.md). |
 
 ## Permission scopes
 
@@ -96,5 +96,5 @@ Each tool carries one of six permission scopes, weakest first: `tools:read`, `to
 |---|---|
 | `read`, `glob`, `list` | `tools:files` |
 | `grep` | `tools:search` |
-| `bash` | `tools:execute` |
+| `bash`, `cad` | `tools:execute` |
 | Declared tools | their `scope`, default `tools:read` |

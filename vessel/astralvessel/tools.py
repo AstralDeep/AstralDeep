@@ -95,6 +95,19 @@ BUILTIN_SCHEMAS: dict[str, dict[str, Any]] = {
             "command": {"type": "string"},
         }, "required": ["command"]},
     },
+    "cad": {
+        "description": "Build a 3D model with build123d and return CAD files. The script is Python run "
+                       "offline in this sandbox; it has no network. Model in millimetres with +Z up and "
+                       "import build123d as bd. Write files by calling the provided helpers: "
+                       "export_step(part, \"bracket\"), export_stl(part, \"bracket\", tolerance=0.1) or "
+                       "export_glb(part, \"bracket\"). Each helper takes one shape or a list of shapes and "
+                       "a plain file name, and writes into the turn's outbox; nothing else you write is kept.",
+        "parameters": {"type": "object", "properties": {
+            "script": {"type": "string",
+                       "description": "A build123d script: import build123d as bd, build the model, call "
+                                      "the export helpers for each file the caller asked for."},
+        }, "required": ["script"]},
+    },
 }
 
 
@@ -471,6 +484,65 @@ async def _bash(args: dict[str, Any], workdir: str, timeout: int,
     return f"{out.rstrip()}\n[exit code {code}]".lstrip(), code != 0
 
 
+CAD_PRELUDE = '''
+import os as _os, re as _re, sys as _sys
+
+_OUT = _os.environ.get("VESSEL_OUTBOX")
+if not _OUT:
+    _sys.exit("cad: the sandbox gave this call no output folder; files can only be written inside a turn workspace")
+if not _os.path.isdir(_OUT):
+    _os.makedirs(_OUT, exist_ok=True)
+import build123d as _bd
+
+
+def _path(name, extension):
+    if not isinstance(name, str) or not _re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,94}", name):
+        raise ValueError("the export name must be 1-95 letters, digits, dots, dashes or underscores")
+    return _os.path.join(_OUT, f"{name}.{extension}")
+
+
+def _one(shapes):
+    if isinstance(shapes, (list, tuple)):
+        return _bd.Compound(children=list(shapes))
+    return shapes
+
+
+def export_step(shapes, name):
+    if not _bd.export_step(_one(shapes), _path(name, "step")):
+        raise RuntimeError("the STEP export failed")
+
+
+def export_stl(shapes, name, tolerance=0.1, angular_tolerance=0.2):
+    if not _bd.export_stl(_one(shapes), _path(name, "stl"), tolerance=tolerance,
+                          angular_tolerance=angular_tolerance):
+        raise RuntimeError("the STL export failed")
+
+
+def export_glb(shapes, name, tolerance=0.1, angular_tolerance=0.2):
+    if not _bd.export_gltf(_one(shapes), _path(name, "glb"), binary=True, linear_deflection=tolerance,
+                           angular_deflection=angular_tolerance):
+        raise RuntimeError("the GLB export failed")
+'''
+
+MAX_CAD_SCRIPT_BYTES = 256 * 1024
+
+
+async def _cad(args: dict[str, Any], workdir: str, timeout: int,
+               confinement: Confinement | None) -> tuple[str, bool]:
+    script = args.get("script")
+    if not isinstance(script, str) or not script.strip():
+        return "cad: script must be a non-empty string of Python using build123d", True
+    if len(script.encode("utf-8")) > MAX_CAD_SCRIPT_BYTES:
+        return f"cad: the script is over {MAX_CAD_SCRIPT_BYTES // 1024} KB", True
+    code, out = await _proc(["python", "-I", "-"], cwd=workdir, timeout=timeout,
+                            stdin=(CAD_PRELUDE + "\n" + script).encode("utf-8"),
+                            confinement=confinement)
+    out = out.rstrip()
+    if code != 0 and "ModuleNotFoundError" in out and "build123d" in out:
+        return out + "\n[cad: build123d is not installed in this sandbox image]", True
+    return out or f"[exit code {code}]", code != 0
+
+
 async def _declared(tool: DeclaredTool, args: dict[str, Any], workdir: str, package_root: str,
                     timeout: int, confinement: Confinement | None) -> tuple[str, bool]:
     argv = [part.replace("{package}", package_root) for part in tool.command]
@@ -510,6 +582,8 @@ async def run_sandbox_tool(name: str, args: dict[str, Any], *, workdir: str, tim
             return await _list(args, workdir, confinement)
         if name == "bash":
             return await _bash(args, workdir, timeout, confinement)
+        if name == "cad":
+            return await _cad(args, workdir, timeout, confinement)
         if name in declared:
             return await _declared(declared[name], args, workdir, package_root, timeout, confinement)
     except (KeyError, ValueError, TypeError) as exc:
