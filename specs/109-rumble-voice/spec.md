@@ -110,6 +110,7 @@ goal of this spec, ahead of everything else in it.
 | O9 | English offers two voices in Settings, the local voice as the default and the system voice, each with a preview. Decided 2026-11-19 for Piper and carried over to its replacement. |
 | O10 | When the provider goes offline during a conversation, Astral says "Your LLM model provider is offline." and keeps talking using local resources only. Those exchanges are recorded in the text conversation. When the provider returns, Astral says "Your LLM model provider is back online." and sends queries to it as normal. The owner called this an edge case and asked that it weigh less than the rest. |
 | O11 | Piper was only part of the pilot. Use a similar model with a more open licence and similar speed if one exists. Otherwise use the default iOS English voice. |
+| O12 | The entity that distributes Astral has annual revenue under $10 million. LFM2.5 is therefore licensed for this use under the LFM Open License v1.0. If that revenue crosses $10 million, the local model needs a commercial licence from Liquid AI or a replacement. |
 
 ### 4.2 This design's calls
 
@@ -652,7 +653,7 @@ watch becomes a follow-up, outside this spec.
 | `apple-clients/ONDEVICE-VOICE.md` | Rewritten for the new stack. |
 | `apple-clients/README.md` | The voice lines. |
 | `tests/test_apple_no_hosted_voice.py` | `AVSpeechSynthesizer` is allowed in one named file. Every other pattern stays forbidden everywhere. |
-| App acknowledgments | Rumble, LFM2.5, llama.cpp, and the chosen voice model with its speech library. A CC-BY voice gets its attribution line. |
+| App acknowledgments | Rumble, LFM2.5 with a copy of the LFM Open License and its notices, llama.cpp, and the chosen voice model with its speech library. A CC-BY voice gets its attribution line. |
 | `config/astral-composition.json` | The Projection pin, when the work merges. |
 | Vault | `synthesis-astral-conversational-voice-interface` and `project-astral`, at each checkpoint. |
 
@@ -721,8 +722,7 @@ Most calls in section 4.2 follow from the owner's answers. Four do more than tha
 
 | # | Question | Who answers | Needed by |
 |---|---|---|---|
-| 1 | LFM2.5 ships under the LFM Open License v1.0. Commercial use is licensed only while the legal entity, counted with every entity it controls or is controlled by, has annual revenue under $10 million. A qualified non-profit is exempt for non-commercial and research use. Which entity distributes Astral, and does it fit? | The owner | End of phase 0. If the answer is no, the local model needs a commercial licence from Liquid AI or a replacement. |
-| 2 | Which shortlisted voice sounds right? | The owner, by ear, from phase 0 recordings | End of phase 0 |
+| 1 | Which shortlisted voice sounds right? | The owner, by ear, from phase 0 recordings | End of phase 0 |
 
 ---
 

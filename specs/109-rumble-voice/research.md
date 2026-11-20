@@ -269,7 +269,7 @@ provider fails, and how the host is told that the provider is unreachable.
 | Component | Licence | Note |
 |---|---|---|
 | Rumble 2 Flash | Apache 2.0 | |
-| LFM2.5 1.2B Instruct | LFM Open License v1.0 | Commercial use is licensed only while the legal entity and its affiliates have annual revenue under $10 million. Qualified non-profits are exempt for non-commercial and research use. No field-of-use restriction. The shipping LFM3 manifest names the same licence. |
+| LFM2.5 1.2B Instruct | LFM Open License v1.0 | Commercial use is licensed only while the legal entity and its affiliates have annual revenue under $10 million. Qualified non-profits are exempt for non-commercial and research use. No field-of-use restriction. The shipping LFM3 manifest names the same licence. The owner confirmed on 2026-11-20 that the entity distributing Astral is under the threshold. Redistribution requires a copy of the licence and its notices. |
 | llama.cpp | MIT | |
 | Sherpa-ONNX | Apache 2.0 | Links eSpeak NG |
 | eSpeak NG | GPL-3.0 | Code is linked into the app. Data is downloaded. |
@@ -345,7 +345,7 @@ Phase 0 of [plan.md](plan.md) answers each of these.
 | R6 | Does the paired-watch relay keep working when the phone app is in the background, given that the models use the GPU? |
 | R7 | Does voice processing work on watchOS? |
 | R8 | Is the 5.5 GB phone memory gate still right at a 1.85 GB peak? |
-| R9 | Do the licence files of each voice candidate, its pronunciation data and FluidAudio confirm what their cards say? Does LFM2.5's revenue threshold fit the entity that distributes Astral? |
+| R9 | Do the licence files of each voice candidate, its pronunciation data and FluidAudio confirm what their cards say? |
 | R10 | How good is LFM2.5 1.2B at short acknowledgments in the seven languages other than English? |
 | R11 | How often does Rumble return words for a cough, room noise or a clip under one second? Word-confirmed interruption depends on the answer. |
 | R12 | How fast is each voice candidate to first audio on an iPhone 13 Pro with Rumble and LFM2.5 loaded, and how much memory does it add? |

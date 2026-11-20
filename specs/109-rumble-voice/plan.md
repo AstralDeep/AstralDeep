@@ -9,7 +9,7 @@ unverified items in [research.md](research.md) section 10.
 ## Preconditions
 
 1. The owner has reviewed [spec.md](spec.md), in particular section 16.
-2. Open questions 1 and 2 have answers by the end of phase 0.
+2. The open question, which voice, has an answer by the end of phase 0.
 
 ## Shape of the work
 
@@ -18,7 +18,7 @@ every merge. Phase 3 is where the conversation gets its feel. Phases 4 and 5 are
 
 | Phase | What it delivers | Repositories |
 |---|---|---|
-| 0 | Answers to R1 to R12 and the open questions, including the English voice. No product code. | All |
+| 0 | Answers to R1 to R12, including the English voice. No product code. | All |
 | 1 | The runtime package and the pack store | Projection |
 | 2 | Rumble, the English voice, system voices and LFM2.5 under the shipping pipeline. LFM3 removed. | Projection |
 | 3 | Natural conversation: end of turn, fillers, interruption, pacing, and the offline case | Projection, Kernel if R3 needs it |
@@ -45,14 +45,14 @@ No product code. Each item ends with a short written result in `phase-0/` beside
 - **R7.** Check voice processing on watchOS in Apple's documentation and SDK headers.
 - **R8.** Check the memory gate against the pilot's peak figures.
 - **R9.** Collect the licence files for LFM2.5, FluidAudio and each voice candidate, including the
-  pronunciation data each one ships. Put open question 1 to the owner.
+  pronunciation data each one ships. The owner settled the LFM2.5 revenue question on 2026-11-20 (O12).
 - **R10.** Run LFM2.5 on twenty acknowledgment prompts in each of the eight languages and score them
   against the rules in section 8.2.
 - **R11.** Feed Rumble coughs, room noise and clips under one second. Count how often it returns words.
 - **R12.** The voice test in spec section 7.4. Measure the three candidates on the iPhone 13 Pro in a
   small test app, record each one speaking the same ten lines, and give the owner the recordings.
 
-**Exit:** every R item has a written result. The owner has answered open questions 1 and 2, so the
+**Exit:** every R item has a written result. The owner has picked a voice, so the
 English voice is named or the system voice is confirmed. Any kernel
 change from R3 is specified.
 

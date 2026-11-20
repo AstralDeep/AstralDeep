@@ -22,15 +22,15 @@ can run beside the others in its phase. Every code task includes its tests.
 - [ ] T006 (P) Projection. Establish what the paired-watch relay needs from the phone app's state. R6.
 - [ ] T007 (P) Projection. Check voice processing on watchOS. R7.
 - [ ] T008 (P) Projection. Review the phone memory gate against measured peaks. R8.
-- [ ] T009 Deep. Collect the licence files for LFM2.5, FluidAudio and the three voice candidates. Put
-  open question 1 to the owner. R9.
+- [ ] T009 Deep. Collect the licence files for LFM2.5, FluidAudio and the three voice candidates.
+  LFM2.5 is cleared by O12. R9.
 - [ ] T010 (P) Projection. Score LFM2.5 acknowledgments in eight languages against section 8.2. R10.
 - [ ] T011 (P) Projection. Measure Rumble's false words on coughs, room noise and clips under one
   second. R11.
 - [ ] T012 Projection. Build a small test app that runs Kokoro-82M, Phonon 31m and Pocket TTS small on
   the iPhone 13 Pro with Rumble and LFM2.5 loaded. Measure first audio and memory for ten lines. R12.
 - [ ] T013 Owner. Listen to the recordings from T012 and pick a voice, or choose the system voice. Open
-  question 2.
+  The open question.
 - [ ] T014 Deep. Write the phase 0 results into `specs/109-rumble-voice/phase-0/`.
 
 ## Phase 1. Runtime and pack
