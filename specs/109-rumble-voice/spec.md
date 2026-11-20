@@ -148,6 +148,7 @@ goal of this spec, ahead of everything else in it.
 | C27 | Keep the 5.5 GB phone memory gate. (R8) | Lowering it to admit 4 GB phones. Nothing measured covers a 4 GB phone. |
 | C28 | A device that cannot run Phonon, which means iOS 17 or macOS 14, downloads the three GGUF files only. The pack counts as complete and English uses the system voice. | Downloading 136 MB of voice files the device can never load. |
 | C29 | A mirror for the pack serves the Hugging Face path shape, `<mirror>/<repository>/resolve/<revision>/<path>`. | The flat mirror layout the LFM3 store accepts. Two repositories at pinned revisions do not fit in it. |
+| C30 | The local voice plays through one fixed gain of 1.75, about 4.9 dB, with samples clamped after resampling. The live pass tunes it. System voices get no gain. (phase-1/device-check) | Normalising each sentence to full scale, as the recordings the owner judged were. That pumps the level from sentence to sentence. |
 
 ---
 
@@ -387,6 +388,22 @@ ten lines, against 491 MB before the voice loaded. Resident size at the end of t
 resident size (`ru_maxrss`) and not footprint, so the two figures do not conflict (phase-0/R8). Nothing
 measured covers a 4 GB phone or the real app with its mesh runtime and interface, so the gate does not
 move.
+
+**On the phone through the packages** (phase-1/device-check, iPhone 13 Pro, Release, agent-run). Both
+packages build, link and run. Rumble transcribed seven fixtures correctly, and LFM2.5 answered and
+cancelled at exactly 20 tokens.
+
+- The first launch after an install took 20.0 s from process start to all three models ready. Later
+  launches took 0.9 s and 0.5 s. The "Getting ready" state has to cover the long case.
+- Phonon reached first audible sound in 0.166 s through the package, against 0.169 s for the raw stream
+  in phase 0. Its output peaks at 0.33 to 0.57, about 8.6 dB below the recordings the owner judged, which
+  were peak-normalised per file (C30).
+- Running Rumble, LFM2.5 and Phonon together slowed each by 0 to 23 percent. No Phonon buffer arrived
+  late in 40 overlapping streams.
+- Footprint peaked at 557 MB with all three loaded. CPU-only mode works and raises the footprint of
+  Rumble plus LFM2.5 to about 1.4 GB, with recognition about 1.9 times slower.
+- The phone reached a serious thermal state within about a minute of back-to-back decoding, and hot
+  runs were up to 27 percent slower. Long sessions, backgrounding and a live microphone were not tested.
 
 ### 7.4 The English voice: the test and its result
 
