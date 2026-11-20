@@ -385,6 +385,40 @@ def attach(uses: list[str], ledger: list[dict[str, Any]], capabilities_root: Pat
     return attached_tools, Mount(source=str(capabilities_root), target="/capabilities")
 
 
+def run_tool(ledger_path: Path, tool_name: str, script_file: Path, out_dir: Path) -> None:
+    # Runs one installed capability tool on this host with the files landing in --out; this is the
+    # direct local path, the same execution the node performs inside its sandbox during a turn.
+    import subprocess
+
+    installed = None
+    for entry in load_ledger(ledger_path):
+        manifest = _manifest_of(Path(entry["path"]))
+        if any(tool["name"] == tool_name for tool in manifest["tools"]):
+            if installed is None or tuple(int(part) for part in entry["version"].split(".")) > \
+                    tuple(int(part) for part in installed["version"].split(".")):
+                installed = {**entry, "manifest": manifest}
+    if installed is None:
+        raise CapabilityError("capability.missing", f"no installed capability offers the tool {tool_name}")
+    manifest = installed["manifest"]
+    tool = next(t for t in manifest["tools"] if t["name"] == tool_name)
+    payload = Path(installed["path"])
+    interpreter = payload / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    if not interpreter.exists():
+        interpreter = Path(sys.executable)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    env = {k: v for k, v in os.environ.items() if not k.startswith("VESSEL_")}
+    env["VESSEL_OUTBOX"] = str(out_dir)
+    done = subprocess.run([str(interpreter), "-I", str(payload / tool["script"])],
+                          input=json.dumps({"script": script_file.read_text(encoding="utf-8-sig")}).encode("utf-8"),
+                          env=env, capture_output=True, timeout=1800)
+    sys.stdout.write(done.stdout.decode("utf-8", "replace"))
+    sys.stderr.write(done.stderr.decode("utf-8", "replace"))
+    if done.returncode != 0:
+        raise SystemExit(done.returncode)
+    for produced in sorted(out_dir.iterdir()):
+        print(f"wrote {produced}")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="astralvessel.capability",
                                      description="install marketplace capabilities")
@@ -407,9 +441,17 @@ def main(argv: list[str] | None = None) -> int:
     sync_parser.add_argument("--phi-excluded", action="store_true", help="refuse reviewed-PHI capabilities")
     sync_parser.add_argument("--no-venv", action="store_true",
                              help="skip the kernel runtime venv (container hosts build it into the image)")
+    run_parser = sub.add_parser("run", help="run one installed capability tool locally and keep its files")
+    run_parser.add_argument("tool", help="the tool name, like cad")
+    run_parser.add_argument("--ledger", required=True, help="the node's capability ledger file")
+    run_parser.add_argument("--script", required=True, help="a file with the tool's input script")
+    run_parser.add_argument("--out", required=True, help="the folder that receives the produced files")
     args = parser.parse_args(argv)
-    ledger = Path(args.ledger).resolve() if args.command in ("install", "sync") else None
+    ledger = Path(args.ledger).resolve() if args.command in ("install", "sync", "run") else None
     try:
+        if args.command == "run":
+            run_tool(ledger, args.tool, Path(args.script), Path(args.out))
+            return 0
         source = args.source
         label = source
         if source.startswith("gh:") or source.startswith("github:"):
