@@ -9,7 +9,8 @@ can run beside the others in its phase. Every code task includes its tests.
 ## Phase 0. Find out
 
 - [ ] T001 (P) Projection. Measure Rumble partial transcription every 0.5 s on the iPhone 13 Pro with
-  the lab app. Record time per partial for 2, 5 and 10 second segments. R1.
+  the lab app. Record time per partial for 2, 5 and 10 second segments, and whether an LFM2.5 draft and
+  one Piper sentence fit between partials. R1.
 - [ ] T002 (P) Projection. Check the pinned llama.cpp revision for the short-clip padding fix. Name the
   revision to pin. R2.
 - [ ] T003 Kernel. Document when a turn routes to the on-device model and whether a local exchange can
@@ -23,7 +24,10 @@ can run beside the others in its phase. Every code task includes its tests.
 - [ ] T008 (P) Projection. Review the phone memory gate against measured peaks. R8.
 - [ ] T009 Deep. Collect licence texts and put open questions 1 and 3 to the owner. R9.
 - [ ] T010 (P) Projection. Score LFM2.5 acknowledgments in eight languages against section 8.2. R10.
-- [ ] T011 Deep. Write the phase 0 results into `specs/109-rumble-piper-voice/phase-0/`.
+- [ ] T011 (P) Projection. Measure Rumble's false words on coughs, room noise and clips under one
+  second. R11.
+- [ ] T012 Deep. Put open question 4 to the owner. It decides T072 and T073.
+- [ ] T013 Deep. Write the phase 0 results into `specs/109-rumble-piper-voice/phase-0/`.
 
 ## Phase 1. Runtime and pack
 
@@ -80,8 +84,9 @@ can run beside the others in its phase. Every code task includes its tests.
 - [ ] T069 Projection. Progress lines from kernel events, at most one every 15 seconds.
 - [ ] T070 Projection. Send the short-answer and reply-language preference with voice turns.
 - [ ] T071 Projection. Speak a component's `spoken` form and strip markup from text.
-- [ ] T072 Kernel. The change from T003, if one is needed.
-- [ ] T073 Projection. Local talk while a job runs, logged through the kernel.
+- [ ] T072 Kernel. The change from T003, if one is needed and the owner keeps C17.
+- [ ] T073 Projection. Local talk while a job runs, logged through the kernel. Only if the owner keeps
+  C17. Otherwise a follow-up during a job waits for the provider.
 - [ ] T074 Projection. Provider failure detection, the offline state, the recovery check, and a test
   that no request carries the person's words while offline.
 - [ ] T075 Projection. A timing recorder for the moments in section 8.5, off by default, used by the

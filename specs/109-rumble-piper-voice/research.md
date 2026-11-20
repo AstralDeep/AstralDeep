@@ -121,6 +121,11 @@ exception.
 - The drift guard `AstralProjection/tests/test_apple_no_hosted_voice.py` forbids `api/voice`, `LiveKit`
   and any constructor call to `AVSpeechSynthesizer`, `SFSpeechRecognizer`, `SpeechAnalyzer` or
   `SpeechTranscriber`.
+- Two older guards cover the retired hosted path: `tests/test_voice_audio_focus_parity.py` and
+  `tests/test_mobile_voice_interruption_065.py`. Both read `Voice/VoiceSessionController.swift` and its
+  tests. This spec does not touch those files.
+- No branch on the Projection remote changes the voice, watch or model files beyond `main`, and Deep's
+  `converge/remove-web-chat` branch changes no voice file. Checked 2026-11-20.
 
 ### 1.7 Deployment targets and native code
 
@@ -295,7 +300,7 @@ Phase 0 of [plan.md](plan.md) answers each of these.
 
 | Id | Question |
 |---|---|
-| R1 | Does re-running Rumble on a growing segment every 0.5 s keep up on an iPhone 13 Pro? Speculation and interruption both depend on partials. |
+| R1 | Does re-running Rumble on a growing segment every 0.5 s keep up on an iPhone 13 Pro, with an LFM2.5 draft and a Piper sentence fitted between partials? Speculation, fillers and interruption all depend on it. |
 | R2 | Does llama.cpp at the pinned revision carry the short-clip padding fix? If it does not, which revision does? |
 | R3 | When does the kernel route a turn to the on-device model, and can it record a local exchange while a provider turn runs in the same chat? |
 | R4 | Do llama.cpp with `libmtmd`, Sherpa-ONNX and ONNX Runtime build and pass tests as macOS arm64 slices under the hardened runtime? |
@@ -305,3 +310,4 @@ Phase 0 of [plan.md](plan.md) answers each of these.
 | R8 | Is the 5.5 GB phone memory gate still right at a 1.85 GB peak? |
 | R9 | Which licence terms apply to shipping eSpeak NG code in an App Store build, and to LFM2.5 under its commercial-use terms? |
 | R10 | How good is LFM2.5 1.2B at short acknowledgments in the seven languages other than English? |
+| R11 | How often does Rumble return words for a cough, room noise or a clip under one second? Word-confirmed interruption depends on the answer. |

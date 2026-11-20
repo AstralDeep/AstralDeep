@@ -10,6 +10,7 @@ unverified items in [research.md](research.md) section 9.
 
 1. The owner has reviewed [spec.md](spec.md), in particular section 16.
 2. Open questions 1 to 3 have answers by the end of phase 0. Question 2 is needed before phase 1.
+3. Open question 4 has an answer before phase 3. It decides whether steps 5 and the kernel work exist.
 
 ## Shape of the work
 
@@ -18,7 +19,7 @@ every merge. Phase 3 is where the conversation gets its feel. Phases 4 and 5 are
 
 | Phase | What it delivers | Repositories |
 |---|---|---|
-| 0 | Answers to R1 to R10 and the open questions. No product code. | All |
+| 0 | Answers to R1 to R11 and the open questions. No product code. | All |
 | 1 | The runtime package and the pack store | Projection |
 | 2 | Rumble, Piper, system voices and LFM2.5 under the shipping pipeline. LFM3 removed. | Projection |
 | 3 | Natural conversation: end of turn, fillers, interruption, local talk, offline | Projection, Kernel if R3 needs it |
@@ -46,6 +47,7 @@ No product code. Each item ends with a short written result in `phase-0/` beside
   put the question to the owner.
 - **R10.** Run LFM2.5 on twenty acknowledgment prompts in each of the eight languages and score them
   against the rules in section 8.2.
+- **R11.** Feed Rumble coughs, room noise and clips under one second. Count how often it returns words.
 
 **Exit:** every R item has a written result. The owner has answered open questions 1 to 3. Any kernel
 change from R3 is specified.
@@ -82,7 +84,7 @@ The order matters. Each step is felt on a device before the next starts.
 2. The three-stage interruption (section 8.3).
 3. Model-drafted fillers with the checker, and the quick-answer window (section 8.2).
 4. Sentence pacing and the voice preference sent to the provider (section 8.4).
-5. Local talk while a job runs, logged (sections 9.2, 9.3).
+5. Local talk while a job runs, logged (sections 9.2, 9.3). Only if the owner keeps C17.
 6. Provider failure, the offline state and recovery (section 9.4).
 
 **Exit:** code tests for each step pass. The agent holds a ten-turn English conversation on the Mac and
