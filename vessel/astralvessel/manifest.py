@@ -62,11 +62,17 @@ class OutputSection(Strict):
     files: list[Literal["png", "svg", "csv", "pdf", "step", "stl", "3mf", "glb"]] = []
 
 
+class CapabilitiesSection(Strict):
+    # Marketplace capabilities the agent uses, as astral.capability/v1 references; resolved at deploy.
+    uses: list[str] = []
+
+
 class Manifest(Strict):
     agent: AgentSection
     tools: ToolsSection = ToolsSection()
     sandbox: SandboxSection = SandboxSection()
     output: OutputSection = OutputSection()
+    capabilities: CapabilitiesSection = CapabilitiesSection()
 
 
 class DeclaredTool(Strict):

@@ -128,7 +128,7 @@ def check_install(
     # reads the fetched manifest, because the index entry carries no runtime or PHI fields.
     if entry.get("manifest_sha256") != fetched_manifest_sha256:
         raise CapabilityError("capability.digest")
-    if signer is None or (allow_signers is not None and signer not in allow_signers):
+    if signer is None or not allow_signers or signer not in allow_signers:
         raise CapabilityError("capability.signer")
     runtime = manifest.get("runtime") if isinstance(manifest, dict) else None
     if isinstance(runtime, dict):

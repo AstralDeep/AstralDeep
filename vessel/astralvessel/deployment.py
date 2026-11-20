@@ -17,7 +17,8 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .manifest import AgentPackage, load_package
+from . import capability
+from .manifest import BUILTIN_TOOLS, AgentPackage, load_package
 
 AGENT_ID = r"^[a-z][a-z0-9-]{0,62}$"
 
@@ -184,16 +185,18 @@ class Agent(BaseModel):
     package: AgentPackage
     host_package: Path
     profile: SandboxProfile
+    capabilities: list[dict[str, str]] = []
 
     @property
     def fingerprint(self) -> str:
         # Everything that shapes the sandbox container, plus the manifest and declared tools that the executor and
-        # the sandbox load once at start; a change means a redeploy.
+        # the sandbox load once at start; a change means a redeploy. Resolved capability versions change the image
+        # payload and the mounted tools, so they belong here too.
         sandbox = self.package.manifest.sandbox.model_dump()
         dockerfile = self.package.manifest.sandbox.dockerfile
         image = build_inputs_hash(self.package.root, dockerfile) if dockerfile else None
         body = {"id": self.id, "profile": self.profile.model_dump(), "needs": sandbox, "image": image,
-                "loaded": self.package.loaded_digest(), "schema": 3}
+                "loaded": self.package.loaded_digest(), "capabilities": self.capabilities, "schema": 4}
         return hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()[:16]
 
 
@@ -216,11 +219,35 @@ def load_deployment(path: str | Path, packages_root: str | None = None) -> Deplo
     for entry in raw.agents:
         host = (path.parent / entry.package).resolve()
         package = load_package(Path(packages_root) / entry.id if packages_root else host)
+        resolved = _attach_capabilities(path, entry, package)
         _check_grants(entry, package)
-        agents[entry.id] = Agent(id=entry.id, package=package, host_package=host, profile=entry.sandbox)
+        agents[entry.id] = Agent(id=entry.id, package=package, host_package=host, profile=entry.sandbox,
+                                 capabilities=resolved)
     notices = (LEGACY_OWNER_NOTICE,) if raw.owner is not None else ()
     return Deployment(path=path, node=raw.node, egress=raw.egress, executor=raw.executor, agents=agents,
                       runtime=raw.runtime, notices=notices)
+
+
+def _attach_capabilities(deployment_path: Path, entry: AgentEntry, package: AgentPackage) -> list[dict[str, str]]:
+    # An agent that uses capabilities gets their tools and mount attached here; the ledger and the
+    # installed payloads live beside the deployment file, installed by the node's owner.
+    uses = package.manifest.capabilities.uses
+    if not uses:
+        return []
+    ledger_path = deployment_path.parent / "capabilities-ledger.json"
+    ledger = capability.load_ledger(ledger_path)
+    capabilities_root = deployment_path.parent / "capabilities"
+    dockerfile = package.manifest.sandbox.dockerfile
+    dockerfile_text = (package.root / dockerfile).read_text() if dockerfile else None
+    tools, mount = capability.attach(uses, ledger, capabilities_root, dockerfile_text)
+    clash = ({t.name for t in tools} & set(BUILTIN_TOOLS)) | (
+        {t.name for t in tools} & {t.name for t in package.declared})
+    if clash:
+        raise ValueError(f"a capability tool collides with an existing tool: {', '.join(sorted(clash))}")
+    package.declared.extend(tools)
+    package.manifest.sandbox.mounts.append(mount)
+    entry.sandbox.mounts.append(MountGrant(source=mount.source, target=mount.target, read_only=True))
+    return [{"id": r["id"], "version": r["version"]} for r in capability.resolve(uses, ledger)]
 
 
 def _check_grants(entry: AgentEntry, package: AgentPackage) -> None:

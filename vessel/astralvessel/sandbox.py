@@ -46,10 +46,12 @@ def confinement_for(package: AgentPackage, scratch_root: str = SCRATCH_ROOT) -> 
 
 
 class LocalRunner:
-    def __init__(self, package: AgentPackage, confinement: Confinement | None = None):
+    def __init__(self, package: AgentPackage, confinement: Confinement | None = None,
+                 capabilities_root: str = ""):
         self.package = package
         self.declared = {t.name: t for t in package.declared if t.command}  # service tools never run here
         self.confinement = confinement
+        self.capabilities_root = capabilities_root or os.environ.get("VESSEL_CAPABILITIES", "")
         self.files: dict[str, list[outputs.ToolFile]] = {}
 
     async def run(self, name: str, args: dict[str, Any], workspace: str | None = None,
@@ -58,7 +60,8 @@ class LocalRunner:
         workdir = os.environ.get("VESSEL_WORKDIR") or sandbox.workdir
         output, error = await run_sandbox_tool(name, args, workdir=workdir, timeout=sandbox.tool_timeout_seconds,
                                                declared=self.declared, package_root=str(self.package.root),
-                                               confinement=self.confinement, workspace=workspace)
+                                               confinement=self.confinement, workspace=workspace,
+                                               capabilities_root=self.capabilities_root)
         if workspace and self.confinement is not None and WORKSPACE_KEY.fullmatch(workspace):
             outbox = outbox_of(self.confinement.for_turn(workspace).workspace)
             found, notes = await asyncio.to_thread(outputs.collect, outbox, self.package.manifest.output.files)

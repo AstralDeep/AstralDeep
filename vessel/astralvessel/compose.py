@@ -140,6 +140,13 @@ def generate(deployment: Deployment, *, repo_root: Path | None) -> dict[str, Any
         networks[tools] = {"internal": True}
         mounts = [f"{agent.host_package}:/agent:ro"] + [
             f"{_source(deployment, m.source)}:{m.target}:{'ro' if m.read_only else 'rw'}" for m in agent.profile.mounts]
+        environment = {"VESSEL_PACKAGE": "/agent", "VESSEL_PORT": str(SANDBOX_PORT),
+                       "VESSEL_PROFILE_HASH": agent.fingerprint,
+                       "VESSEL_TURN_DISK": str(agent.profile.turn_bytes),
+                       "VESSEL_USER_DISK": str(agent.profile.user_bytes)}
+        if agent.capabilities:
+            # The attached capabilities resolve {capabilities} inside tool commands to this mount.
+            environment["VESSEL_CAPABILITIES"] = "/capabilities"
         dockerfile = agent.package.manifest.sandbox.dockerfile
         if dockerfile:
             # The agent's own image, built FROM the AstralVessel image (named "astralvessel" in its Dockerfile).
@@ -152,10 +159,7 @@ def generate(deployment: Deployment, *, repo_root: Path | None) -> dict[str, Any
         services[f"sandbox-{agent_id}"] = {
             **HARDENED, **image,
             "command": ["astralvessel", "sandbox"],
-            "environment": {"VESSEL_PACKAGE": "/agent", "VESSEL_PORT": str(SANDBOX_PORT),
-                            "VESSEL_PROFILE_HASH": agent.fingerprint,
-                            "VESSEL_TURN_DISK": str(agent.profile.turn_bytes),
-                            "VESSEL_USER_DISK": str(agent.profile.user_bytes)},
+            "environment": environment,
             "env_file": [f".generated/sandbox-{agent_id}.env"],
             "volumes": mounts,
             # One inode per KB of scratch, matching the charge per entry, so empty files cannot exhaust memory.
@@ -167,6 +171,11 @@ def generate(deployment: Deployment, *, repo_root: Path | None) -> dict[str, Any
         }
     executor_networks: dict[str, Any] = {"front": {"ipv4_address": deployment.node.front_address}}
     executor_volumes = [f"{deployment.path}:/deploy/deployment.toml:ro", "executor_data:/executor"]
+    uses_capabilities = any(agent.capabilities for agent in deployment.agents.values())
+    if uses_capabilities:
+        # Process-mode sandboxes run inside the executor and resolve {capabilities} to this mount.
+        executor_volumes.append(f"{deployment.path.parent / 'capabilities'}:/deploy/capabilities:ro")
+        executor_volumes.append(f"{deployment.path.parent / 'capabilities-ledger.json'}:/deploy/capabilities-ledger.json:ro")
     for agent_id, agent in deployment.agents.items():
         executor_networks[f"tools-{agent_id}"] = {}
         executor_volumes.append(f"{agent.host_package}:/agents/{agent_id}:ro")
@@ -177,6 +186,7 @@ def generate(deployment: Deployment, *, repo_root: Path | None) -> dict[str, Any
             "VESSEL_DEPLOYMENT": "/deploy/deployment.toml", "VESSEL_PACKAGES_ROOT": "/agents",
             "VESSEL_SANDBOX_URL_TEMPLATE": f"http://sandbox-{{id}}:{SANDBOX_PORT}",
             "VESSEL_SANDBOX_TOKEN": _env_ref("env:VESSEL_SANDBOX_TOKEN"),
+            "VESSEL_CAPABILITIES": "/capabilities" if uses_capabilities else "",
             # Listen only on the front network, so no sandbox (each shares a tools network with the executor) can
             # reach it.
             "VESSEL_HOST": deployment.node.front_address, "VESSEL_PORT": str(EXECUTOR_PORT),

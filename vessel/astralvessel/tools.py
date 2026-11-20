@@ -544,8 +544,10 @@ async def _cad(args: dict[str, Any], workdir: str, timeout: int,
 
 
 async def _declared(tool: DeclaredTool, args: dict[str, Any], workdir: str, package_root: str,
-                    timeout: int, confinement: Confinement | None) -> tuple[str, bool]:
-    argv = [part.replace("{package}", package_root) for part in tool.command]
+                    timeout: int, confinement: Confinement | None,
+                    capabilities_root: str = "") -> tuple[str, bool]:
+    argv = [part.replace("{package}", package_root).replace("{capabilities}", capabilities_root)
+            for part in tool.command]
     stdin = json.dumps(args).encode()
     if tool.input == "args":
         # Only the declared parameters become flags, so the model cannot add flags of its own.
@@ -563,7 +565,8 @@ async def _declared(tool: DeclaredTool, args: dict[str, Any], workdir: str, pack
 async def run_sandbox_tool(name: str, args: dict[str, Any], *, workdir: str, timeout: int,
                            declared: dict[str, DeclaredTool], package_root: str,
                            confinement: Confinement | None = None,
-                           workspace: str | None = None) -> tuple[str, bool]:
+                           workspace: str | None = None,
+                           capabilities_root: str = "") -> tuple[str, bool]:
     try:
         if workspace and confinement is not None:
             confinement = confinement.for_turn(workspace)
@@ -585,7 +588,8 @@ async def run_sandbox_tool(name: str, args: dict[str, Any], *, workdir: str, tim
         if name == "cad":
             return await _cad(args, workdir, timeout, confinement)
         if name in declared:
-            return await _declared(declared[name], args, workdir, package_root, timeout, confinement)
+            return await _declared(declared[name], args, workdir, package_root, timeout, confinement,
+                                   capabilities_root=capabilities_root)
     except (KeyError, ValueError, TypeError) as exc:
         return f"invalid arguments for {name}: {type(exc).__name__}", True
     except OSError as exc:
