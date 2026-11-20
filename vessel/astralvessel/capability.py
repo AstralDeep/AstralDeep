@@ -385,20 +385,54 @@ def attach(uses: list[str], ledger: list[dict[str, Any]], capabilities_root: Pat
     return attached_tools, Mount(source=str(capabilities_root), target="/capabilities")
 
 
-def run_tool(ledger_path: Path, tool_name: str, script_file: Path, out_dir: Path) -> None:
+def _tools_of(version_dir: Path) -> list[str]:
+    try:
+        manifest = tomllib.loads((version_dir / "capability.toml").read_bytes().decode("utf-8-sig"))
+        return [tool["name"] for tool in manifest.get("tools", [])]
+    except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError, ValueError, KeyError):
+        return []
+
+
+def _resolve_source(source: str, cache_dir: Path) -> Path:
+    if source.startswith("gh:") or source.startswith("github:"):
+        repo, _, ref = source.split(":", 1)[1].partition("@")
+        return fetch_github(repo, cache_dir, ref or "main")
+    return Path(source)
+
+
+def run_tool(ledger_path: Path, tool_name: str, script_file: Path, out_dir: Path,
+             source: str | None = None, phi_excluded: bool = False) -> None:
     # Runs one installed capability tool on this host with the files landing in --out; this is the
     # direct local path, the same execution the node performs inside its sandbox during a turn.
+    # A source (gh:owner/repo) makes the run self-installing: a missing capability is pulled first.
     import subprocess
 
-    installed = None
-    for entry in load_ledger(ledger_path):
-        manifest = _manifest_of(Path(entry["path"]))
-        if any(tool["name"] == tool_name for tool in manifest["tools"]):
-            if installed is None or tuple(int(part) for part in entry["version"].split(".")) > \
-                    tuple(int(part) for part in installed["version"].split(".")):
-                installed = {**entry, "manifest": manifest}
+    def find_installed() -> dict[str, Any] | None:
+        found = None
+        for entry in load_ledger(ledger_path):
+            manifest = _manifest_of(Path(entry["path"]))
+            if any(tool["name"] == tool_name for tool in manifest["tools"]):
+                if found is None or tuple(int(part) for part in entry["version"].split(".")) > \
+                        tuple(int(part) for part in found["version"].split(".")):
+                    found = {**entry, "manifest": manifest}
+        return found
+
+    installed = find_installed()
+    if installed is None and source:
+        fetched = _resolve_source(source, Path(ledger_path).parent / "registry-cache")
+        offers = [offer for offer in list_available(fetched)
+                  if tool_name in _tools_of(Path(fetched) / "capabilities" / offer["id"] / offer["version"])]
+        if not offers:
+            raise CapabilityError("capability.missing",
+                                  f"no capability published in {source} offers the tool {tool_name}")
+        best = max(offers, key=lambda offer: tuple(int(part) for part in offer["version"].split(".")))
+        install(fetched, f"{best['id']}@{best['version']}", ledger_path,
+                phi_excluded=phi_excluded, create_venv=True)
+        installed = find_installed()
     if installed is None:
-        raise CapabilityError("capability.missing", f"no installed capability offers the tool {tool_name}")
+        raise CapabilityError("capability.missing",
+                              f"no installed capability offers the tool {tool_name}"
+                              + (f"; install one from {source}" if source else ""))
     manifest = installed["manifest"]
     tool = next(t for t in manifest["tools"] if t["name"] == tool_name)
     payload = Path(installed["path"])
@@ -446,11 +480,16 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument("--ledger", required=True, help="the node's capability ledger file")
     run_parser.add_argument("--script", required=True, help="a file with the tool's input script")
     run_parser.add_argument("--out", required=True, help="the folder that receives the produced files")
+    run_parser.add_argument("--from", dest="source", default=None,
+                            help="a capability folder, a registry checkout, or gh:owner/repo[@ref]; a missing "
+                                 "tool is pulled from here before the run")
+    run_parser.add_argument("--phi-excluded", action="store_true", help="refuse reviewed-PHI capabilities")
     args = parser.parse_args(argv)
     ledger = Path(args.ledger).resolve() if args.command in ("install", "sync", "run") else None
     try:
         if args.command == "run":
-            run_tool(ledger, args.tool, Path(args.script), Path(args.out))
+            run_tool(ledger, args.tool, Path(args.script), Path(args.out),
+                     source=args.source, phi_excluded=args.phi_excluded)
             return 0
         source = args.source
         label = source
