@@ -1,8 +1,9 @@
 # Tasks for spec 109
 
 **Date:** 2026-11-20. **Status:** phase 0 is done, see [phase-0/README.md](phase-0/README.md). The owner picked Phonon 31m on
-2026-11-20 (T013, O13). Phase 1 is built and tested on three local Projection branches merged into
-`feat/109-rumble-voice`, not pushed. Nothing from phase 2 on is built.
+2026-11-20 (T013, O13). Phase 1 is open as draft Projection PR 222. Phase 2 is code complete on the
+local Projection branch `feat/109-voice-swap`, not pushed. Its exit is not met: the live spoken turn on
+a Mac and the universal Release link are open. Nothing from phase 3 on is built.
 **Companions:** [spec.md](spec.md), [plan.md](plan.md), [research.md](research.md).
 
 Each task names its repository. Projection paths are relative to `apple-clients/`. A task marked (P)
@@ -65,31 +66,38 @@ after phase 0 and sit in the phase they belong to.
 
 ## Phase 2. Swap the models
 
-- [ ] T040 Projection. Split `VoiceModelInference` into recognition, speech and local text.
-- [ ] T041 Projection. `RumbleTranscriber` implementing `VoiceStreamingTranscriber` with partials.
-- [ ] T042 (P) Projection. `LocalVoiceSpeech` playing Phonon from the `AstralVoiceSpeech` package into the
+- [x] T040 Projection. Split `VoiceModelInference` into recognition, speech and local text.
+- [x] T041 Projection. `RumbleTranscriber` implementing `VoiceStreamingTranscriber` with partials.
+- [x] T042 (P) Projection. `LocalVoiceSpeech` playing Phonon from the `AstralVoiceSpeech` package into the
   duplex engine through one resampler. On iOS 17 and macOS 14 it reports unavailable and English uses the
   system voice.
-- [ ] T043 (P) Projection. `SystemVoiceSpeech` using `AVSpeechSynthesizer.write` only. Pick the default
+- [x] T043 (P) Projection. `SystemVoiceSpeech` using `AVSpeechSynthesizer.write` only. Pick the default
   installed voice for the locale. Exclude personal and novelty voices.
-- [ ] T044 Projection. `ConversationLanguage` with the eight languages and their locales. Save the
+- [x] T044 Projection. `ConversationLanguage` with the eight languages and their locales. Save the
   choice per device.
-- [ ] T045 Projection. The automatic switch from the local voice to the system voice, with its notice.
-- [ ] T046 Projection. `LFM25OnDeviceModel` replacing `VerifiedLFM3OnDeviceModel` at
+- [x] T045 Projection. The automatic switch from the local voice to the system voice, with its notice.
+- [x] T046 Projection. `LFM25OnDeviceModel` replacing `VerifiedLFM3OnDeviceModel` at
   `Mesh/MeshAppMode.swift`.
-- [ ] T047 Projection. Load on overlay open, warm the voice in parallel, unload after 60 s or on
+- [x] T047 Projection. Load on overlay open, warm the voice in parallel, unload after 60 s or on
   memory pressure.
-- [ ] T048 Projection. Delete `AstralVoiceModel`, the MLX dependency and the LFM3 manifest.
-- [ ] T049 Projection. Delete installed LFM3 weights on first launch.
-- [ ] T050 Projection. Port `MLXVoiceRuntimeTests`, `OnDeviceVoicePipelineTests`,
+- [x] T048 Projection. Delete `AstralVoiceModel`, the MLX dependency and the LFM3 manifest.
+- [x] T049 Projection. Delete installed LFM3 weights on first launch.
+- [x] T050 Projection. Port `MLXVoiceRuntimeTests`, `OnDeviceVoicePipelineTests`,
   `OnDeviceVoiceControllerTests` and `VoiceModelStoreTests` to the new runtime.
-- [ ] T051 Projection. Link `AstralVoiceRuntime` and `AstralVoiceSpeech` into the app project. The app
+- [x] T051 Projection. Link `AstralVoiceRuntime` and `AstralVoiceSpeech` into the app project. The app
   jobs in Apple CI build the llama.cpp runtime before they build the app.
-- [ ] T135 Projection. Route the pack store's background download session id in the app delegate, as the
+- [x] T135 Projection. Route the pack store's background download session id in the app delegate, as the
   LFM3 store's id is routed today.
 - [ ] T134 Projection. A build step that deletes FluidAudio's `LuxTtsG2pResources` bundle from the built
   app, and a test that asserts the bundle is absent. Check that App Store validation and signing accept
-  the deletion.
+  the deletion. Built: the step, the guard and the app test are in, and an ad-hoc signed Release Mac
+  build with the hardened runtime verifies with `codesign --verify --deep --strict`. Open: a
+  Developer ID or App Store signed build and App Store validation.
+- [ ] T137 Deep and Projection. Every other builder of the app runs `build-voice-runtime.sh` before it
+  builds: Deep's release scripts, the iPhone archive path and `build_localtest.sh`. This lands before
+  T116 moves the pin.
+- [ ] T138 Projection. Reproduce on a device that a decode in flight when the app goes to the
+  background returns a failed decode and does not abort, as the unload-on-background design assumes.
 
 ## Phase 3. Natural conversation
 
@@ -185,7 +193,7 @@ after phase 0 and sit in the phase they belong to.
 
 - [ ] T110 Deep. Amend the voice sentence in `AGENTS.md`.
 - [ ] T111 Deep. Dated amendments to spec 105 sections 12.1 and 12.5.
-- [ ] T112 Projection. Allow `AVSpeechSynthesizer` in one named file in
+- [x] T112 Projection. Allow `AVSpeechSynthesizer` in one named file in
   `tests/test_apple_no_hosted_voice.py`. Land it with T043.
 - [ ] T113 (P) Projection. Rewrite `ONDEVICE-VOICE.md` and the voice lines in `README.md`.
 - [ ] T114 (P) Projection. Acknowledgments screen entries and licence files for Rumble and Qwen3-ASR,

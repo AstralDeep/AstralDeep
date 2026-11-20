@@ -149,6 +149,10 @@ goal of this spec, ahead of everything else in it.
 | C28 | A device that cannot run Phonon, which means iOS 17 or macOS 14, downloads the three GGUF files only. The pack counts as complete and English uses the system voice. | Downloading 136 MB of voice files the device can never load. |
 | C29 | A mirror for the pack serves the Hugging Face path shape, `<mirror>/<repository>/resolve/<revision>/<path>`. | The flat mirror layout the LFM3 store accepts. Two repositories at pinned revisions do not fit in it. |
 | C30 | The local voice plays through one fixed gain of 1.75, about 4.9 dB, with samples clamped after resampling. The live pass tunes it. System voices get no gain. (phase-1/device-check) | Normalising each sentence to full scale, as the recordings the owner judged were. That pumps the level from sentence to sentence. |
+| C31 | The models unload when the app enters the background on iOS, and on a memory warning. Losing focus does not unload them. A decode that fails in the gap surfaces as an ordinary error and the model is rebuilt on next use. | Unloading when the app goes inactive. On a Mac that would drop the models every time the window lost focus. |
+| C32 | An idle or memory unload of the local voice waits for the sentence in flight to end. Removing the pack unloads it at once. | Cutting a sentence off to free memory. |
+| C33 | If either model fails to load, voice does not start and the person sees a message. | Reaching the listening state and failing on the first utterance. |
+| C34 | The download sheet has a Download Voice button, with progress and a failure line, when the three GGUF files are installed and the voice is not. Phase 2 added it ahead of the overlay work, because a model-only install would otherwise have no way to fetch the voice. | Waiting for phase 4. |
 
 ---
 
