@@ -13,8 +13,8 @@ can run beside the others in its phase. Every code task includes its tests.
   one Piper sentence fit between partials. R1.
 - [ ] T002 (P) Projection. Check the pinned llama.cpp revision for the short-clip padding fix. Name the
   revision to pin. R2.
-- [ ] T003 Kernel. Document when a turn routes to the on-device model and whether a local exchange can
-  be logged during a provider turn. Propose a change if one is needed. R3.
+- [ ] T003 Kernel. Document how the host learns that the provider is unreachable and how a turn is
+  served by the on-device model in the same chat. Propose a change if one is needed. R3.
 - [ ] T004 (P) Projection. Build llama.cpp with `libmtmd`, Sherpa-ONNX and ONNX Runtime for macOS arm64
   and run both models in a hardened, signed host. R4.
 - [ ] T005 (P) Projection. Prototype the `tar.bz2` unpacker with path checks against the real Piper
@@ -26,8 +26,7 @@ can run beside the others in its phase. Every code task includes its tests.
 - [ ] T010 (P) Projection. Score LFM2.5 acknowledgments in eight languages against section 8.2. R10.
 - [ ] T011 (P) Projection. Measure Rumble's false words on coughs, room noise and clips under one
   second. R11.
-- [ ] T012 Deep. Put open question 4 to the owner. It decides T072 and T073.
-- [ ] T013 Deep. Write the phase 0 results into `specs/109-rumble-piper-voice/phase-0/`.
+- [ ] T012 Deep. Write the phase 0 results into `specs/109-rumble-piper-voice/phase-0/`.
 
 ## Phase 1. Runtime and pack
 
@@ -84,11 +83,17 @@ can run beside the others in its phase. Every code task includes its tests.
 - [ ] T069 Projection. Progress lines from kernel events, at most one every 15 seconds.
 - [ ] T070 Projection. Send the short-answer and reply-language preference with voice turns.
 - [ ] T071 Projection. Speak a component's `spoken` form and strip markup from text.
-- [ ] T072 Kernel. The change from T003, if one is needed and the owner keeps C17.
-- [ ] T073 Projection. Local talk while a job runs, logged through the kernel. Only if the owner keeps
-  C17. Otherwise a follow-up during a job waits for the provider.
-- [ ] T074 Projection. Provider failure detection, the offline state, the recovery check, and a test
-  that no request carries the person's words while offline.
+- [ ] T072 Kernel. The change from T003, if one is needed.
+- [ ] T073 Projection. Speech during a running job becomes the next provider turn. Stop cancels a
+  cancel-safe job.
+- [ ] T074 Projection. Going offline: detect the kernel signal, speak "Your LLM model provider is
+  offline." once, answer the waiting question locally, show Offline.
+- [ ] T076 Projection. While offline: serve each turn from the on-device model through the kernel so it
+  lands in the chat as text, marked as answered on this device. Test that no request carries the
+  person's words.
+- [ ] T077 Projection. Coming back: check before each turn and on a backoff timer, speak "Your LLM
+  model provider is back online." at the next pause, then route to the provider.
+- [ ] T078 (P) Projection. Both sentences in eight languages, and as text notices in typed chat.
 - [ ] T075 Projection. A timing recorder for the moments in section 8.5, off by default, used by the
   live pass.
 
@@ -134,5 +139,5 @@ can run beside the others in its phase. Every code task includes its tests.
 - [ ] T122 Projection. Build the localtest iPhone app under the `AGENTS.md` rules for a phone that
   holds mesh keys.
 - [ ] T123 Owner and agent. The live iPhone pass in spec section 15.
-- [ ] T124 Owner. The verdict on naturalness, and the answer to open question 4.
+- [ ] T124 Owner. The verdict on naturalness.
 - [ ] T125 Deep. Store the report and recordings under `specs/109-rumble-piper-voice/evidence/`.

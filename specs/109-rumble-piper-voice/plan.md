@@ -10,7 +10,6 @@ unverified items in [research.md](research.md) section 9.
 
 1. The owner has reviewed [spec.md](spec.md), in particular section 16.
 2. Open questions 1 to 3 have answers by the end of phase 0. Question 2 is needed before phase 1.
-3. Open question 4 has an answer before phase 3. It decides whether steps 5 and the kernel work exist.
 
 ## Shape of the work
 
@@ -22,7 +21,7 @@ every merge. Phase 3 is where the conversation gets its feel. Phases 4 and 5 are
 | 0 | Answers to R1 to R11 and the open questions. No product code. | All |
 | 1 | The runtime package and the pack store | Projection |
 | 2 | Rumble, Piper, system voices and LFM2.5 under the shipping pipeline. LFM3 removed. | Projection |
-| 3 | Natural conversation: end of turn, fillers, interruption, local talk, offline | Projection, Kernel if R3 needs it |
+| 3 | Natural conversation: end of turn, fillers, interruption, pacing, and the offline case | Projection, Kernel if R3 needs it |
 | 4 | The overlay and Settings on iPhone and Mac | Projection |
 | 5 | The watch | Projection |
 | 6 | Rules, documents, guards and acknowledgments | Deep, Projection |
@@ -34,8 +33,9 @@ No product code. Each item ends with a short written result in `phase-0/` beside
 
 - **R1, R2.** Measure Rumble partials on the iPhone 13 Pro with the lab app. Find a llama.cpp revision
   with the short-clip fix, or confirm the pinned one has it.
-- **R3.** Read the kernel's turn routing. Write down when the on-device model is used and whether a
-  local exchange can be logged during a provider turn. If it cannot, propose the smallest change.
+- **R3.** Read the kernel's turn routing. Write down how the host learns that the provider is
+  unreachable and how a turn is served by the on-device model in the same chat. If either is missing,
+  propose the smallest change.
 - **R4.** Build llama.cpp with `libmtmd`, Sherpa-ONNX and ONNX Runtime for macOS arm64. Run one
   recognition and one synthesis in a signed, hardened test host.
 - **R5.** Prototype the archive unpacker against the real Piper archive, outside the app.
@@ -84,8 +84,9 @@ The order matters. Each step is felt on a device before the next starts.
 2. The three-stage interruption (section 8.3).
 3. Model-drafted fillers with the checker, and the quick-answer window (section 8.2).
 4. Sentence pacing and the voice preference sent to the provider (section 8.4).
-5. Local talk while a job runs, logged (sections 9.2, 9.3). Only if the owner keeps C17.
-6. Provider failure, the offline state and recovery (section 9.4).
+5. Speech during a running job becomes the next provider turn (section 9.2).
+6. The offline case: both announcements, local turns in the chat, checking and return (sections 5.3,
+   9.4). This is an edge case and comes last.
 
 **Exit:** code tests for each step pass. The agent holds a ten-turn English conversation on the Mac and
 reports timings against section 8.5.
@@ -125,7 +126,7 @@ composition pin matches the merged Projection commit.
 - The live Mac conversation by the agent.
 - The live iPhone pass (section 15). The agent asks the owner to connect the phone, installs a
   localtest build and runs the script.
-- The owner talks to it and gives the verdict. Open question 4 is answered here.
+- The owner talks to it and gives the verdict.
 
 **Exit:** all code gates pass. The iPhone report meets section 8.5 or records each miss. The owner has
 said the conversation feels natural, or has listed what to change, in which case the work returns to

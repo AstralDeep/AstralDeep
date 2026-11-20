@@ -260,8 +260,7 @@ The kernel takes an optional `OnDeviceModel` from the host (`crates/astral-kerne
 (`crates/astral-kernel/src/turns_runtime.rs:182-189`).
 
 **Unverified:** the exact condition under which the kernel routes a turn to the on-device model when a
-provider fails, and whether it can run an on-device exchange while a provider turn is in flight in the
-same chat.
+provider fails, and how the host is told that the provider is unreachable.
 
 ---
 
@@ -302,7 +301,7 @@ Phase 0 of [plan.md](plan.md) answers each of these.
 |---|---|
 | R1 | Does re-running Rumble on a growing segment every 0.5 s keep up on an iPhone 13 Pro, with an LFM2.5 draft and a Piper sentence fitted between partials? Speculation, fillers and interruption all depend on it. |
 | R2 | Does llama.cpp at the pinned revision carry the short-clip padding fix? If it does not, which revision does? |
-| R3 | When does the kernel route a turn to the on-device model, and can it record a local exchange while a provider turn runs in the same chat? |
+| R3 | How does the host learn that the provider is unreachable, and how is a turn served by the on-device model in the same chat while it is? |
 | R4 | Do llama.cpp with `libmtmd`, Sherpa-ONNX and ONNX Runtime build and pass tests as macOS arm64 slices under the hardened runtime? |
 | R5 | Can the app unpack a `tar.bz2` archive with system libraries alone, with every path checked? |
 | R6 | Does the paired-watch relay keep working when the phone app is in the background, given that the models use the GPU? |

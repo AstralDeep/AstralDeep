@@ -7,7 +7,7 @@
 [spec 106](../106-sign-in-free-clients/spec.md).
 
 **Scope:** AstralProjection (the Apple clients), AstralDeep (rules, spec 105 amendments, pins) and
-possibly AstralKernel (one logging question, section 9.3). iPhone, Mac and Apple Watch.
+possibly AstralKernel (one provider-state question, section 9.3). iPhone, Mac and Apple Watch.
 
 **Out of scope:** the web shell, Android, Windows, and any hosted speech service.
 
@@ -47,9 +47,9 @@ its own screen.
 2. **Piper speaks English.** The seven other languages use a system voice. The owner can also choose a
    system voice for English.
 3. **The provider answers, through the kernel,** exactly as a typed message would.
-4. **LFM2.5 keeps the conversation alive.** It answers alone when the provider is unreachable. This
-   design also has it draft the short spoken acknowledgment (C3) and talk with the person while a job
-   runs (C17). The owner has not ruled on those two.
+4. **LFM2.5 covers for the provider when it goes offline.** Astral says the provider is offline, keeps
+   talking with local resources only, and says so again when the provider is back. While the provider
+   is online, LFM2.5 only drafts the short spoken acknowledgment (C3).
 5. **A waveform overlay** covers the chat while the person talks. It shows no transcript.
 6. **The watch relays audio to the phone,** as it does today.
 7. **LFM3 and MLX leave the apps.**
@@ -100,13 +100,14 @@ goal of this spec, ahead of everything else in it.
 |---|---|
 | O1 | Swap the voice model in the Apple apps for Rumble with Piper. The seven other languages use the default system voice. |
 | O2 | A system voice may speak when it is the chosen voice for that language. If Piper fails to load, the app switches English to the system voice by itself and says that it did. This changes spec 105 section 12.1. |
-| O3 | Remove LFM3 entirely. Use LFM2.5 from the pack. Normal turns follow the ecosystem's normal conversation flow. When the provider fails, the local model talks to the person with no backend request until the provider returns. The owner's words were "use that as the pilot did it, use lfm 2.5". Whether that includes the pilot's talk during a running job is C17 and open question 4. |
+| O3 | Remove LFM3 entirely. Use LFM2.5 from the pack as the local model. Normal turns follow the ecosystem's normal conversation flow and go to the provider. |
 | O4 | The overlay shows a waveform and no transcript. |
 | O5 | The conversation must sound and flow as naturally as possible. The pilot's canned fillers and its interruption handling were the clunky parts. |
 | O6 | Live testing: when the build is ready, the owner connects the iPhone. The agent sideloads the app and holds the conversation through the laptop's speakers and microphone. |
 | O7 | A mic tap with no pack installed downloads Rumble from the Kentucky Open Science organization on Hugging Face and Piper from its own source. |
 | O8 | Voice works on iPhone and Mac. The watch connects to the phone, or does whatever Apple recommends. |
 | O9 | English offers two voices in Settings, Piper as the default and the system voice, each with a preview. Decided 2026-11-19 and recorded in the vault. |
+| O10 | When the provider goes offline during a conversation, Astral says "Your LLM model provider is offline." and keeps talking using local resources only. Those exchanges are recorded in the text conversation. When the provider returns, Astral says "Your LLM model provider is back online." and sends queries to it as normal. The owner called this an edge case and asked that it weigh less than the rest. |
 
 ### 4.2 This design's calls
 
@@ -128,7 +129,7 @@ goal of this spec, ahead of everything else in it.
 | C14 | The overlay covers the chat on iPhone, the chat pane on Mac and the whole screen on the watch. | A floating panel on Mac. |
 | C15 | Timing budgets are targets measured in the live pass. CI does not gate on them. | Wall-clock gates in CI, which the engineering rules forbid. |
 | C16 | The live listening pass is required on iPhone only. Mac gets a live check by the agent. The watch qualifies by code tests. | Requiring the owner's ears on all three. |
-| C17 | While a job runs, speech goes to LFM2.5, as in the pilot. Saying stop cancels the job. This reads O3 broadly and needs the owner's answer to open question 4 before phase 3. | Queueing follow-ups for the provider. That is the narrow reading of O3. |
+| C17 | While the provider is online, the local model never answers a question. Something said during a running job becomes the next provider turn, and saying stop cancels the job. This follows from O10. | The pilot's side chat with the local model during a job. |
 
 ---
 
@@ -174,14 +175,29 @@ Closing the overlay ends the session. The chat underneath now holds the whole ex
 
 ### 5.3 When the provider is down
 
-The provider times out or refuses. Astral says so in one short sentence and keeps talking, using the
-local model. The state word under the waveform reads Offline.
+This is an edge case. It gets a simple, predictable design and no more (O10).
 
-Local answers are shorter and less capable, and the app does not pretend otherwise. No tool runs and
-nothing leaves the device.
+The person is talking normally and the provider stops answering. Astral says:
 
-The app keeps checking. When the provider answers again, the state word changes back and the next turn
-goes to the provider. Astral mentions it once.
+> Your LLM model provider is offline.
+
+Then it keeps talking, using the local model only. If a question was waiting on the provider when it
+failed, the local model answers that question, so the person does not have to repeat it. The state
+word under the waveform reads Offline.
+
+Local answers are shorter and less capable. No tool runs and nothing leaves the device.
+
+Every offline exchange is written into the chat as text, like any other turn, and marked as answered
+on this device.
+
+The app keeps checking quietly. When the provider answers again, Astral waits for a pause and says:
+
+> Your LLM model provider is back online.
+
+From the next thing the person says, queries go to the provider as normal. The provider sees the
+offline exchanges as part of the chat, so the conversation carries on where it was.
+
+Both sentences are spoken in the session's language.
 
 ### 5.4 Languages
 
@@ -437,13 +453,15 @@ These are targets for the live pass on an iPhone 13 Pro, warm, with Piper. CI do
 - Audio from a file, a call or a video is untrusted.
 - Only speech that played is written to `chat.spoken`.
 
-### 9.2 The local model's three jobs
+### 9.2 The local model's two jobs
 
-| Job | Reaches the kernel as |
-|---|---|
-| The acknowledgment and progress lines | `chat.spoken` records, as today |
-| An answer when the provider is unreachable | A kernel turn served by the on-device model |
-| Talk while a job runs, if the owner keeps C17 | A local exchange in the same chat, logged (C2) |
+| Job | When | Reaches the kernel as |
+|---|---|---|
+| The acknowledgment and progress lines | Provider online | `chat.spoken` records, as today |
+| The whole answer | Provider offline | A kernel turn served by the on-device model, in the same chat (C2) |
+
+While the provider is online the local model answers nothing (C17). Something the person says during a
+running job is queued as the next provider turn. "Stop" cancels the job when it is safe to cancel.
 
 LFM2.5 replaces LFM3 as the host's `OnDeviceModel`. The existing limits stay: plain text only, bounded
 input and output, no structured schemas.
@@ -452,21 +470,33 @@ PHI rules already treat the device as a named destination. A local answer follow
 
 ### 9.3 The one kernel question
 
-The pilot let the person chat with the local model while a provider job ran, and kept that chat in the
-app. Under C17 this spec keeps the chat and moves it into the log. If the owner answers open question
-4 the other way, this section and its tasks fall away.
+The app needs two things from the kernel: a clear signal that the provider is unreachable, and a way to
+serve a turn from the on-device model in the same chat while it is.
 
-Phase 0 must establish whether the kernel can record an on-device exchange while a provider turn is in
-flight in the same chat. If it can, nothing changes in the kernel. If it cannot, the smallest change
-that allows it is specified and reviewed before phase 3 starts.
+Phase 0 must establish whether both exist today. If they do, nothing changes in the kernel. If one is
+missing, the smallest change that adds it is specified and reviewed before phase 3 starts.
 
-### 9.4 Provider failure
+### 9.4 Provider failure and return
 
-The switch to local talk happens on a kernel signal that the provider is unreachable, timed out or
-refused the request. It does not happen on a slow answer.
+**Going offline.** The switch happens on a kernel signal that the provider is unreachable, timed out or
+refused the request. A slow answer does not trigger it. Astral speaks the offline sentence once, then
+answers the waiting question locally.
 
-While offline, each new turn first makes one cheap check that the provider is back. No request with
-the person's words is sent until that check passes.
+**While offline.** Each turn is a kernel turn served by the on-device model. It lands in the chat as
+text, marked as answered on this device. No request carrying the person's words leaves the device.
+
+**Checking.** The app checks whether the provider is back before each turn and on a timer between
+turns, starting at 15 seconds and backing off to one minute. The check carries no conversation
+content.
+
+**Coming back.** When a check passes, Astral speaks the back-online sentence at the next pause. It
+never talks over the person and never cuts off its own sentence to say it. The next turn goes to the
+provider with the full chat, offline exchanges included.
+
+If the provider fails again, the same steps repeat. Each change of state is announced once.
+
+In typed chat, with no voice session open, nothing is spoken. The same switch applies and the chat
+shows the two notices as text.
 
 ---
 
@@ -588,7 +618,10 @@ clock and a fake provider, as spec 105 section 12.5 describes. They include:
 - The acknowledgment checker: every rejection rule, opener rotation, the quick-answer window.
 - Interruption: noise, a backchannel and real words, each in at least English and one other language.
 - End of turn with continuation words in all eight languages.
-- Provider failure, local talk, recovery, and that no request carries the person's words while offline.
+- Provider failure: both announcements, each spoken once, local turns written to the chat as text, the
+  waiting question answered locally, recovery, and that no request carries the person's words while
+  offline.
+- Speech during a running job with the provider online becomes the next provider turn.
 - Local exchanges reaching the kernel log.
 - Integrity: a file or programmatic source never produces an owner turn. Saying yes approves nothing.
 - The system voice path: buffers only, the automatic switch from Piper, and its notice.
@@ -604,7 +637,7 @@ speech through the laptop's speakers, records the replies through its microphone
 | Clean install | Mic tap, download, overlay, first turn |
 | Ten varied questions | With Piper, then with the system voice |
 | Interruption | Real words, a cough, a backchannel, and a stop command |
-| Offline | Provider made unreachable, three local turns, provider restored |
+| Offline | Provider made unreachable mid-conversation, the offline sentence, three local turns that appear in the chat, provider restored, the back-online sentence, one provider turn |
 | A second language | Spanish, four turns |
 | Timings | Every target in section 8.5 |
 
@@ -619,13 +652,11 @@ recordings and the timing report are kept with the spec's evidence.
 
 ## 16. Calls worth the owner's eye
 
-Most calls in section 4.2 follow from the owner's answers. Five do more than that.
+Most calls in section 4.2 follow from the owner's answers. Four do more than that.
 
-- **C17.** Talk with the local model while a job runs. The owner said local talk happens when the
-  provider fails, and then said to use LFM2.5 as the pilot did. This design took the broad reading.
-  The narrow one is simpler: a follow-up during a job waits for the provider.
-- **C2.** If C17 stays, the pilot's side chat becomes part of the kernel log. It costs kernel work if
-  phase 0 finds a gap.
+- **C17.** With the provider online, the local model stays out of the conversation. The pilot let it
+  chat during a running job. This design drops that, reading O10 to mean local talk is for the offline
+  case only.
 - **C4.** Astral often says no filler at all. The pilot always said one.
 - **C8.** Piper comes from the Sherpa-ONNX release that the published manifest pins. The owner's words
   were "the piper model page".
@@ -640,7 +671,6 @@ Most calls in section 4.2 follow from the owner's answers. Five do more than tha
 | 1 | Sherpa-ONNX links eSpeak NG, which is GPL-3.0, to pronounce words for Piper. Is that acceptable in the App Store and direct-download builds? | The owner | End of phase 0. If the answer is no, English ships with the system voice until a different pronouncer is found. |
 | 2 | Is the Sherpa-ONNX release the right source for Piper (C8)? | The owner | Before phase 1 |
 | 3 | LFM2.5 ships under the LFM Open License with commercial-use terms. The shipping LFM3 model names the same licence. Does anything change for this use? | The owner | End of phase 0 |
-| 4 | While a job runs, should a follow-up go to the local model, as in the pilot (C17), or wait for the provider? | The owner | Before phase 3. The live pass can revisit it. |
 
 ---
 
