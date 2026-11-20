@@ -131,7 +131,10 @@ def _check_assistant(message: dict[str, Any], where: str, pending: set[str]) -> 
                 or not isinstance(fn.get("name"), str) or not isinstance(fn.get("arguments"), str)
                 or set(call) - {"id", "type", "function"} or set(fn) - {"name", "arguments"}):
             raise TranscriptError(f"{where} has a malformed tool call")
-        pending.add(call["id"])
+        call_id = call["id"]
+        if not call_id.strip() or call_id in pending:
+            raise TranscriptError(f"{where} needs nonempty and unique tool call IDs")
+        pending.add(call_id)
 
 
 def parse_arguments(raw: str) -> dict[str, Any] | None:

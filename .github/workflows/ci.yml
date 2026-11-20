@@ -1162,6 +1162,14 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           submodules: false
+      - name: Check out the verified panel streamer for transcript replay
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: 80165f440b302f55f8d17cdc260eb4c1e5474ab8
+          path: .panel-streamer
+          sparse-checkout: astralvessel
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: ${{ matrix.python }}
@@ -1192,7 +1200,10 @@ jobs:
           python scripts/install_kernel.py "$RUNNER_TEMP/kernel-artifacts" --binding config/kernel-binding.json --bin-dir "$RUNNER_TEMP/kernel-bin"
           echo "$RUNNER_TEMP/kernel-bin" >> "$GITHUB_PATH"
           python -c "import astral_kernel"
-      - working-directory: vessel
+      - name: Run Vessel suites including panel stream replay
+        working-directory: vessel
+        env:
+          VESSEL_PANEL_STREAMER_SOURCE: ${{ github.workspace }}/.panel-streamer
         run: python -m pytest -q -rs
 
   vessel-isolation:

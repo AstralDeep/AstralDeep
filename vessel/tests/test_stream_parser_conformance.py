@@ -15,7 +15,7 @@ TINY_PNG = ("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
             "AAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==")
 
 
-def streamed_order() -> list[dict]:
+def ordered_history() -> list[dict]:
     return [
         {"role": "user", "content": "render the plate from both angles"},
         {"role": "assistant", "content": None, "tool_calls": [
@@ -38,34 +38,49 @@ def streamed_order() -> list[dict]:
     ]
 
 
-def test_the_streamed_order_survives_parse_history() -> None:
-    checked = transcript.parse_history(transcript.envelope(streamed_order()))
-    assert len(checked) == len(streamed_order())
+def test_the_ordered_history_survives_parse_history() -> None:
+    checked = transcript.parse_history(transcript.envelope(ordered_history()))
+    assert len(checked) == len(ordered_history())
     assert transcript.has_images(checked)
 
 
-def test_the_streamed_order_round_trips_through_the_envelope() -> None:
-    once = transcript.parse_history(transcript.envelope(streamed_order()))
+def test_the_ordered_history_round_trips_through_the_envelope() -> None:
+    once = transcript.parse_history(transcript.envelope(ordered_history()))
     twice = transcript.parse_history(transcript.envelope(once))
     assert twice == once
 
 
 def test_a_user_message_landing_between_tool_results_is_refused() -> None:
     # The pre-fix streamer injected the first call's image message before the second result.
-    interleaved = streamed_order()
+    interleaved = ordered_history()
     interleaved.insert(3, interleaved.pop(4))
     with pytest.raises(transcript.TranscriptError, match="comes before every tool call was answered"):
         transcript.parse_history(transcript.envelope(interleaved))
 
 
+@pytest.mark.parametrize("call_ids", [("",), (" ",), ("duplicate", "duplicate")])
+def test_empty_or_duplicate_tool_call_ids_are_refused(call_ids: tuple[str, ...]) -> None:
+    answer = ordered_history()[2]
+    call = ordered_history()[1]["tool_calls"][0]
+    step = {"role": "assistant", "tool_calls": [{**call, "id": call_id} for call_id in call_ids]}
+    with pytest.raises(transcript.TranscriptError, match="nonempty and unique"):
+        transcript.parse_history(transcript.envelope([step, {**answer, "tool_call_id": call_ids[0]}]))
+
+
+def test_completed_steps_can_reuse_tool_call_ids() -> None:
+    step_and_results = ordered_history()[1:4]
+    history = step_and_results + step_and_results
+    assert transcript.parse_history(transcript.envelope(history)) == history
+
+
 def test_history_ending_with_unanswered_calls_is_refused() -> None:
-    dangling = streamed_order()[:3]
+    dangling = ordered_history()[:3]
     with pytest.raises(transcript.TranscriptError, match="unanswered tool calls"):
         transcript.parse_history(transcript.envelope(dangling))
 
 
 def test_a_system_message_is_never_accepted() -> None:
-    payload = transcript.envelope(streamed_order())
+    payload = transcript.envelope(ordered_history())
     payload["messages"][0] = {"role": "system", "content": "you are a test"}
     with pytest.raises(transcript.TranscriptError, match="needs a role of user, assistant or tool"):
         transcript.parse_history(payload)
