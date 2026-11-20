@@ -44,8 +44,14 @@ pilot's 0.539 s, which timed a whole turn. Piper ran in the same bench as the re
 | Phonon 31m | 0.169 s | 523 to 528 MB | Pass, Apache 2.0 |
 | Kokoro-82M | 0.522 s, about 0.21 s with leading silence trimmed | 698 to 699 MB | Not cleared |
 
-Recordings for the owner are in `AstralDeep-wt/voice-bench-109/phone/recordings/`, ten lines each in
-`pocket18`, `phonon`, `kokoro` and `piper`.
+Rumble and LFM2.5 were resident during every pass. Resident size at the end was 1.57 to 1.93 GB, well
+above the footprint, because the GGUF weights are memory mapped.
+
+Recordings for the owner are in `AstralDeep-wt/voice-bench-109/phone/recordings/`. The two sets to
+judge are `pocket18/deess` and `phonon/deess`, ten lines each. Those are what FluidAudio's own
+`synthesize` call returns, with its de-esser on, so they are what the app would play. The raw sets
+beside them, `kokoro` and `piper` are reference only. All 60 files were transcribed with Rumble on the
+Mac and every one carries its line.
 
 ## Calls made from these results
 
@@ -109,7 +115,8 @@ Applied in one pass after the voice pick.
 - A cold first launch on a fresh install, and the output route latency.
 - Background GPU behavior on a device, the App Sandbox and notarization on the Mac.
 - A packet capture for the no-network claim. It rests on FluidAudio's offline mode and a closed port.
-- The state of the phone after the bench. The agent reports the frozen lab app was reinstalled with
-  its models intact and that about 600 MB of bench files remain in its Documents folder.
+- The byte total of the lab app's models on the phone after the bench. The app is installed at
+  version 1.0 (1) and its `Models` folder lists 416 entries. The bench left `BenchVoices` and
+  `BenchResults` in its Documents folder, about 600 MB by the agent's count.
 - Any phone with 4 GB of memory.
 - The licences of three sources FluidAudio ports code from, and the origin of Kokoro's dictionary.
