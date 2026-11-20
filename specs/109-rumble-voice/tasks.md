@@ -1,8 +1,7 @@
 # Tasks for spec 109
 
 **Date:** 2026-11-20. **Status:** phase 0 is done, see [phase-0/README.md](phase-0/README.md). The owner picked Phonon 31m on
-2026-11-20 (T013, O13). Phase 1 is open as draft Projection PR 222. Phase 2 is code complete on the
-local Projection branch `feat/109-voice-swap`, not pushed. Its exit is not met: the live spoken turn on
+2026-11-20 (T013, O13). Phases 1 and 2 are open together as draft Projection PR 222. Phase 2 is code complete. Its exit is not met: the live spoken turn on
 a Mac and the universal Release link are open. Nothing from phase 3 on is built.
 **Companions:** [spec.md](spec.md), [plan.md](plan.md), [research.md](research.md).
 

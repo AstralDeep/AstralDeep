@@ -91,7 +91,7 @@ iPhone simulator build succeed. The built app holds no `LuxTtsG2pResources` bund
 works end to end on a Mac. No source file imports
 MLX.
 
-**Status, 2026-11-20.** Code complete on the local Projection branch `feat/109-voice-swap`. The app runs
+**Status, 2026-11-20.** Code complete and pushed to draft Projection PR 222 with phase 1. The app runs
 on Rumble, LFM2.5, Phonon and system voices, and LFM3, MLX and the old package are gone. The voice test
 classes pass on macOS, an arm64 Release Mac build and an iPhone simulator build succeed, the built app
 holds no `LuxTtsG2pResources` bundle and no source file imports MLX. Two exit items are open: the live
