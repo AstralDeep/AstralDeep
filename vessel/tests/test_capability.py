@@ -203,6 +203,23 @@ def test_a_deployment_attaches_the_capability_tools(tmp_path):
     assert agent.fingerprint != before
 
 
+def test_sync_installs_the_whole_published_set_once(tmp_path):
+    registry = write_folder_registry(tmp_path / "registry")
+    demo = (registry / "capabilities" / "astral.demo" / "1.0.0" / "capability.toml").read_text(encoding="utf-8")
+    second = tmp_path / "registry" / "capabilities" / "astral.second" / "2.0.0"
+    (second / "tools").mkdir(parents=True)
+    (second / "capability.toml").write_text(
+        demo.replace("astral.demo", "astral.second").replace('"1.0.0"', '"2.0.0"')
+        .replace("demo_run.py", "second_run.py"), encoding="utf-8")
+    (second / "tools" / "second_run.py").write_text(TOOL_SCRIPT, encoding="utf-8")
+    records = capability.sync(registry, ledger_of(tmp_path), create_venv=False)
+    assert sorted((r["id"], r["version"]) for r in records) == [("astral.demo", "1.0.0"), ("astral.second", "2.0.0")]
+    again = capability.sync(registry, ledger_of(tmp_path), create_venv=False)
+    assert sorted((r["id"], r["version"]) for r in again) == [("astral.demo", "1.0.0"), ("astral.second", "2.0.0")]
+    ledger = capability.load_ledger(ledger_of(tmp_path))
+    assert len(ledger) == 2
+
+
 def test_list_available_reads_what_a_source_publishes(tmp_path):
     registry = write_folder_registry(tmp_path / "registry", version="1.0.0")
     available = capability.list_available(registry)

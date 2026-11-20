@@ -315,6 +315,27 @@ def _git_commit(registry: Path) -> str | None:
         return None
 
 
+def sync(source: str | Path, ledger_path: str | Path, *, phi_excluded: bool = False,
+         create_venv: bool = True, source_label: str | None = None) -> list[dict[str, Any]]:
+    # A node activating anywhere pulls the owner's whole published set: every capability the source
+    # offers, at its highest version, becomes installed; existing installs are kept, not downgraded.
+    offers = list_available(source)
+    if not offers:
+        raise CapabilityError("capability.missing", f"{source} publishes no capabilities")
+    wanted: dict[str, str] = {}
+    for offer in offers:
+        current = wanted.get(offer["id"])
+        if current is None or tuple(int(part) for part in offer["version"].split(".")) > \
+                tuple(int(part) for part in current.split(".")):
+            wanted[offer["id"]] = offer["version"]
+    installed = []
+    for capability_id, version in sorted(wanted.items()):
+        installed.append(install(source, f"{capability_id}@{version}", ledger_path,
+                                 phi_excluded=phi_excluded, create_venv=create_venv,
+                                 source_label=source_label))
+    return installed
+
+
 def resolve(uses: list[str], ledger: list[dict[str, Any]]) -> list[dict[str, Any]]:
     # Highest satisfying installed version per reference; a missing one refuses the agent's build.
     resolved = []
@@ -379,8 +400,15 @@ def main(argv: list[str] | None = None) -> int:
     list_parser = sub.add_parser("list", help="list the capability versions a source publishes")
     list_parser.add_argument("--from", dest="source", required=True,
                              help="a capability folder, a registry checkout, or gh:owner/repo[@ref] on GitHub")
+    sync_parser = sub.add_parser("sync", help="install every capability the source publishes")
+    sync_parser.add_argument("--from", dest="source", required=True,
+                             help="a capability folder, a registry checkout, or gh:owner/repo[@ref] on GitHub")
+    sync_parser.add_argument("--ledger", required=True, help="the node's capability ledger file")
+    sync_parser.add_argument("--phi-excluded", action="store_true", help="refuse reviewed-PHI capabilities")
+    sync_parser.add_argument("--no-venv", action="store_true",
+                             help="skip the kernel runtime venv (container hosts build it into the image)")
     args = parser.parse_args(argv)
-    ledger = Path(args.ledger).resolve() if args.command == "install" else None
+    ledger = Path(args.ledger).resolve() if args.command in ("install", "sync") else None
     try:
         source = args.source
         label = source
@@ -393,6 +421,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "list":
             for item in list_available(source):
                 print(f"{item['id']}@{item['version']}  {item['kind']:6}  {item['description']}")
+            return 0
+        if args.command == "sync":
+            for record in sync(source, ledger, phi_excluded=args.phi_excluded,
+                               create_venv=not args.no_venv, source_label=label):
+                print(f"installed {record['id']} {record['version']}")
             return 0
         record = install(source, args.reference, ledger, phi_excluded=args.phi_excluded,
                          create_venv=not args.no_venv, source_label=label)
