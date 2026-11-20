@@ -7,10 +7,12 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import shutil
 import sys
 import tarfile
+import tempfile
 import tomllib
 from datetime import date
 from pathlib import Path
@@ -146,6 +148,111 @@ def _index_entry(registry_dir: Path, capability_id: str, constraint: str) -> dic
     return _highest(published)
 
 
+def _folder_version(registry_dir: Path, capability_id: str, constraint: str) -> Path:
+    # A source registry is the folder layout itself: capabilities/<id>/<version>/capability.toml.
+    versions = []
+    for manifest_path in registry_dir.glob(f"capabilities/{capability_id}/*/capability.toml"):
+        try:
+            manifest = tomllib.loads(manifest_path.read_bytes().decode("utf-8-sig"))
+        except (tomllib.TOMLDecodeError, UnicodeDecodeError, ValueError):
+            continue
+        version = str(manifest.get("capability", {}).get("version", ""))
+        if _satisfies(version, constraint):
+            versions.append((version, manifest_path.parent))
+    if not versions:
+        raise CapabilityError("capability.missing",
+                              f"no published version of {capability_id} satisfies {constraint}")
+    return max(versions, key=lambda item: tuple(int(part) for part in item[0].split(".")))[1]
+
+
+def fetch_github(repo: str, cache_dir: str | Path, ref: str = "main") -> Path:
+    # Pulls a capability repository from GitHub and returns the local source folder to install from.
+    # repo is "owner/name"; the tarball comes from codeload, so no auth is needed for public repos.
+    repo = repo.removeprefix("https://github.com/").removeprefix("http://github.com/").strip("/")
+    if repo.count("/") != 1:
+        raise CapabilityError("capability.malformed", f"{repo!r} is not owner/name")
+    cache = Path(cache_dir) / repo.replace("/", "_") / ref
+    marker = cache / ".fetched"
+    if marker.exists():
+        return cache
+    import urllib.request
+
+    url = f"https://codeload.github.com/{repo}/tar.gz/refs/heads/{ref}"
+    cache.mkdir(parents=True, exist_ok=True)
+    archive = cache / "source.tar.gz"
+    try:
+        with urllib.request.urlopen(url, timeout=120) as response:
+            archive.write_bytes(response.read())
+    except OSError as exc:
+        raise CapabilityError("capability.missing", f"the GitHub pull of {repo}@{ref} failed: {exc}") from exc
+    root = cache / "unpack"
+    if root.exists():
+        shutil.rmtree(root)
+    root.mkdir(parents=True)
+    with tarfile.open(archive, "r:gz") as tar:
+        for member in tar.getmembers():
+            parts = Path(member.name).parts
+            if len(parts) < 2 or parts[1] != "capabilities" and member.name != f"{parts[0]}/capabilities":
+                continue
+            if member.issym() or member.islnk() or not member.isfile():
+                continue
+            extracted = tar.extractfile(member)
+            if extracted is None:
+                continue
+            target = cache.joinpath(*parts[1:])
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with open(target, "wb") as handle:
+                shutil.copyfileobj(extracted, handle)
+    if not (cache / "capabilities").exists():
+        raise CapabilityError("capability.missing", f"{repo}@{ref} carries no capabilities folder")
+    archive.unlink()
+    marker.write_text(date.today().isoformat(), encoding="utf-8")
+    return cache
+
+
+def list_available(source: str | Path) -> list[dict[str, Any]]:
+    # What a picker shows: every capability version a source publishes.
+    registry = Path(source)
+    found: list[dict[str, Any]] = []
+    for manifest_path in sorted(registry.glob("capabilities/*/*/capability.toml")):
+        try:
+            manifest = tomllib.loads(manifest_path.read_bytes().decode("utf-8-sig"))
+        except (tomllib.TOMLDecodeError, UnicodeDecodeError, ValueError, OSError):
+            continue
+        cap = manifest.get("capability", {})
+        if ID.fullmatch(str(cap.get("id", ""))) and SEMVER.fullmatch(str(cap.get("version", ""))):
+            found.append({"id": cap["id"], "version": cap["version"], "kind": cap.get("kind"),
+                          "description": cap.get("description", "")})
+    return found
+
+
+def _materialize_venv(payload: Path, wheels: list[str]) -> None:
+    # The runtime layer on hosts without containers: one virtual environment per capability version.
+    # uv is preferred (fast, no bundled pip needed); the stdlib venv plus pip is the fallback.
+    import subprocess
+    import venv as venv_module
+
+    venv_dir = payload / ".venv"
+    if venv_dir.exists():
+        return
+    python = payload / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    uv = os.environ.get("VESSEL_UV") or shutil.which("uv")
+    try:
+        if uv:
+            subprocess.run([str(uv), "venv", str(venv_dir), "--python", sys.executable],
+                           capture_output=True, text=True, timeout=600, check=True)
+            subprocess.run([str(uv), "pip", "install", "-p", str(python), *wheels],
+                           capture_output=True, text=True, timeout=1800, check=True)
+        else:
+            venv_module.create(venv_dir, with_pip=True, clear=True)
+            subprocess.run([str(python), "-m", "pip", "install", "--no-cache-dir", *wheels],
+                           capture_output=True, text=True, timeout=1800, check=True)
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or exc.stdout or "").strip()[-400:]
+        shutil.rmtree(venv_dir, ignore_errors=True)
+        raise CapabilityError("capability.incompatible", f"the kernel runtime did not install: {detail}") from exc
+
+
 def _extract_package(archive: Path, destination: Path) -> None:
     # Members must be plain files inside the destination; a link or an escape refuses the install.
     destination.mkdir(parents=True, exist_ok=True)
@@ -170,52 +277,75 @@ def _extract_package(archive: Path, destination: Path) -> None:
                 shutil.copyfileobj(extracted, handle)
 
 
-def install(registry_dir: str | Path, reference: str, ledger_path: str | Path, *, allow_signers: list[str] | None,
-            host_python: str, phi_excluded: bool) -> dict[str, Any]:
-    # The contract's verification order: digest, signer, compatibility, revocation; then materialize and record.
+def install(source: str | Path, reference: str, ledger_path: str | Path, *, phi_excluded: bool = False,
+            create_venv: bool = True, source_label: str | None = None) -> dict[str, Any]:
+    # Installs one capability into the ledger: validate the manifest, copy the payload, and for
+    # kernels materialize the runtime venv. A source that ships index.json keeps the tarball rules;
+    # a plain capability folder is the source of truth and the ledger records where it came from.
     if "@" not in reference:
         raise CapabilityError("capability.missing", f"{reference} carries no version constraint")
     capability_id, constraint = reference.split("@", 1)
     if capability_id == BASELINE:
         raise CapabilityError("capability.malformed", "the baseline capability is never installed")
-    entry = _index_entry(Path(registry_dir), capability_id, constraint)
+    registry = Path(source)
     existing = load_ledger(ledger_path)
-    already = [e for e in existing if e.get("id") == capability_id and e.get("version") == entry.get("version")]
+    index_path = registry / "index.json"
+    manifest: dict[str, Any]
+    version: str
+    if index_path.exists():
+        entry = _index_entry(registry, capability_id, constraint)
+        version = str(entry.get("version"))
+        already = [e for e in existing if e.get("id") == capability_id and e.get("version") == version]
+        if already and Path(already[0].get("path", "")).exists():
+            return already[0]
+        package_path = registry / "capabilities" / capability_id / version / f"{capability_id}-{version}.tar.gz"
+        raw_package = package_path.read_bytes()
+        if _sha256(raw_package) != entry.get("package_sha256"):
+            raise CapabilityError("capability.digest", "the package does not match the index digest")
+        with tarfile.open(package_path, "r:gz") as tar:
+            manifest_member = next((m for m in tar.getmembers()
+                                    if m.name.endswith("capability.toml") and m.isfile()), None)
+            if manifest_member is None:
+                raise CapabilityError("capability.malformed", "the package carries no capability.toml")
+            manifest_raw = tar.extractfile(manifest_member).read()
+        manifest = validate_manifest(manifest_raw)
+        if _sha256(manifest_raw) != entry.get("manifest_sha256"):
+            raise CapabilityError("capability.digest", "the manifest does not match the index digest")
+        if manifest["capability"]["id"] != capability_id or manifest["capability"]["version"] != version:
+            raise CapabilityError("capability.malformed", "the manifest does not name the index entry")
+        if entry.get("revoked"):
+            raise CapabilityError("capability.revoked", str(entry.get("revoked_reason") or "the entry is revoked"))
+        destination = Path(ledger_path).parent / "capabilities" / capability_id / version
+        if destination.exists():
+            shutil.rmtree(destination)
+        _extract_package(package_path, destination)
+        if manifest["capability"]["kind"] == "kernel" and create_venv:
+            _materialize_venv(destination, manifest["runtime"]["wheels"])
+        record = {"id": capability_id, "version": version, "installed": date.today().isoformat(),
+                  "path": str(destination), "manifest_sha256": entry["manifest_sha256"],
+                  "source": source_label or str(registry)}
+        save_ledger(ledger_path, existing + [record])
+        return record
+    # The folder model: capabilities/<id>/<version>/ is the published artifact.
+    version_dir = _folder_version(registry, capability_id, constraint)
+    version = version_dir.name
+    already = [e for e in existing if e.get("id") == capability_id and e.get("version") == version]
     if already and Path(already[0].get("path", "")).exists():
         return already[0]
-    version = str(entry.get("version"))
-    package_path = Path(registry_dir) / "capabilities" / capability_id / version / f"{capability_id}-{version}.tar.gz"
-    raw_package = package_path.read_bytes()
-    if _sha256(raw_package) != entry.get("package_sha256"):
-        raise CapabilityError("capability.digest", "the package does not match the index digest")
-    with tarfile.open(package_path, "r:gz") as tar:
-        manifest_member = next((m for m in tar.getmembers() if m.name.endswith("capability.toml") and m.isfile()), None)
-        if manifest_member is None:
-            raise CapabilityError("capability.malformed", "the package carries no capability.toml")
-        manifest_raw = tar.extractfile(manifest_member).read()
-    manifest = validate_manifest(manifest_raw)
-    if _sha256(manifest_raw) != entry.get("manifest_sha256"):
-        raise CapabilityError("capability.digest", "the manifest does not match the index digest")
-    if manifest["capability"]["id"] != capability_id or manifest["capability"]["version"] != entry.get("version"):
-        raise CapabilityError("capability.malformed", "the manifest does not name the index entry")
-    signer = entry.get("signer")
-    if signer is None or not allow_signers or signer not in allow_signers:
-        raise CapabilityError("capability.signer", f"the signer {signer!r} is not in the node's allow-signers policy")
-    if manifest["capability"]["kind"] == "kernel":
-        required = manifest["runtime"]["python"]
-        if host_python != required and not host_python.startswith(required + "."):
-            raise CapabilityError("capability.incompatible",
-                                  f"the kernel needs python {required}; the host provides {host_python}")
+    manifest = validate_manifest((version_dir / "capability.toml").read_bytes().replace(b"\xef\xbb\xbf", b""))
+    if manifest["capability"]["id"] != capability_id or manifest["capability"]["version"] != version:
+        raise CapabilityError("capability.malformed", "the manifest does not name its folder")
     if phi_excluded and manifest["permissions"]["phi"] == "reviewed":
         raise CapabilityError("capability.incompatible", "a reviewed-PHI capability is refused on a PHI-excluded host")
-    if entry.get("revoked"):
-        raise CapabilityError("capability.revoked", str(entry.get("revoked_reason") or "the entry is revoked"))
-    destination = Path(ledger_path).parent / "capabilities" / capability_id / str(entry["version"])
+    destination = Path(ledger_path).parent / "capabilities" / capability_id / version
     if destination.exists():
         shutil.rmtree(destination)
-    _extract_package(package_path, destination)
-    record = {"id": capability_id, "version": entry["version"], "installed": date.today().isoformat(),
-              "path": str(destination), "manifest_sha256": entry["manifest_sha256"]}
+    shutil.copytree(version_dir, destination,
+                    ignore=shutil.ignore_patterns(".venv", "__pycache__"))
+    if manifest["capability"]["kind"] == "kernel" and create_venv:
+        _materialize_venv(destination, manifest["runtime"]["wheels"])
+    record = {"id": capability_id, "version": version, "installed": date.today().isoformat(),
+              "path": str(destination), "source": source_label or str(registry)}
     save_ledger(ledger_path, existing + [record])
     return record
 
@@ -243,35 +373,29 @@ def _manifest_of(installed_path: Path) -> dict[str, Any]:
     return validate_manifest(raw)
 
 
-def attach(uses: list[str], ledger: list[dict[str, Any]], capabilities_root: Path,
-           dockerfile_text: str | None) -> tuple[list[DeclaredTool], Mount]:
-    # Returns the capability's tools as declared tools with {capabilities} commands, plus the mount
-    # the agent's sandbox needs; a kernel whose wheels the agent image does not install is refused.
+def attach(uses: list[str], ledger: list[dict[str, Any]], capabilities_root: Path) -> tuple[list[DeclaredTool], Mount]:
+    # Returns the capability's tools as declared tools, plus the mount the agent's sandbox needs.
+    # A kernel whose runtime venv was materialized runs with that interpreter; otherwise the tool
+    # runs with the sandbox interpreter and {capabilities} resolves the payload path.
     attached_tools: list[DeclaredTool] = []
     for entry in resolve(uses, ledger):
         manifest = entry["manifest"]
         version_path = capabilities_root / entry["id"] / entry["version"]
         if not version_path.exists():
             raise CapabilityError("capability.missing", f"the installed payload of {entry['id']} is missing its folder")
-        if manifest["capability"]["kind"] == "kernel":
-            wheels = manifest["runtime"]["wheels"]
-            if dockerfile_text is None:
-                raise CapabilityError("capability.incompatible",
-                                      f"{entry['id']} needs a sandbox dockerfile that installs {', '.join(wheels)}")
-            for wheel in wheels:
-                if wheel not in dockerfile_text:
-                    raise CapabilityError("capability.incompatible",
-                                          f"the sandbox dockerfile does not install {wheel}")
+        venv_python = version_path / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
         for tool in manifest["tools"]:
-            script = "/".join([entry["id"], entry["version"], tool["script"]])
+            script = "{capabilities}/" + "/".join([entry["id"], entry["version"], tool["script"]])
+            if venv_python.exists():
+                command = [str(venv_python), "-I", str(version_path / tool["script"])]
+            else:
+                command = ["python", "-I", script]
             schema_path = version_path / "tools" / f"{tool['name']}.schema.json"
             parameters = json.loads(schema_path.read_text(encoding="utf-8")) if schema_path.exists() \
                 else {"type": "object", "properties": {}}
             attached_tools.append(DeclaredTool(
                 name=tool["name"], description=str(manifest["capability"]["description"]),
-                command=["python", "-I", "{capabilities}/" + script],
-                parameters=parameters,
-                scope=tool["scope"]))
+                command=command, parameters=parameters, scope=tool["scope"]))
     return attached_tools, Mount(source=str(capabilities_root), target="/capabilities")
 
 
@@ -279,19 +403,34 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="astralvessel.capability",
                                      description="install marketplace capabilities")
     sub = parser.add_subparsers(dest="command", required=True)
-    install_parser = sub.add_parser("install", help="verify and install a capability into the ledger")
+    install_parser = sub.add_parser("install", help="install a capability into the ledger")
     install_parser.add_argument("reference", help="capability id with a version constraint")
-    install_parser.add_argument("--registry", required=True, help="the registry checkout holding index.json")
+    install_parser.add_argument("--from", dest="source", required=True,
+                                help="a capability folder, a registry checkout, or gh:owner/repo[@ref] on GitHub")
     install_parser.add_argument("--ledger", required=True, help="the node's capability ledger file")
-    install_parser.add_argument("--allow-signers", default="",
-                                help="comma-separated signer identities; empty refuses every install")
-    install_parser.add_argument("--host-python", default=f"{sys.version_info.major}.{sys.version_info.minor}")
     install_parser.add_argument("--phi-excluded", action="store_true", help="refuse reviewed-PHI capabilities")
+    install_parser.add_argument("--no-venv", action="store_true",
+                                 help="skip the kernel runtime venv (container hosts build it into the image)")
+    list_parser = sub.add_parser("list", help="list the capability versions a source publishes")
+    list_parser.add_argument("--from", dest="source", required=True,
+                             help="a capability folder, a registry checkout, or gh:owner/repo[@ref] on GitHub")
     args = parser.parse_args(argv)
-    allow = [part.strip() for part in args.allow_signers.split(",") if part.strip()] or None
+    ledger = Path(args.ledger).resolve()
     try:
-        record = install(args.registry, args.reference, args.ledger, allow_signers=allow,
-                         host_python=args.host_python, phi_excluded=args.phi_excluded)
+        source = args.source
+        label = source
+        if source.startswith("gh:") or source.startswith("github:"):
+            repo, _, ref = source.split(":", 1)[1].partition("@")
+            label = f"github:{repo}@{ref or 'main'}"
+            cache = ledger.parent / "registry-cache" if args.command == "install" \
+                else Path(tempfile.gettempdir()) / "astral-capabilities-cache"
+            source = fetch_github(repo, cache, ref or "main")
+        if args.command == "list":
+            for item in list_available(source):
+                print(f"{item['id']}@{item['version']}  {item['kind']:6}  {item['description']}")
+            return 0
+        record = install(source, args.reference, ledger, phi_excluded=args.phi_excluded,
+                         create_venv=not args.no_venv, source_label=label)
     except CapabilityError as refused:
         print(f"{refused.code}: {refused.reason}", file=sys.stderr)
         return 1

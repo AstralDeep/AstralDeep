@@ -133,7 +133,8 @@ async def _spawn(argv: list[str], *, cwd: str, env: dict[str, str]) -> asyncio.s
 
 
 async def _proc(argv: list[str], *, cwd: str, timeout: int, shell: bool = False,
-                stdin: bytes | None = None, confinement: Confinement | None = None) -> tuple[int, str]:
+                stdin: bytes | None = None, confinement: Confinement | None = None,
+                outbox: str | None = None) -> tuple[int, str]:
     if shell:
         argv = ["/bin/sh", "-c", argv[0]]
     if confinement is not None and confinement.process is not None:
@@ -153,6 +154,11 @@ async def _proc(argv: list[str], *, cwd: str, timeout: int, shell: bool = False,
         if confinement.max_file_bytes:
             flags += ["--fsize", str(confinement.max_file_bytes)]
         argv = [sys.executable, "-I", "-S", landlock.__file__, "--scratch", scratch, *flags, "--", *argv]
+    elif outbox:
+        # The unconstrained development runner has no confinement, so the tool runs in the
+        # operator's own environment (HOME and friends resolve normally) plus a fresh outbox.
+        env = {k: v for k, v in os.environ.items() if not k.startswith("VESSEL_")}
+        env["VESSEL_OUTBOX"] = outbox
     try:
         return await _supervise(argv, cwd=cwd, env=env, timeout=timeout, stdin=stdin)
     finally:
@@ -545,7 +551,7 @@ async def _cad(args: dict[str, Any], workdir: str, timeout: int,
 
 async def _declared(tool: DeclaredTool, args: dict[str, Any], workdir: str, package_root: str,
                     timeout: int, confinement: Confinement | None,
-                    capabilities_root: str = "") -> tuple[str, bool]:
+                    capabilities_root: str = "", outbox: str | None = None) -> tuple[str, bool]:
     argv = [part.replace("{package}", package_root).replace("{capabilities}", capabilities_root)
             for part in tool.command]
     stdin = json.dumps(args).encode()
@@ -558,7 +564,7 @@ async def _declared(tool: DeclaredTool, args: dict[str, Any], workdir: str, pack
         argv += [f"--{key}={value}" for key, value in args.items()]
         stdin = b""
     code, out = await _proc(argv, cwd=workdir, timeout=tool.timeout_seconds or timeout, stdin=stdin,
-                            confinement=confinement)
+                            confinement=confinement, outbox=outbox)
     return out.rstrip() or f"[exit code {code}]", code != 0
 
 
@@ -566,7 +572,8 @@ async def run_sandbox_tool(name: str, args: dict[str, Any], *, workdir: str, tim
                            declared: dict[str, DeclaredTool], package_root: str,
                            confinement: Confinement | None = None,
                            workspace: str | None = None,
-                           capabilities_root: str = "") -> tuple[str, bool]:
+                           capabilities_root: str = "",
+                           outbox: str | None = None) -> tuple[str, bool]:
     try:
         if workspace and confinement is not None:
             confinement = confinement.for_turn(workspace)
@@ -583,13 +590,14 @@ async def run_sandbox_tool(name: str, args: dict[str, Any], *, workdir: str, tim
             return await _glob(args, workdir, timeout, confinement)
         if name == "list":
             return await _list(args, workdir, confinement)
+        if name in declared:
+            # A declared tool shadows a same-named builtin: the agent's manifest is the authority.
+            return await _declared(declared[name], args, workdir, package_root, timeout, confinement,
+                                   capabilities_root=capabilities_root, outbox=outbox)
         if name == "bash":
             return await _bash(args, workdir, timeout, confinement)
         if name == "cad":
             return await _cad(args, workdir, timeout, confinement)
-        if name in declared:
-            return await _declared(declared[name], args, workdir, package_root, timeout, confinement,
-                                   capabilities_root=capabilities_root)
     except (KeyError, ValueError, TypeError) as exc:
         return f"invalid arguments for {name}: {type(exc).__name__}", True
     except OSError as exc:

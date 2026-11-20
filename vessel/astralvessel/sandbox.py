@@ -8,7 +8,9 @@ import hashlib
 import hmac
 import logging
 import os
+import shutil
 import signal
+import tempfile
 import time
 from dataclasses import replace
 from typing import Any
@@ -58,10 +60,21 @@ class LocalRunner:
                   owner: str = "") -> tuple[str, bool]:
         sandbox = self.package.manifest.sandbox
         workdir = os.environ.get("VESSEL_WORKDIR") or sandbox.workdir
+        dev_outbox = None
+        if self.confinement is None and workspace and WORKSPACE_KEY.fullmatch(workspace):
+            # The unconstrained development runner still gives file-returning tools an outbox.
+            dev_outbox = tempfile.mkdtemp(prefix="dev-outbox-")
         output, error = await run_sandbox_tool(name, args, workdir=workdir, timeout=sandbox.tool_timeout_seconds,
                                                declared=self.declared, package_root=str(self.package.root),
                                                confinement=self.confinement, workspace=workspace,
-                                               capabilities_root=self.capabilities_root)
+                                               capabilities_root=self.capabilities_root, outbox=dev_outbox)
+        if workspace and dev_outbox:
+            found, notes = await asyncio.to_thread(outputs.collect, dev_outbox, self.package.manifest.output.files)
+            shutil.rmtree(dev_outbox, ignore_errors=True)
+            if found:
+                self.files.setdefault(workspace, []).extend(found)
+            if notes:
+                output = "\n".join([*notes, output])
         if workspace and self.confinement is not None and WORKSPACE_KEY.fullmatch(workspace):
             outbox = outbox_of(self.confinement.for_turn(workspace).workspace)
             found, notes = await asyncio.to_thread(outputs.collect, outbox, self.package.manifest.output.files)

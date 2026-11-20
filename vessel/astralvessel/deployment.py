@@ -237,9 +237,7 @@ def _attach_capabilities(deployment_path: Path, entry: AgentEntry, package: Agen
     ledger_path = deployment_path.parent / "capabilities-ledger.json"
     ledger = capability.load_ledger(ledger_path)
     capabilities_root = deployment_path.parent / "capabilities"
-    dockerfile = package.manifest.sandbox.dockerfile
-    dockerfile_text = (package.root / dockerfile).read_text() if dockerfile else None
-    tools, mount = capability.attach(uses, ledger, capabilities_root, dockerfile_text)
+    tools, mount = capability.attach(uses, ledger, capabilities_root)
     enabled = set(package.manifest.tools.builtin) | {t.name for t in package.declared}
     clash = {t.name for t in tools} & enabled
     if clash:
