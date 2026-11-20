@@ -56,6 +56,12 @@ def write_folder_registry(root: Path, version: str = "1.0.0", kind: str = "tool"
         body += '\n[runtime]\npython = "3.11"\nwheels = ["' + '", "'.join(wheels) + '"]\n'
     (version_dir / "capability.toml").write_text(body, encoding="utf-8")
     (version_dir / "tools" / "demo_run.py").write_text(TOOL_SCRIPT, encoding="utf-8")
+    if not (root / ".git").exists():
+        import subprocess
+        subprocess.run(["git", "init", "-q", str(root)], capture_output=True, check=True)
+        subprocess.run(["git", "-C", str(root), "add", "-A"], capture_output=True, check=True)
+        subprocess.run(["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@t",
+                        "commit", "-q", "-m", "seed", "--allow-empty"], capture_output=True, check=True)
     return root
 
 
@@ -107,20 +113,15 @@ def test_a_folder_registry_installs_without_a_ceremony(tmp_path):
     assert ledger[0]["source"] == "folder-test"
 
 
-def test_an_index_registry_still_verifies_digests_and_revocation(tmp_path):
-    registry = tmp_path / "registry"
-    write_index_registry(registry, manifest=MANIFEST.replace("{version}", "1.0.0").replace("{kind}", "tool"),
-                         revoked=True)
-    with pytest.raises(capability.CapabilityError) as refused:
-        capability.install(registry, "astral.demo@^1.0", ledger_of(tmp_path), create_venv=False)
-    assert refused.value.code == "capability.revoked"
-    write_index_registry(registry, manifest=MANIFEST.replace("{version}", "1.0.0").replace("{kind}", "tool"))
-    tarball = registry / "capabilities" / "astral.demo" / "1.0.0" / "astral.demo-1.0.0.tar.gz"
-    tampered = tarball.read_bytes() + b"tampered"
-    tarball.write_bytes(tampered)
-    with pytest.raises(capability.CapabilityError) as refused:
-        capability.install(registry, "astral.demo@^1.0", ledger_of(tmp_path), create_venv=False)
-    assert refused.value.code == "capability.digest"
+def test_the_ledger_records_the_source_commit(tmp_path):
+    registry = write_folder_registry(tmp_path / "registry")
+    record = capability.install(registry, "astral.demo@^1.0", ledger_of(tmp_path), create_venv=False,
+                                source_label="github:AstralDeep/AstralCapabilities@main")
+    import subprocess
+    commit = subprocess.run(["git", "-C", str(registry), "rev-parse", "HEAD"],
+                            capture_output=True, text=True, check=True).stdout.strip()
+    assert record["commit"] == commit
+    assert record["source"] == "github:AstralDeep/AstralCapabilities@main"
 
 
 def test_resolution_picks_the_highest_installed(tmp_path):

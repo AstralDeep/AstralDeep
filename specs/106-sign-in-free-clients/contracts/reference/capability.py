@@ -179,7 +179,8 @@ def _satisfies(version: str, constraint: str) -> bool:
 def run(kind: str, case: dict[str, Any]) -> dict[str, Any]:
     try:
         if kind == "validate_manifest":
-            return validate_manifest(case["raw"].encode("utf-8"))
+            raw = case["raw"]
+            return validate_manifest(raw if isinstance(raw, bytes) else raw.encode("utf-8"))
         if kind == "validate_index_entry":
             return validate_index_entry(case["entry"])
         if kind == "check_install":

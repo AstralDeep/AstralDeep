@@ -42,7 +42,7 @@ def _sha256(raw: bytes) -> str:
 def validate_manifest(raw: bytes) -> dict[str, Any]:
     # The manifest rules of astral.capability/v1, section 1; unknown tables or keys are malformed.
     try:
-        manifest = tomllib.loads(raw.decode("utf-8"))
+        manifest = tomllib.loads(raw.decode("utf-8-sig"))
     except (tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
         raise CapabilityError("capability.malformed", f"the manifest does not parse: {exc}") from exc
     cap = manifest.get("capability")
@@ -167,47 +167,35 @@ def _folder_version(registry_dir: Path, capability_id: str, constraint: str) -> 
 
 def fetch_github(repo: str, cache_dir: str | Path, ref: str = "main") -> Path:
     # Pulls a capability repository from GitHub and returns the local source folder to install from.
-    # repo is "owner/name"; the tarball comes from codeload, so no auth is needed for public repos.
+    # repo is "owner/name". The pull is a shallow git clone, so private repositories work with the
+    # credentials the machine already has and no token plumbing.
     repo = repo.removeprefix("https://github.com/").removeprefix("http://github.com/").strip("/")
     if repo.count("/") != 1:
         raise CapabilityError("capability.malformed", f"{repo!r} is not owner/name")
-    cache = Path(cache_dir) / repo.replace("/", "_") / ref
-    marker = cache / ".fetched"
-    if marker.exists():
-        return cache
-    import urllib.request
+    import subprocess
 
-    url = f"https://codeload.github.com/{repo}/tar.gz/refs/heads/{ref}"
-    cache.mkdir(parents=True, exist_ok=True)
-    archive = cache / "source.tar.gz"
+    clone = Path(cache_dir) / repo.replace("/", "_")
     try:
-        with urllib.request.urlopen(url, timeout=120) as response:
-            archive.write_bytes(response.read())
-    except OSError as exc:
-        raise CapabilityError("capability.missing", f"the GitHub pull of {repo}@{ref} failed: {exc}") from exc
-    root = cache / "unpack"
-    if root.exists():
-        shutil.rmtree(root)
-    root.mkdir(parents=True)
-    with tarfile.open(archive, "r:gz") as tar:
-        for member in tar.getmembers():
-            parts = Path(member.name).parts
-            if len(parts) < 2 or parts[1] != "capabilities" and member.name != f"{parts[0]}/capabilities":
-                continue
-            if member.issym() or member.islnk() or not member.isfile():
-                continue
-            extracted = tar.extractfile(member)
-            if extracted is None:
-                continue
-            target = cache.joinpath(*parts[1:])
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with open(target, "wb") as handle:
-                shutil.copyfileobj(extracted, handle)
-    if not (cache / "capabilities").exists():
+        if (clone / "capabilities").exists():
+            subprocess.run(["git", "-C", str(clone), "fetch", "--depth", "1", "origin", ref],
+                           capture_output=True, text=True, timeout=300, check=True)
+            subprocess.run(["git", "-C", str(clone), "reset", "--hard", "FETCH_HEAD"],
+                           capture_output=True, text=True, timeout=120, check=True)
+        else:
+            shutil.rmtree(clone, ignore_errors=True)
+            clone.parent.mkdir(parents=True, exist_ok=True)
+            subprocess.run(["git", "clone", "--depth", "1", "--branch", ref,
+                            f"https://github.com/{repo}", str(clone)],
+                           capture_output=True, text=True, timeout=600, check=True)
+    except FileNotFoundError as exc:
+        raise CapabilityError("capability.missing", "git is required to pull capabilities from GitHub") from exc
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or exc.stdout or "").strip()[-300:]
+        raise CapabilityError("capability.missing",
+                              f"the GitHub pull of {repo}@{ref} failed: {detail}") from exc
+    if not (clone / "capabilities").exists():
         raise CapabilityError("capability.missing", f"{repo}@{ref} carries no capabilities folder")
-    archive.unlink()
-    marker.write_text(date.today().isoformat(), encoding="utf-8")
-    return cache
+    return clone
 
 
 def list_available(source: str | Path) -> list[dict[str, Any]]:
@@ -279,9 +267,9 @@ def _extract_package(archive: Path, destination: Path) -> None:
 
 def install(source: str | Path, reference: str, ledger_path: str | Path, *, phi_excluded: bool = False,
             create_venv: bool = True, source_label: str | None = None) -> dict[str, Any]:
-    # Installs one capability into the ledger: validate the manifest, copy the payload, and for
-    # kernels materialize the runtime venv. A source that ships index.json keeps the tarball rules;
-    # a plain capability folder is the source of truth and the ledger records where it came from.
+    # Installs one capability into the ledger from a capability repository checkout: validate the
+    # manifest, copy the payload, and for kernels materialize the runtime venv. The ledger records
+    # the source repository and commit as provenance; the folder layout is the catalog.
     if "@" not in reference:
         raise CapabilityError("capability.missing", f"{reference} carries no version constraint")
     capability_id, constraint = reference.split("@", 1)
@@ -289,44 +277,6 @@ def install(source: str | Path, reference: str, ledger_path: str | Path, *, phi_
         raise CapabilityError("capability.malformed", "the baseline capability is never installed")
     registry = Path(source)
     existing = load_ledger(ledger_path)
-    index_path = registry / "index.json"
-    manifest: dict[str, Any]
-    version: str
-    if index_path.exists():
-        entry = _index_entry(registry, capability_id, constraint)
-        version = str(entry.get("version"))
-        already = [e for e in existing if e.get("id") == capability_id and e.get("version") == version]
-        if already and Path(already[0].get("path", "")).exists():
-            return already[0]
-        package_path = registry / "capabilities" / capability_id / version / f"{capability_id}-{version}.tar.gz"
-        raw_package = package_path.read_bytes()
-        if _sha256(raw_package) != entry.get("package_sha256"):
-            raise CapabilityError("capability.digest", "the package does not match the index digest")
-        with tarfile.open(package_path, "r:gz") as tar:
-            manifest_member = next((m for m in tar.getmembers()
-                                    if m.name.endswith("capability.toml") and m.isfile()), None)
-            if manifest_member is None:
-                raise CapabilityError("capability.malformed", "the package carries no capability.toml")
-            manifest_raw = tar.extractfile(manifest_member).read()
-        manifest = validate_manifest(manifest_raw)
-        if _sha256(manifest_raw) != entry.get("manifest_sha256"):
-            raise CapabilityError("capability.digest", "the manifest does not match the index digest")
-        if manifest["capability"]["id"] != capability_id or manifest["capability"]["version"] != version:
-            raise CapabilityError("capability.malformed", "the manifest does not name the index entry")
-        if entry.get("revoked"):
-            raise CapabilityError("capability.revoked", str(entry.get("revoked_reason") or "the entry is revoked"))
-        destination = Path(ledger_path).parent / "capabilities" / capability_id / version
-        if destination.exists():
-            shutil.rmtree(destination)
-        _extract_package(package_path, destination)
-        if manifest["capability"]["kind"] == "kernel" and create_venv:
-            _materialize_venv(destination, manifest["runtime"]["wheels"])
-        record = {"id": capability_id, "version": version, "installed": date.today().isoformat(),
-                  "path": str(destination), "manifest_sha256": entry["manifest_sha256"],
-                  "source": source_label or str(registry)}
-        save_ledger(ledger_path, existing + [record])
-        return record
-    # The folder model: capabilities/<id>/<version>/ is the published artifact.
     version_dir = _folder_version(registry, capability_id, constraint)
     version = version_dir.name
     already = [e for e in existing if e.get("id") == capability_id and e.get("version") == version]
@@ -344,10 +294,25 @@ def install(source: str | Path, reference: str, ledger_path: str | Path, *, phi_
                     ignore=shutil.ignore_patterns(".venv", "__pycache__"))
     if manifest["capability"]["kind"] == "kernel" and create_venv:
         _materialize_venv(destination, manifest["runtime"]["wheels"])
+    provenance = _git_commit(registry)
     record = {"id": capability_id, "version": version, "installed": date.today().isoformat(),
               "path": str(destination), "source": source_label or str(registry)}
+    if provenance:
+        record["commit"] = provenance
     save_ledger(ledger_path, existing + [record])
     return record
+
+
+def _git_commit(registry: Path) -> str | None:
+    # The checked-out commit is the integrity anchor of a git-registry install.
+    import subprocess
+
+    try:
+        done = subprocess.run(["git", "-C", str(registry), "rev-parse", "HEAD"],
+                              capture_output=True, text=True, timeout=30, check=True)
+        return done.stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None
 
 
 def resolve(uses: list[str], ledger: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -415,14 +380,14 @@ def main(argv: list[str] | None = None) -> int:
     list_parser.add_argument("--from", dest="source", required=True,
                              help="a capability folder, a registry checkout, or gh:owner/repo[@ref] on GitHub")
     args = parser.parse_args(argv)
-    ledger = Path(args.ledger).resolve()
+    ledger = Path(args.ledger).resolve() if args.command == "install" else None
     try:
         source = args.source
         label = source
         if source.startswith("gh:") or source.startswith("github:"):
             repo, _, ref = source.split(":", 1)[1].partition("@")
             label = f"github:{repo}@{ref or 'main'}"
-            cache = ledger.parent / "registry-cache" if args.command == "install" \
+            cache = ledger.parent / "registry-cache" if ledger \
                 else Path(tempfile.gettempdir()) / "astral-capabilities-cache"
             source = fetch_github(repo, cache, ref or "main")
         if args.command == "list":
