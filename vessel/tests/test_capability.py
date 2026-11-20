@@ -95,7 +95,8 @@ def test_install_verifies_in_the_contract_order(tmp_path):
     assert refused.value.code == "capability.signer"
     record = capability.install(registry, "astral.demo@^1.0", ledger, allow_signers=["dev"], host_python="3.11",
                                 phi_excluded=False)
-    assert record["version"] == "1.0.0" and (tmp_path / "deploy" / "capabilities" / "astral.demo" / "1.0.0" / "capability.toml").exists()
+    assert record["version"] == "1.0.0"
+    assert (tmp_path / "deploy" / "capabilities" / "astral.demo" / "1.0.0" / "capability.toml").exists()
 
 
 def test_install_refuses_a_tampered_package(tmp_path):
@@ -208,6 +209,5 @@ def test_a_deployment_attaches_the_capability_tools(tmp_path):
     assert [t.name for t in agent.package.declared] == ["demo"]
     assert any(m.target == "/capabilities" for m in agent.package.manifest.sandbox.mounts)
     before = agent.fingerprint
-    ledger = capability.load_ledger(ledger_path)
     agent.capabilities.append({"id": "astral.demo", "version": "9.9.9"})
     assert agent.fingerprint != before

@@ -174,8 +174,10 @@ def generate(deployment: Deployment, *, repo_root: Path | None) -> dict[str, Any
     uses_capabilities = any(agent.capabilities for agent in deployment.agents.values())
     if uses_capabilities:
         # Process-mode sandboxes run inside the executor and resolve {capabilities} to this mount.
-        executor_volumes.append(f"{deployment.path.parent / 'capabilities'}:/deploy/capabilities:ro")
-        executor_volumes.append(f"{deployment.path.parent / 'capabilities-ledger.json'}:/deploy/capabilities-ledger.json:ro")
+        capabilities_dir = deployment.path.parent / "capabilities"
+        ledger_file = deployment.path.parent / "capabilities-ledger.json"
+        executor_volumes.append(f"{capabilities_dir}:/deploy/capabilities:ro")
+        executor_volumes.append(f"{ledger_file}:/deploy/capabilities-ledger.json:ro")
     for agent_id, agent in deployment.agents.items():
         executor_networks[f"tools-{agent_id}"] = {}
         executor_volumes.append(f"{agent.host_package}:/agents/{agent_id}:ro")
