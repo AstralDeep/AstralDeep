@@ -146,6 +146,8 @@ goal of this spec, ahead of everything else in it.
 | C25 | The app's own bundled manifest is the authority for the pack. It lists the three GGUF files and the Phonon Core ML files. (R9) | The pack repository's published v1.1 manifest, which still lists the Piper archive. |
 | C26 | A watch voice session needs the phone app in front and unlocked, with its mesh open. C13 stands. (R6) | An audio background mode, a CPU-only path or a continued processing task. R6 did not recommend any of them. |
 | C27 | Keep the 5.5 GB phone memory gate. (R8) | Lowering it to admit 4 GB phones. Nothing measured covers a 4 GB phone. |
+| C28 | A device that cannot run Phonon, which means iOS 17 or macOS 14, downloads the three GGUF files only. The pack counts as complete and English uses the system voice. | Downloading 136 MB of voice files the device can never load. |
+| C29 | A mirror for the pack serves the Hugging Face path shape, `<mirror>/<repository>/resolve/<revision>/<path>`. | The flat mirror layout the LFM3 store accepts. Two repositories at pinned revisions do not fit in it. |
 
 ---
 
@@ -259,11 +261,13 @@ with its repository, pinned revision, byte count and SHA-256.
 | Phonon 31m, Core ML | `FluidInference/pocket-tts-coreml` at `c2e998e269e4d4b51f74061faddb8450cd8f9a9a`, folder `phonon/phonon-31m-en/` | 136,148,876 in the 12 files the loader needs. The whole folder is 362,189,660 bytes in 148 files, and the rest is not downloaded. |
 
 The three GGUF files total 1,228,712,832 bytes. With the voice the pack is 15 files and 1,364,861,708
-bytes. Phase 1 installed it from the real repositories on a Mac and every digest verified.
+bytes. In phase 1 the store lane's agent installed it from the real repositories on a Mac in a
+temporary test and reported that every digest verified. The three GGUF digests in the manifest match
+the lab's files, hashed separately in phase 0.
 
 The pack installs as two units, the three GGUF files and the voice, each with its own install marker.
 A change to the voice never forces the GGUF files to download again. A device that cannot run Phonon,
-which means iOS 17 or macOS 14, downloads the GGUF files only and the pack counts as complete.
+which means iOS 17 or macOS 14, downloads the GGUF files only and the pack counts as complete (C28).
 
 The published v1.1 manifest in the Kentucky Open Science repository lists a Piper archive of 67,230,653
 bytes. The app does not use that manifest. Its own bundled manifest is the authority and lists the three
@@ -287,7 +291,7 @@ Two things are new.
 
 The mirror setting stays, with its HTTPS rule. A mirror for the pack has to serve the Hugging Face
 path shape, `<mirror>/<repository>/resolve/<revision>/<path>`. A flat mirror set up for LFM3 fails
-safely with a 404.
+safely with a 404. (C29)
 
 The Phonon folder's `LICENSE` file is not one of the 12 files, so the Apache 2.0 text ships in the
 app's acknowledgments (section 14).
