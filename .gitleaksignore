@@ -597,3 +597,5 @@ a2dad76472aa81ccb6874e9fe30d8ecf44c63fa3:specs/106-sign-in-free-clients/contract
 098588d6256599e4902bb3f6c322df267ddaccde:provenance/attachment-parser-and-blob-composition.json:generic-api-key:68
 # Imported Plane history, tests/repositories/test_audit.py line 280: a one byte placeholder passed as an expected digest in an audit chain test.
 c1182c09ca767c7c8b3396fae91aa27d0b1c56ce:tests/repositories/test_audit.py:generic-api-key:280
+# Spec 109 phase 0 licence capture, kokoro-82m-coreml/README.md line 130: a saved Hugging Face web page holding that site's public page configuration keys. The file now holds the model card.
+82e769c3995188717f29806eded6825b31251876:specs/109-rumble-voice/phase-0/licences/kokoro-82m-coreml/README.md:generic-api-key:130
