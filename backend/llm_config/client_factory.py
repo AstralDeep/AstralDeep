@@ -9,6 +9,11 @@ from openai import OpenAI
 
 from .deadlines import deadlines_for
 from .local_endpoint import classify_endpoint
+from .openai_responses import (
+    OpenAIResponsesAdapter,
+    RESPONSES_PROFILE,
+    is_responses_eligible,
+)
 from .types import CredentialSource, LLMUnavailable, ResolvedConfig
 
 
@@ -78,6 +83,7 @@ def build_llm_client(
     source: CredentialSource,
     *,
     timeout: Optional[float] = None,
+    enable_responses: bool = False,
 ) -> Tuple[Any, CredentialSource, ResolvedConfig]:
     if source == CredentialSource.OPERATOR_DEFAULT:
         raise ValueError(
@@ -113,10 +119,16 @@ def build_llm_client(
     }
     kwargs.update(openai_auth_kwargs(config.api_key))
     client = OpenAI(**kwargs)
+
+    resolved_profile = None
+    if enable_responses and is_responses_eligible(config.base_url, getattr(config, "model", None)):
+        client = OpenAIResponsesAdapter(client, enabled=True)
+        resolved_profile = RESPONSES_PROFILE
+
     return (
         client,
         source,
-        ResolvedConfig(base_url=config.base_url, model=config.model),
+        ResolvedConfig(base_url=config.base_url, model=config.model, profile=resolved_profile),
     )
 
 
@@ -125,4 +137,19 @@ async def create_completion(client, **kwargs):
     from .native_provider import NativeMessagesClient
     if isinstance(client, NativeMessagesClient):
         return await client.create_async(**kwargs)
+    if isinstance(client, OpenAIResponsesAdapter):
+        return await client.create_completion_or_response(**kwargs)
+    if kwargs.pop("use_responses", False):
+        adapter = OpenAIResponsesAdapter(client, enabled=True)
+        return await adapter.create_completion_or_response(**kwargs)
     return await asyncio.to_thread(client.chat.completions.create, **kwargs)
+
+
+async def create_response(client, **kwargs):
+    """Opt-in direct entrypoint for OpenAI Responses API.
+    
+    Dispatches to OpenAIResponsesAdapter with typed output and HIPAA/PHI
+    store=false defaults preserved.
+    """
+    adapter = client if isinstance(client, OpenAIResponsesAdapter) else OpenAIResponsesAdapter(client, enabled=True)
+    return await adapter.create_response(**kwargs)
