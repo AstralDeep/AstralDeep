@@ -256,9 +256,14 @@ with its repository, pinned revision, byte count and SHA-256.
 | Rumble recognition, GGUF | `Kentucky-Open-Science/Rumble-2-Flash-Astral`, pinned revision | 283,424,640 |
 | Rumble audio encoder, GGUF | Same | 214,393,024 |
 | LFM2.5 1.2B Instruct, GGUF | Same | 730,895,168 |
-| Phonon 31m, Core ML | `FluidInference/pocket-tts-coreml` at `c2e998e269e4d4b51f74061faddb8450cd8f9a9a`, folder `phonon/phonon-31m-en/` | Set in phase 1 from the files the app needs. The whole folder is 362,189,660 bytes in 148 files, summed from the file list in phase-0/R5b. |
+| Phonon 31m, Core ML | `FluidInference/pocket-tts-coreml` at `c2e998e269e4d4b51f74061faddb8450cd8f9a9a`, folder `phonon/phonon-31m-en/` | 136,148,876 in the 12 files the loader needs. The whole folder is 362,189,660 bytes in 148 files, and the rest is not downloaded. |
 
-The three GGUF files total 1,228,712,832 bytes. The Phonon files come on top of that.
+The three GGUF files total 1,228,712,832 bytes. With the voice the pack is 15 files and 1,364,861,708
+bytes. Phase 1 installed it from the real repositories on a Mac and every digest verified.
+
+The pack installs as two units, the three GGUF files and the voice, each with its own install marker.
+A change to the voice never forces the GGUF files to download again. A device that cannot run Phonon,
+which means iOS 17 or macOS 14, downloads the GGUF files only and the pack counts as complete.
 
 The published v1.1 manifest in the Kentucky Open Science repository lists a Piper archive of 67,230,653
 bytes. The app does not use that manifest. Its own bundled manifest is the authority and lists the three
@@ -273,13 +278,19 @@ Two things are new.
 
 - **Two repositories.** The manifest names both. The app contacts no other repository for the pack. The
   voice model loads from the verified local folder, and the speech library is never allowed to fetch
-  files by itself. FluidAudio's offline mode is on and its registry URL points at a closed loopback
-  port, both set before any FluidAudio call (phase-0/R5a).
+  files by itself. FluidAudio's offline mode is on before any FluidAudio call, and the speech package
+  calls only the load-from-folder API. Its tests point the registry at a loopback listener and assert
+  that nothing connects (phase-0/R5a).
 - **A partial outcome.** If the three GGUF files install and the voice files keep failing, the sheet
   offers one extra button: continue with the system voice for English. The app retries the voice later
   on its own and tells the person when it arrives.
 
-The mirror setting stays, with its HTTPS rule.
+The mirror setting stays, with its HTTPS rule. A mirror for the pack has to serve the Hugging Face
+path shape, `<mirror>/<repository>/resolve/<revision>/<path>`. A flat mirror set up for LFM3 fails
+safely with a 404.
+
+The Phonon folder's `LICENSE` file is not one of the 12 files, so the Apache 2.0 text ships in the
+app's acknowledgments (section 14).
 
 Consent given for the LFM3 download does not carry over. The person confirms the new pack once.
 
@@ -455,6 +466,10 @@ word was a continuation word such as "and" or "because", it waits 0.4 s more. Th
   while the previous partial is still running (C22). Measured on the iPhone 13 Pro, a partial takes
   0.25 s on a 2 s segment, 0.45 s at 5 s and 0.80 s at 10 s, so a 0.5 s tick falls behind on a long
   utterance (phase-0/R1).
+- The last word of a partial is provisional. Padding stops invented words on noise. It does not stop a
+  misheard last word when a clip ends in the middle of a word. Phase 1 measured "Name one fruit" cut
+  at 0.6 s coming back as "Name one from." A draft, a continuation check or an interruption check that
+  rests on the last word waits for the next partial or the final transcript.
 - Each of the eight languages gets its own continuation list. A language with no list uses the plain
   0.6 s.
 - A partial that ends mid-number or mid-list also earns the extension.

@@ -1,7 +1,8 @@
 # Tasks for spec 109
 
 **Date:** 2026-11-20. **Status:** phase 0 is done, see [phase-0/README.md](phase-0/README.md). The owner picked Phonon 31m on
-2026-11-20 (T013, O13). Nothing from phase 1 on is built.
+2026-11-20 (T013, O13). Phase 1 is built and tested on three local Projection branches merged into
+`feat/109-rumble-voice`, not pushed. Nothing from phase 2 on is built.
 **Companions:** [spec.md](spec.md), [plan.md](plan.md), [research.md](research.md).
 
 Each task names its repository. Projection paths are relative to `apple-clients/`. A task marked (P)
@@ -37,29 +38,30 @@ after phase 0 and sit in the phase they belong to.
 
 ## Phase 1. Runtime and pack
 
-- [ ] T020 Projection. Add `scripts/build-voice-runtime.sh`, pinned at llama.cpp
+- [x] T020 Projection. Add `scripts/build-voice-runtime.sh`, pinned at llama.cpp
   `8af68d486a9473820d24d00af8f33334ca80124d`, producing the llama.cpp xcframework for iPhone, simulator
   and Mac with `MTMD_VIDEO` off. Ignore the outputs in Git.
-- [ ] T021 Projection. Create the `AstralVoiceRuntime` package with binary targets and a C shim.
-- [ ] T022 Projection. Recognition: load Rumble and its encoder, transcribe 16 kHz audio with a
+- [x] T021 Projection. Create the `AstralVoiceRuntime` package with binary targets and a C shim.
+- [x] T022 Projection. Recognition: load Rumble and its encoder, transcribe 16 kHz audio with a
   language, stream tokens, cancel. Pad each clip with zeros to `16000*k - 160` samples, where k is the
   smallest whole number of seconds that fits, and test the padding on short clips.
-- [ ] T023 (P) Projection. Create the `AstralVoiceSpeech` package for Phonon 31m on FluidAudio `v0.18.4`,
+- [x] T023 (P) Projection. Create the `AstralVoiceSpeech` package for Phonon 31m on FluidAudio `v0.18.4`,
   pinned by commit `e0c6103b`. Behind a speech protocol: load from the verified folder with
-  `ModelHub.offlineMode` on and the registry URL at a closed loopback port, set before any FluidAudio
-  call. Synthesize one sentence to buffers, stream, cancel. Report unavailable below iOS 18 and macOS 15.
-- [ ] T024 (P) Projection. Text generation: load LFM2.5, generate with a token limit, stream, cancel.
-- [ ] T025 Projection. One scheduler so recognition and generation never use the GPU together, with
+  `ModelHub.offlineMode` on, set before any FluidAudio call, and only the load-from-folder API. Tests
+  point the registry URL at a loopback listener and assert zero connections. Synthesize one sentence to buffers, stream, cancel. Report unavailable below iOS 18 and macOS 15.
+- [x] T024 (P) Projection. Text generation: load LFM2.5, generate with a token limit, stream, cancel.
+- [x] T025 Projection. One scheduler so recognition and generation never use the GPU together, with
   recognition first.
-- [ ] T026 Projection. Fixture models and audio small enough to commit, with tests that run in the
+- [x] T026 Projection. Fixture models and audio small enough to commit, with tests that run in the
   simulator on CPU.
-- [ ] T027 Projection. Define and parse the app's own pack manifest: repository, revision, path, bytes
+- [x] T027 Projection. Define and parse the app's own pack manifest: repository, revision, path, bytes
   and SHA-256 for each file. It lists the three GGUF files and the Phonon Core ML files and no Piper
   archive.
-- [ ] T028 Projection. Extend `VoiceModelStore` to two repositories. Block the speech library from
-  fetching files by itself.
-- [ ] T029 Projection. The partial outcome: GGUF files installed, voice pending, with later retry.
-- [ ] T030 Projection. Bundle the manifest. Keep the mirror setting and its HTTPS rule.
+- [x] T028 Projection. A sibling store, `VoicePackStore`, for two repositories, sharing the existing
+  download and digest code. The existing LFM3 store is untouched until phase 2. The store is the only
+  code that downloads. It skips the voice files on a device that cannot run Phonon.
+- [x] T029 Projection. The partial outcome: GGUF files installed, voice pending, with later retry.
+- [x] T030 Projection. Bundle the manifest. Keep the mirror setting and its HTTPS rule.
 
 ## Phase 2. Swap the models
 
@@ -81,7 +83,10 @@ after phase 0 and sit in the phase they belong to.
 - [ ] T049 Projection. Delete installed LFM3 weights on first launch.
 - [ ] T050 Projection. Port `MLXVoiceRuntimeTests`, `OnDeviceVoicePipelineTests`,
   `OnDeviceVoiceControllerTests` and `VoiceModelStoreTests` to the new runtime.
-- [ ] T051 Projection. Link `AstralVoiceRuntime` and `AstralVoiceSpeech` into the app project.
+- [ ] T051 Projection. Link `AstralVoiceRuntime` and `AstralVoiceSpeech` into the app project. The app
+  jobs in Apple CI build the llama.cpp runtime before they build the app.
+- [ ] T135 Projection. Route the pack store's background download session id in the app delegate, as the
+  LFM3 store's id is routed today.
 - [ ] T134 Projection. A build step that deletes FluidAudio's `LuxTtsG2pResources` bundle from the built
   app, and a test that asserts the bundle is absent. Check that App Store validation and signing accept
   the deletion.
@@ -97,6 +102,9 @@ after phase 0 and sit in the phase they belong to.
   (autocorrelation above 0.5 between 60 and 400 Hz, within 30 dB of the loudest frame, above minus 55
   dBFS) and a 0.4 s minimum clip before Rumble transcribes overlapping audio. Test noise, a cough, a
   sneeze and real stop words.
+- [ ] T136 Projection. Treat the last word of a partial transcript as provisional. A draft, a
+  continuation check or an interruption check that rests on it waits for the next partial or the final
+  transcript.
 - [ ] T131 Projection. Skip a partial tick while the previous partial is still running, so partials
   never queue. Test it with a fake clock and a slow recognizer.
 - [ ] T063 (P) Projection. Backchannel and stop-word lists for eight languages. Matching ignores case,
