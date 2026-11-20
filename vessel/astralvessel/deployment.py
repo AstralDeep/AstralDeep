@@ -18,7 +18,7 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from . import capability
-from .manifest import BUILTIN_TOOLS, AgentPackage, load_package
+from .manifest import AgentPackage, load_package
 
 AGENT_ID = r"^[a-z][a-z0-9-]{0,62}$"
 
@@ -240,8 +240,8 @@ def _attach_capabilities(deployment_path: Path, entry: AgentEntry, package: Agen
     dockerfile = package.manifest.sandbox.dockerfile
     dockerfile_text = (package.root / dockerfile).read_text() if dockerfile else None
     tools, mount = capability.attach(uses, ledger, capabilities_root, dockerfile_text)
-    clash = ({t.name for t in tools} & set(BUILTIN_TOOLS)) | (
-        {t.name for t in tools} & {t.name for t in package.declared})
+    enabled = set(package.manifest.tools.builtin) | {t.name for t in package.declared}
+    clash = {t.name for t in tools} & enabled
     if clash:
         raise ValueError(f"a capability tool collides with an existing tool: {', '.join(sorted(clash))}")
     package.declared.extend(tools)

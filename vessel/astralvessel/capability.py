@@ -264,9 +264,13 @@ def attach(uses: list[str], ledger: list[dict[str, Any]], capabilities_root: Pat
                                           f"the sandbox dockerfile does not install {wheel}")
         for tool in manifest["tools"]:
             script = "/".join([entry["id"], entry["version"], tool["script"]])
+            schema_path = version_path / "tools" / f"{tool['name']}.schema.json"
+            parameters = json.loads(schema_path.read_text(encoding="utf-8")) if schema_path.exists() \
+                else {"type": "object", "properties": {}}
             attached_tools.append(DeclaredTool(
                 name=tool["name"], description=str(manifest["capability"]["description"]),
                 command=["python", "-I", "{capabilities}/" + script],
+                parameters=parameters,
                 scope=tool["scope"]))
     return attached_tools, Mount(source=str(capabilities_root), target="/capabilities")
 
