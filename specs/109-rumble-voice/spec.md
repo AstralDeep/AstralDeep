@@ -153,6 +153,7 @@ goal of this spec, ahead of everything else in it.
 | C32 | An idle or memory unload of the local voice waits for the sentence in flight to end. Removing the pack unloads it at once. | Cutting a sentence off to free memory. |
 | C33 | If either model fails to load, voice does not start and the person sees a message. | Reaching the listening state and failing on the first utterance. |
 | C34 | The download sheet has a Download Voice button, with progress and a failure line, when the three GGUF files are installed and the voice is not. Phase 2 added it ahead of the overlay work, because a model-only install would otherwise have no way to fetch the voice. | Waiting for phase 4. |
+| C35 | Only the shipping app deletes the old LFM3 weights. A build with any other bundle identifier leaves them alone. | Deleting on every launch of any build. On a Mac a test build shares Application Support with the installed app, so it would delete the installed app's model. |
 
 ---
 

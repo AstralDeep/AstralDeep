@@ -1,7 +1,8 @@
 # Tasks for spec 109
 
 **Date:** 2026-11-20. **Status:** phase 0 is done, see [phase-0/README.md](phase-0/README.md). The owner picked Phonon 31m on
-2026-11-20 (T013, O13). Phases 1 and 2 are open together as draft Projection PR 222. Phase 2 is code complete. Its exit is not met: the live spoken turn on
+2026-11-20 (T013, O13). Phases 1 and 2 are open together as draft Projection PR 222. Phase 2 is code complete. The documents,
+acknowledgments and plist tasks of phase 6 are built on the local Projection branch `feat/109-voice-docs`. Its exit is not met: the live spoken turn on
 a Mac and the universal Release link are open. Nothing from phase 3 on is built.
 **Companions:** [spec.md](spec.md), [plan.md](plan.md), [research.md](research.md).
 
@@ -94,7 +95,9 @@ after phase 0 and sit in the phase they belong to.
   Developer ID or App Store signed build and App Store validation.
 - [ ] T137 Deep and Projection. Every other builder of the app runs `build-voice-runtime.sh` before it
   builds: Deep's release scripts, the iPhone archive path and `build_localtest.sh`. This lands before
-  T116 moves the pin.
+  T116 moves the pin. Done in Projection: `build_localtest.sh` stops early when the runtime is missing,
+  lacks an architecture or was built at another revision, and the build instructions name the step.
+  Open: Deep's release scripts and the iPhone archive path.
 - [ ] T138 Projection. Reproduce on a device that a decode in flight when the app goes to the
   background returns a failed decode and does not abort, as the unload-on-background design assumes.
 
@@ -194,10 +197,10 @@ after phase 0 and sit in the phase they belong to.
 - [ ] T111 Deep. Dated amendments to spec 105 sections 12.1 and 12.5.
 - [x] T112 Projection. Allow `AVSpeechSynthesizer` in one named file in
   `tests/test_apple_no_hosted_voice.py`. Land it with T043.
-- [ ] T113 (P) Projection. Rewrite `ONDEVICE-VOICE.md` and the voice lines in `README.md`.
-- [ ] T114 (P) Projection. Acknowledgments screen entries and licence files for Rumble and Qwen3-ASR,
+- [x] T113 (P) Projection. Rewrite `ONDEVICE-VOICE.md` and the voice lines in `README.md`.
+- [x] T114 (P) Projection. Acknowledgments screen entries and licence files for Rumble and Qwen3-ASR,
   LFM2.5, llama.cpp and its vendored code, Phonon, and FluidAudio with NemoTextProcessing.
-- [ ] T115 Projection. Remove `NSSpeechRecognitionUsageDescription`.
+- [x] T115 Projection. Remove `NSSpeechRecognitionUsageDescription`.
 - [ ] T116 Deep. Bump the Projection pin in `config/astral-composition.json` and run
   `scripts/verify_composition.py`.
 - [ ] T117 Vault. Update the voice synthesis page and `project-astral` at each checkpoint.
