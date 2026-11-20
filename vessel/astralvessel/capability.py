@@ -183,7 +183,8 @@ def install(registry_dir: str | Path, reference: str, ledger_path: str | Path, *
     already = [e for e in existing if e.get("id") == capability_id and e.get("version") == entry.get("version")]
     if already and Path(already[0].get("path", "")).exists():
         return already[0]
-    package_path = Path(registry_dir) / "capabilities" / capability_id / str(entry.get("version")) / f"{capability_id}-{entry.get('version')}.tar.gz"
+    version = str(entry.get("version"))
+    package_path = Path(registry_dir) / "capabilities" / capability_id / version / f"{capability_id}-{version}.tar.gz"
     raw_package = package_path.read_bytes()
     if _sha256(raw_package) != entry.get("package_sha256"):
         raise CapabilityError("capability.digest", "the package does not match the index digest")
@@ -226,9 +227,11 @@ def resolve(uses: list[str], ledger: list[dict[str, Any]]) -> list[dict[str, Any
         if "@" not in reference:
             raise CapabilityError("capability.missing", f"{reference} carries no version constraint")
         capability_id, constraint = reference.split("@", 1)
-        matches = [e for e in ledger if e.get("id") == capability_id and _satisfies(str(e.get("version", "")), constraint)]
+        matches = [e for e in ledger if e.get("id") == capability_id
+                   and _satisfies(str(e.get("version", "")), constraint)]
         if not matches:
-            raise CapabilityError("capability.missing", f"no installed version of {capability_id} satisfies {constraint}")
+            raise CapabilityError("capability.missing",
+                                  f"no installed version of {capability_id} satisfies {constraint}")
         best = _highest(matches)
         best = {**best, "manifest": _manifest_of(Path(best["path"]))}
         resolved.append(best)
@@ -269,13 +272,15 @@ def attach(uses: list[str], ledger: list[dict[str, Any]], capabilities_root: Pat
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="astralvessel.capability", description="install marketplace capabilities")
+    parser = argparse.ArgumentParser(prog="astralvessel.capability",
+                                     description="install marketplace capabilities")
     sub = parser.add_subparsers(dest="command", required=True)
     install_parser = sub.add_parser("install", help="verify and install a capability into the ledger")
-    install_parser.add_argument("reference", help="capability id with a version constraint, like astral.cad-kernel@^1.0")
+    install_parser.add_argument("reference", help="capability id with a version constraint")
     install_parser.add_argument("--registry", required=True, help="the registry checkout holding index.json")
     install_parser.add_argument("--ledger", required=True, help="the node's capability ledger file")
-    install_parser.add_argument("--allow-signers", default="", help="comma-separated signer identities; empty refuses every install")
+    install_parser.add_argument("--allow-signers", default="",
+                                help="comma-separated signer identities; empty refuses every install")
     install_parser.add_argument("--host-python", default=f"{sys.version_info.major}.{sys.version_info.minor}")
     install_parser.add_argument("--phi-excluded", action="store_true", help="refuse reviewed-PHI capabilities")
     args = parser.parse_args(argv)
