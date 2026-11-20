@@ -694,8 +694,8 @@ outage, so it needs its own wording.
 C12 needs no kernel change. The host holds a flag for an active voice session that the on-device model
 reads. A typed turn during a voice session would also see LFM2.5, and phase 3 checks that race.
 
-**Built, 2026-11-20.** The four pieces are on the AstralKernel branch `feat/109-offline-route`, pushed and
-unmerged. The affected crates' tests pass. Three things differ from the text above or add to it.
+**Built, 2026-11-20.** The four pieces are on the AstralKernel branch `feat/109-offline-route`, open as
+draft Kernel PR 22 and unmerged. The affected crates' tests pass. Three things differ from the text above or add to it.
 
 - The reason code reaches the host through a new observer method. The fallback notice type itself is
   unchanged, so no existing kernel test changed.

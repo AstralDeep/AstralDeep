@@ -126,7 +126,7 @@ after phase 0 and sit in the phase they belong to.
 - [ ] T070 Projection. Send the short-answer and reply-language preference with voice turns.
 - [ ] T071 Projection. Speak a component's `spoken` form and strip markup from text.
 - [ ] T072 Kernel. The change from T003, in four pieces with their tests. Built on the Kernel branch
-  `feat/109-offline-route`, pushed and unmerged. It needs the owner's review before it merges and before
+  `feat/109-offline-route`, open as draft Kernel PR 22, unmerged. It needs the owner's review before it merges and before
   phase 3 starts (spec section 9.3).
   - (a) A structured fallback event: a reason code on the fallback notice, an additive `fallback` journal
     key, `TurnEvent::ModelFallback` and `TurnProgress::ModelFallback`. Tests: the reason for 503,
