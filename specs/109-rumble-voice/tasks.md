@@ -125,8 +125,9 @@ after phase 0 and sit in the phase they belong to.
 - [ ] T069 Projection. Progress lines from kernel events, at most one every 15 seconds.
 - [ ] T070 Projection. Send the short-answer and reply-language preference with voice turns.
 - [ ] T071 Projection. Speak a component's `spoken` form and strip markup from text.
-- [ ] T072 Kernel. The change from T003, in four pieces with their tests. It needs review before phase 3
-  starts (spec section 9.3).
+- [ ] T072 Kernel. The change from T003, in four pieces with their tests. Built on the Kernel branch
+  `feat/109-offline-route`, pushed and unmerged. It needs the owner's review before it merges and before
+  phase 3 starts (spec section 9.3).
   - (a) A structured fallback event: a reason code on the fallback notice, an additive `fallback` journal
     key, `TurnEvent::ModelFallback` and `TurnProgress::ModelFallback`. Tests: the reason for 503,
     unreachable, first-token timeout and 429, no event for a 400, and journal replay that ignores the new

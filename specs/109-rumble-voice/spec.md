@@ -694,7 +694,22 @@ outage, so it needs its own wording.
 C12 needs no kernel change. The host holds a flag for an active voice session that the on-device model
 reads. A typed turn during a voice session would also see LFM2.5, and phase 3 checks that race.
 
-**This change needs review before phase 3 starts.**
+**Built, 2026-11-20.** The four pieces are on the AstralKernel branch `feat/109-offline-route`, pushed and
+unmerged. The affected crates' tests pass. Three things differ from the text above or add to it.
+
+- The reason code reaches the host through a new observer method. The fallback notice type itself is
+  unchanged, so no existing kernel test changed.
+- The kernel's shared model client, which learning and run summaries use, also honors the route. With
+  the route at on-device only, those background calls cannot send chat-derived text to a provider.
+- An on-device-only turn on a device with no on-device model fails with `route.on_device_unavailable`
+  before anything is written to the log.
+
+The empty candidate list is safe for a normal turn, and a tool call from a round that offered no tools
+is dropped. Only the kernel's own event-to-progress mapping matched exhaustively. The Python binding
+suites were not run, because they need the Linux build.
+
+**This change needs the owner's review on the Kernel pull request before it merges, and before phase 3
+starts.**
 
 ### 9.4 Provider failure and return
 
