@@ -1,0 +1,16 @@
+[agent]
+name = "cad-studio"
+description = "Builds 3D models with the installed cad-kernel capability and returns STEP, STL and GLB files."
+
+[tools]
+builtin = ["read", "list"]
+
+[sandbox]
+dockerfile = "Dockerfile"
+tool_timeout_seconds = 120
+
+[output]
+files = ["step", "stl", "3mf", "glb"]
+
+[capabilities]
+uses = ["astral.cad-kernel@^1.0"]
