@@ -76,7 +76,7 @@ class Hooks:
     stat: Callable[[str], Any] = os.stat
     sandbox_check: Callable[[int], Any] = _sandbox_check
     pid: Callable[[], int] = os.getpid
-    euid: Callable[[], int] = os.geteuid
+    euid: Callable[[], int] = getattr(os, "geteuid", lambda: 0)
     exists: Callable[[str], bool] = os.path.exists
     tid: Callable[[], int] = threading.get_native_id
     read_text: Callable[[str], str] = _read_text

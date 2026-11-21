@@ -9,7 +9,10 @@ import binascii
 import errno
 import hashlib
 import json
-import fcntl
+try:
+    import fcntl
+except ImportError:
+    fcntl = None  # type: ignore[assignment]
 import logging
 import math
 import os
@@ -18,7 +21,10 @@ import shutil
 import signal
 import struct
 import subprocess
-import termios
+try:
+    import termios
+except ImportError:
+    termios = None  # type: ignore[assignment]
 import threading
 import time
 import uuid

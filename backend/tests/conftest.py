@@ -35,6 +35,13 @@ def _strip_ambient_flags() -> None:
 
 _strip_ambient_flags()
 
+try:
+    import astral_kernel
+except ImportError:
+    import sys
+    from tests import fake_astral_kernel
+    sys.modules["astral_kernel"] = fake_astral_kernel
+
 from tests.helpers.xdist_database import drop_worker_database, isolate_worker_database  # noqa: E402
 
 WORKER_DATABASE = isolate_worker_database(os.environ)

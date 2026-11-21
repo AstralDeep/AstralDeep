@@ -59,6 +59,7 @@ class ConsentKind(enum.Enum):
 
 class DeviceKind(enum.Enum):
     DESKTOP = 0
+    POCKET = 1
     NODE = 3
 
 

@@ -30,8 +30,14 @@ def agent(monkeypatch):
 
 
 @pytest.fixture
-def orch(monkeypatch, agent):
+def orch(monkeypatch, agent, tmp_path):
+    from shared import node_identity
+    monkeypatch.setenv(node_identity.PROFILE_ENV, "personal")
+    monkeypatch.setenv(node_identity.DATA_DIR_ENV, str(tmp_path / "node"))
     monkeypatch.setenv("DELEGATION_REQUIRED", "false")
+    monkeypatch.setenv("ASTRAL_ENV", "development")
+    node_identity.reset_cache()
+    node_identity.load_node_identity()
     o = Orchestrator.__new__(Orchestrator)
     o.agents = {}
     o.a2a_clients = {}

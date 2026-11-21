@@ -296,7 +296,10 @@ def load_node_identity(*, create: bool = True) -> NodeIdentity:
                 )
                 descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             except FileExistsError:
-                key = _read_key(path)
+                if path.exists():
+                    key = _read_key(path)
+                else:
+                    raise NodeKeyError("node data directory is not writable")
             except OSError as exc:
                 raise NodeKeyError("node data directory is not writable") from exc
             else:

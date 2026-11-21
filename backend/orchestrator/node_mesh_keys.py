@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 import os
 import stat
+import sys
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,7 +42,7 @@ class PresenceRefused(NodeMeshKeyError):
 def _private_dir(path: Path) -> None:
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
     mode = stat.S_IMODE(path.stat().st_mode)
-    if mode & 0o077:
+    if sys.platform != "win32" and (mode & 0o077):
         os.chmod(path, 0o700)
 
 
@@ -59,7 +60,7 @@ def _write_new(path: Path, data: bytes) -> None:
 
 def _read_private(path: Path) -> bytes:
     info = path.stat()
-    if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) & 0o077:
+    if not stat.S_ISREG(info.st_mode) or (sys.platform != "win32" and (stat.S_IMODE(info.st_mode) & 0o077)):
         raise NodeMeshKeyError(f"{path.name} must be a regular file readable only by the node")
     data = path.read_bytes()
     if not data:

@@ -186,7 +186,7 @@ def public_run(tmp_path, monkeypatch, selected, grader=None):
 
 @pytest.mark.parametrize("usage,text,known", [
     ("invalid", "fact", 0), (-1, "fact", 0), (True, "fact", 0),
-    (2**54, "fact", 0), (1, "x" * 65537, 0.5),
+    (2**54, "fact", 0), pytest.param(1, "x" * 65537, 0.5, id="long_text"),
 ])
 def test_malformed_provider_reply_is_reported_with_only_known_usage(
         tmp_path, monkeypatch, usage, text, known):
