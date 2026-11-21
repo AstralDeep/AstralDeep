@@ -1,18 +1,30 @@
 # Fence egress pilot
 
-The pilot protects the existing `lint` job on an ephemeral GitHub-hosted Ubuntu24.04 x64 runner. It retains the job's ten-minute limit, ordinary candidate checkout, pinned Python setup with pip cache, hash-locked tooling install and Ruff command. Other jobs and product configuration are outside its scope.
+## Status: rolled back and unqualified
 
-The [pilot verifier](../scripts/ci_fence_egress_pilot.py) checks the actual workflow. An absent pilot is a failure; a generated patch or an independent packet-policy model cannot qualify it. Until the separately reviewed helper companion is genuinely merged and its two file digests are bound, the verifier returns `missing_trust`. The neutral companion's lifecycle evidence does not prove Fence enforcement.
+The pilot is rolled back as of 2026-11-18 and is unqualified. The `lint` job currently has no egress firewall. It runs checkout, pinned Python setup with pip cache, the hash-locked tooling install and Ruff, with no Fence action and none of the peer start, remount, verify or close steps.
+
+The reason is the readiness failure on the AWS-hosted `ubuntu-24.04` fleet described below. Fence v0.12.5 and v0.13.1 cannot pass their readiness check there. On 2026-11-18 that fleet took most jobs. Eight of eleven `lint` attempts failed at the Fence step and every push run on `main` that day failed only there. No workflow-side preparation step fixes it.
+
+The egress-hardening issue stays open. The rollback reverted the pilot activation and its strict-conformance bridge together. The workflow no longer needs to conform to the pilot, and the owning supply-chain gate now requires that `lint` carries no Fence step. The verifier, the helpers and their tests stay as the tools for re-activation.
+
+Re-activation needs a Fence release that passes readiness on both runner fleets, followed by fresh pilot qualification on the supported runners. The rest of this document records the pilot design and evidence as they were when it was active.
+
+## Design
+
+The pilot protected the `lint` job on an ephemeral GitHub-hosted Ubuntu24.04 x64 runner. It retains the job's ten-minute limit, ordinary candidate checkout, pinned Python setup with pip cache, hash-locked tooling install and Ruff command. Other jobs and product configuration are outside its scope.
+
+The [pilot verifier](../scripts/ci_fence_egress_pilot.py) checks a workflow against the pilot design. While the pilot is active an absent pilot is a failure, and it is not a required gate now. A generated patch or an independent packet-policy model cannot qualify it. Until the separately reviewed helper companion is genuinely merged and its two file digests are bound, the verifier returns `missing_trust`. The neutral companion's lifecycle evidence does not prove Fence enforcement.
 
 ## Provenance and trust boundary
 
 Fence is pinned to the published v0.12.5 production action bundle `openai/fence@f9751ca5d767dc0199e88733c2b286bd4800a008`, rather than upstream's source main. Its [release documentation](https://github.com/openai/fence/blob/f9751ca5d767dc0199e88733c2b286bd4800a008/README.md) and [allowlist contract](https://github.com/openai/fence/blob/f9751ca5d767dc0199e88733c2b286bd4800a008/docs/allowlist.md) define the reviewed behavior. Source review is separate from supported-runner acceptance.
 
-`ReviewedHelpers` binds one actual merged AstralDeep default-branch commit and SHA256 identities for `scripts/ci_network_fixture.py` and `scripts/ci_fence_fixture_verifier_v2.py`. An unmerged candidate ref, a placeholder digest or a candidate-controlled assertion of trust cannot authorize the pre-Fence launcher. The [owning supply-chain gate](../backend/tests/test_python_ci_supply_chain_060.py) requires actual workflow conformance, verifies that the helper commit is already an ancestor of `origin/main`, checks both Git-object digests and compares the candidate's helper files with those exact bytes.
+`ReviewedHelpers` binds one actual merged AstralDeep default-branch commit and SHA256 identities for `scripts/ci_network_fixture.py` and `scripts/ci_fence_fixture_verifier_v2.py`. An unmerged candidate ref, a placeholder digest or a candidate-controlled assertion of trust cannot authorize the pre-Fence launcher. The [owning supply-chain gate](../backend/tests/test_python_ci_supply_chain_060.py) verifies that the helper commit is already an ancestor of `origin/main`, checks both Git-object digests and compares the candidate's helper files with those exact bytes.
 
 The reviewed helper merge is `a1bfc19ccd9d1cc58c8298ce26718e92b76b3fb2`. Its peer SHA256 is `23c0ff99e9cb3a8e0889767c9ef75f8b00c85aaf981c57634d3eecc4a134c240`; its verifier SHA256 is `6c16e452bb0be0f877c40067663c6cc3759eab9ebe11fffd0d41952539b90b57`. The merged helper's neutral lifecycle is qualified separately. Actual protected Fence acceptance is still required for this pilot candidate.
 
-The lint job follows one fixed order:
+While the pilot was active the lint job followed one fixed order:
 
 1. A fixed system-Python launcher fetches only the two immutable helper URLs over verified HTTPS. A no-redirect opener refuses any redirect before contacting its target. Inside root, a sanitized environment and Python isolated mode bound and hash both buffers before executing the verified peer buffer. Its fixed start operation creates and baselines the owned fixture. The same two buffers are written exclusively as root-owned read-only files inside that fresh fixture directory. A copy failure requires fixed close plus removal and supervisor-exit attestation before returning an error.
 2. The pinned production Fence action activates explicit block mode. Lint inherits the exact explicit workflow-global `permissions: contents: read` grant; the verifier rejects every job-level permission override and every alteration to that global grant. This uses neither an implicit token default nor additional authority: the job gains no secret, OIDC permission, protected dispatch surface or credential. Sudo/container preservation and audit enforcement are forbidden.
@@ -21,6 +33,26 @@ The lint job follows one fixed order:
 5. Only after successful verification and cleanup does the normal candidate checkout, Python setup/cache, hash-locked install and Ruff execution begin. No privileged fixture supervisor remains for candidate code.
 
 The bootstrap uses the runner's system Python before dependencies exist; its source remains Python3.11 compatible. Helper identity updates require a separately reviewed and qualified default-branch merge, followed by a coordinated digest/workflow update and fresh pilot qualification.
+
+## Runners that mount /run noexec
+
+The Fence action copies its binary to `/run/fence-launcher/<id>/action/bin/fence` and starts it with `systemd-run`. GitHub serves `ubuntu-24.04` jobs from two fleets. On the AWS-hosted fleet `/run` is mounted `rw,nosuid,nodev,noexec`. There `systemd-run` fails at once with `Permission denied` and the action reports only that it could not confirm the resident started. On the Azure-hosted fleet `/run` has no `noexec` and the step passes.
+
+Observed images: the AWS fleet on 20261111.127.1 and 20261116.133.1 with kernel 7.0.0-1014-aws, and the Azure fleet on 20261111.370.1 and 20261116.376.1. A stand-in binary at the same path started on all seven AWS samples after `mount -o remount,exec /run`. The remount changed nothing on Azure. The real Fence binary was not part of that experiment.
+
+The step "Let the reviewed firewall start from /run on runners that mount it noexec" ran just before the Fence action. It prints the mount options of `/run`. When they contain `noexec` it runs `mount -o remount,exec /run`, then prints the options again and fails the job if `noexec` is still present. It uses no network, no retry and no `continue-on-error`.
+
+The remount only removes `noexec` from the runner's own `/run` tmpfs for the life of the job. `nosuid` and `nodev` stay set. The pilot verifier requires this step, with exactly this command shape, in this position. The upstream report is openai/fence issue 233.
+
+## The AWS-hosted fleet is not supported by Fence v0.12.5
+
+The remount is needed and it is not enough. With it, the real Fence binary starts on the AWS-hosted fleet and then stops at its readiness check with `local_control_inventory_unavailable` and `unavailable_inputs: socket_ownership`. The `lint` job fails there and stays failed.
+
+Fence lists the local listening sockets and their owners, and accepts only owners on a list built into the binary. That list names the Azure agent and no AWS one. The same list is in v0.13.1. The resident's journal names no socket or owner.
+
+Ten samples of the real `lint` job ran on each fleet from a scratch branch. Every Azure sample reached "Fence ready" and passed. Every AWS sample failed, with the ACPI daemon masked and its socket removed, and again with `irqbalance` masked as well. Those two were the only services seen listening on the AWS fleet alone. No preparation step is known that makes the check pass.
+
+While the pilot was active, a `lint` job that landed on that fleet failed for this reason alone. A job on image 20261111.127.1 or 20261116.133.1 is on the AWS fleet. The workflow never retried it and never skipped the firewall. The rollback removes the firewall from `lint` and does not skip it inside an active pilot.
 
 ## Reviewed egress
 

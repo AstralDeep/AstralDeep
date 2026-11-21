@@ -1592,15 +1592,15 @@ async def test_interactive_frame_reuses_connection_owner_and_renews_lease(
         if frame.get("type") == "register_ui":
             await probe(ws, raw)
             return
-        await runtime_module.Orchestrator._serialized_chat(
+        await _chat(
             orch,
             ws,
             "lease probe",
             "lease-chat",
             None,
+            operation_context=runtime_module._CONNECTION_OPERATION_CONTEXT.get(),
         )
 
-    orch.handle_chat_message = types.MethodType(_chat, orch)
     orch.handle_ui_message = types.MethodType(_handle, orch)
     serve = await _start(runtime_module, orch, websocket, entrypoint)
     try:
@@ -1685,11 +1685,8 @@ async def test_lease_loss_cancels_worker_and_terminalizes_retryable(
         if frame.get("type") == "register_ui":
             await probe(ws, raw)
             return
-        await runtime_module.Orchestrator._serialized_chat(
-            orch, ws, "lease loss", "lease-loss-chat", None
-        )
+        await _chat(orch, ws, "lease loss", "lease-loss-chat", None)
 
-    orch.handle_chat_message = types.MethodType(_chat, orch)
     orch.handle_ui_message = types.MethodType(_handle, orch)
     serve = await _start(runtime_module, orch, websocket, entrypoint)
     try:

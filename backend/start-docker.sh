@@ -16,7 +16,7 @@ SQLITE_AUDIT="/app/backend/data/test_audit.db"
 if [ -f "$SQLITE_MAIN" ] || [ -f "$SQLITE_AUDIT" ]; then
     echo "ERROR: legacy SQLite data was detected; AstralDeep will not start." >&2
     echo "The files were not modified. Do not delete them or run ad-hoc SQL." >&2
-    echo "Follow AstralPlane docs/migration-and-recovery.md using a verified" >&2
+    echo "Follow plane/docs/migration-and-recovery.md using a verified" >&2
     echo "PostgreSQL/blob backup or a separately reviewed import boundary." >&2
     exit 78
 fi

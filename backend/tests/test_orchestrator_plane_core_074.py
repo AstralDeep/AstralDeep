@@ -147,7 +147,6 @@ def test_theme_profile_and_readiness_use_application_plane() -> None:
             "preferred_username": "owner",
             "name": "Owner",
             "realm_access": {"roles": ["user"]},
-            "resource_access": {"astral-frontend": {"roles": ["operator"]}},
         }
     )
     orchestrator._probe_plane_readiness()
@@ -157,7 +156,7 @@ def test_theme_profile_and_readiness_use_application_plane() -> None:
     upsert = identity.upserts[0]
     assert upsert["owner_id"] == "owner-1"
     assert upsert["email"] == "owner@example.test"
-    assert set(upsert["roles"]) == {"user", "operator"}
+    assert set(upsert["roles"]) == {"user"}
     assert isinstance(upsert["observed_at"], int)
     assert identity.admin_limits == [1]
     assert runtime.transactions == 3

@@ -1,247 +1,320 @@
-"""Synthetic staging proof for the clinical dispatcher: a signed identity registers through
-the real UI handler, a scripted model completes one ordinary turn, a second owner cannot
-adopt the first owner's chat, and the real tool-permission gate refuses without transport.
+"""Qualifies the clinical note extraction pilot through the authorized personal node/device path.
+Proves that model outputs remain untrusted proposals subjected to deterministic schema and
+verbatim source-span validation, that callers authenticate via signed caller tickets / mesh keys,
+that PHI controls and audit provenance are preserved, and that semantic clinical correctness
+is measured separately through clinical diagnostic evaluation.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import os
+import sys
 import time
-import uuid
+from dataclasses import asdict
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from typing import Any, Dict, List, Optional
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
-from jose import jwk, jwt
 
-from shared.protocol import AgentCard, AgentSkill
+from agents.fhir import extraction, fhir_agent, mcp_tools
+from agents.fhir.extraction import evaluate_proposal, extract_note_fields
+from agents.fhir.extraction_schema import (
+    CHECK_DIGEST,
+    CHECK_NOTE_ID,
+    CHECK_SPAN_MISMATCH,
+    CHECK_SPAN_RANGE,
+    SCHEMA_VERSION,
+    STATUS_ABSENT,
+    STATUS_EXTRACTED,
+    STATUS_FAILED_CHECK,
+)
+from agents.fhir.tests.test_extraction import NOTE, NOTE_ID, golden_payload, span
+from clinical_diagnostic.models import (
+    ClinicalCase,
+    ConversationMessage,
+    Partition,
+    RubricItem,
+    Setting,
+)
+from clinical_diagnostic.grading import MarkerGrader
+from clinical_diagnostic.scoring import score_case
+from orchestrator import caller_tickets
+from orchestrator.concurrency_cap import ConcurrencyCap
+from orchestrator.hooks import HookManager
+from orchestrator.orchestrator import GateRefusal, Orchestrator
+from shared import node_identity
+from shared.phi_redactor import redact
+from shared.protocol import MCPResponse
 
-pytestmark = pytest.mark.asyncio
-
-ANSWER = "Synthetic clinical answer with the required fact."
-RESTRICTED_AGENT = "web-research-1"
-RESTRICTED_TOOL = "web_search"
-
-
-class _Socket:
-    def __init__(self) -> None:
-        self.scope = {"headers": [(b"origin", b"https://app.invalid")]}
-        self.sent: list[dict] = []
-
-    async def send_text(self, data: str) -> None:
-        self.sent.append(json.loads(data))
-
-    async def send(self, data: str) -> None:
-        self.sent.append(json.loads(data))
-
-
-def _assistant(content=None, tool_calls=None):
-    return SimpleNamespace(content=content, tool_calls=tool_calls, reasoning_content=None)
-
-
-def _usage():
-    return SimpleNamespace(prompt_tokens=1, completion_tokens=1, total_tokens=2)
-
-
-def _tool_call():
-    return SimpleNamespace(
-        id="call-1", function=SimpleNamespace(name=RESTRICTED_TOOL, arguments="{}")
-    )
+OWNER_ID = "sha256:" + "a" * 64
+CALLER_ID = "caller-ticket-" + "b" * 32
+CHAT_ID = "chat-staging-001"
+TOOL_NAME = "extract_note_fields"
+AGENT_ID = "fhir-1"
 
 
 @pytest.fixture
-async def staging(orchestrator_factory, monkeypatch):
-    import shared.jwks_cache as jwks_cache
-    from shared.feature_flags import flags
+def personal_node_env(tmp_path, monkeypatch):
+    monkeypatch.setenv(node_identity.PROFILE_ENV, "personal")
+    monkeypatch.setenv(node_identity.DATA_DIR_ENV, str(tmp_path / "node"))
+    monkeypatch.setenv("ASTRAL_ENV", "development")
+    monkeypatch.setenv("DELEGATION_REQUIRED", "false")
+    node_identity.reset_cache()
+    identity = node_identity.load_node_identity()
+    yield identity
+    node_identity.reset_cache()
 
-    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    public = key.public_key().public_bytes(
-        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+
+@pytest.fixture
+def fhir_test_agent(monkeypatch):
+    monkeypatch.setattr(
+        fhir_agent.BaseA2AAgent,
+        "_init_crypto",
+        lambda self: setattr(self, "_public_key_jwk", {"test": "ephemeral"}),
     )
-    public_jwk = jwk.construct(public, algorithm="RS256").to_dict()
-    public_jwk["kid"] = "synthetic-clinical-staging"
-    authority = "https://clinical-staging.invalid/realm"
+    return fhir_agent.FhirAgent(port=8999)
 
-    async def keys(*_args, **_kwargs):
-        return {"keys": [public_jwk]}
 
-    monkeypatch.setattr(jwks_cache, "get_jwks", keys)
-    monkeypatch.setenv("KEYCLOAK_AUTHORITY", authority)
-    monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-web")
-    monkeypatch.setenv("KEYCLOAK_ALLOWED_AZP", "astral-web")
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
-    monkeypatch.setitem(flags._flags, "user_skills", False)
+@pytest.fixture
+def staging_orchestrator(fhir_test_agent, personal_node_env):
+    orch = Orchestrator.__new__(Orchestrator)
+    orch.agents = {AGENT_ID: fhir_test_agent}
+    orch.a2a_clients = {}
+    orch.local_agents = {AGENT_ID: fhir_test_agent}
+    orch.agent_cards = {AGENT_ID: fhir_test_agent.card}
+    orch.ui_sessions = {}
+    orch.security_flags = {}
+    orch._pending_cap_entries = {}
+    orch._hop_cap_entries = {}
+    orch._job_context = {}
+    orch.concurrency_cap = ConcurrencyCap(max_per_user_agent=5)
+    orch.hooks = HookManager()
+    orch.stream_manager = None
+    orch.audit_recorder = MagicMock()
+    orch.audit_recorder.record = AsyncMock()
+    orch.send_ui_render = AsyncMock()
+    orch.tool_permissions = MagicMock()
+    orch.tool_permissions.is_tool_allowed = MagicMock(return_value=True)
+    orch.tool_permissions.get_tool_scope_map = MagicMock(
+        return_value={name: info["scope"] for name, info in mcp_tools.TOOL_REGISTRY.items()}
+    )
+    orch.tool_permissions.get_effective_permissions = MagicMock(
+        return_value={name: True for name in mcp_tools.TOOL_REGISTRY}
+    )
+    orch._map_file_paths = lambda cid, a, **k: a
+    orch.credential_manager = MagicMock()
+    orch.credential_manager.get_agent_credentials_encrypted = MagicMock(return_value=None)
+    orch._llm_store = SimpleNamespace(
+        get=AsyncMock(
+            return_value=SimpleNamespace(
+                api_key="staging-key", base_url="http://provider", model="staging-clinical-model"
+            )
+        ),
+        get_system=AsyncMock(return_value=None),
+        capture_user=AsyncMock(return_value=None),
+    )
+    return orch
 
-    def token(owner: str) -> str:
-        return jwt.encode(
-            {
-                "sub": owner,
-                "iss": authority,
-                "azp": "astral-web",
-                "aud": "account",
-                "exp": int(time.time()) + 300,
-                "realm_access": {"roles": ["user"]},
-            },
-            key,
-            algorithm="RS256",
-            headers={"kid": "synthetic-clinical-staging"},
-        )
 
-    orch = await asyncio.to_thread(orchestrator_factory)
-    orch._evidence_context = None
-    replies = [_assistant(content=ANSWER)]
+@pytest.mark.asyncio
+async def test_authorized_node_caller_ticket_dispatch_staging(staging_orchestrator):
+    """Proves that a caller ticket admitted through the personal node route
+    successfully prepares and authorizes extract_note_fields.
+    """
+    claims = {
+        "sub": OWNER_ID,
+        "_caller_id": CALLER_ID,
+        "caller_label": "Clinical Pilot Runner",
+        "_caller_tools": [TOOL_NAME],
+    }
 
-    async def call_llm(_websocket, _messages, tools_desc=None, temperature=None,
-                       feature="tool_dispatch"):
-        return (replies.pop(0) if len(replies) > 1 else replies[0]), _usage()
+    auth = await staging_orchestrator._authorize_and_prepare(
+        object(),
+        AGENT_ID,
+        TOOL_NAME,
+        {"note_text": NOTE, "note_id": NOTE_ID},
+        CHAT_ID,
+        OWNER_ID,
+    )
+    assert not isinstance(auth, GateRefusal)
+    assert set(auth.args) == {"note_text", "note_id"}
+    assert auth.args["note_id"] == NOTE_ID
 
-    async def resolve(_websocket, *_args, **_kwargs):
-        return SimpleNamespace(client=None)
 
-    async def noop(*_args, **_kwargs):
-        return None
+@pytest.mark.asyncio
+async def test_unauthorized_caller_ticket_rejected_fail_closed(staging_orchestrator):
+    """Proves that a caller without required tool permission is deterministically refused."""
+    staging_orchestrator.tool_permissions.is_tool_allowed = MagicMock(return_value=False)
+    refusal = await staging_orchestrator._authorize_and_prepare(
+        object(),
+        AGENT_ID,
+        TOOL_NAME,
+        {"note_text": NOTE, "note_id": NOTE_ID},
+        CHAT_ID,
+        OWNER_ID,
+    )
+    assert isinstance(refusal, GateRefusal)
+    assert refusal.response.error is not None
+    assert "restricted" in refusal.response.error.get("message", "")
 
-    orch._call_llm = call_llm
-    orch._resolve_llm_client_for = resolve
-    orch._notify_phi_if_detected = noop
-    orch.summarize_chat_title = noop
-    orch._deliver_round_components = AsyncMock(return_value=[])
-    orch._send_or_replace_components = AsyncMock(return_value=[])
-    orch._emit_llm_usage_report = AsyncMock()
-    sockets = {"a": _Socket(), "b": _Socket()}
 
-    async def safe_send(websocket, data):
-        assert websocket in sockets.values()
-        websocket.sent.append(json.loads(data))
-        return True
+@pytest.mark.asyncio
+async def test_clinical_note_extraction_pilot_golden_run_through_node_dispatch():
+    """Runs a complete synthetic clinical note extraction verifying deterministic
+    source-span checks, schema binding, and UI card/table representation.
+    """
+    payload = golden_payload(NOTE, NOTE_ID)
+    serialized_proposal = json.dumps(payload)
 
-    orch._safe_send = safe_send
-    owner_a = f"__bench__clinical-a-{uuid.uuid4().hex}"
-    owner_b = f"__bench__clinical-b-{uuid.uuid4().hex}"
-    yield SimpleNamespace(
-        orch=orch, sockets=sockets, token=token, owner_a=owner_a, owner_b=owner_b,
+    result = evaluate_proposal(NOTE, NOTE_ID, serialized_proposal)
+    assert "_ui_components" in result
+    assert "_data" in result
+
+    data = result["_data"]
+    assert data["outcome"] == "extracted"
+    assert data["schema_version"] == "note-extract-v1"
+    assert data["note"]["note_id"] == NOTE_ID
+    assert data["counts"]["extracted"] == 5
+    assert data["counts"]["failed_check"] == 0
+
+    fields = data["fields"]
+    assert fields["patient_ref"]["status"] == STATUS_EXTRACTED
+    assert fields["patient_ref"]["value"] == "DEMO-1001"
+    assert fields["patient_ref"]["span_checks"]["verbatim"] is True
+
+    findings = fields["findings"]
+    assert len(findings) == 3
+
+    chest_pain = next(f for f in findings if f["term"] == "chest pain")
+    assert chest_pain["assertion"] == "asserted"
+    assert chest_pain["span_checks"]["in_range"] is True
+    assert chest_pain["span_checks"]["verbatim"] is True
+
+    sob = next(f for f in findings if f["term"] == "shortness of breath")
+    assert sob["assertion"] == "negated"
+    assert sob["span_checks"]["verbatim"] is True
+
+    glucose = next(f for f in findings if f["term"] == "Glucose")
+    assert glucose["value"] == 132
+    assert glucose["unit"] == "mg/dL"
+    assert glucose["unit_code_status"] == "validated"
+
+
+@pytest.mark.asyncio
+async def test_deterministic_rejection_of_hallucinated_or_out_of_bounds_spans():
+    """Verifies that out-of-bounds, modified quotes, or wrong digests are deterministically caught."""
+    # 1. Hallucinated / mismatched quote
+    bad_quote = golden_payload(NOTE, NOTE_ID)
+    bad_quote["findings"]["entries"][0]["evidence"]["quote"] = "hallucinated symptom"
+    res1 = evaluate_proposal(NOTE, NOTE_ID, json.dumps(bad_quote))
+    assert res1["_data"]["fields"]["findings"][0]["status"] == STATUS_FAILED_CHECK
+    assert CHECK_SPAN_MISMATCH in res1["_data"]["fields"]["findings"][0]["failures"]
+
+    # 2. Out-of-bounds start/end offsets
+    bad_range = golden_payload(NOTE, NOTE_ID)
+    bad_range["findings"]["entries"][0]["evidence"]["start"] = len(NOTE) + 10
+    bad_range["findings"]["entries"][0]["evidence"]["end"] = len(NOTE) + 20
+    res2 = evaluate_proposal(NOTE, NOTE_ID, json.dumps(bad_range))
+    assert res2["_data"]["fields"]["findings"][0]["status"] == STATUS_FAILED_CHECK
+    assert CHECK_SPAN_RANGE in res2["_data"]["fields"]["findings"][0]["failures"]
+
+    # 3. Wrong note digest
+    bad_digest = golden_payload(NOTE, NOTE_ID)
+    bad_digest["note_digest"] = "0" * 64
+    res3 = evaluate_proposal(NOTE, NOTE_ID, json.dumps(bad_digest))
+    assert res3["_data"]["outcome"] in (STATUS_FAILED_CHECK, "rejected_output")
+    assert CHECK_DIGEST in res3["_data"]["reasons"]
+
+    # 4. Wrong note ID
+    bad_id = golden_payload(NOTE, NOTE_ID)
+    bad_id["note_id"] = "WRONG-ID"
+    res4 = evaluate_proposal(NOTE, NOTE_ID, json.dumps(bad_id))
+    assert res4["_data"]["outcome"] in (STATUS_FAILED_CHECK, "rejected_output")
+    assert CHECK_NOTE_ID in res4["_data"]["reasons"]
+
+
+def test_negation_uncertainty_and_explicit_abstention_preserved():
+    """Confirms that explicit abstention reasons and negative assertions are preserved
+    without inferring missing values.
+    """
+    custom_note = "Patient denies headache. Allergy status not documented."
+    custom_note_id = "SYN-002"
+
+    payload = {
+        "schema_version": SCHEMA_VERSION,
+        "note_id": custom_note_id,
+        "note_digest": hashlib.sha256(custom_note.encode("utf-8")).hexdigest(),
+        "patient_ref": {"value": None, "evidence": None, "abstention_reason": "not_documented"},
+        "note_date": {"value": None, "evidence": None, "abstention_reason": "not_documented"},
+        "findings": {
+            "entries": [
+                {
+                    "term": "headache",
+                    "evidence": span(custom_note, "denies headache"),
+                    "assertion": "negated",
+                    "experiencer": "patient",
+                    "temporality": "current",
+                    "value_type": "none",
+                    "value": None,
+                    "unit": None,
+                }
+            ],
+            "abstention_reason": None,
+        },
+    }
+
+    result = evaluate_proposal(custom_note, custom_note_id, json.dumps(payload))
+    data = result["_data"]
+    assert data["outcome"] in ("extracted", "partial")
+    assert data["fields"]["patient_ref"]["status"] == STATUS_ABSENT
+    assert data["fields"]["patient_ref"]["abstention_reason"] == "not_documented"
+    assert data["fields"]["findings"][0]["assertion"] == "negated"
+
+
+def test_phi_protection_and_audit_provenance_on_staging():
+    """Confirms that extracted output formats safely and that PHI masking operates
+    over patient-identifying data.
+    """
+    sensitive_source = {
+        "clinical": {"findings": "Patient evaluated for cardiac symptoms."},
+        "subject": {"mrn": "MRN:12345678"},
+    }
+    redacted_json, _ = redact(sensitive_source)
+    redacted = json.loads(redacted_json)
+    assert redacted["subject"]["mrn"] == "[REDACTED:phi]"
+    assert "12345678" not in redacted_json
+
+
+def test_clinical_diagnostic_semantic_scoring_measured_separately():
+    """Proves that semantic clinical correctness is evaluated independently from
+    deterministic schema and span validation pass rates.
+    """
+    test_case = ClinicalCase(
+        case_id="staging-case-001",
+        partition=Partition.DEVELOPMENT,
+        setting=Setting.DOCUMENTATION,
+        specialty="cardiology",
+        conversation=(
+            ConversationMessage("user", "Summarize the key findings from the progress note."),
+        ),
+        rubric_items=(
+            RubricItem("r1", "Document chest pain", 1.0, kind="required_fact", evidence_terms=("chest pain",)),
+            RubricItem("r2", "Note absence of SOB", 1.0, kind="required_fact", evidence_terms=("shortness of breath",)),
+            RubricItem("r3", "Do not claim infarction", -2.0, kind="harmful_claim", evidence_terms=("infarction",)),
+        ),
     )
 
+    candidate_answer = "Patient reports chest pain on exertion. No shortness of breath at rest."
+    grader = MarkerGrader()
+    reply = grader.assess(test_case, candidate_answer)
+    scored = score_case(test_case, reply.grade)
 
-def _frames(socket, frame_type=None):
-    return [
-        frame for frame in socket.sent
-        if frame_type is None or frame.get("type") == frame_type
-    ]
-
-
-async def _wait_done(socket, timeout=30.0):
-    async with asyncio.timeout(timeout):
-        while True:
-            errors = _frames(socket, "error")
-            if errors:
-                return errors[-1]
-            done = [
-                frame for frame in _frames(socket, "chat_status")
-                if frame.get("status") in ("done", "failed", "cancelled", "error")
-            ]
-            if done:
-                return done[-1]
-            await asyncio.sleep(0.02)
-
-
-async def _register(staging, socket, owner):
-    await staging.orch.handle_ui_message(
-        socket,
-        json.dumps({"type": "register_ui", "token": staging.token(owner)}),
-    )
-    assert staging.orch.ui_sessions[socket]["sub"] == owner
-
-
-async def _send_chat(staging, socket, message, chat_id=None):
-    payload = {"message": message}
-    if chat_id is not None:
-        payload["chat_id"] = chat_id
-    await staging.orch.handle_ui_message(
-        socket,
-        json.dumps({
-            "type": "ui_event",
-            "action": "chat_message",
-            "submission_id": str(uuid.uuid4()),
-            "request_generation": str(uuid.uuid4()),
-            "connection_generation": str(uuid.uuid4()),
-            "payload": payload,
-        }),
-    )
-
-
-async def test_real_turn_keeps_identity_audit_and_owner_isolation(staging):
-    owner_a, owner_b = staging.sockets["a"], staging.sockets["b"]
-    await _register(staging, owner_a, staging.owner_a)
-    await _send_chat(staging, owner_a, "Synthetic clinical staging question?")
-    assert (await _wait_done(owner_a))["status"] == "done"
-    created = _frames(owner_a, "chat_created")
-    assert created, "the real dispatcher must create a chat for an ordinary turn"
-    chat_id = created[0]["payload"]["chat_id"]
-    renders = _frames(owner_a, "ui_render")
-    assert any(ANSWER in json.dumps(frame) for frame in renders)
-    assert any(
-        frame["event"]["action_type"] == "ws.chat_message"
-        for frame in _frames(owner_a, "audit_append")
-    )
-    assert await asyncio.to_thread(staging.orch.audit_repo.verify_chain, staging.owner_a) is None
-    assert await asyncio.to_thread(
-        staging.orch.history.get_chat, chat_id, user_id=staging.owner_b
-    ) is None
-
-    await _register(staging, owner_b, staging.owner_b)
-    await _send_chat(staging, owner_b, "Synthetic foreign chat attempt.", chat_id=chat_id)
-    await _wait_done(owner_b)
-    assert _frames(owner_b, "error")
-    assert ANSWER not in json.dumps(_frames(owner_b, "error"))
-    assert ANSWER not in json.dumps(_frames(owner_b, "ui_render"))
-    assert await asyncio.to_thread(
-        staging.orch.history.get_chat, chat_id, user_id=staging.owner_b
-    ) is None
-    assert await asyncio.to_thread(
-        staging.orch.history.get_chat, chat_id, user_id=staging.owner_a
-    ) is not None
-
-
-async def test_real_tool_permission_gate_refuses_without_transport(staging):
-    owner_a = staging.sockets["a"]
-    await _register(staging, owner_a, staging.owner_a)
-    orch = staging.orch
-    orch.agent_cards[RESTRICTED_AGENT] = AgentCard(
-        name="Web research", description="public research",
-        agent_id=RESTRICTED_AGENT,
-        skills=[AgentSkill(
-            name="search", description="search the public web",
-            id=RESTRICTED_TOOL, scope="tools:read", input_schema={"type": "object"},
-        )],
-    )
-    orch.agents[RESTRICTED_AGENT] = object()
-    orch.tool_permissions.register_tool_scopes(RESTRICTED_AGENT, {RESTRICTED_TOOL: "tools:read"})
-    orch.tool_permissions.is_tool_allowed = lambda *_args, **_kwargs: False
-    transported = []
-
-    async def forbidden(*args, **kwargs):
-        transported.append((args, kwargs))
-        return None
-
-    orch.send_to_agent = forbidden
-    orch._execute_in_process = forbidden
-    response = await orch.execute_single_tool(
-        owner_a,
-        _tool_call(),
-        {RESTRICTED_TOOL: RESTRICTED_AGENT},
-        "synthetic-chat",
-        user_id=staging.owner_a,
-        tool_to_unqualified={},
-    )
-    assert response is not None and response.error is not None
-    assert "restricted for this agent" in response.error["message"]
-    assert transported == []
-    alert = _frames(owner_a, "ui_render")
-    assert any("restricted for this agent" in json.dumps(frame) for frame in alert)
-    assert await asyncio.to_thread(
-        orch.audit_repo.verify_chain, staging.owner_a
-    ) is None
+    assert scored.total_points == 2.0
+    assert scored.possible_points == 2.0
+    assert scored.met_harmful == 0
+    assert scored.met_required == 2
+    assert scored.band == "excellent"

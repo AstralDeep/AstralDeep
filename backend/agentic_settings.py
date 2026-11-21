@@ -1,5 +1,5 @@
 """Environment-driven defaults for offline grants, the scheduler loop, and dreaming
-consolidation, read by dreaming/scheduling.py, orchestrator/offline_grant.py,
+consolidation, read by dreaming/scheduling.py,
 scheduler/loop.py, and scheduler/api.py.
 """
 

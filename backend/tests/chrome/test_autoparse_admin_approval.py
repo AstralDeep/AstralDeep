@@ -80,3 +80,33 @@ async def test_non_auto_attachment_draft_uses_ownership_not_admin():
     await agentic_creation._h_draft_approve(
         orch, object(), user_id="owner", roles=["user"], payload={"draft_id": "d-normal"})
     assert orch._lifecycle.approve_called_with == "d-normal"
+
+
+@pytest.mark.asyncio
+async def test_promoting_a_parser_tells_the_requester_to_ask_again(monkeypatch):
+    from orchestrator import attachment_autoparse
+
+    class _Repo:
+        def get_by_draft(self, draft_id, for_administration=False):
+            return {"gap_fingerprint": "gap-1", "extension": "parquet", "requested_by": "uploader"}
+
+        def mark_live(self, gap, **kwargs):
+            self.live = (gap, kwargs)
+
+    repo = _Repo()
+    notices = []
+
+    async def notify(orch, user_id, message, chat_id=None):
+        notices.append((user_id, message))
+
+    monkeypatch.setattr(agentic_creation, "_parser_repository", lambda orch: repo)
+    monkeypatch.setattr(attachment_autoparse, "_notify_user", notify)
+    orch = _fake_orch(_DRAFT)
+    orch.tool_permissions = types.SimpleNamespace(
+        scopes_required_by_tools=lambda agent_id: [], set_agent_scopes=lambda *a: None)
+
+    await agentic_creation._promote_parser_global(
+        orch, _DRAFT, "parquet-parser-1", approved_by="some-admin")
+
+    assert repo.live[0] == "gap-1"
+    assert notices == [("uploader", "The .parquet reader is live — ask again to read your file.")]

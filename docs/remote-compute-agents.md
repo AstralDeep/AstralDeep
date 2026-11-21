@@ -46,7 +46,7 @@ render, native `components()`, and each `chrome_*` handler — re-checks the
 flag itself, so a crafted `ui_event` cannot mutate machine state while the
 feature is off.
 
-## Dependency record (FR-054, Constitution V exception D1)
+## Dependency record (FR-054, exception D1)
 
 Feature 063 adds the product's SSH client library to the backend runtime
 image, under the recorded lead-developer approval **D1 (2026-07-23)** in
@@ -240,7 +240,7 @@ secrets:
 
 The FR-052 live-verification checklist for a candidate image lives in
 [quickstart.md](../specs/063-remote-compute-agents/quickstart.md#live-verification-checklist-fr-052-sc-016).
-The broader service posture, Keycloak setup, TLS, readiness, and rollback
+The broader service posture, TLS, readiness, and rollback
 entry points remain in the
 [production deployment guide](production-deployment.md).
 

@@ -3,72 +3,12 @@ token-injected shell route and the StaticFiles mount serving client.js/astral.cs
 from AstralProjection's packaged static resources.
 """
 
-import re
 from pathlib import Path
 
-import pytest
 from astralprojection.resources import static_root, template_path, vendor_path
-from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse
-from fastapi.staticfiles import StaticFiles
-from fastapi.testclient import TestClient
 
 STATIC_ROOT = Path(str(static_root()))
 SHELL = template_path("shell.html")
-
-
-@pytest.fixture
-def client(monkeypatch):
-    monkeypatch.setenv("USE_MOCK_AUTH", "true")
-    from orchestrator.orchestrator import _apply_asset_versions
-    from orchestrator.web_auth import session_token
-
-    app = FastAPI()
-
-    @app.get("/", response_class=HTMLResponse)
-    async def shell(request: Request):
-        html = SHELL.read_text(encoding="utf-8")
-        html = html.replace("%%ASTRAL_TOKEN%%", session_token(request) or "")
-        return HTMLResponse(_apply_asset_versions(html, str(STATIC_ROOT)))
-
-    app.mount("/static", StaticFiles(directory=str(STATIC_ROOT)), name="static")
-    return TestClient(app)
-
-
-def test_shell_served_with_token(client):
-    resp = client.get("/")
-    assert resp.status_code == 200
-    body = resp.text
-    assert "AstralDeep" in body
-    assert "/static/client.js" in body and "/static/astral.css" in body
-    assert re.search(
-        r'<link rel="icon" type="image/png" '
-        r'href="/static/img/astra-fav\.png\?v=[0-9a-f]{12}">', body)
-    assert re.search(r'/static/client\.js\?v=[0-9a-f]{12}', body)
-    assert re.search(r'/static/astral\.css\?v=[0-9a-f]{12}', body)
-    assert "%%ASTRAL_V:" not in body
-    assert "%%ASTRAL_TOKEN%%" not in body
-    assert 'window.__ASTRAL_TOKEN__ = "dev-token"' in body
-
-
-def test_brand_image_assets_served(client):
-    for path in ("/static/img/AstralDeep.png", "/static/img/astra-fav.png"):
-        resp = client.get(path)
-        assert resp.status_code == 200, f"missing asset: {path}"
-        assert resp.headers["content-type"] == "image/png"
-        assert resp.content[:8] == b"\x89PNG\r\n\x1a\n"
-
-
-def test_client_js_served(client):
-    resp = client.get("/static/client.js")
-    assert resp.status_code == 200
-    assert "register_ui" in resp.text and "ui_stream_data" in resp.text
-
-
-def test_astral_css_served(client):
-    resp = client.get("/static/astral.css")
-    assert resp.status_code == 200
-    assert "--astral-primary" in resp.text
 
 
 def test_vendor_assets_present():

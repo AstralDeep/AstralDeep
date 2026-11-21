@@ -723,6 +723,26 @@ def test_nonfinite_saved_json_recovers_visibly(database: PlaneTestRuntime) -> No
     assert parts[0]["code"] == "saved_content_unrenderable"
 
 
+@pytest.mark.parametrize("text", [
+    "[urgent] please fix this",
+    "[2026-11-06 12:00:01] ERROR boom",
+    "{name} is a placeholder, what does it do?",
+    "[x*2 for x in xs]",
+])
+def test_a_user_message_that_looks_like_json_stays_their_text(
+    database: PlaneTestRuntime, text: str,
+) -> None:
+    _create_chat(database)
+    database.execute(
+        "INSERT INTO messages (chat_id, user_id, role, content, timestamp) "
+        "VALUES (?, ?, 'user', ?, ?)",
+        (CHAT_ID, OWNER, json.dumps(text), 1_752_664_803_500),
+    )
+
+    parts = _snapshot(_repository(database))["transcript"][0]["parts"]
+    assert parts == [{"type": "text", "text": text}]
+
+
 def test_transient_scope_is_exact_sequenced_and_never_relabels_snapshots() -> None:
     orchestrator = object.__new__(Orchestrator)
     socket = object()

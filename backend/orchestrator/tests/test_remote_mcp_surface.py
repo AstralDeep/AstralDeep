@@ -63,14 +63,15 @@ def test_native_edit_form_submission_keeps_connector_id(monkeypatch):
 
 def test_oauth_authorization_link_is_visible_in_sdui_without_credentials(monkeypatch):
     orch = _orch()
-    auth_url = "https://login.example/authorize?state=opaque&code_challenge=public"
+    auth_url = "https://deep.example/api/remote-mcp/oauth/start?state=opaque&x=public"
     monkeypatch.setattr(remote_mcp, "_enabled", lambda: True)
     monkeypatch.setattr("orchestrator.mcp_authz.canonical_public_base_url", lambda: "https://deep.example")
 
-    async def begin(_orch, owner, connector_id, redirect_uri):
+    async def begin(_orch, owner, connector_id, redirect_uri, start_uri):
         assert owner == "owner"
         assert connector_id == "a" * 32
         assert redirect_uri == "https://deep.example/api/remote-mcp/oauth/callback"
+        assert start_uri == "https://deep.example/api/remote-mcp/oauth/start"
         return auth_url
 
     monkeypatch.setattr("orchestrator.remote_mcp_oauth.begin_authorization", begin)
@@ -86,7 +87,7 @@ def test_oauth_authorization_link_is_visible_in_sdui_without_credentials(monkeyp
     assert auth_url not in result[2]
     html = asyncio.run(remote_mcp.render(orch, "owner", [], result[1]))
     assert "Open OAuth authorization page</a>" in html
-    assert 'href="https://login.example/authorize?state=opaque&amp;code_challenge=public"' in html
+    assert 'href="https://deep.example/api/remote-mcp/oauth/start?state=opaque&amp;x=public"' in html
 
 
 def test_surface_render_edit_and_cards_escape_remote_metadata(monkeypatch):
@@ -343,3 +344,34 @@ def test_edit_submission_cannot_recreate_connector_deleted_during_save(monkeypat
     }))
     assert "saved" not in result[2].lower()
     assert remote_mcp_connectors.list_connectors(orch, "owner") == []
+
+
+def test_surface_flags_changed_and_removed_tools_in_both_renderings(monkeypatch):
+    orch = _orch()
+    monkeypatch.setattr(remote_mcp, "_enabled", lambda: True)
+    saved = remote_mcp_connectors.save_connector(orch, "owner", {
+        "name": "Fixture", "url": "https://mcp.example/mcp", "transport": "sse", "auth_type": "none",
+        "tools_catalog": [{"name": "echo", "description": "new text", "inputSchema": {"type": "object"}}],
+        "tools": {"echo": False},
+        "tool_pins": {"echo": "sha256:" + "a" * 64, "gone": "sha256:" + "b" * 64},
+        "tool_changes": {"echo": {"status": "changed", "pinned": "sha256:" + "a" * 64, "current": "sha256:" + "c" * 64},
+                         "gone": {"status": "removed", "pinned": "sha256:" + "b" * 64, "current": ""}},
+    })
+    html = asyncio.run(remote_mcp.render(orch, "owner", [], {}))
+    components = json.dumps(asyncio.run(remote_mcp.components(orch, "owner", [], {})))
+    for rendered in (html, components):
+        assert "Definition changed since you approved it" in rendered
+        assert "removed this tool since you approved it" in rendered
+    assert saved["tool_changes"]["gone"]["status"] == "removed"
+
+
+def test_test_action_reports_tools_that_changed_since_approval(monkeypatch):
+    orch = _orch()
+    monkeypatch.setattr(remote_mcp, "_enabled", lambda: True)
+    saved = remote_mcp_connectors.save_connector(orch, "owner", {
+        "name": "Fixture", "url": "https://mcp.example/mcp", "transport": "sse", "auth_type": "none",
+        "tool_changes": {"echo": {"status": "changed", "pinned": "sha256:" + "a" * 64, "current": ""}},
+    })
+    monkeypatch.setattr(remote_mcp_connectors, "refresh_tools", lambda *args, **kwargs: [])
+    result = asyncio.run(remote_mcp._test(orch, None, "owner", [], {"connector_id": saved["id"]}))
+    assert "1 approved tools changed or were removed" in result[2]

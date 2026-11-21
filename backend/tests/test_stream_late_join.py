@@ -8,7 +8,7 @@ import json
 import os
 import sys
 import uuid
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -159,6 +159,38 @@ async def test_load_chat_attaches_and_replays_current_state(env):
     for ws in (ws1, ws2):
         seqs = [f["seq"] for f in _frames(ws, "ui_stream_data")]
         assert 2 in seqs, f"live chunk missing on {ws}: {seqs}"
+
+
+@pytest.mark.parametrize("unavailable", ["streams", "tasks"])
+async def test_load_chat_replays_available_background_state_when_a_service_is_unavailable(env, monkeypatch, unavailable):
+    from orchestrator.async_tasks import BackgroundTask
+
+    orch, ws1, ws2, chat_id, user_id = env
+    monkeypatch.setitem(flags._flags, "bg_continuity", True)
+    stream_id = await _subscribe_and_chunk(orch, ws1, chat_id, user_id)
+    task = BackgroundTask(task_id="active-job", chat_id=chat_id, user_id=user_id, title="Active job")
+    lookup = AsyncMock(return_value=task)
+    monkeypatch.setattr(orch.async_task_manager, "get_active_for_chat", lookup)
+    if unavailable == "tasks":
+        lookup.side_effect = RuntimeError("task lookup unavailable")
+    else:
+        for operation in ("resume", "attach_to_chat"):
+            monkeypatch.setattr(orch.stream_manager, operation, AsyncMock(side_effect=RuntimeError("streams unavailable")))
+
+    await _load_chat(orch, ws2, chat_id)
+
+    assert _frames(ws2, "chat_loaded")
+    lookup.assert_awaited_once_with(chat_id)
+    if unavailable == "tasks":
+        assert [frame["stream_id"] for frame in _frames(ws2, "stream_subscribed")] == [stream_id]
+        assert _frames(ws2, "task_started") == []
+    else:
+        assert _frames(ws2, "stream_subscribed") == []
+        statuses = [frame["status"] for frame in _frames(ws2, "chat_status")]
+        assert "processing_async" in statuses
+        assert [frame["payload"] for frame in _frames(ws2, "task_started")] == [
+            {"task_id": task.task_id, "chat_id": chat_id, "status": task.status.value, "title": task.title, "replay": True}
+        ]
 
 
 async def test_load_chat_attach_without_retained_chunk_sends_no_replay(env):

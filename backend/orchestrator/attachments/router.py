@@ -14,9 +14,13 @@ from typing import Literal, Optional
 
 from astralplane import BlobSizeLimitError
 from astralplane.errors import PlaneError
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import JSONResponse
 from orchestrator.attachments import content_type as ct
+from orchestrator.attachments.capture_source import (
+    CaptureSourceError,
+    parse_capture_source,
+)
 from orchestrator.attachments.materialization import (
     AttachmentContentTypeMismatchError,
     materialization_service_from_orchestrator,
@@ -45,6 +49,36 @@ attachments_router = APIRouter(tags=["Files"])
 
 class AccountRetirementRequest(BaseModel):
     confirmation: Literal["retire-my-account"]
+
+
+async def _audit_capture_event(
+    user_id: str,
+    *,
+    action_type: str,
+    outcome: str,
+    description: str,
+    inputs_meta: Optional[dict] = None,
+) -> None:
+    try:
+        from audit.recorder import get_recorder
+        from audit.schemas import AuditEventCreate
+
+        rec = get_recorder()
+        if rec is None:
+            return
+        await rec.record(AuditEventCreate(
+            actor_user_id=user_id or "legacy",
+            auth_principal=user_id or "legacy",
+            event_class="file",
+            action_type=action_type,
+            description=description,
+            correlation_id=str(uuid.uuid4()),
+            outcome=outcome,
+            inputs_meta=inputs_meta or {},
+            started_at=datetime.now(UTC),
+        ))
+    except Exception:
+        logger.warning("attachment capture audit failed", exc_info=True)
 
 
 def _get_orchestrator(request: Request):
@@ -129,19 +163,40 @@ def _attachment_to_response(att) -> dict:
         "medical imaging formats (DICOM, NIfTI, CZI, NRRD/MHA/MHD, OME-TIFF, "
         "SVS, NDPI). The accepted-type list is broad (feature 031); an accepted "
         "type with no reader eagerly triggers safe, admin-approved auto-creation "
-        "of one. Files are user-scoped and visible across the user's chats."
+        "of one. Files are user-scoped and visible across the user's chats. "
+        "Optionally accepts a `source` form field holding a strict JSON "
+        "window-capture descriptor (kind `window_capture`, `app_bundle_id`, "
+        "`window_title`, `captured_at` ISO-8601, "
+        "`accessibility_text_truncated`); unknown kinds, unknown fields, or "
+        "oversized values are refused with 400 and nothing is stored."
     ),
     status_code=status.HTTP_201_CREATED,
 )
 async def upload_file(
     request: Request,
     file: UploadFile = File(...),
+    source: Optional[str] = Form(default=None),
     user_id: str = Depends(require_user_id),
 ):
     raw_filename = file.filename or ""
     safe_filename = os.path.basename(raw_filename)
     if not safe_filename:
         raise HTTPException(status_code=400, detail="Filename is required")
+
+    try:
+        capture_source = parse_capture_source(source)
+    except CaptureSourceError as exc:
+        await _audit_capture_event(
+            user_id,
+            action_type="attachment.source_refused",
+            outcome="failure",
+            description=f"Refused window-capture source descriptor: {exc.reason}",
+            inputs_meta={"reason": exc.reason},
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid source descriptor: {exc.reason}",
+        ) from exc
 
     extension = ct.normalise_extension(safe_filename)
     category = ct.category_for_extension(extension)
@@ -223,7 +278,30 @@ async def upload_file(
         f"for user={user_id}"
     )
 
+    if capture_source is not None:
+        await _audit_capture_event(
+            user_id,
+            action_type="attachment.created",
+            outcome="success",
+            description=(
+                "Recorded window-capture provenance for attachment "
+                f"{attachment.attachment_id}"
+            ),
+            inputs_meta={
+                "kind": capture_source.kind,
+                "app_bundle_id": capture_source.app_bundle_id,
+                "window_title": capture_source.window_title,
+                "captured_at": capture_source.captured_at,
+                "accessibility_text_truncated": capture_source.accessibility_text_truncated,
+                "sha256": attachment.sha256,
+                "size_bytes": attachment.size_bytes,
+                "category": attachment.category,
+            },
+        )
+
     response_body = _attachment_to_response(attachment)
+    if capture_source is not None:
+        response_body["source"] = capture_source.model_dump()
     response_body["parser_status"] = "covered"
     try:
         from orchestrator import attachment_autoparse

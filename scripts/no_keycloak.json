@@ -1,0 +1,83 @@
+{
+  "exclude": [
+    "specs/**",
+    "**/tests/**",
+    "**/*Tests/**",
+    "**/src/test/**",
+    "**/src/androidTest/**",
+    "docs/superpowers/**",
+    "provenance/**",
+    "**/provenance/**",
+    ".gitleaksignore",
+    "scripts/check_no_keycloak.py",
+    "scripts/no_keycloak.json",
+    ".github/workflows/ci.yml",
+    "plane/no-keycloak.json",
+    "vessel/no-keycloak.json"
+  ],
+  "pending": [
+    {
+      "path": ".github/workflows/release-readiness.yml",
+      "until": "T8.6",
+      "bound_by": ".github/workflows/release-readiness-protected.yml"
+    },
+    {
+      "path": "docker-compose.staging.yml",
+      "until": "T8.6",
+      "bound_by": "scripts/run_candidate_staging.py"
+    },
+    {
+      "path": "scripts/backend_web_service_materials.py",
+      "until": "T8.6",
+      "bound_by": "scripts/initialize_backend_web_services.py"
+    },
+    {
+      "path": "scripts/initialize_backend_web_services.py",
+      "until": "T8.6",
+      "bound_by": "scripts/produce_backend_web_qualification.py"
+    },
+    {
+      "path": "scripts/install_doctor.py",
+      "until": "T8"
+    },
+    {
+      "path": "scripts/node/install-personal-node.sh",
+      "until": "T8"
+    },
+    {
+      "path": "scripts/probe_backend_web_auth.py",
+      "until": "T8.6",
+      "bound_by": "scripts/produce_backend_web_qualification.py"
+    },
+    {
+      "path": "scripts/produce_backend_web_qualification.py",
+      "until": "T8.6",
+      "bound_by": ".github/workflows/backend-web-qualification-protected.yml"
+    },
+    {
+      "path": "scripts/run_backend_web_qualification.py",
+      "until": "T8.6",
+      "bound_by": "scripts/produce_backend_web_qualification.py"
+    },
+    {
+      "path": "scripts/run_candidate_staging.py",
+      "until": "T8.6",
+      "bound_by": ".github/workflows/release-readiness.yml"
+    },
+    {
+      "path": "scripts/validate_backend_web_evidence.py",
+      "until": "T8.6",
+      "bound_by": ".github/workflows/backend-web-readiness.yml"
+    },
+    {
+      "path": "scripts/validate_release_evidence.py",
+      "until": "T8.6",
+      "bound_by": ".github/workflows/release-readiness.yml"
+    },
+    {
+      "path": "scripts/wait_backend_web_services.py",
+      "until": "T8.6",
+      "bound_by": "scripts/initialize_backend_web_services.py"
+    }
+  ]
+}

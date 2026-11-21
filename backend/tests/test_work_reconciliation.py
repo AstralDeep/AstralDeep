@@ -16,7 +16,6 @@ from types import SimpleNamespace
 
 import pytest
 
-os.environ.setdefault("USE_MOCK_AUTH", "true")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from orchestrator import mesh_enrollment as me  # noqa: E402
@@ -722,7 +721,6 @@ def test_report_accepts_valid_dicts_and_refuses_invalid_ones(encryption_key):
             "target_id": "bad",
             "outcome": "bad",
         })
-
 
 
 def test_prune_removes_every_row_of_a_purged_operation(encryption_key):

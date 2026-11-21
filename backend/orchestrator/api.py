@@ -20,7 +20,6 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from pydantic import BaseModel
 
 from orchestrator.models import (
-    ChatMessageRequest, ChatMessageResponse,
     ChatListResponse, ChatSummary,
     ChatCreateRequest, ChatCreateResponse, ProjectCreateRequest, ProjectRenameRequest,
     ChatDetailResponse, ChatDetail,
@@ -43,7 +42,6 @@ from orchestrator.auth import (
     get_current_user_payload,
     require_user_id,
     require_user_id_or_web_session,
-    security,
     verify_admin,
 )
 from shared.feature_flags import flags
@@ -55,6 +53,7 @@ from orchestrator.work_admission import (
     OwnerScope,
     SafeOperationProjection,
 )
+from orchestrator.phi_node_policy import AgentServerUnsupported
 from orchestrator.voice_api import router as _voice_control_router
 from orchestrator.workspace_export import workspace_export_router
 
@@ -503,7 +502,7 @@ async def get_operation_submission(
         "snapshot of effective admission gauges and bounded reliability "
         "counters, including the feature-080 background operation latency "
         "aggregates, with a no-store response. Deployment-wide diagnostics "
-        "require the existing Keycloak admin role: an authenticated non-admin "
+        "require the existing admin role: an authenticated non-admin "
         "principal is denied with 403 before any collector or admission "
         "inspection occurs. Ordinary owner-scoped operation reconciliation "
         "remains available to non-admin users on its own endpoints."
@@ -840,91 +839,6 @@ async def get_chat_steps(
     except Exception as exc:  # pragma: no cover
         logger.error("Failed to load chat steps: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to load steps")
-
-
-@chat_router.post(
-    "/{chat_id}/messages",
-    response_model=ChatMessageResponse,
-    summary="Send a chat message",
-    description=(
-        "Sends a message in the specified chat. This endpoint **acknowledges** the message immediately. "
-        "The actual response (LLM tool routing, UI components) will stream back over the WebSocket connection. "
-        "Connect to `ws://<host>:<port>/ws` and register to receive streaming results."
-    ),
-    responses={404: {"model": ErrorResponse}},
-)
-async def send_message(
-    request: Request,
-    chat_id: str,
-    body: ChatMessageRequest,
-    credentials=Depends(security),
-):
-    orch = _get_orchestrator(request)
-    from orchestrator import user_skills
-    from orchestrator.human_request_authority import authenticate_current_human_request
-    from orchestrator.turn_guidance_authority import (
-        bind_http_guidance, capture_turn_guidance_from_human, use_turn_guidance,
-    )
-    from persistent_agents.models import AssignmentError
-
-    origin = None
-    try:
-        caller = None
-        if user_skills.enabled():
-            caller = await authenticate_current_human_request(request,
-                boundary=getattr(orch, "human_request_boundary", None))
-            origin = await capture_turn_guidance_from_human(caller, expected_orchestrator=orch)
-            claims = caller.claims
-        else:
-            claims = await get_current_user_payload(request, credentials)
-        user_id = await require_user_id(request, claims)
-        message, display_message = body.message, body.display_message
-        if not await asyncio.to_thread(orch.history.get_chat, chat_id, user_id=user_id):
-            await asyncio.to_thread(orch.history.create_chat, chat_id, user_id=user_id)
-        if caller is not None:
-            await caller.verify_delivery()
-        websocket = next((ws for ws in orch.ui_clients
-                          if orch.ui_sessions.get(ws, {}).get("sub") == user_id), None)
-
-        async def dispatch():
-            try:
-                if origin is None:
-                    await orch.handle_chat_message(websocket, message, chat_id, display_message, user_id=user_id)
-                else:
-                    binding = bind_http_guidance(origin, expected_orchestrator=orch,
-                                                  websocket=websocket, chat_id=chat_id)
-                    with use_turn_guidance(binding, expected_orchestrator=orch):
-                        await orch.handle_chat_message(websocket, message, chat_id, display_message, user_id=user_id)
-            finally:
-                if origin is not None:
-                    origin.close()
-
-        def settled(task):
-            if origin is not None:
-                origin.close()
-            if not task.cancelled() and task.exception() is not None:
-                logger.warning("Chat message processing failed")
-
-        pending = dispatch()
-        try:
-            task = asyncio.create_task(pending)
-        except BaseException:
-            pending.close()
-            raise
-        task.add_done_callback(settled)
-    except BaseException as exc:
-        if origin is not None:
-            origin.close()
-        if isinstance(exc, AssignmentError):
-            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from None
-        raise
-
-    return ChatMessageResponse(
-        chat_id=chat_id,
-        status="accepted",
-        message="Message received. Results will stream via WebSocket." if websocket is not None
-               else "Message received. No WebSocket client connected — results will be saved to history.",
-    )
 
 
 @chat_router.get(
@@ -2203,6 +2117,8 @@ async def test_draft(
     try:
         result = await lifecycle.start_draft_agent(draft_id, websocket=ws)
         return _draft_to_response(result, orch)
+    except AgentServerUnsupported as e:
+        raise HTTPException(status_code=409, detail=e.detail())
     except (ValueError, FileNotFoundError) as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -2428,8 +2344,8 @@ def _roles_from_payload(payload: dict) -> list:
         "Feature 042 — the single server-owned chrome model (top-bar controls + "
         "settings menu), role-filtered and feature-flag-resolved for the caller. "
         "Native clients (Windows/Android) render their chrome from this; it is the "
-        "same model the web shell renders and the `chrome_menu` WS frame carries "
-        "(Constitution XII: one definition, every client renders it). Admin items "
+        "same model the web shell renders and the `chrome_menu` WS frame carries; "
+        "one definition, every client renders it. Admin items "
         "are omitted for non-admins; server-side authorization stays authoritative."
     ),
 )

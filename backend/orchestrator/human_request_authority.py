@@ -35,7 +35,7 @@ from orchestrator import auth
 from orchestrator.session_store import WebSessionStore
 from orchestrator.work_submit_authority import (
     AuthenticatedWorkRequest, _authenticate_work_request, _expiry, capture_human_caller,
-    _signed_selection,
+    SESSION_COOKIE,
 )
 from orchestrator.work_write_boundary import freeze_work_request
 from persistent_agents.models import AssignmentError
@@ -43,7 +43,7 @@ from persistent_agents.models import AssignmentError
 _HUMAN_CALLER = contextvars.ContextVar("current_human_metadata_caller", default=None)
 _SOCKET_READS = frozenset({"chrome_author_list", "chrome_user_skill_edit", "chrome_declarative_view",
                            "chrome_note_search", "chrome_turn_selection_set", "chrome_safety_verify"})
-_SOCKET_WRITES = frozenset({"chrome_user_skill_save", "chrome_user_skill_toggle",
+_SOCKET_WRITES = frozenset({"register_external_agent", "chrome_user_skill_save", "chrome_user_skill_toggle",
                            "chrome_work_continuity", "chrome_work_result_save",
                            "chrome_user_skill_delete", "chrome_declarative_command",
                            "chrome_connection_issue", "chrome_connection_revoke",
@@ -51,7 +51,6 @@ _SOCKET_WRITES = frozenset({"chrome_user_skill_save", "chrome_user_skill_toggle"
                            "chrome_safety_stop", "chrome_safety_resume",
                            "chrome_mesh_create", "chrome_mesh_confirm", "chrome_mesh_reject",
                            "chrome_mesh_rename", "chrome_mesh_revoke", "chrome_mesh_remove_invitation"})
-_GUIDANCE_READS = frozenset({"chat_message", "authorize_action", "remote_op_decision"})
 MAX_SOCKET_MESSAGE_BYTES = 128 * 1024
 
 
@@ -75,8 +74,7 @@ def _socket_method(message):
 
 def _socket_policy():
     return tuple(os.getenv(key) for key in (
-        "KEYCLOAK_AUTHORITY", "KEYCLOAK_CLIENT_ID", "KEYCLOAK_ALLOWED_AZP",
-        "USE_MOCK_AUTH", "PUBLIC_BASE_URL", "BACKEND_PUBLIC_URL",
+        "PUBLIC_BASE_URL", "BACKEND_PUBLIC_URL",
     ))
 
 
@@ -385,6 +383,8 @@ class _HumanSocketRequest:
     def __init__(self, boundary, *, websocket, context, message, method, purpose):
         if type(boundary) is not HumanRequestBoundary:
             _unavailable()
+        if purpose not in ("metadata", "skill_lookup", "voice_guidance"):
+            _unauthenticated()
         self.boundary, self.websocket, self.connection = boundary, websocket, context
         self.message = message
         self.purpose = purpose
@@ -420,20 +420,10 @@ class _HumanSocketRequest:
                 raise AssignmentError("human_query_token_refused", 403)
             # Real transport for header parsing, not a fabricated request
             transport = HTTPConnection({"type": "websocket", "headers": headers})
-            self.session_id = _signed_selection(transport)
-            from orchestrator import web_auth
-            supplied = [part.strip().split("=", 1)[0] for header in
-                transport.headers.getlist("cookie") for part in header.split(";")]
-            if web_auth.COOKIE_NAME in supplied and self.session_id is None:
+            self.session_id = None
+            if SESSION_COOKIE in [part.strip().split("=", 1)[0] for header in
+                    transport.headers.getlist("cookie") for part in header.split(";")]:
                 raise ValueError
-            if purpose == "remote_effect" and self.session_id is None:
-                raise ValueError
-            if self.session_id is not None and method == "WS_WRITE":
-                from orchestrator.work_api import _origin
-                origins = transport.headers.getlist("origin")
-                base = os.getenv("PUBLIC_BASE_URL") or os.getenv("BACKEND_PUBLIC_URL")
-                if not base or len(origins) != 1 or _origin(origins[0]) != _origin(base, base=True):
-                    raise AssignmentError("human_origin_refused", 403)
         except AssignmentError:
             raise
         except (AttributeError, KeyError, TypeError, ValueError, UnicodeError):
@@ -466,7 +456,7 @@ class _HumanSocketRequest:
                 or _socket_policy() != self.policy
                 or _socket_message(self.message) != self.message_json
                 or (self.purpose == "metadata" and _socket_method(self.message) != self.method)
-                or (self.purpose == "skill_lookup" and self.message.get("action") not in _GUIDANCE_READS)
+                or (self.purpose == "skill_lookup" and self.message.get("action") != "chat_message")
                 or (self.purpose == "voice_guidance" and not _voice_guidance_message(self.message))):
             _unauthenticated()
 
@@ -483,8 +473,7 @@ class _HumanSocketRequest:
                 def current():
                     binding.assert_host_current(expected_orchestrator)
                     self._assert_socket_snapshot()
-                    if (self.session_id is None or datetime.now(timezone.utc) < self.expiry
-                            or os.getenv("USE_MOCK_AUTH", "").strip().lower() in {"true", "1", "yes"}):
+                    if (self.session_id is None or datetime.now(timezone.utc) < self.expiry):
                         _unauthenticated()
 
                 def capture(tx):
@@ -504,7 +493,7 @@ class _HumanSocketRequest:
                     return observation
 
                 current()
-                observation = await binding.adapter.run_in_transaction(capture)
+                await binding.adapter.run_in_transaction(capture)
                 current()
                 try:
                     await auth.verify_production_token(self.token)
@@ -513,35 +502,7 @@ class _HumanSocketRequest:
                         return
                 else:
                     return
-                current()
-                claims = auth.jose_jwt.get_unverified_claims(self.token)
-                authority, client_id, _ = auth._get_keycloak_config()
-                from shared.auth_clients import is_azp_allowed
-                if (not authority or not client_id or type(claims.get("iss")) is not str
-                        or claims["iss"].rstrip("/") != authority.rstrip("/")
-                        or type(claims.get("azp")) is not str or not is_azp_allowed(claims["azp"])
-                        or _expiry(claims, self.owner_id) != self.expiry):
-                    return
-                auth._reject_non_first_party(claims)
-                await auth.verify_user(claims)
-                saved = {key: deepcopy(value) for key, value in self.captured.items()
-                         if not key.startswith("_")}
-                for value in (claims, saved):
-                    value["realm_access"] = {**value.get("realm_access", {}),
-                        "roles": sorted(set(auth._extract_roles(value)))}
-                if claims != saved:
-                    return
-
-                def verify(tx):
-                    current()
-                    binding.session_repository.bound_request_execution_waits(tx)
-                    binding.session_repository.assert_current_consent(tx, observation=observation)
-                    current()
-
-                await binding.adapter.run_in_transaction(verify)
-                current()
-                from shared.protocol import AuthRequired
-                await expected_orchestrator._safe_send(self.websocket, AuthRequired(reason="expired").to_json())
+                return
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -619,19 +580,44 @@ class _HumanSocketRequest:
         self._caller = None
 
 
+async def recheck_queued_skill_read(request):
+    if type(request) is not _HumanSocketRequest or request.purpose != "skill_lookup" or request.closed:
+        _unauthenticated()
+    fresh = capture_human_socket_request(
+        request.boundary, websocket=request.websocket, context=request.connection,
+        message=request.message, purpose=request.purpose)
+    if fresh is None:
+        _unauthenticated()
+    try:
+        if (fresh.registration is not request.registration or fresh.captured != request.captured
+                or fresh.token != request.token or fresh.owner_id != request.owner_id
+                or fresh.session_id != request.session_id or fresh.expiry != request.expiry
+                or fresh.policy != request.policy or fresh.method != request.method
+                or fresh.message_json != request.message_json
+                or fresh.connection_generation != request.connection_generation
+                or fresh.request_generation != request.request_generation
+                or fresh.submission_id != request.submission_id):
+            _unauthenticated()
+        await fresh.capture_session()
+        previous, current = request.observation, fresh.observation
+        if (previous is None) != (current is None) or (
+                previous is not None and previous.credential != current.credential):
+            _unauthenticated()
+    except BaseException:
+        fresh.close()
+        raise
+    request.close()
+    return fresh
+
+
 def capture_human_socket_request(boundary, *, websocket, context, message, purpose="metadata"):
     if purpose == "skill_lookup":
         method = ("WS_READ" if type(message) is dict and message.get("type") == "ui_event"
-                  and message.get("action") in _GUIDANCE_READS else None)
+                  and message.get("action") == "chat_message" else None)
     elif purpose == "metadata":
         method = _socket_method(message)
     elif purpose == "voice_guidance":
         method = "WS_READ" if _voice_guidance_message(message) else None
-    elif purpose == "remote_effect":
-        if type(boundary) is not HumanRequestBoundary:
-            _unavailable()
-        from orchestrator.remote_effect_ingress import pending_call
-        method = "WS_WRITE" if pending_call(boundary.orchestrator, websocket, message) is not None else None
     else:
         _unauthenticated()
     return None if method is None else _HumanSocketRequest(boundary, websocket=websocket,
@@ -643,29 +629,6 @@ def _voice_guidance_message(message):
         message.get("type") == "ui_event" and message.get("action") == "chat_message"
         and type(message.get("payload")) is dict
         and type(message["payload"].get("voice_origin")) is dict))
-
-
-async def current_socket_human_read(*, expected_orchestrator, websocket,
-                                    operation_context=None):
-    from orchestrator.connection_context import _CONNECTION_OPERATION_CONTEXT
-    context = operation_context
-    if not isinstance(context, dict):
-        context = _CONNECTION_OPERATION_CONTEXT.get() or {}
-    pending = context.get("human_request")
-    if (type(pending) is not _HumanSocketRequest or pending.purpose != "skill_lookup"
-            or pending.boundary.orchestrator is not expected_orchestrator
-            or pending.websocket is not websocket or pending.method != "WS_READ"):
-        raise AssignmentError("human_skill_lookup_unavailable", 503)
-    return await pending.authenticate()
-
-
-def retire_socket_human_read(caller):
-    if type(caller) is not CurrentHumanCaller:
-        _unauthenticated()
-    pending = caller._binding.socket_request
-    if type(pending) is not _HumanSocketRequest or pending.purpose != "skill_lookup":
-        _unauthenticated()
-    pending.close()
 
 
 @contextmanager

@@ -9,6 +9,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Optional
 
+from orchestrator import a2a_publication_signing as publication_signing
 from shared.a2a_publication import A2APublicationRegistry, PublicationRecord, PublicationStoreUnavailable
 
 logger = logging.getLogger("A2APublicationPolicy")
@@ -90,6 +91,8 @@ class A2APublicationPolicy:
                 audiences=(),
                 expires_at=None,
             )
+        if not publication_signing.can_publish(self.orchestrator):
+            return None
         record = self.registry.active_publication(agent_id)
         if (record is None or agent_id not in set(self.catalog_ids())
                 or not self.owner_matches(agent_id, record.owner)):

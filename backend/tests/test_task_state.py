@@ -1,11 +1,10 @@
 """Tests for orchestrator/task_state.py's coordinator-backed Re-Act task: the legacy
-Task dataclass stays a coordinator projection, admission and phase transitions are
-validated against work_admission.py, and sync surfaces make zero coordinator calls.
+Task dataclass stays a coordinator projection, operation states are validated against
+work_admission.py, and sync surfaces make zero coordinator calls.
 """
 
 from __future__ import annotations
 
-import asyncio
 import dataclasses
 import uuid
 from dataclasses import dataclass
@@ -15,7 +14,6 @@ import pytest
 
 from orchestrator.task_state import (
     Task,
-    TaskAdmissionError,
     TaskManager,
     TaskManagerNotBoundError,
     TaskState,
@@ -29,7 +27,6 @@ from orchestrator.work_admission import (
     OperationRequest,
     OperationState,
     OwnerScope,
-    StaleExecutionFenceError,
     WorkAdmissionCoordinator,
 )
 
@@ -399,149 +396,6 @@ def test_task_fences_are_validated_against_running_operation() -> None:
     replacement_operation = coordinator.assert_current_execution(replacement)
     manager.apply_operation(replacement_operation, execution_fence=replacement)
     assert task._execution_fence == replacement
-
-
-@pytest.mark.asyncio
-async def test_reselected_task_cancel_drops_stale_fence_until_explicit_refresh() -> None:
-    coordinator = _coordinator(_Clock())
-    manager = TaskManager(coordinator)
-    owner, operation, claim = _admit(coordinator)
-    task = manager.create_task(
-        "chat-1",
-        "user-1",
-        operation=operation,
-        owner=owner,
-        execution_fence=claim.fence,
-    )
-    replacement = coordinator.reselect_execution(claim.fence)
-
-    await manager.transition_task(task, TaskState.CANCELLED)
-    assert task._execution_fence is None
-    current = coordinator.assert_current_execution(replacement)
-    assert current.cancel_requested_at is not None
-    assert task._canonical_state() is TaskState.RUNNING
-
-    manager.apply_operation(current, execution_fence=replacement)
-    await manager.transition_task(task, TaskState.CANCELLED)
-    assert task.state is TaskState.CANCELLED
-
-
-@pytest.mark.asyncio
-async def test_concurrent_same_chat_admission_leaves_one_running_operation() -> None:
-    coordinator = _coordinator(_Clock())
-    manager = TaskManager(coordinator)
-
-    first, second = await asyncio.gather(
-        manager.admit_task("chat-1", "user-1", "first"),
-        manager.admit_task("chat-1", "user-1", "second"),
-    )
-
-    active = manager.get_active_task("chat-1")
-    assert active is second
-    assert first.state is TaskState.CANCELLED
-    status = coordinator.inspect_admission_class(AdmissionClass.INTERACTIVE)
-    assert status.active_count == 1
-
-
-@pytest.mark.asyncio
-async def test_failed_projection_terminalizes_newly_claimed_operation(
-    monkeypatch,
-) -> None:
-    coordinator = _coordinator(_Clock())
-    manager = TaskManager(coordinator)
-
-    def fail_projection(*args, **kwargs):
-        raise RuntimeError("projection failed")
-
-    monkeypatch.setattr(manager, "create_task", fail_projection)
-    with pytest.raises(RuntimeError, match="projection failed"):
-        await manager.admit_task("chat-1", "user-1", "message")
-
-    status = coordinator.inspect_admission_class(AdmissionClass.INTERACTIVE)
-    assert status.active_count == 0
-
-
-@pytest.mark.asyncio
-async def test_async_phase_and_terminal_mutations_cover_golden_paths() -> None:
-    coordinator = _coordinator(_Clock())
-    manager = TaskManager(coordinator)
-    completed = await manager.admit_task("chat-complete", "user-1", "message")
-    await manager.transition_task(
-        completed,
-        TaskState.AWAITING_TOOL,
-        current_tool="search",
-        turn_count=1,
-    )
-    assert completed.state is TaskState.AWAITING_TOOL
-    await manager.transition_task(completed, TaskState.RUNNING, current_tool=None)
-    await manager.assert_current_execution(completed)
-    await manager.transition_task(completed, TaskState.COMPLETED, turn_count=2)
-    assert completed.state is TaskState.COMPLETED
-
-    failed = await manager.admit_task("chat-failed", "user-1")
-    await manager.transition_task(failed, TaskState.FAILED, error="local detail")
-    assert failed.state is TaskState.FAILED
-    assert failed._operation.safe_summary == "Task failed"
-
-    retryable = await manager.admit_task("chat-retry", "user-1")
-    await manager.transition_task(retryable, TaskState.RETRYABLE)
-    assert retryable.state is TaskState.RETRYABLE
-    assert retryable._operation.retry_after_ms == 1000
-
-
-@pytest.mark.asyncio
-async def test_admit_context_reuse_validation_and_capacity_refusals() -> None:
-    coordinator = _coordinator(_Clock(), active_limit=1, queue_limit=0)
-    manager = TaskManager(coordinator)
-    running = await manager.admit_task("chat-1", "user-1", "first")
-
-    same = await manager.admit_task(
-        "chat-1",
-        "user-1",
-        "updated",
-        operation=running._operation,
-        owner=running._owner,
-        execution_fence=running._execution_fence,
-    )
-    assert same is running
-    assert same.message == "updated"
-
-    with pytest.raises(TaskManagerNotBoundError, match="both operation and owner"):
-        await manager.admit_task(
-            "chat-context",
-            "user-1",
-            operation=running._operation,
-        )
-    with pytest.raises(TaskAdmissionError) as refused:
-        await manager.admit_task("chat-2", "user-1")
-    assert refused.value.code == "capacity_exceeded"
-    await manager.transition_task(running, TaskState.CANCELLED)
-
-    queued_coordinator = _coordinator(_Clock(), active_limit=1, queue_limit=1)
-    queued_manager = TaskManager(queued_coordinator)
-    blocker = await queued_manager.admit_task("chat-a", "user-1")
-    with pytest.raises(TaskAdmissionError) as queued:
-        await queued_manager.admit_task("chat-b", "user-1")
-    assert queued.value.code == "compatibility_queue_unavailable"
-    await queued_manager.transition_task(blocker, TaskState.CANCELLED)
-
-
-@pytest.mark.asyncio
-async def test_stale_assert_and_phase_propagate_ownership_loss() -> None:
-    coordinator = _coordinator(_Clock())
-    manager = TaskManager(coordinator)
-    task = await manager.admit_task("chat-1", "user-1")
-    stale = task._execution_fence
-    replacement = coordinator.reselect_execution(stale)
-
-    with pytest.raises(StaleExecutionFenceError):
-        await manager.assert_current_execution(task)
-    assert task._execution_fence is None
-    current = coordinator.assert_current_execution(replacement)
-    manager.apply_operation(current, execution_fence=replacement)
-    coordinator.reselect_execution(replacement)
-    with pytest.raises(StaleExecutionFenceError):
-        await manager.transition_task(task, TaskState.AWAITING_TOOL)
 
 
 def test_replacement_requires_prior_coordinator_terminal() -> None:

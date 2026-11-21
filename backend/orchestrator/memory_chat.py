@@ -1,7 +1,4 @@
-"""Exposes cross-session memory recall and writes as LLM tool calls under a pseudo agent
-id outside normal per-agent permission gates, mirroring scheduling_chat.py. Memory
-writes are PHI-gated but execute immediately, without a consent card.
-"""
+"""Handles owner-scoped memory lookup and PHI-gated writes for orchestrator meta tools."""
 
 import logging
 from typing import Any, Dict, List, Optional
@@ -96,7 +93,7 @@ async def _audit(user_id: str, action_type: str, description: str,
     try:
         from datetime import datetime, timezone
 
-        from audit.recorder import get_recorder
+        from audit.recorder import get_recorder, make_correlation_id
         from audit.schemas import AuditEventCreate
         rec = get_recorder()
         if rec is None:
@@ -108,6 +105,7 @@ async def _audit(user_id: str, action_type: str, description: str,
             action_type=action_type,
             description=description[:1024],
             conversation_id=chat_id,
+            correlation_id=make_correlation_id(),
             outcome=outcome,
             inputs_meta=inputs_meta or {},
             started_at=datetime.now(timezone.utc),
@@ -119,6 +117,12 @@ async def _audit(user_id: str, action_type: str, description: str,
 async def handle_meta_tool(orch, tool_name: str, args: Dict[str, Any], *,
                            user_id: str, chat_id: Optional[str], websocket):
     from shared.protocol import MCPResponse
+
+    if tool_name == "forget":
+        await _audit(user_id, "memory.delete", "Refused to erase a memory through chat",
+                     outcome="failure", chat_id=chat_id)
+        return MCPResponse(error={"code": "memory.forget_requires_owner", "retryable": False,
+                                  "message": "Memory removal needs the owner's explicit memory controls."})
 
     args = args or {}
     tools = _memory_tools(orch)
@@ -152,7 +156,7 @@ async def handle_meta_tool(orch, tool_name: str, args: Dict[str, Any], *,
             comp = Alert(message=msg_text, variant="info").to_dict()
             return MCPResponse(result={"status": action, **res}, ui_components=[comp])
         await _audit(user_id, "memory.remember_refused", "Memory write refused",
-                     outcome="denied", chat_id=chat_id)
+                     outcome="failure", chat_id=chat_id)
         comp = Alert(message=res.get("reason", "I could not save that."),
                      variant="warning").to_dict()
         return MCPResponse(result={"status": "refused", **res}, ui_components=[comp])

@@ -4,27 +4,29 @@ This is the single repository instruction file for all coding agents, including 
 
 ## Authority and freshness
 
-- `.specify/memory/constitution.md` is the highest-authority engineering policy for this repository and for how AstralDeep consumes, pins, and releases its components. Read it before planning architecture, security, schema, dependency, UI, protocol, or client changes.
-- AstralPrimitives, AstralProjection, AstralPlane, and LETS each carry their own constitution at `.specify/memory/constitution.md` in their repository (ratified 2026-09-28); it governs work inside that component. Submodule pins older than that ratification predate the file, so read it from the component repository's `main` until the pin moves.
-- For feature intent, use the active feature's `spec.md`, `plan.md`, `tasks.md`, `contracts/`, and clarification records. A spec describes intent; verify implementation claims against the live tree and tests.
+- For feature intent, use the feature's `spec.md`, `plan.md`, `tasks.md`, `contracts/`, and clarification records under `specs/`. A spec describes intent; verify implementation claims against the live tree and tests.
 - The live branch, working tree, and current code are the source of truth for present state. Older generated feature digests remain in Git history; their technology notes may be superseded and are not current instructions.
-- Before feature work, check `git status --short --branch`, recent commits, `.specify/feature.json`, and matching `specs/<number>-*/` directories. Do not assume the highest-numbered spec or `feature.json` on `main` is the work currently in progress. Spec Kit's managed `.specify/.gitignore` lists `feature.json` as machine-local, but this repository keeps tracking it; ignore rules never untrack a tracked file.
+- Before feature work, check `git status --short --branch`, recent commits, and matching `specs/<number>-*/` directories. Do not assume the highest-numbered spec on `main` is the work currently in progress.
 - Work may continue on another machine. Do not edit an active feature branch/spec, overwrite handoff artifacts, or recreate work merely because it is absent from the current checkout. Inspect remotes and ask when ownership is genuinely ambiguous.
 - Prefer paths supplied by the current workspace and repository-relative paths. Absolute paths recorded in old docs or the knowledge vault are historical, not commands.
 
 ## Mental model
 
-AstralDeep is a clinical-AI, multi-agent platform with one FastAPI orchestrator and PostgreSQL backend. It serves REST, WebSocket/A2A transport, the web shell, and static assets on port 8001. Bundled first-party agents run in-process by default; the kill switch restores their transport path, while external, draft, and user-authored agents retain explicit trust boundaries.
+AstralDeep is a clinical-AI, multi-agent platform whose FastAPI orchestrator is a node in an owner's personal mesh. Peers embed the shared Rust AstralKernel for signed event logs, sync, authorization, turns and adaptation; AstralPlane supplies SQLite for personal nodes and PostgreSQL where a node is configured for it, as in development and CI. The orchestrator serves node discovery and operator endpoints, worker control, MCP and A2A on port 8001. The Kernel engine is the only turn engine: every client runs turns on it, a node answers a mesh request with `kernel.answer_request`, and no Python code runs a model-and-tool turn. A web shell belongs in an application-layer client. Bundled first-party agents retain their runtime authorization and audit gates regardless of transport placement.
 
 The UI contract is:
 
-`AstralPrimitives defines -> AstralProjection renders and adapts -> AstralDeep orchestrates`
+`AstralPrimitives defines -> the base decides, authorizes and adapts -> AstralProjection renders`
+
+The base is AstralKernel, AstralDeep, AstralPlane, LETS and ROTE, distributed as AstralVessel. ROTE belongs to the kernel's Python package; base code must not import Projection rendering code. Models propose artifacts and deterministic code validates, bounds and renders them.
 
 The evidence control adapter depends on the orchestrator's private ephemeral archive and stays host-bound. It has no standalone transport process; disabling in-process registration preserves complete source responses and makes its inspection commands unavailable.
 
 - There is no React/Vite SPA. Do not reintroduce a parallel frontend source of truth.
-- Web UI is backend-served HTML plus vanilla JS/CSS owned under `components/AstralProjection/backend/webrender/` and exposed to Deep through the installed Projection resource accessors.
-- Windows (PySide6), Android (Kotlin/Compose), and Apple (Swift/SwiftUI) are thin native consumers of server-owned structured UI and chrome contracts.
+- Deep hosts no web UI. Projection owns the web rendering code under `components/AstralProjection/backend/webrender/` for a later web client, and Deep reads it only through the installed Projection resource accessors.
+- The requesting owner device reviews a node turn’s pending consent through the Kernel. The node never signs an owner approval. A call reaches `Orchestrator.execute_authorized_tool` only with a verified Kernel ticket or caller ticket, and an action that needs approval runs only when the Kernel ticket carries it. `backend/tests/test_single_turn_engine.py` lists every module that may start a turn, call a model or enter protected dispatch, and a new one fails it until it is listed with a reason.
+- Apple clients (Swift/SwiftUI) embed the kernel and render structured UI from their local signed log. Android and Windows are paused until their kernel ports qualify and open to a "not available yet" screen.
+- Voice runs on-device through the same turn and consent gates as typed input; no hosted-voice or system-speech fallback may silently substitute for an unavailable local model.
 - "LLM proposes, code decides" is the default design rule: models may draft layouts or artifacts, but deterministic code validates, authorizes, bounds, and renders them.
 
 ## Repository routing
@@ -34,19 +36,24 @@ The evidence control adapter depends on the orchestrator's private ephemeral arc
 - `backend/shared/protocol.py`: shared transport structures.
 - `components/AstralProjection/contracts/ui_protocol.json`: authoritative cross-client frame/component vocabulary, consumed from the pinned Projection component.
 - `backend/orchestrator/plane_composition.py`: fail-closed binding to the one
-  application-scoped AstralPlane runtime and its pinned contract metadata.
-- `components/AstralPlane/`: pinned data-plane component. Its public facade,
+  application-scoped AstralPlane runtime and the contract metadata of the in-tree `plane/` package.
+- `plane/`: the `astralplane` package, moved from AstralPlane with its history. Its public facade,
   guarded migration registry, repositories, PostgreSQL pool, recovery logic,
   and configured blob stores own all durable mechanics; Deep code must not
-  borrow connections or reintroduce `backend/shared/database.py`.
+  borrow connections or reintroduce `backend/shared/database.py`. It keeps its own manifest, tests and lint,
+  and stays outside Deep's root lint, test discovery, coverage gate and Docker build context except for the
+  files the `Dockerfile` copies to build its wheel, as `scripts/tests/test_moved_packages.py` checks. An imported file keeps its own text until someone edits it for a reason.
+- `config/astral-assembly.json`: the node's activation manifest (`astral.assembly/v0`). `backend/orchestrator/assembly_manifest.py` validates it at boot and stops the node with exit 78 on any problem. The 106 contract tests check its pinned contract digests, so an edit to a pinned contract document changes its digest here in the same commit.
 - `backend/shared/external_http.py`: approved outbound HTTP/egress path.
 - `components/AstralProjection/backend/webrender/`: authoritative primitive rendering, sanitization, accessibility, web shell, reusable chrome, and static resources.
-- `components/AstralProjection/backend/rote/`: authoritative device capabilities and semantic adaptation.
+- `components/AstralKernel/python/rote/`: ROTE (`astral-rote`, import `rote`), the base's authoritative device capabilities and semantic adaptation. Deep and Projection both depend on it, and it imports neither.
 - `backend/orchestrator/projection_surfaces/`: Deep-owned, host-authorized chrome surface adapters; reusable rendering remains in Projection.
 - `backend/agents/`: bundled first-party agents. Generated draft directories can appear here during development; treat unexpected untracked directories as user/generated data, never as files to stage blindly.
 - `backend/tests/` plus module-local `*/tests/`: backend verification. Root pytest discovery does not include every module suite.
 - `components/AstralProjection/windows-client/`, `components/AstralProjection/android-client/`, `components/AstralProjection/apple-clients/`: authoritative native clients and their parity/drift guards.
-- `specs/`: numbered Spec Kit feature artifacts; the spec number is more reliable than historical branch naming.
+- `vessel/`: the `astralvessel` package and command, moved from AstralVessel with its history. It keeps its own manifest, tests, lint and kernel binding (`vessel/config/kernel-binding.json`). It stays outside Deep's root lint, test discovery, coverage gate, image and Docker build context, as `scripts/tests/test_moved_packages.py` checks. Deep's ignore rules do apply to it, with `!vessel/docs/build/` keeping its docs pages tracked. It releases later with `vessel-v` tags. An imported file keeps its own text until someone edits it for a reason. That edit brings only that file's header in line with the three-sentence rule, nothing more.
+- `examples/`: small runnable examples, such as `examples/mcp-progress-server`, moved from the `mcp_server_examples` repository. Each example carries its own pinned requirements file, and `backend/tests/test_mcp_progress_example.py` covers the progress server.
+- `specs/`: numbered feature specifications, plans, tasks, and contracts; the spec number is more reliable than historical branch naming.
 - `docs/`: operator documentation. Most of this tree is ignored; check `.gitignore` before assuming a new doc will be committed.
 
 For deployment and agent workflows, read [production deployment](docs/production-deployment.md), [BYO client agents](docs/byo-client-agents.md), [remote compute agents](docs/remote-compute-agents.md), and [authoring agents and skills](docs/your-own-agents-and-skills.md).
@@ -55,13 +62,13 @@ The pinned `components/AstralPrimitives` repository owns primitive definitions a
 
 ## Non-negotiable engineering rules
 
-- Backend code is Python and must remain compatible with the production Python 3.11 image. Ruff's target is `py311`, even if a host virtualenv is newer.
-- Any dependency may be added (Constitution V, v3.0.0); declare it in the owning repository's manifest and name it in the PR description.
+- Node backend code is Python and must remain compatible with the production Python 3.11 image; the shared kernel is Rust. Ruff's target is `py311`, even if a host virtualenv is newer.
+- Any dependency may be added; declare it in the owning repository's manifest and name it in the PR description.
 - Keep changes production-ready: no silent stubs, debug-only paths, fake success, untracked TODOs, or happy-path-only handling.
-- The code documents itself (Constitution VI, v4.0.0). Each source file opens with a header of at most three sentences: what it does and how it connects to other files. Add no other comments or docstrings except a one-line *why* where absolutely necessary. Never put spec/task IDs, feature numbers, history, TODOs, or narration in source. Tool directives (`# noqa`, `# type: ignore`, `# pragma: no cover`, eslint/ktlint/swift-format directives, shebangs) are not comments and stay.
+- The code documents itself. Each source file opens with a header of at most three sentences: what it does and how it connects to other files. Add no other comments or docstrings except a one-line *why* where absolutely necessary. Never put spec/task IDs, feature numbers, history, TODOs, or narration in source. Tool directives (`# noqa`, `# type: ignore`, `# pragma: no cover`, eslint/ktlint/swift-format directives, shebangs) are not comments and stay. Files imported with a moved package follow the imported-file rule on the `vessel/` routing line.
 - Write or update tests for golden paths, edge cases, denials, and failures. Changed Python lines must retain at least 90% coverage.
-- CI jobs and test suites finish within 30 minutes on hosted runners; over-budget suites get cheaper fixtures or lose their slowest tests (never sharded, raised, or waived); no soak tests; required gates stay deterministic — no live third-party network services, no exact bounds on clock-derived values, no wall-clock performance bounds on shared hosted runners, per-test retries only (Constitution XI, v5.0.0).
-- Preserve the user's working tree. Never discard unrelated changes. Local commits for work within the task's scope are allowed without additional user authorization, including Spec Kit commit hooks. Review the diff and stage only task-related files; keep unrelated changes and sensitive/generated user data out of commits.
+- CI jobs and test suites finish within 30 minutes on hosted runners; over-budget suites get cheaper fixtures or lose their slowest tests (never sharded, raised, or waived); no soak tests; required gates stay deterministic — no live third-party network services, no exact bounds on clock-derived values, no wall-clock performance bounds on shared hosted runners, per-test retries only.
+- Preserve the user's working tree. Never discard unrelated changes. Local commits for work within the task's scope are allowed without additional user authorization. Review the diff and stage only task-related files; keep unrelated changes and sensitive/generated user data out of commits.
 - Do not push, merge, release, submit to a store, or mutate external issue trackers unless the request or invoked workflow explicitly calls for it. Permission to create local commits does not authorize those actions.
 - Use targeted parallel research/review when it improves coverage, then personally verify critical seams and integrate the findings. Agent reports are evidence leads, not proof by themselves.
 - Distinguish clearly among specified, implemented, test-passing, live-verified, merged, deployed, and released. Do not collapse them into "done."
@@ -73,74 +80,31 @@ The pinned `components/AstralPrimitives` repository owns primitive definitions a
 - Use `css`, not `style`. Escape and sanitize web output through the existing renderer helpers; never pass model/user text as raw HTML.
 - `Primitive.attributes` flattens last and can overwrite declared fields, including `type`; use it only with trusted, deliberate keys.
 - The installed `astralprims` wheel may lag the sibling repository's `main`. Before importing a newer class, bump the AstralDeep version floor, rebuild the environment/image, verify the import, and run parity tests. Until then, an already-approved manifest type may be emitted as a plain dict.
-- A new primitive requires constitution approval and a coordinated change: definition/exports/serialization tests/docs/version in AstralPrimitives; renderer and ROTE behavior; `ui_protocol.json`; all affected client dispositions/renderers; drift guards; and live client verification.
+- A new primitive requires owner approval and a coordinated change: definition/exports/serialization tests/docs/version in AstralPrimitives; renderer and ROTE behavior; `ui_protocol.json`; all affected client dispositions/renderers; drift guards; and live client verification.
 - A protocol, frame, chrome, theme, component, or layout change must land across every in-scope client in the same feature. A web-only exception must be explicit in the spec and enforced by the server-owned definition, never hidden independently by clients.
 
 ## Security, identity, and data
 
-- Preserve Keycloak-only user IAM, RFC 8693 attenuated delegation, owner isolation, tool permission/policy gates, PHI gates, egress validation, confirmation gates, and hash-chained audit provenance. Do not create a convenience bypass around the normal dispatch path.
+- Personal-mesh identity is the mesh keys. A personal node authenticates a caller only by a roster-listed device key with a mesh ticket, or by an owner-minted caller ticket, and refuses every bearer JWT. Preserve ticket-based attenuated delegation with exact action, actor-chain, roster, stop, expiry, receipt and consent bindings, owner isolation keyed on the mesh id, tool permission and policy gates, PHI gates, egress validation, confirmation gates and hash-chained audit provenance, and never bypass the normal dispatch path. Outside services authenticate through their own adapters. An institution is an outside service with its own authorization server.
 - Treat in-process first-party agents as trusted only for transport placement; runtime authorization and auditing still apply. Treat external and user-authored agents as untrusted at the server boundary.
 - Backend access to user-controlled URLs must use `backend/shared/external_http.py` and its allow/deny/size/TLS controls.
 - `.env` may be inspected when relevant to diagnosis, setup, or live verification; the user has explicitly authorized this. Never echo secret values or commit the file. Treat credentials, tokens, encryption keys, agent keys, user uploads, generated user code, `backend/data`, `backend/tmp`, and synthesized `backend/knowledge` as sensitive: access them only when the task requires it, redact sensitive output, and never stage them.
-- `ASTRAL_ENV` unset means production. Production configuration must fail closed; missing/placeholder secrets and mock auth must retain the documented exit-78 posture.
-- LLM credentials are configured in-product and encrypted. Do not reintroduce environment-backed provider keys, type user keys, or perform the user's Keycloak/provider sign-in.
+- `ASTRAL_ENV` unset means production. Production configuration must fail closed. Missing or placeholder secrets must retain the documented exit-78 posture. A leftover mock-auth setting is refused.
+- Every outside credential is entered in a native secure field and kept in the device keystore. A sign-in token never syncs. A pasted key syncs only sealed to the owner's devices. Do not reintroduce environment-backed provider keys, type user keys, or perform the owner's sign-in to any service.
 
 ## Database changes
 
 - PostgreSQL schema evolution lives only in AstralPlane's guarded, idempotent
-  migration registry. Deep pins the exact Plane schema revision and migration
-  digest in `config/astral-composition.json`; it owns product policy and
+  migration registry under `plane/`. `config/astral-composition.json` records the exact Plane schema
+  revision and migration digest, and `scripts/verify_composition.py` fails when they disagree with
+  `plane/`. Deep code owns product policy and
   orchestration, not SQL, driver pools, baseline provisioning, or blob
   mechanics.
 - Schema changes require the matching AstralPlane `SCHEMA_REVISION` bump,
   repeat-safe DDL/data migration, rollback or recovery procedure, current-schema
-  verification, and tests against representative existing data. Update Deep's
-  composition pin only after the exact Plane revision is qualified. Do not use
+  verification, and tests against representative existing data. Change `plane/` and the
+  `compatibility.data_plane*` fields in the same commit. Do not use
   ad-hoc deployed SQL or introduce a second migration framework.
-
-## Spec Kit with Codex
-
-All agent integrations share this `AGENTS.md`. Spec Kit 1.0.12 skills no longer run an agent-context updater; the project-owned `.specify/scripts/powershell/update-agent-context.ps1` runs only when invoked explicitly and routes both Claude and Codex here, so the Spec Kit marker block below is otherwise maintained by hand. If an older installed skill or template names a different instruction file, update this file instead, including its Spec Kit markers; do not recreate the retired file. Preserve the installed integration manifests so upgrades can identify local customizations.
-
-AstralDeep's plan and tasks template customizations live in `.specify/templates/overrides/`, which Spec Kit's template resolver prefers over the core `.specify/templates/` copies. Edit the overrides; integration upgrades refresh the core copies.
-
-Codex discovers the repository-local skills in `.agents/skills/`. Invoke them with `$skill-name` (not Claude's slash-command spelling). Start a new Codex task/session after skill installation or updates so discovery refreshes.
-
-The ten core skills are installed and hash-tracked by `.specify/integrations/codex.manifest.json`. The five `speckit-git-*` skills are deliberately project-owned Codex adapters for `.specify/extensions/git/commands/` and its Bash/PowerShell scripts; Spec Kit integration upgrade/uninstall does not manage them. Preserve their remote-collision and working-tree safety additions when syncing extension changes. The installed git extension is 1.0.1 (bundled with Spec Kit 1.0.12), and the adapters call its `create-new-feature-branch` scripts; update the extension only together with the adapters.
-
-### Mandatory feature-ownership preflight
-
-This project is developed across machines, and feature directories can exist only on a remote branch. The following preflight overrides the ordering in generated skill bodies: perform it before any Spec Kit hook, script, branch creation, or file mutation.
-
-For `$speckit-specify`:
-
-- Refresh `origin` and inventory numeric `specs/<NNN>-*` directories from the working tree and the trees of every `refs/remotes/origin/*` ref, not merely remote branch names. If the remote cannot be refreshed/inspected, stop and require the user to provide an explicit collision-checked `SPECIFY_FEATURE_DIRECTORY` and `GIT_BRANCH_NAME`.
-- Choose a number unused in every inventoried tree. Verify the proposed directory and branch do not collide before running the mandatory feature-branch hook.
-- Pass the resolved `SPECIFY_FEATURE_DIRECTORY` and `GIT_BRANCH_NAME` through the workflow so the hook and spec creator cannot independently choose conflicting numbers. Never run the allocation script twice.
-
-For `$speckit-clarify`, `$speckit-plan`, `$speckit-tasks`, `$speckit-analyze`, `$speckit-implement`, `$speckit-converge`, `$speckit-checklist`, and `$speckit-taskstoissues`:
-
-- Resolve one target feature before running the skill's own pre-execution checks. On `main`, with a missing/stale pointer, when branch and feature artifacts disagree, or when work is known to be active on another machine, do not trust `.specify/feature.json` by itself. Stop and obtain an explicit target/ownership decision.
-- Require the target directory to exist in the checked-out tree. Set `SPECIFY_FEATURE_DIRECTORY` for each setup/prerequisite script invocation and verify the returned `FEATURE_DIR`/`FEATURE_SPEC`/`IMPL_PLAN` paths stay inside that exact directory. Abort on any mismatch before writes or external actions.
-- Never use a local older copy of a spec to mutate work whose newer version exists only on another remote branch. Switch/pull the authorized branch first, or leave it alone.
-
-Normal feature flow after that preflight:
-
-1. `$speckit-specify <feature description>`
-2. `$speckit-clarify`
-3. `$speckit-plan`
-4. `$speckit-tasks`
-5. `$speckit-analyze`
-6. `$speckit-implement`
-
-After implementation, `$speckit-converge` is optional: use it only when the user requests artifact-to-code reconciliation and branch/feature ownership has been re-verified, because it appends tasks. Additional workflows are `$speckit-constitution`, `$speckit-checklist`, and `$speckit-taskstoissues`. Git-extension helpers are `$speckit-git-initialize`, `$speckit-git-feature`, `$speckit-git-validate`, `$speckit-git-remote`, and `$speckit-git-commit`.
-
-- Read the selected skill completely and follow its gates. Clarify and Analyze are real quality gates, not ceremonial steps.
-- `speckit-specify` has a mandatory branch-creation hook. Later hooks may create task-scoped local commits under the standing permission above. Report these mutations before executing them and preserve unrelated working-tree changes; do not ask for separate commit authorization.
-- `speckit-taskstoissues` mutates GitHub; run it only when the user explicitly requests issue creation/synchronization.
-- Never point a workflow at a feature merely because it is the newest directory. Resolve the intended feature from the branch, `feature.json`, artifacts, remotes, and user context first.
-- This Codex integration is pinned in project metadata at Spec Kit 1.0.12. The executable on `PATH` may be older on some machines; for integration management, use a version-matched one-shot CLI or deliberately upgrade the user tool. Do not run the older executable against managed integration state, blindly reinitialize Claude, or overwrite modified Claude-managed files.
-- The core skills were rendered with PowerShell paths. Script-family selection happens before the skill body: use PowerShell scripts on Windows and substitute the same-purpose Bash script plus its native flags on POSIX. A literal PowerShell path in generated content is not a requirement to install PowerShell on macOS/Linux.
 
 ## Build and verification
 
@@ -172,13 +136,29 @@ Client gates:
 - Apple (macOS only): run `swift test --package-path components/AstralProjection/apple-clients/AstralCore` and the affected unsigned `xcodebuild` schemes from `components/AstralProjection/apple-clients/README.md`.
 - AstralPrimitives changes (only when explicitly in scope): run its pytest suite before any version bump/publish. Publication checks do not replace PR qualification.
 
-When driving a running iOS Simulator app, prefer available simulator MCP tools, inspect screenshots or accessibility trees, and use semantic labels for interaction. Keep `xcodebuild` for builds/tests; drive the macOS app directly because it is not a simulator. Apple sign-in uses real PKCE and must be completed by the user, without a development-token bypass.
+Plane gate, from `plane/` with a PostgreSQL DSN in `ASTRALPLANE_TEST_POSTGRES_DSN` and `ASTRALDEEP_SOURCE_REPO` set to the repository root.
+
+```text
+cd plane && uv sync --frozen --group ci && uv run --frozen --group ci ruff check . && uv run --frozen --group ci pytest -q -ra -p no:cacheprovider
+```
+
+Vessel gate, from the repository root. Its sandbox tests need Linux (Landlock and `/proc`).
+
+```text
+python3.11 -m venv vessel/.venv
+vessel/.venv/bin/pip install -e vessel pytest==9.2.0 pytest-asyncio==1.4.1.post1 ruff==0.17.4 build twine -r vessel/egress/requirements.txt
+cd vessel && .venv/bin/python -m pytest -q -rs && .venv/bin/ruff check .
+```
+
+When driving a running iOS Simulator app, prefer available simulator MCP tools, inspect screenshots or accessibility trees, and use semantic labels for interaction. Keep `xcodebuild` for builds/tests; drive the macOS app directly because it is not a simulator. Astral has no sign-in. Sign-in to an outside service uses the system browser and is completed by the owner. Test builds use the seeded test mesh and fixture servers.
+
+When replacing an Apple localtest app that holds existing mesh keys, retain its bundle identifier and stable developer signing identity, use Xcode-generated entitlements, and take a stopped data backup first. Use Projection's localtest build script and verify the installed app's actual path and signature. Ad-hoc re-signing or post-build rebranding can invalidate Keychain access across rebuilds; the user must handle any password or presence prompt themselves.
 
 Tests are necessary, not sufficient. Exercise changed UI behavior against the live backend on every affected client/form factor. Verify authorization and security changes through the real dispatch path, including denial/failure cases. If an unrelated baseline failure exists, demonstrate and document the baseline rather than hiding it or weakening a gate.
 
 Release-evidence collection, normalization, and parsing normally run locally before push and
 remain diagnostic. If a canonical input structurally requires a provider identity or native
-artifact that cannot exist until the exact SHA is remote, use only Constitution X's provider-native
+artifact that cannot exist until the exact SHA is remote, use only a provider-native
 lead approval bound to the exact initial SHA, path scope, and RFC 3339 expiry within 168 hours. Keep
 the PR draft/non-mergeable; run every locally executable gate; retain the external candidate-bound
 fail-closed missing-input inventory; re-query provider approval, draft state, scope, expiry, and
@@ -200,40 +180,19 @@ broker for release verification or publication.
 
 ## Knowledge vault and handoffs
 
-When available, the local knowledge vault is the sibling repository at `../kos-wiki`. Use `index.md` to route, then read the relevant concept/entity pages, the tail of `log.md`, and any active `sessions/resume-*.md`. The vault is project memory, not current-state authority; verify its claims against the live repositories.
+The active knowledge vault is the sibling repository at `../kos-wiki-v2`; the old `../kos-wiki` is historical. Before reading or saving knowledge, follow the active vault's `AGENTS.md` for schema, provenance, tier routing, sensitivity, intake, and Git operations. Use its `index.md` to route, then read the relevant pages and the tail of `log.md`; consult `local/index.md` and `local/profile.md` when working in the personal tier. Check `to-file/` at session start and after sync, and read any active `sessions/resume-*.md` when present. The vault is project memory, not current-state authority; verify its claims against the live repositories.
 
 The user has established an always-on checkpoint rule: whenever a major checkpoint occurs — a
 branch is pushed for handoff, a spec/plan/tasks phase finishes, a PR opens or merges, a feature or
 release changes state, or a durable decision is made — update the vault before declaring the
 checkpoint complete. First read that vault's `AGENTS.md`, refresh the repository anchor, revise the
-affected curated pages (never `raw/`), update `index.md` and `log.md`, then commit and push the vault
-when its remote is available. The machine-written `sessions/` breadcrumb is not a substitute for the
-curated update. Keep the vault commit separate from product-repository commits, and report explicitly
-if the vault commit or push is blocked.
+affected curated pages in the correct tier (never raw sources), and update that tier's `index.md`
+and `log.md`. Commit and push according to the active wiki's tier rules and authorization; normal
+team-content batches may sync to the global remote, personal-scope content requires a direct human
+command before reaching any remote, and ultra-private content never enters Git. The machine-written
+`sessions/` breadcrumb is not a substitute for the curated update. Keep vault commits separate from
+product-repository commits, and report explicitly if a required vault commit or push is blocked.
 
 ## Handoff standard
 
 Finish with an evidence-backed summary: files changed, behavior changed, exact tests/checks and results, live verification performed or still required, feature flags/migrations/contracts affected, and any residual risk. Keep work-in-progress recoverable across machines through a named pushed branch only when the user has requested pushing; otherwise leave a precise local handoff without claiming remote persistence.
-
-<!-- SPECKIT START -->
-## Active Feature Plan
-
-- `091-windows-ui-v2`: `specs/091-windows-ui-v2/plan.md`
-
-## Active Technologies
-
-- Python 3.11; vanilla JavaScript; Python/PySide6; Kotlin/JVM 17 with Android API 33 local-speech eligibility; Swift 5.9-compatible sources; JSON Schema 2020-12; OpenAPI 3.1; first-party C#/.NET Framework helper source + existing FastAPI/ASGI, PostgreSQL/AstralPlane, Keycloak/RFC 8693, LiveKit/ONNX/Silero/LLM Factory, ROTE/webrender, QtTextToSpeech, Android SpeechRecognizer/TextToSpeech, Apple Speech/AVFAudio, and browser Web Speech APIs; no new third-party runtime/model dependency (075-client-local-speech)
-- PostgreSQL adds an immutable voice speech-backend discriminator and conditional remote-media fields through guarded AstralPlane `075.001`; local audio, interim/final working text, digests/proofs, engine details, endpoints, and credentials remain ephemeral/non-durable (075-client-local-speech)
-
-- Python 3.11; vanilla JavaScript; Python/PySide6; Kotlin/JVM 17; Swift 5.9-compatible sources; JSON Schema 2020-12; Git/PowerShell + FastAPI/ASGI, PostgreSQL, Keycloak/RFC 8693, Docker/Compose, AstralPrimitives, AstralProjection, AstralPlane, and pinned LETS v1.0.11 public client/executor contracts (074-multirepo-lets-integration)
-- Existing PostgreSQL and configured blob roots remain in place; LETS warden storage remains external; executor replay/authority and local manuscript/evidence state remain outside repositories (074-multirepo-lets-integration)
-
-- Python 3.11, vanilla JavaScript, Python/PySide6, Kotlin/JVM 17, and Swift 5.9-compatible sources + pinned self-hosted LiveKit server/direct-RTC/client SDKs, bounded WebSocket worker control, ONNX Runtime + exact Silero VAD, FastAPI, PostgreSQL, Keycloak, astralprims/ROTE (065-conversational-voice)
-- PostgreSQL additive `voice_session`/`voice_turn` metadata plus immutable execution-base commit anchors/digests and commit-scoped workspace-layout versioning; ephemeral LiveKit media and speech buffers with no audio retention (065-conversational-voice)
-
-## Recent Changes
-
-- 075-client-local-speech: Planned a server-selected client-local ASR/TTS resilience profile across all clients, retained byte-compatible LLM Factory voice by default, bounded remote retries/warm admission, and kept every accepted turn on the ordinary authenticated dispatcher.
-- 074-multirepo-lets-integration: Planned independent Projection/Plane/Primitives/LETS submodules, a history-preserving content replacement, and fail-closed LETS enforcement without changing production during migration.
-- 065-conversational-voice: Planned an included exact-model conversational voice path across web, Windows, Android, macOS, iOS, and watchOS while preserving the normal authenticated agentic dispatcher.
-<!-- SPECKIT END -->

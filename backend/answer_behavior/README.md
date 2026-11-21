@@ -9,7 +9,7 @@ as evidence.
 
 > **Eval/test-only.** Nothing here is imported by product runtime code;
 > `security_benchmark.isolation_check` fails CI if `backend/orchestrator`,
-> `backend/agents`, or `backend/shared` ever import this package (Constitution V).
+> `backend/agents`, or `backend/shared` ever import this package.
 > The rubric core runs on the standard library; the suite declares **no new
 > dependencies**.
 

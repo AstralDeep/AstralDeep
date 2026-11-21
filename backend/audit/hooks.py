@@ -22,6 +22,8 @@ def actor_principal_from_claims(claims: Optional[Dict[str, Any]]) -> tuple[str, 
         if owner:
             return owner, f"machine:{machine_class}"
     user = claims.get("sub", "legacy")
+    if claims.get("_caller_id"):
+        return user, f"caller:{claims['_caller_id']}"
     act = claims.get("act") or {}
     principal = act.get("sub") if isinstance(act, dict) and act.get("sub") else user
     return user, principal
@@ -60,6 +62,9 @@ async def record_auth_event(
 _NOISY_WS_ACTIONS = frozenset({
     "ping", "heartbeat",
 })
+_CONVERSATION_WS_ACTIONS = frozenset({
+    "load_chat", "delete_chat", "save_component", "delete_component", "side_question",
+})
 
 
 async def record_ws_action(
@@ -86,7 +91,7 @@ async def record_ws_action(
         await rec.record(AuditEventCreate(
             actor_user_id=user,
             auth_principal=principal,
-            event_class="conversation" if action.startswith("chat_") or action in ("load_chat", "delete_chat", "save_component", "delete_component") else "settings",
+            event_class="conversation" if action.startswith("chat_") or action in _CONVERSATION_WS_ACTIONS else "settings",
             action_type=f"ws.{action}",
             description=f"User WS action {action!r}",
             conversation_id=chat_id,
@@ -180,6 +185,8 @@ class ToolDispatchAudit:
         self._args_meta = self._sanitize_args_meta(args_meta or {})
         if invocation_channel:
             self._args_meta["invocation_channel"] = str(invocation_channel)[:32]
+        if claims and claims.get("_caller_id"):
+            self._args_meta["caller_label"] = str(claims.get("_caller_label") or "")[:64]
         if claims and claims.get("machine_class") and claims.get("consent_ref"):
             self._args_meta["consent_ref"] = str(claims["consent_ref"])
         self._outcome = "success"

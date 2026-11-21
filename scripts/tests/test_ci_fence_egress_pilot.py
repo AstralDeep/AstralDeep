@@ -64,6 +64,7 @@ def workflow(helpers=None):
     helpers = helpers or trust()
     start = run_step("Start and baseline the immutable reviewed CI peer", pilot.expected_start(helpers),
                      "        id: fence_peer\n")
+    run_exec = run_step(pilot.RUN_EXEC_STEP_NAME, pilot.RUN_EXEC_SCRIPT)
     fence = """      - name: Install the reviewed Fence egress firewall in block mode
         uses: openai/fence@f9751ca5d767dc0199e88733c2b286bd4800a008 # v0.12.5
         with:
@@ -94,7 +95,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-""" + start + fence + verify + close + """      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+""" + start + run_exec + fence + verify + close + """      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
@@ -148,6 +149,11 @@ def test_missing_or_invalid_trust_cannot_qualify(field, value):
     ("            pypi.org:443\n", ""),
     ("            pypi.org:443\n", "            pypi.org:443\n            example.com:443\n"),
     ("if: always()", "if: success()"),
+    ("-no OPTIONS /run)\n          printf '/run options before", "-no OPTIONS /tmp)\n          printf '/run options before"),
+    ("remount,exec /run", "remount,exec /tmp"),
+    ("/usr/bin/sudo --non-interactive /usr/bin/mount", "/usr/bin/sudo --non-interactive mount"),
+    ("            exit 1\n", "            exit 0\n"),
+    (",noexec,* ]]; then\n            /usr/bin/sudo", ",noexec,* ]] || true; then\n            /usr/bin/sudo"),
     ("if: always()", "if: always()\n        continue-on-error: true"),
     ("/usr/bin/env -i PATH=", "/usr/bin/env PATH="),
     ("data = response.read(limit + 1)", "data = response.read()"),
@@ -260,12 +266,12 @@ def test_script_entrypoint_refuses_different_helper_identity(tmp_path, monkeypat
     assert json.loads(capsys.readouterr().out)["state"] == "nonconforming"
 
 
-def test_actual_workflow_cli_uses_only_real_merged_helper_identities():
+def test_actual_workflow_cli_reports_the_rolled_back_pilot_as_absent():
     path = MODULE.parents[1] / ".github" / "workflows" / "ci.yml"
     result = subprocess.run([sys.executable, str(MODULE), "--check", str(path)],
                             capture_output=True, text=True, check=False)
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert json.loads(result.stdout) == {"state": "conforming", "reasons": []}
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert json.loads(result.stdout)["state"] == "absent"
 
 
 class BufferFile(io.BytesIO):
@@ -489,3 +495,16 @@ def test_active_profile_is_exact_qualified_v2_and_explicitly_selected():
     assert pilot.REVIEWED_BUNDLE_SHA in source
     candidate = workflow().replace(pilot.REVIEWED_BUNDLE_SHA, 'abc5790eac3445fe3854eea6b506aa7d31bed67c')
     assert pilot.evaluate_workflow(candidate, trust()).state == pilot.STATE_NONCONFORMING
+
+
+def test_run_exec_step_is_required_immediately_before_fence():
+    original = workflow()
+    start = original.index("      - name: " + pilot.RUN_EXEC_STEP_NAME)
+    fence = original.index("      - name: Install the reviewed Fence")
+    assert pilot.evaluate_workflow(original[:start] + original[fence:], trust()).state == "nonconforming"
+    verify = original.index("      - name: Verify actual Fence")
+    moved = original[:start] + original[fence:verify] + original[start:fence] + original[verify:]
+    assert pilot.evaluate_workflow(moved, trust()).state == "nonconforming"
+    relaxed = original.replace("        shell: bash --noprofile --norc -euo pipefail {0}\n        run: |\n          before=",
+                               "        continue-on-error: true\n        shell: bash --noprofile --norc -euo pipefail {0}\n        run: |\n          before=", 1)
+    assert pilot.evaluate_workflow(relaxed, trust()).state == "nonconforming"

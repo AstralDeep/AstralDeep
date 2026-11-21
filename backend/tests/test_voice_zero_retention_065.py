@@ -11,7 +11,6 @@ import io
 import json
 import logging
 import re
-import types
 from dataclasses import fields
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -21,8 +20,7 @@ from uuid import UUID
 
 import pytest
 from astralplane.database.legacy_baseline_066 import _LegacyBaseline066Builder
-from orchestrator.history import ConversationCommitRepository
-from orchestrator.orchestrator import Orchestrator, _VoiceDispatchContext
+from orchestrator.orchestrator import Orchestrator
 from orchestrator.runtime_observability import RuntimeObservability
 from orchestrator.voice_sessions import (
     TranscriptSubmission,
@@ -164,18 +162,8 @@ def test_database_schema_is_metadata_only_and_message_is_single_source() -> None
     )
     assert "message_id" in turn_columns
 
-    acceptance_source = inspect.getsource(
-        ConversationCommitRepository.accept_voice_turn
-    )
-    assert acceptance_source.count("append_next_to_staged_publication") == 1
-    assert "INSERT INTO messages" not in acceptance_source
-    assert '"role": "user"' in acceptance_source
-    assert "accept_turn" in acceptance_source
     assert "INSERT INTO messages" not in inspect.getsource(
         VoiceSessionRepository.admit_transcript
-    )
-    assert "INSERT INTO messages" not in inspect.getsource(
-        VoiceSessionRepository.accept_transcript
     )
 
 
@@ -294,6 +282,7 @@ def test_frame_trace_is_metadata_only_even_for_content_bearing_render(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     sink = _NonClosingStringIO()
+    monkeypatch.setenv("ASTRAL_FRAME_TRACE_DIR", "/trace")
     monkeypatch.setattr("orchestrator.orchestrator.os.path.exists", lambda _path: True)
     monkeypatch.setattr("builtins.open", lambda *_args, **_kwargs: sink)
     frame = {
@@ -326,116 +315,8 @@ def test_frame_trace_is_metadata_only_even_for_content_bearing_render(
         assert value not in trace
 
 
-def _voice_frame() -> dict[str, Any]:
-    return {
-        "type": "ui_event",
-        "action": "chat_message",
-        "session_id": CHAT_ID,
-        "submission_id": SUBMISSION_ID,
-        "request_generation": REQUEST_ID,
-        "connection_generation": CONNECTION_ID,
-        "payload": {
-            "chat_id": CHAT_ID,
-            "message": " | ".join(SENSITIVE_VALUES),
-            "summary_text": RECAP,
-            "speech_endpoint": SPEECH_ENDPOINT,
-            "api_key": SPEECH_KEY,
-            "provider_body": PROVIDER_BODY,
-            "voice_origin": {
-                "schema_version": "1",
-                "session_id": SESSION_ID,
-                "generation": 1,
-                "media_grant_revision": 1,
-                "turn_id": TURN_ID,
-                "client_turn_id": CLIENT_TURN_ID,
-                "chat_context_revision": 1,
-                "source_participant_identity": "voice-worker-a",
-                "detected_language": "en",
-                "text_digest_sha256": "a" * 64,
-                "transcript_proof": "b" * 64,
-                "proof_expires_at": (datetime.now(UTC) + timedelta(minutes=1))
-                .isoformat(timespec="milliseconds")
-                .replace("+00:00", "Z"),
-            },
-        },
-    }
 
 
-@pytest.mark.asyncio
-async def test_voice_audit_retains_only_correlation_fences(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    websocket = object()
-    raw = _voice_frame()
-    captured: list[dict[str, Any]] = []
-
-    async def record_ws_action(**values: Any) -> None:
-        captured.append(values)
-
-    import audit.hooks
-
-    monkeypatch.setattr(audit.hooks, "record_ws_action", record_ws_action)
-    runtime = SimpleNamespace()
-    runtime.ui_sessions = {websocket: {"sub": "retention-owner"}}
-    runtime._get_user_id = lambda _websocket: "retention-owner"
-    runtime._parsed_ui_frame = Orchestrator._parsed_ui_frame
-    runtime._ws_active_chat = {id(websocket): CHAT_ID}
-    runtime.cancelled_sessions = {}
-
-    async def retire(_websocket: object) -> None:
-        raise AssertionError("voice input must not use typed welcome teardown")
-
-    async def admit(
-        _websocket: object,
-        _msg: Any,
-        **_kwargs: Any,
-    ) -> _VoiceDispatchContext:
-        return _VoiceDispatchContext(
-            admission=SimpleNamespace(canonical_text=TRANSCRIPT),
-            connection_generation=CONNECTION_ID,
-            origin=SimpleNamespace(**raw["payload"]["voice_origin"]),
-        )
-
-    async def dispatched(*_args: Any, **_kwargs: Any) -> None:
-        return None
-
-    async def safe_send(*_args: Any, **_kwargs: Any) -> bool:
-        return True
-
-    runtime._retire_welcome_canvas = retire
-    runtime._admit_voice_chat_message = admit
-    runtime._serialized_chat = dispatched
-    runtime._safe_send = safe_send
-    runtime.handle_ui_message = types.MethodType(
-        Orchestrator.handle_ui_message,
-        runtime,
-    )
-
-    await runtime.handle_ui_message(websocket, json.dumps(raw))
-    await asyncio.sleep(0)
-    assert len(captured) == 1
-    audit_payload = captured[0]["payload"]
-    assert set(audit_payload) == {
-        "voice_origin",
-        "chat_id",
-        "submission_id",
-        "request_generation",
-    }
-    assert set(audit_payload["voice_origin"]) == {
-        "schema_version",
-        "session_id",
-        "generation",
-        "media_grant_revision",
-        "turn_id",
-        "client_turn_id",
-        "chat_context_revision",
-    }
-    serialized = json.dumps(audit_payload, sort_keys=True)
-    for value in SENSITIVE_VALUES:
-        assert value not in serialized
-    assert "transcript_proof" not in serialized
-    assert "text_digest_sha256" not in serialized
-    assert "source_participant_identity" not in serialized
 
 
 def test_crash_representations_redact_content_and_authority() -> None:

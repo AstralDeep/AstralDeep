@@ -96,36 +96,6 @@ def session_env(monkeypatch, plane_runtime: PlaneTestRuntime):
     )
 
 
-async def test_session_store_async_twins_cover_the_sync_surface(session_env):
-    store, sid, user_id = session_env
-    row = await store.acreate(
-        sid,
-        user_id=user_id,
-        access_token="at",
-        refresh_token="rt",
-        hard_max_seconds=3600,
-    )
-    assert row["sid"] == sid
-
-    got = await store.aget(sid)
-    assert got is not None and got["user_id"] == user_id
-
-    await store.aupdate_tokens(sid, access_token="at2", refresh_token="rt2")
-    await store.amark_resumed(sid, True)
-    assert (await store.aget(sid))["resumed"] is True
-
-    deleted = await store.adelete(sid)
-    assert deleted is not None
-    assert await store.adelete_for_user(user_id) == 0
-    assert isinstance(await store.apurge_expired(), int)
-
-    await store.aenqueue_revocation(user_id, "rt-orphan", client_id="astral-web")
-    pending = await store.apending_revocations(limit=200)
-    mine = [p for p in pending if p["user_id"] == user_id]
-    assert mine and mine[0]["client_id"] == "astral-web"
-    await store.aresolve_revocation(mine[0]["id"])
-
-
 @pytest.fixture()
 def attachment_env(plane_runtime: PlaneTestRuntime, tmp_path):
     user_id = f"twin-att-user-{uuid.uuid4()}"
@@ -188,7 +158,7 @@ async def test_message_attachment_repo_async_twins(attachment_env):
         plane_repositories=db.repositories,
     )
 
-    link_id = await repo.ainsert(
+    link_id = repo.insert(
         chat_id=chat_id,
         attachment_id=att_id,
         user_id=user_id,

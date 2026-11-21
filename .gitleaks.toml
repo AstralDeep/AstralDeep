@@ -5,11 +5,11 @@
 #   - backend test fixtures: pytest HMAC secrets ("pytest-audit-secret",
 #     "alternate-secret-for-test"), fake agent keys ("secret123",
 #     "test-secret-key"), and the hardcoded UNSIGNED mock JWT used by
-#     mock-auth tests (backend/tests, backend/*/tests)
+#     fixture-token tests (backend/tests, backend/*/tests)
 #   - .env.example shipped placeholders (the exit-78 boot gate refuses them
 #     in production: session_store.assert_production_posture)
-#   - mock-auth dev literals ("dev-token") and the documented placeholder
-#     secrets ("change-me", "dev-audit-hmac-secret-change-me-in-prod")
+#   - the documented placeholder secrets ("change-me",
+#     "dev-audit-hmac-secret-change-me-in-prod")
 #   - throwaway CI-only values used by .github/workflows/ci.yml
 #     (ci-test-agent-key, ci-test-hmac-secret, DB password astral_ci) and the
 #     local-dev compose default DB password (astral_dev)
@@ -75,8 +75,6 @@ paths = [
   '''\.env\.example$''',
 ]
 regexes = [
-  # Mock-auth literal token (development mode only; removed from client.js by 028)
-  '''dev-token''',
   # Shipped audit-HMAC placeholder + its generic form; both are refused by the
   # production boot gate (orchestrator/session_store._DEV_PLACEHOLDER_SECRETS)
   '''dev-audit-hmac-secret-change-me-in-prod''',

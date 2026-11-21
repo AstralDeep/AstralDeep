@@ -36,7 +36,7 @@ def test_make_llm_judge_with_fake_llm():
 
     judge = make_llm_judge(_fake_call_llm)
     ev = CapturedEvidence(evidence_id="e", scenario_id="s", run_mode="mock_inprocess",
-                          components=[{"type": "table"}])
+                          audit_rows=[{"action_type": "tool.read_x.end"}])
     check = Check("c", "tangible_ui", lambda e, i: ok("c"))
     assert run_async(judge(check, ev, {})) == Outcome.FAIL
 

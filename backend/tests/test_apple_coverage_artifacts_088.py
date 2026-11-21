@@ -1353,7 +1353,6 @@ def test_native_cli_operations_are_create_only_and_data_free(
     }
 
 
-
 def mac_observation(lane, skip=False, architecture="arm64"):
     from scripts import native_xccov_domain as policy
     summary, tests = observation(lane)
@@ -1413,7 +1412,6 @@ def test_mac_raw_observations_refuse_unproven_dispositions_and_platform_relabell
         lane = change
     with pytest.raises((helper.ArtifactError, ValueError)):
         helper.observation_cases(summary, tests, lane, platform="macos")
-
 
 
 @pytest.mark.parametrize("lane", ["unit", "ui", "staging"])

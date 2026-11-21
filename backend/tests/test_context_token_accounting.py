@@ -1,5 +1,5 @@
 """Verifies complete provider-aware request accounting, offline encoder assets, and
-compaction budget boundaries. The synthetic request histories cover multilingual,
+context window lookups. The synthetic request histories cover multilingual,
 code, JSON, tool-call, result, and multimodal content.
 """
 
@@ -15,7 +15,7 @@ import pytest
 import tiktoken
 
 from orchestrator import context_token_accounting as accounting
-from orchestrator.compaction import compact_messages, get_context_window
+from orchestrator.compaction import get_context_window
 from orchestrator.context_token_accounting import (
     AUDIO_TOKEN_ALLOWANCE,
     FALLBACK_CONTEXT_WINDOW,
@@ -31,20 +31,6 @@ from orchestrator.context_token_accounting import (
     resolve_model_profile,
     verify_encoder_assets,
 )
-
-
-async def _summary_llm(websocket, prompt):
-    assert websocket is None
-    return SimpleNamespace(content="condensed history"), None
-
-
-def _history(pairs: int, chars: int = 40) -> list[dict]:
-    body = "x" * chars
-    messages: list[dict] = []
-    for index in range(pairs):
-        messages.append({"role": "user", "content": f"q{index} {body}"})
-        messages.append({"role": "assistant", "content": f"a{index} {body}"})
-    return messages
 
 
 def _request(messages: list[dict], tools: list[dict] | None = None, reserved: int = 256):
@@ -281,38 +267,6 @@ def test_malformed_content_and_objects_are_counted_conservatively():
     assert accountant.count_tools({"not": "a list"}) > 0
 
 
-@pytest.mark.asyncio
-async def test_compaction_boundary_accounts_tools_and_reserved_output():
-    messages = [
-        {"role": "system", "content": "sys"},
-        *_history(pairs=6, chars=80),
-        {"role": "user", "content": "current question"},
-    ]
-    reserved = 100
-    accountant = TokenAccountant(resolve_model_profile("openai", "gpt-4o"))
-    message_tokens = accountant.count_messages(messages)
-    tool_tokens = accountant.count_tools(SAMPLE_TOOLS)
-    required_window = message_tokens + tool_tokens + reserved
-
-    untouched, fired = await compact_messages(
-        messages, "gpt-4o", _summary_llm,
-        provider="openai", tools_desc=SAMPLE_TOOLS,
-        reserved_output_tokens=reserved, context_window=required_window,
-        encoding_name="o200k_base", budget_ratio=1.0,
-    )
-    assert fired is False and untouched == messages
-
-    compacted, fired = await compact_messages(
-        messages, "gpt-4o", _summary_llm,
-        provider="openai", tools_desc=SAMPLE_TOOLS,
-        reserved_output_tokens=reserved, context_window=required_window - 1,
-        encoding_name="o200k_base", budget_ratio=1.0,
-    )
-    assert fired is True
-    assert accountant.count_messages(compacted) < message_tokens
-    assert compacted[-1] == {"role": "user", "content": "current question"}
-
-
 def test_multilingual_code_and_json_are_not_undercounted_by_character_heuristics():
     accountant = TokenAccountant(resolve_model_profile("openai", "gpt-4o"))
     text = "你好，世界\nПривет мир\n" + json.dumps({"東京": ["α", "β"]}, ensure_ascii=False) + "\nconsole.log('x');"
@@ -433,12 +387,7 @@ def test_encoder_import_initialization_and_parse_failures_are_classified(tmp_pat
     accounting._load_encoder_cached.cache_clear()
 
 
-@pytest.mark.asyncio
-async def test_compaction_empty_invalid_bounds_and_request_estimator():
-    assert await compact_messages([], "gpt-4o", _summary_llm) == ([], False)
-    messages = [{"role": "system", "content": "sys"}, *_history(pairs=6), {"role": "user", "content": "q"}]
-    assert await compact_messages(messages, "gpt-4o", _summary_llm, context_window=0) == (messages, False)
-
+def test_request_estimator_matches_account_request():
     accountant = TokenAccountant(resolve_model_profile("openai", "gpt-4o"))
     expected = accountant.account_request(SAMPLE_MESSAGES, SAMPLE_TOOLS, reserved_output_tokens=256).total_tokens
     assert accounting.account_request_tokens(

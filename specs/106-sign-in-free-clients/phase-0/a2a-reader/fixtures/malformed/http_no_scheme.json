@@ -1,0 +1,50 @@
+{
+  "card": {
+    "capabilities": {
+      "streaming": true
+    },
+    "defaultInputModes": [
+      "text/plain"
+    ],
+    "defaultOutputModes": [
+      "text/plain"
+    ],
+    "description": "Fixture card for the reader tests.",
+    "name": "Fixture Agent",
+    "securityRequirements": [
+      {
+        "schemes": {
+          "tok": {
+            "list": []
+          }
+        }
+      }
+    ],
+    "securitySchemes": {
+      "tok": {
+        "httpAuthSecurityScheme": {
+          "bearerFormat": "JWT"
+        }
+      }
+    },
+    "skills": [
+      {
+        "description": "Echoes text.",
+        "id": "echo",
+        "name": "Echo",
+        "tags": [
+          "echo"
+        ]
+      }
+    ],
+    "supportedInterfaces": [
+      {
+        "protocolBinding": "JSONRPC",
+        "protocolVersion": "1.0",
+        "url": "https://agent.example.org/a2a/v1"
+      }
+    ],
+    "version": "1.0.0"
+  },
+  "expectedRefusal": "missing_field"
+}

@@ -12,17 +12,12 @@ import pytest
 
 from agents.computer_use import mcp_tools
 from orchestrator import computer_use_policy as policy
-from orchestrator import hitl_confirmation as hc
-from orchestrator import remote_confirmation as rc
 from orchestrator.computer_hosts import ComputerHostError
 from orchestrator.computer_sessions import MAX_AX_HELD, MAX_AX_SNAPSHOTS, ComputerSession
 from orchestrator.orchestrator import Orchestrator
 from orchestrator.projection_surfaces import my_computers
 from shared.protocol import ComputerHostDescriptor
-from tests.test_computer_grant_flow_102 import (
-    CHAT as GATE_CHAT, OWNER as GATE_OWNER, ROOT as GATE_ROOT, TEXTEDIT, _buttons, _call,
-    _fresh_pending_cards as _fresh_pending_cards, _mac, _payload,
-)
+from tests.test_computer_grant_flow_102 import CHAT as GATE_CHAT, OWNER as GATE_OWNER, ROOT as GATE_ROOT, TEXTEDIT, _call, _mac
 from tests.test_computer_use_076 import OWNER, _AgentOrch, _descriptor, _FakeHostSocket, _WS
 from tests.test_hitl_public_research import runtime as runtime  # noqa: F401
 from tests.test_hitl_task_continuation import _registered_controller, task_runtime as task_runtime  # noqa: F401
@@ -90,17 +85,6 @@ def _ok(**result):
 
 def _error(code, message="refused", **extra):
     return {"ok": False, "error": {"code": code, "message": message, **extra}}
-
-
-def _approve(monkeypatch, approved=True):
-    calls = []
-
-    def approved_call(orch, owner, chat, agent, tool):
-        calls.append(tool)
-        return approved
-
-    monkeypatch.setattr(hc, "approved_call", approved_call)
-    return calls
 
 
 async def _snapshot(world, tree=TREE):
@@ -347,23 +331,13 @@ async def test_a_known_consequential_control_is_held_for_exact_review_before_any
     data = first["_data"]
     line = '[a7] AXButton "Send"'
     assert data["status"] == "refused" and data["code"] == "confirmation_required" and data["element"] == line
-    assert line in data["next_action"] and world.requests("ax_action") == []
+    assert "directly on the computer" in data["next_action"] and world.requests("ax_action") == []
     assert world.session.ax_held[("x3", "a7")] == line
     mismatch = await world.call("ax_action", ref="a7", snapshot_id="x3", action="press",
                                 confirm_element='[a7] AXButton "Save"')
     assert mismatch["_data"]["code"] == "confirm_element_mismatch" and world.requests("ax_action") == []
-    _approve(monkeypatch, approved=False)
     again = await world.call("ax_action", ref="a7", snapshot_id="x3", action="press", confirm_element=line)
     assert again["_data"]["code"] == "confirmation_required" and world.requests("ax_action") == []
-    calls = _approve(monkeypatch)
-    world.replies["ax_action"] = _ok(element="Send", app="Mail")
-    done = await world.call("ax_action", ref="a7", snapshot_id="x3", action="press", confirm_element=line)
-    assert calls == ["ax_action"] and done["_data"]["element"] == "Send"
-    assert world.requests("ax_action")[-1]["args"] == {
-        "ref": "a7", "snapshot_id": "x3", "action": "press", "permit": {"ref": "a7", "snapshot_id": "x3", "hwnd": 42}}
-    assert ("x3", "a7") not in world.session.ax_held
-    replay = await world.call("ax_action", ref="a7", snapshot_id="x3", action="press", confirm_element=line)
-    assert replay["_data"]["code"] == "confirm_element_mismatch"
 
 
 async def test_a_consequential_value_or_known_field_needs_review_for_pick_and_set_value(world):
@@ -379,23 +353,16 @@ async def test_a_consequential_value_or_known_field_needs_review_for_pick_and_se
     assert "code" not in focus["_data"] and len(world.requests("ax_action")) == 1
 
 
-async def test_a_host_reported_review_is_held_and_an_approved_retry_carries_the_permit(world, monkeypatch):
+async def test_a_host_reported_review_cannot_authorize_a_retry(world, monkeypatch):
     await _snapshot(world)
     line = '[a8] AXButton "Save Draft" — Mail'
     world.replies["ax_action"] = _error("confirmation_required", "needs review", element_line=line)
     out = await world.call("ax_action", ref="a8", snapshot_id="x3", action="press")
     assert out["_data"]["code"] == "confirmation_required" and out["_data"]["element"] == line
-    _approve(monkeypatch, approved=False)
     world.replies["ax_action"] = _error("confirmation_required", f"still needs review\n{line}")
     unapproved = await world.call("ax_action", ref="a8", snapshot_id="x3", action="press", confirm_element=line)
     assert "permit" not in world.requests("ax_action")[-1]["args"] and unapproved["_data"]["element"] == line
-    _approve(monkeypatch)
-    world.replies["ax_action"] = _ok()
-    await world.call("ax_action", ref="a8", snapshot_id="x3", action="press", confirm_element=line)
-    assert world.requests("ax_action")[-1]["args"]["permit"] == {"ref": "a8", "snapshot_id": "x3", "hwnd": 42}
-    world.replies["ax_action"] = _error("confirmation_required", "\x07")
-    blank = await world.call("ax_action", ref="a8", snapshot_id="x3", action="press")
-    assert blank["_data"]["element"] == "" and "ax_find" in blank["_data"]["next_action"]
+    assert len(world.requests("ax_action")) == 1
 
 
 @pytest.mark.parametrize("code,hint", [("terminal_target", "run_command"), ("stale_ref", "ax_find"),
@@ -428,11 +395,8 @@ async def test_menu_invokes_and_lists_and_reviews_consequential_leaves(world, mo
     line = "menu Mail: Mail > Quit Mail"
     assert quit_["_data"]["code"] == "confirmation_required" and quit_["_data"]["element"] == line
     assert len(world.requests("menu")) == before
-    _approve(monkeypatch)
-    world.replies["menu"] = _ok()
-    await world.call("menu", pid=501, path=["Mail", "Quit Mail"], confirm_element=line)
-    assert world.requests("menu")[-1]["args"] == {"pid": 501, "path": ["Mail", "Quit Mail"],
-                                                  "permit": {"path": ["Mail", "Quit Mail"], "pid": 501}}
+    refused = await world.call("menu", pid=501, path=["Mail", "Quit Mail"], confirm_element=line)
+    assert refused["_data"]["code"] == "confirmation_required" and len(world.requests("menu")) == before
     frontmost = await world.call("menu", path=["Finder", "Empty Trash…"])
     assert frontmost["_data"]["element"] == "menu frontmost app: Finder > Empty Trash…"
     world.replies["menu"] = _error("confirmation_required", "needs review", element_line="Edit > Delete")
@@ -550,11 +514,6 @@ async def test_excluded_patterns_reach_the_agent_and_excluded_paths_explain_them
     assert host.excluded == [] and host.public()["excluded"] == []
 
 
-def _effect(effect):
-    tool, args = effect
-    return tool, {key: value for key, value in args.items() if not key.startswith("_")}
-
-
 async def _gate_mac(task_runtime, **kwargs):
     from orchestrator.computer_use_policy import SCOPES
 
@@ -564,36 +523,6 @@ async def _gate_mac(task_runtime, **kwargs):
                                         "app": "TextEdit", "title": "Untitled"},
                                  {"a7": '[a7] AXButton "Delete"'})
     return session, host
-
-
-async def test_a_reference_click_gets_its_window_at_the_gate_and_offers_window_grants(task_runtime):
-    orch, ws, effects, *_ = task_runtime
-    session, _host = await _gate_mac(task_runtime)
-    first = await _call(task_runtime, "click", ref="a8", snapshot_id="x3")
-    assert [b["label"] for b in _buttons(first)] == ["Approve", 'Allow for this task in window "Untitled"',
-                                                    "Allow for this task in TextEdit", "Decline"]
-    await hc.handle_decision(orch, ws, GATE_OWNER, _payload(first, "grant_task"))
-    assert _effect(effects[-1]) == ("click", {"ref": "a8", "snapshot_id": "x3", "hwnd": 42})
-    again = await _call(task_runtime, "ax_action", ref="a8", snapshot_id="x3", action="press")
-    assert again.result["_data"]["ok"] and effects[-1][1]["hwnd"] == 42
-
-
-async def test_an_application_grant_covers_actions_and_menus_but_never_a_consequential_step(task_runtime):
-    orch, ws, effects, *_ = task_runtime
-    session, _host = await _gate_mac(task_runtime)
-    first = await _call(task_runtime, "ax_action", ref="a8", snapshot_id="x3", action="press")
-    await hc.handle_decision(orch, ws, GATE_OWNER, next(b["payload"] for b in _buttons(first)
-                                                         if b["payload"].get("grant_scope") == "app"))
-    assert len(effects) == 1
-    assert (await _call(task_runtime, "menu", pid=501, path=["Format", "Bold"])).result["_data"]["ok"]
-    assert _effect(effects[-1]) == ("menu", {"pid": 501, "path": ["Format", "Bold"], "hwnd": 42})
-    reviewed = await _call(task_runtime, "ax_action", ref="a7", snapshot_id="x3", action="press",
-                           confirm_element='[a7] AXButton "Delete"')
-    assert reviewed.result["_data"]["status"] == "confirmation_required" and len(effects) == 2
-    assert [b["label"] for b in _buttons(reviewed)] == ["Approve", "Decline"]
-    assert "confirm_element" in json.dumps(reviewed.ui_components[0])
-    quit_ = await _call(task_runtime, "menu", pid=501, path=["TextEdit", "Quit TextEdit"])
-    assert quit_.result["_data"]["status"] == "confirmation_required" and len(effects) == 2
 
 
 async def test_the_gate_refuses_stale_terminal_and_astral_targets_without_a_card(task_runtime):
@@ -608,23 +537,10 @@ async def test_the_gate_refuses_stale_terminal_and_astral_targets_without_a_card
                        ({"ref": "a1", "snapshot_id": "x8", "action": "press"}, "out_of_range")):
         response = await _call(task_runtime, "ax_action", **args)
         assert response.error and response.error["message"].startswith(code)
-    assert not effects and not getattr(orch, "_hitl_pending_calls", {}) and not rc._PENDING_CARDS
+    assert not effects
 
 
-async def test_bypass_auto_approves_accessibility_actions_and_keeps_the_floor(task_runtime):
-    orch, ws, effects, *_ = task_runtime
-    session, host = await _gate_mac(task_runtime, remote=True)
-    await orch.computer_sessions.set_bypass(host, True)
-    response = await _call(task_runtime, "ax_action", ref="a7", snapshot_id="x3", action="press",
-                           confirm_element='[a7] AXButton "Delete"')
-    assert response.result["_data"]["approval_source"] == "bypass" and effects[-1][0] == "ax_action"
-    session.remember_ax_snapshot("x5", {"hwnd": 50, "pid": 60, "bundle_id": "com.1password.1password",
-                                        "app": "1Password", "title": "Vault"}, {})
-    secure = await _call(task_runtime, "ax_action", ref="a1", snapshot_id="x5", action="set_value", value="hunter2")
-    assert secure.error and len(effects) == 1
-
-
-async def test_a_bypass_frame_right_after_registration_covers_later_cards(task_runtime, monkeypatch):
+async def test_a_host_bypass_frame_cannot_authorize_an_effect_after_registration(task_runtime, monkeypatch):
     orch, ws, effects, *_ = task_runtime
     monkeypatch.setattr(my_computers, "_enabled", lambda: True)
     _registered_controller(orch, ws)
@@ -656,9 +572,8 @@ async def test_a_bypass_frame_right_after_registration_covers_later_cards(task_r
     assert "Bypass on" in json.dumps(notice) and orch.computer_sessions.bypass_on(GATE_OWNER, host.host_id)
     session = await orch.computer_sessions.start(GATE_OWNER, host, ws, GATE_CHAT, wait_for_ack=False)
     session.remember_windows([dict(TEXTEDIT)])
-    hc.begin_task(orch, ws, GATE_OWNER, GATE_CHAT)
     response = await _call(task_runtime, "type_text", text="hello", hwnd=42)
-    assert response.result["_data"]["approval_source"] == "bypass" and [name for name, _a in effects] == ["type_text"]
+    assert response.error and not response.ui_components and not effects
 
     await Orchestrator._register_computer_host(orch, ws, GATE_OWNER, descriptor)
     again = orch.computer_hosts.host_for_socket(ws)
@@ -674,9 +589,8 @@ async def test_a_bypass_frame_right_after_registration_covers_later_cards(task_r
     assert orch.computer_sessions.bypass_on(GATE_OWNER, restarted.host_id)
     session = await orch.computer_sessions.start(GATE_OWNER, restarted, ws, GATE_CHAT, wait_for_ack=False)
     session.remember_windows([dict(TEXTEDIT)])
-    hc.begin_task(orch, ws, GATE_OWNER, GATE_CHAT)
     restored = await _call(task_runtime, "press_keys", keys="enter", hwnd=42)
-    assert restored.result["_data"]["approval_source"] == "bypass" and len(effects) == 2
+    assert restored.error and not restored.ui_components and not effects
 
     other = _WS(user=GATE_OWNER)
     orch.ui_sessions[other] = {"sub": GATE_OWNER}

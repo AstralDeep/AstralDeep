@@ -54,9 +54,16 @@ docker run --name "$namespace-negative" --network none --cpus=1 --memory=1g \
   --label "org.astraldeep.qualification.namespace=$namespace" \
   --env PYTHON_DOTENV_DISABLED=1 "$image" > "$output/boot-negative.log" 2>&1
 negative=$?
-set -e
 test "$negative" -eq 78
 printf '%s\n' "$negative" > "$output/boot-negative.exit"
+docker run --name "$namespace-unset-profile" --network none --cpus=1 --memory=1g \
+  --label "org.astraldeep.qualification.namespace=$namespace" \
+  --env ASTRAL_ENV=development --env PYTHON_DOTENV_DISABLED=1 "$image" > "$output/boot-profile-unset.log" 2>&1
+profile_unset=$?
+set -e
+test "$profile_unset" -eq 78
+grep -q node.profile_removed "$output/boot-profile-unset.log"
+printf '%s\n' "$profile_unset" > "$output/boot-profile-unset.exit"
 
 python - "$namespace" "$environment" <<'PY'
 import base64
@@ -66,14 +73,12 @@ import sys
 from pathlib import Path
 name, path = sys.argv[1:]
 values = {
-    "ASTRAL_ENV": "production", "USE_MOCK_AUTH": "false",
+    "ASTRAL_ENV": "production",
     "PYTHON_DOTENV_DISABLED": "1", "LETS_MODE": "off",
-    "WEB_SESSION_ENC_KEY": base64.urlsafe_b64encode(os.urandom(32)).decode(),
+    "ASTRAL_NODE_PROFILE": "personal", "ASTRAL_NODE_DATA_DIR": "/tmp/boot-node",
     "CREDENTIAL_ENCRYPTION_KEY": base64.urlsafe_b64encode(os.urandom(32)).decode(),
     "AUDIT_HMAC_SECRET": secrets.token_urlsafe(48),
     "AGENT_API_KEY": secrets.token_urlsafe(48),
-    "KEYCLOAK_AUTHORITY": "https://idp.invalid/realms/isolated-boot",
-    "KEYCLOAK_CLIENT_ID": "isolated-boot", "KEYCLOAK_CLIENT_SECRET": secrets.token_urlsafe(48),
     "DATABASE_URL": f"postgresql://astral:isolated_ci_only@{name}-pg:5432/ad_gate_smoke",
     "ATTACHMENT_UPLOAD_ROOT": "/tmp/boot-blobs",
     "PERSONAL_AGENT_ARTIFACT_ROOT": "/tmp/boot-agents",
@@ -96,12 +101,17 @@ while True:
             with urllib.request.urlopen("http://127.0.0.1:8001" + path, timeout=3) as response:
                 assert response.status == 200
                 observations[path] = json.load(response)
-        try:
-            urllib.request.urlopen("http://127.0.0.1:8001/lets/health", timeout=3)
-        except urllib.error.HTTPError as exc:
-            assert exc.code == 401
-        else:
-            raise AssertionError("unauthenticated protected route was admitted")
+        for path, status, reason in (
+            ("/api/node/connections", 401, "node.operator_secret_required"),
+            ("/lets/health", 404, "Not Found"),
+        ):
+            try:
+                urllib.request.urlopen("http://127.0.0.1:8001" + path, timeout=3)
+            except urllib.error.HTTPError as exc:
+                assert (exc.code, json.load(exc)["detail"]) == (status, reason)
+                observations[path] = {"status": status, "detail": reason}
+            else:
+                raise AssertionError(f"unauthenticated probe was admitted at {path}")
         print(json.dumps({"scope": "production-configuration-boot-only",
                           "real_authentication_tested": False,
                           "lets_enforce_tested": False, "observations": observations}))
@@ -117,7 +127,8 @@ docker stop "$namespace-app" >/dev/null
 
 docker run -d --init --name "$namespace-dev" --network "$namespace" --cpus=2 --memory=2g \
   --label "org.astraldeep.qualification.namespace=$namespace" \
-  --env ASTRAL_ENV=development --env USE_MOCK_AUTH=true --env PYTHON_DOTENV_DISABLED=1 \
+  --env ASTRAL_ENV=development --env PYTHON_DOTENV_DISABLED=1 \
+  --env ASTRAL_NODE_PROFILE=personal --env ASTRAL_NODE_DATA_DIR=/tmp/development-node \
   --env DATABASE_URL="postgresql://astral:isolated_ci_only@$namespace-pg:5432/ad_gate_development" \
   --env ATTACHMENT_UPLOAD_ROOT=/tmp/development-blobs \
   --env PERSONAL_AGENT_ARTIFACT_ROOT=/tmp/development-agents "$image" >/dev/null
@@ -146,22 +157,24 @@ url="postgresql://astral:isolated_ci_only@$namespace-pg:5432/ad_gate_tests"
 docker run --init --name "$namespace-test" --network "container:$namespace-dev" --cpus=4 --memory=10g \
   --label "org.astraldeep.qualification.namespace=$namespace" \
   --user "$(id -u):$(id -g)" --env HOME=/tmp \
-  --env GIT_CONFIG_COUNT=5 \
+  --env GIT_CONFIG_COUNT=4 \
   --env GIT_CONFIG_KEY_0=safe.directory --env GIT_CONFIG_VALUE_0=/workspace \
-  --env GIT_CONFIG_KEY_1=safe.directory --env GIT_CONFIG_VALUE_1=/workspace/components/AstralPlane \
-  --env GIT_CONFIG_KEY_2=safe.directory --env GIT_CONFIG_VALUE_2=/workspace/components/AstralProjection \
-  --env GIT_CONFIG_KEY_3=safe.directory --env GIT_CONFIG_VALUE_3=/workspace/components/AstralPrimitives \
-  --env GIT_CONFIG_KEY_4=safe.directory --env GIT_CONFIG_VALUE_4=/workspace/components/LETS \
+  --env GIT_CONFIG_KEY_1=safe.directory --env GIT_CONFIG_VALUE_1=/workspace/components/AstralProjection \
+  --env GIT_CONFIG_KEY_2=safe.directory --env GIT_CONFIG_VALUE_2=/workspace/components/AstralPrimitives \
+  --env GIT_CONFIG_KEY_3=safe.directory --env GIT_CONFIG_VALUE_3=/workspace/components/LETS \
   --env DATABASE_URL="$url" --env ASTRALPLANE_TEST_DATABASE_URL="$url" \
   --env ASTRALPLANE_TEST_POSTGRES_DSN="$url" --env ASTRAL_TEST_ISOLATED=1 \
   --env PYTHON_DOTENV_DISABLED=1 --env PYTHONDONTWRITEBYTECODE=1 \
+  --env ASTRAL_NODE_PROFILE=personal \
   --env ATTACHMENT_UPLOAD_ROOT=/tmp/test-blobs --env PERSONAL_AGENT_ARTIFACT_ROOT=/tmp/test-agents \
   --env ASTRALDEEP_SOURCE_REPO=/workspace --env ASTRAL_GATE_GROUP="$group" \
-  --env PATH=/opt/ci-node:/usr/local/bin:/usr/bin:/bin \
+  --env PATH=/opt/astral-kernel/bin:/opt/ci-node:/usr/local/bin:/usr/bin:/bin \
   --volume "$(dirname "$(command -v node)"):/opt/ci-node:ro" \
   --volume "$policy_root:/qualification-policy:ro" \
   --volume "$root:/workspace" --workdir /workspace \
   --entrypoint /bin/bash "$image" -euc '
+    mailbox="$(command -v astral-mailbox)"
+    [[ "$mailbox" == /opt/astral-kernel/bin/astral-mailbox ]]
     python -m venv --system-site-packages /tmp/ci
     /tmp/ci/bin/python -m pip install --require-hashes -r /qualification-policy/tooling/backend-ci/requirements.lock.txt
     /tmp/ci/bin/python /qualification-policy/scripts/run_backend_web_tests.py --root /workspace --output /workspace/build/backend-web --group "$ASTRAL_GATE_GROUP"

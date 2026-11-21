@@ -1,8 +1,10 @@
 """Boots the backend under process_supervision: waits for the orchestrator's health
 check, then discovers and spawns each agents/ subdirectory as its own supervised
 child, or runs it in-process/remote-compute per feature flags.
+A generated agent gets the draft launch from orchestrator/sandbox.py and runs only while node_api answers that the node allows agent servers.
 """
 
+import json
 import time
 import sys
 import os
@@ -14,6 +16,7 @@ from shared.process_supervision import (
     ProcessSupervisor,
     TerminationReason,
 )
+from orchestrator.sandbox import agent_launch, draft_confinement
 
 try:
     from dotenv import load_dotenv
@@ -24,7 +27,7 @@ except ImportError:
 
 EX_UNAVAILABLE = getattr(os, "EX_UNAVAILABLE", 69)
 
-_NON_AGENT_DIRS = frozenset({"tests", "__pycache__"})
+_NON_AGENT_DIRS = frozenset({"tests", "__pycache__", "sandbox_qualification"})
 _HOST_ONLY_AGENT_DIRS = frozenset({"evidence"})
 
 
@@ -103,6 +106,64 @@ def _wait_for_orchestrator(port: int, process, timeout_s: float = 60.0,
     return False
 
 
+POLICY_TICKS = 5
+
+
+def _agent_servers_refused(port: int) -> bool:
+    try:
+        with urllib.request.urlopen(f"http://localhost:{port}/api/node/agent-servers", timeout=5) as resp:
+            return json.load(resp).get("allowed") is not True
+    except Exception:
+        return True
+
+
+class GeneratedAgents:
+    def __init__(self, supervisor, python_exe):
+        self._supervisor = supervisor
+        self._python = python_exe
+        self._specs = {}
+        self._procs = {}
+        self._held = set()
+        self._refused = set()
+
+    def register(self, item, script, path, port):
+        self._specs[item] = (script, path, port)
+
+    def hold(self, item):
+        self._held.add(item)
+
+    def launch(self, item):
+        self._held.discard(item)
+        script, path, port = self._specs[item]
+        try:
+            launch = agent_launch(path)
+        except Exception as exc:
+            print(f"Refusing {item}: its resource limits could not be set up ({type(exc).__name__})")
+            self._refused.add(item)
+            return
+        print(f"Starting {item} agent on port {port}...")
+        print(f" {item}: {draft_confinement(launch.limits_applied)['notice']}")
+        self._procs[item] = self._supervisor.spawn(
+            process_id=uuid.uuid4(),
+            owner=ProcessOwner(owner_kind="server_agent", owner_id=item),
+            argv=(self._python, script, "--port", str(port)),
+            cwd=path,
+            **launch.popen,
+        )
+
+    def reconcile(self, refused):
+        for item in self._specs:
+            proc = self._procs.get(item)
+            running = proc is not None and proc.poll() is None
+            if refused and running:
+                print(f"Stopping {item}: the node no longer allows agent servers")
+                proc.terminate(reason=TerminationReason.STOP)
+                self._procs.pop(item, None)
+                self._held.add(item)
+            elif not refused and item in self._held and item not in self._refused:
+                self.launch(item)
+
+
 def main(process_supervisor=None):
     process_supervisor = (
         process_supervisor
@@ -157,15 +218,18 @@ def main(process_supervisor=None):
 
         inprocess_enabled = os.environ.get("FF_INPROCESS_AGENTS", "True").lower() in ("true", "1", "yes")
         try:
-            from orchestrator.local_agents import BUILT_IN_AGENT_DIRS
+            from orchestrator.local_agents import BUILT_IN_AGENT_DIRS, FIRST_PARTY_AGENT_DIRS
         except Exception:
             BUILT_IN_AGENT_DIRS = ()
+            FIRST_PARTY_AGENT_DIRS = frozenset()
         try:
             from orchestrator.local_agents import _REMOTE_COMPUTE_AGENT_DIRS
         except Exception:
             _REMOTE_COMPUTE_AGENT_DIRS = ("remote_compute",)
         remote_compute_enabled = _remote_compute_enabled()
 
+        refused = _agent_servers_refused(orch_port)
+        generated = GeneratedAgents(process_supervisor, python_exe)
         next_port = int(os.environ.get("AGENT_PORT", 8003))
         for item in os.listdir(agents_dir):
             custom_agent_script = _agent_entrypoint(agents_dir, item)
@@ -177,6 +241,15 @@ def main(process_supervisor=None):
                 continue
             if inprocess_enabled and item in BUILT_IN_AGENT_DIRS:
                 print(f"Running {item} in-process (no port)")
+                continue
+            if item not in FIRST_PARTY_AGENT_DIRS:
+                generated.register(item, custom_agent_script, item_path, next_port)
+                next_port += 1
+                if refused:
+                    generated.hold(item)
+                    print(f"Holding {item}: the node has not allowed agent servers")
+                else:
+                    generated.launch(item)
                 continue
             if item in _REMOTE_COMPUTE_AGENT_DIRS:
                 # Off must fully disable the agent — no in-process, no subprocess
@@ -205,7 +278,7 @@ def main(process_supervisor=None):
                     continue
                 if inprocess_enabled:
                     continue
-            if item in ("artifacts", "sandbox_qualification") and inprocess_enabled:
+            if item == "artifacts" and inprocess_enabled:
                 print(f"Running {item} in-process when its feature flag is on (no port)")
                 continue
             print(f"Starting {item} agent on port {next_port}...")
@@ -228,7 +301,7 @@ def main(process_supervisor=None):
         print()
         print("-" * 60)
         print(" System started!")
-        print(f"  Orchestrator WS: ws://localhost:{orch_port}")
+        print(f"  Node API: http://localhost:{orch_port}/api/docs")
         agent_start_port = int(os.environ.get("AGENT_PORT", 8003))
         print(f"  Agent APIs start at: http://localhost:{agent_start_port}")
         print("-" * 60)
@@ -236,8 +309,12 @@ def main(process_supervisor=None):
         print("Press Ctrl+C to stop.")
         print()
 
+        ticks = 0
         while True:
             time.sleep(1)
+            ticks += 1
+            if ticks % POLICY_TICKS == 0:
+                generated.reconcile(_agent_servers_refused(orch_port))
             if p_orch.poll() is not None:
                 print(" Orchestrator died!")
                 _rc = p_orch.returncode

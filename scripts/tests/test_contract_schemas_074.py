@@ -32,7 +32,6 @@ def _validator(name: str) -> Draft202012Validator:
 @pytest.mark.parametrize(
     ("implementation_name", "planning_name"),
     [
-        ("system-composition.schema.json", "composition-manifest.schema.json"),
         ("case-study-evidence.schema.json", "case-study-evidence.schema.json"),
     ],
 )
@@ -63,11 +62,11 @@ def _composition() -> dict[str, object]:
     lets = component(
         "https://github.com/AstralDeep/LETS.git",
         "components/LETS",
-        "1.1.0",
+        "1.1.2",
     )
-    lets["ref"] = "v1.1.0"
+    lets["ref"] = "v1.1.2"
     return {
-        "format": "astral.composition/v1",
+        "format": "astral.composition/v2",
         "astraldeep_contract_version": "astraldeep.composition/v1",
         "components": {
             "astral-projection": component(
@@ -75,20 +74,24 @@ def _composition() -> dict[str, object]:
                 "components/AstralProjection",
                 "astralprojection.contract/v1",
             ),
-            "astral-plane": component(
-                "https://github.com/AstralDeep/AstralPlane.git",
-                "components/AstralPlane",
-                "astralplane.contract/v1",
+            "astral-kernel": component(
+                "https://github.com/AstralDeep/AstralKernel.git",
+                "components/AstralKernel",
+                "0.1.0",
             ),
             "astral-primitives": component(
                 "https://github.com/AstralDeep/AstralPrimitives.git",
                 "components/AstralPrimitives",
-                "0.4.0",
+                "0.13.0",
             ),
             "lets": lets,
         },
+        "in_tree": {
+            "astral-plane": {"path": "plane", "contract_version": "astralplane.contract/v1"}
+        },
         "availability": {
             "astral-projection": "required-embedded",
+            "astral-kernel": "required-embedded",
             "astral-plane": "required-embedded",
             "astral-primitives": "required-embedded",
             "lets": "external-feature-gated",
@@ -102,9 +105,14 @@ def _composition() -> dict[str, object]:
                 "migration_sha256": SHA256,
                 "blob_layout_version": "astralplane.blob-layout/v1",
             },
-            "primitives": {"package_version": "0.4.0", "contract_sha256": SHA256},
+            "data_plane_sqlite": {
+                "schema_revision": "067.001",
+                "migration_sha256": SHA256,
+                "structure_sha256": SHA256,
+            },
+            "primitives": {"package_version": "0.13.0", "contract_sha256": SHA256},
             "lets": {
-                "release": "v1.1.0",
+                "release": "v1.1.2",
                 "api_version": "v1",
                 "openapi_sha256": SHA256,
                 "receipt_wire_type": "lets.receipt/v1",
@@ -171,7 +179,7 @@ def _evidence() -> dict[str, object]:
 
 
 def test_composition_accepts_exported_component_contract_identifiers() -> None:
-    _validator("system-composition.schema.json").validate(_composition())
+    _validator("composition-manifest-v2.schema.json").validate(_composition())
 
 
 @pytest.mark.parametrize(
@@ -186,16 +194,17 @@ def test_composition_rejects_wrong_component_contract(
     component: str, contract: str
 ) -> None:
     document = _composition()
-    document["components"][component]["contract_version"] = contract  # type: ignore[index]
+    group = "in_tree" if component == "astral-plane" else "components"
+    document[group][component]["contract_version"] = contract  # type: ignore[index]
     with pytest.raises(ValidationError):
-        _validator("system-composition.schema.json").validate(document)
+        _validator("composition-manifest-v2.schema.json").validate(document)
 
 
 def test_composition_requires_signed_lets_ref() -> None:
     document = _composition()
     del document["components"]["lets"]["ref"]  # type: ignore[index]
     with pytest.raises(ValidationError):
-        _validator("system-composition.schema.json").validate(document)
+        _validator("composition-manifest-v2.schema.json").validate(document)
 
 
 @pytest.mark.parametrize(
@@ -220,7 +229,7 @@ def test_composition_rejects_cross_component_contract_mismatch(
     else:
         document["components"]["lets"]["contract_version"] = value  # type: ignore[index]
     with pytest.raises(ValidationError):
-        _validator("system-composition.schema.json").validate(document)
+        _validator("composition-manifest-v2.schema.json").validate(document)
 
 
 def test_case_study_accepts_sanitized_digest_bound_evidence() -> None:

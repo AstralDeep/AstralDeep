@@ -64,6 +64,9 @@ class FakeRepo:
     def list_memory(self, user_id):
         return [dict(m) for m in self.memory]
 
+    def get_memory(self, user_id, mem_id):
+        return next((dict(m) for m in self.memory if m["id"] == mem_id), None)
+
     def update_memory_value(self, user_id, mem_id, value):
         for m in self.memory:
             if m["id"] == mem_id:
@@ -604,6 +607,58 @@ def test_memory_delete_success_then_not_found():
     assert "not found" in notice
 
 
+ATLAS_PAGE_VALUE = json.dumps({"body": "ciphertext", "format": "astral.atlas-page/v1", "kind": "page",
+                               "owner_id": "u1", "page_id": "page-1", "revision": 1}, sort_keys=True)
+
+
+def _orch_with_atlas_page():
+    orch = make_orch()
+    orch.personalization_service.repo.memory.append({
+        "id": "atlas-1", "user_id": "u1", "category": "context", "value": ATLAS_PAGE_VALUE,
+        "source": "atlas", "salience": 0.0, "created_at": 1700000000000, "updated_at": 1700000000000,
+    })
+    return orch
+
+
+def test_memory_tab_hides_atlas_page_rows():
+    html = render(_orch_with_atlas_page(), {"tab": "memory"})
+    assert 'value="prefers tables"' in html
+    assert "atlas-1" not in html and "ciphertext" not in html
+
+
+def test_memory_components_hide_atlas_page_rows():
+    components = asyncio.run(surf._components_memory(_orch_with_atlas_page(), "u1"))
+    rendered = json.dumps(components)
+    assert "prefers tables" in rendered
+    assert "atlas-1" not in rendered and "ciphertext" not in rendered
+
+
+def test_memory_update_and_delete_refuse_atlas_page_rows():
+    orch = _orch_with_atlas_page()
+    _, _, notice = call(surf._handle_memory_update, orch, {"id": "atlas-1", "fields": {"value": "overwrite"}})
+    assert "not found" in notice
+    _, _, notice = call(surf._handle_memory_delete, orch, {"id": " atlas-1 "})
+    assert "not found" in notice
+    assert orch.personalization_service.repo.memory[1]["value"] == ATLAS_PAGE_VALUE
+    _, _, notice = call(surf._handle_memory_delete, orch, {"id": " m1 "})
+    assert "Memory deleted." in notice
+
+
+def test_memory_update_refuses_an_atlas_page_shaped_value():
+    orch = make_orch()
+    _, _, notice = call(surf._handle_memory_update, orch, {"id": "m1", "fields": {"value": ATLAS_PAGE_VALUE}})
+    assert "Atlas page format" in notice
+    assert orch.personalization_service.repo.memory[0]["value"] == "prefers tables"
+
+
+def test_pulse_digest_leaves_out_atlas_page_rows():
+    from orchestrator.projection_surfaces import pulse
+
+    items = pulse._digest_items(_orch_with_atlas_page().personalization_service.repo, "u1")
+    titles = [item["title"] for item in items]
+    assert "prefers tables" in titles and ATLAS_PAGE_VALUE not in titles
+
+
 def test_skill_toggle_enable_beyond_scope_is_denied():
     orch = make_orch()
     _, params, notice = call(
@@ -860,13 +915,26 @@ def test_state_notices_survive_the_copy_cuts(monkeypatch):
     assert "Currently" in render(orch, {"tab": "soul"})
 
 
-def test_assignment_limit_fields_carry_no_help_sentences():
-    limits = surf._assignment_limits()
+@pytest.mark.parametrize("mode", ["create", "revise"])
+def test_retired_assignment_links_show_the_reason_without_a_spending_form(monkeypatch, mode):
+    from orchestrator.chrome_events import current_surface_socket
 
-    fields = surf._assignment_limit_fields(limits)
-
-    assert fields and all("help" not in item for item in fields)
-    assert {"daily.spend_micro_units", "lifetime.spend_micro_units"} <= {item["name"] for item in fields}
+    monkeypatch.setitem(flags._flags, "persistent_agents", True)
+    orch = make_orch()
+    socket = object()
+    orch.ui_sessions[socket] = {"sub": "u1"}
+    orch.persistent_assignments = object()
+    params = {"tab": "schedule", "assignment_mode": mode}
+    token = current_surface_socket.set(socket)
+    try:
+        markup = render(orch, params)
+        structured = asyncio.run(surf.components(orch, "u1", ["user"], params))
+    finally:
+        current_surface_socket.reset(token)
+    for content in (markup, json.dumps(structured)):
+        assert "execution engine has been retired" in content
+        assert "spend_micro_units" not in content
+        assert f"chrome_assignment_{mode}" not in content
 
 
 def test_run_policy_form_has_no_field_help_and_keeps_its_state_text():

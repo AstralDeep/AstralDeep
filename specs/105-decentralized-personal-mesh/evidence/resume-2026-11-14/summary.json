@@ -1,0 +1,54 @@
+{
+  "status": "checkpoint_2026_11_14",
+  "qualification": "backend complete on one frozen source; native gates green; live and owner-decision criteria open; no production-readiness, merge, deployment or release claim",
+  "evidence_root_outside_git": "/Users/sam/Desktop/Work/AstralDeep-wt/evidence-105",
+  "deep_frozen_candidate": "bd197b828cd5d9bda4e613eaee6c34e39a75e8d7",
+  "deep_previous_tested_source": "6d5307b1d1dbd4a4bd5fa6dd4a8af1fef6289483",
+  "deep_delta_since_previous": "three test fixes and one contract fixture; no product code",
+  "deep_proposal_branch": {"name": "feat/105-node-turn-scopes", "head": "4de30d69", "integrated": false},
+  "projection_feature": "377ee45d1f7a64071762bfdbd9a7ba28a57daf2e",
+  "projection_native_gates_source": "8931bd83527bb37a48690e6b9297e78bd615a49b",
+  "kernel": {"branch": "k/integration", "head": "a49905544244c79dd0f5b847ac4c1618e4a055e5", "pushed": true, "artifacts_published": false},
+  "kernel_composed_gate_branch": {"name": "k/composed-gate", "head": "97aba18", "pushed": false, "state": "red by design: 4 of 30 runnable cases disagree with the contract"},
+  "backend": {
+    "test_image": "sha256:aa6fa0b4f5a2f35d0260b381021f27458f15bd5be14efd45c1e63c114d39060c",
+    "groups": {
+      "tests_2": {"collected": 11708, "skipped": 13, "failures": 0, "errors": 0, "wall_seconds": 249},
+      "tests_1": {"collected": 12025, "skipped": 3, "failures": 0, "errors": 0, "wall_seconds": 208},
+      "modules": {"collected": 9072, "skipped": 17, "failures": 0, "errors": 0, "wall_seconds": 291},
+      "persistent_agents": {"collected": 1008, "skipped": 0, "failures": 0, "errors": 0, "wall_seconds": 541}
+    },
+    "voice_worker": {"tests": 384, "passed": 382, "skipped": 2, "failed": 0, "covered": 4219, "valid": 4669, "percent": 90.36},
+    "strict_changed_coverage": {
+      "resume_delta": {"base": "ced61ce087ca8b1a1d1e4339e521ef2c8f59718a", "covered": 339, "total": 347, "percent": 97.69, "status": "pass"},
+      "full_feature": {"base": "a3eb724aa15fcdcb2c590b859c5f5104c41a4daa", "covered": 4583, "total": 4685, "percent": 97.82, "status": "pass"}
+    },
+    "protected_ci": false
+  },
+  "native": {
+    "macos_full_gate_two_consecutive_runs": {"passed": 1618, "failed": 0, "skipped": 2},
+    "ios_simulator_27_0_and_26_5": {"passed": 989, "failed": 0, "skipped": 2},
+    "astralcore_package": {"passed": 621, "failed": 0, "skipped": 1},
+    "kernel_swift_wrapper": {"passed": 10, "failed": 0},
+    "windows_client_python": {"passed": 2567, "skipped": 20, "failed": 0},
+    "projection_python_at_377ee45": {"passed": 4528, "skipped": 8, "failed": 0},
+    "retries": "none",
+    "release_mac_candidate": {"path": "/Users/sam/Desktop/Work/AstralProjection-wt/localtest-stage-20261114T2008Z-final/AstralDeep-localtest.app", "installed": false, "signature_matches_installed_app": true},
+    "physical_iphone_build": "none; the repository has no script for one"
+  },
+  "node_pack": {
+    "version": "3.11.18-bd197b82-a499055",
+    "archive_bytes": 146303689,
+    "archive_sha256": "155fe50401a9bd1c8ebd632f2c40a14423b81e283a30a7b63192673c2b431400",
+    "manifest_sha256": "b9ece534d6a14a95d03b779ae23d0bb014cc3ee141287af580dd0c07eacd4ebc",
+    "swift_host_tests": {"executed": 48, "failed": 0},
+    "real_install_run": "passed",
+    "tool_turn_driver": {"checks": 14, "passed": 14},
+    "posture": "development, fake model, loopback issuer"
+  },
+  "live": {
+    "pairing": "not attempted; waits for the owner",
+    "physical_voice_offline_push": "not attempted",
+    "installed_mac": "unchanged; staged candidate not installed"
+  }
+}

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "astral-sdk"
 version = "0.2.0"
-description = "Python SDK for Astral Work operations and proof-bound personal mesh devices."
+description = "Python SDK for Astral Work operations."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Proprietary" }
@@ -15,9 +15,9 @@ dependencies = [
 
 # Every extra below is imported lazily, inside a function body, by exactly one
 # astral_sdk.integrations submodule (or astral_sdk.mcp_bridge for `mcp`).
-# None of these ever enter backend/requirements.txt or the product image
-# (Constitution V) — this package is built, tested and distributed entirely
-# outside that image (see the `sdk` CI job in .github/workflows/ci.yml).
+# None of these ever enter backend/requirements.txt or the product image;
+# this package is built, tested and distributed entirely outside that image
+# (see the `sdk` CI job in .github/workflows/ci.yml).
 [project.optional-dependencies]
 mcp = ["mcp>=2"]
 openai = ["openai>=1.0"]
@@ -27,7 +27,6 @@ pydantic-ai = ["pydantic-ai>=0.0.9"]
 crewai = ["crewai>=0.30"]
 autogen = ["autogen-agentchat>=0.2"]
 agent-framework = []
-mesh = ["cryptography>=42"]
 dev = ["pytest>=8", "pytest-asyncio>=0.23", "pytest-cov>=5", "jsonschema>=4.20", "mcp>=2", "cryptography>=42"]
 
 [tool.setuptools.packages.find]

@@ -344,7 +344,7 @@ def test_v1_authentication_error_shape_is_unchanged() -> None:
 
     assert response.status_code == 401
     assert response.headers.get("cache-control") is None
-    assert response.json() == {"detail": "Not authenticated"}
+    assert response.json() == {"detail": "node.bearer_refused"}
 
 
 def test_v2_create_is_strict_header_bound_and_has_no_media_grant(api) -> None:

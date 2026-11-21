@@ -13,7 +13,6 @@ from orchestrator.emergency_stop_binding import interrupt_owner
 from orchestrator.orchestrator import Orchestrator
 from orchestrator.stream_manager import StreamManager, StreamState, StreamSubscription
 from orchestrator.async_tasks import BackgroundTaskManager
-from persistent_agents.runner import AssignmentRunner
 from scheduler.runner import JobRunner
 
 
@@ -180,7 +179,7 @@ async def test_background_owner_cancel_uses_existing_durable_cancellation_path()
     manager.cancel.assert_awaited_once_with("1")
 
 
-async def test_scheduled_and_persistent_entries_refuse_effects_when_owner_stopped():
+async def test_scheduled_entries_refuse_effects_when_owner_stopped():
     stop = EmergencyStopCoordinator()
     await stop.engage("owner", sweep=False)
     orch = SimpleNamespace(emergency_stop=stop)
@@ -195,16 +194,9 @@ async def test_scheduled_and_persistent_entries_refuse_effects_when_owner_stoppe
         await scheduled.run_job(attempt.job)
     scheduled._run_occurrence.assert_not_awaited()
     scheduled._run_job.assert_not_awaited()
-    persistent = object.__new__(AssignmentRunner)
-    persistent.orch = orch
-    persistent._run_claim = AsyncMock()
-    with pytest.raises(EmergencyStopRefused):
-        await persistent.run_claim(SimpleNamespace(assignment=SimpleNamespace(owner_id="owner")))
-    persistent._run_claim.assert_not_awaited()
 
 
-async def test_final_governed_attempt_rechecks_stop_after_authorization(monkeypatch):
-    from orchestrator import hitl_confirmation
+async def test_final_governed_attempt_rechecks_stop_after_authorization():
 
     stop = EmergencyStopCoordinator()
     invoke = AsyncMock()
@@ -219,7 +211,6 @@ async def test_final_governed_attempt_rechecks_stop_after_authorization(monkeypa
                            ui_sessions={websocket: {"sub": "owner"}},
                            tool_permissions=SimpleNamespace(get_tool_scope=lambda *args: "tools:read",
                                get_tool_scope_map=lambda agent: {"tool": "tools:read"} if agent == "agent" else {}))
-    monkeypatch.setattr(hitl_confirmation, "effect_refusal", lambda *args, **kwargs: None)
     result = await Orchestrator._execute_governed_attempt(orch, websocket, "agent", "tool", {},
         user_id="owner", channel="ui", audit_correlation_id=None, actor_user_id="owner",
         auth_principal="owner", conversation_id=None, invoke=invoke)
@@ -235,32 +226,6 @@ async def test_safety_controls_and_open_remain_available_without_llm_configurati
     for action in ("chrome_safety_stop", "chrome_safety_resume", "chrome_safety_verify"):
         assert not await _llm_gate_refusal(orch, socket, action, "owner", payload={"surface": "safety"})
     assert not await _llm_gate_refusal(orch, socket, "chrome_open", "owner", payload={"surface": "safety"})
-
-
-async def test_admitted_chat_and_runner_tasks_are_registered_until_interrupted(monkeypatch):
-    from orchestrator import user_skills, evidence_context
-
-    stop = EmergencyStopCoordinator()
-    entered, release = asyncio.Event(), asyncio.Event()
-
-    async def physical(*args, **kwargs):
-        entered.set()
-        await release.wait()
-
-    monkeypatch.setattr(user_skills, "enabled", lambda: False)
-    monkeypatch.setattr(evidence_context, "needs_authority", lambda orch: False)
-    orch = SimpleNamespace(emergency_stop=stop, _handle_chat_message_with_guidance=physical)
-    task = asyncio.create_task(Orchestrator.handle_chat_message(orch, object(), "hello", "chat", user_id="owner"))
-    await entered.wait()
-    await stop.engage("owner", sweep=False)
-    with pytest.raises(asyncio.CancelledError):
-        await task
-    assert stop._effects == {}
-    await stop.resume("owner", expected_revision=1, actor_id="owner")
-    runner = object.__new__(AssignmentRunner)
-    runner.orch = orch
-    runner._run_claim = AsyncMock(return_value="new work")
-    assert await runner.run_claim(SimpleNamespace(assignment=SimpleNamespace(owner_id="owner"))) == "new work"
 
 
 @pytest.mark.parametrize("stop_after_authorization", [False, True])

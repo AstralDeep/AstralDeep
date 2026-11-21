@@ -6,8 +6,6 @@ async_tasks.py), gaining no separate authorization path.
 from __future__ import annotations
 
 import asyncio
-import copy
-import uuid
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -21,7 +19,6 @@ from shared.protocol import MCPResponse
 
 USER_ID = "voice-parity-owner"
 USERNAME = "voice.parity"
-RAW_KEYCLOAK_TOKEN = "memory-only-keycloak-token-065"
 AGENT_ID = "parity-agent"
 TOOL_ID = "read_record"
 
@@ -42,6 +39,9 @@ class _Permissions:
         assert (user_id, agent_id) == (USER_ID, AGENT_ID)
         return ["tools:read"] if self.allowed else []
 
+    def get_tool_scope(self, agent_id: str, tool_id: str) -> str:
+        return "tools:read"
+
     def get_tool_scope_map(self, agent_id: str) -> dict[str, str]:
         return {TOOL_ID: "tools:read", "send_email": "tools:read", "blocked_tool": "tools:read"}
 
@@ -49,19 +49,6 @@ class _Permissions:
 class _Delegation:
     def __init__(self) -> None:
         self.calls: list[tuple[Any, ...]] = []
-
-    async def exchange_token_for_agent(
-        self,
-        raw_token: str,
-        agent_id: str,
-        allowed_tools: list[str],
-        user_id: str,
-        scopes: list[str],
-    ) -> dict[str, str]:
-        self.calls.append(
-            (raw_token, agent_id, tuple(allowed_tools), user_id, tuple(scopes))
-        )
-        return {"access_token": "attenuated-parity-token"}
 
 
 def _sockets() -> tuple[_TypedSocket, DurableUserTurnWebSocket]:
@@ -75,7 +62,6 @@ def _claims() -> dict[str, Any]:
         "sub": USER_ID,
         "preferred_username": USERNAME,
         "realm_access": {"roles": ["clinician"]},
-        "_raw_token": RAW_KEYCLOAK_TOKEN,
     }
 
 
@@ -120,7 +106,14 @@ def _gate_runtime(
 
 
 @pytest.mark.asyncio
-async def test_keycloak_owner_llm_and_rfc8693_scope_match_typed_turn() -> None:
+async def test_owner_llm_and_node_delegation_scope_match_typed_turn(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from shared import node_identity
+
+    monkeypatch.setenv(node_identity.PROFILE_ENV, node_identity.PERSONAL)
+    monkeypatch.setenv(node_identity.DATA_DIR_ENV, str(tmp_path / "node"))
+    node_identity.reset_cache()
     typed, voice = _sockets()
     runtime, delegation = _gate_runtime(typed, voice)
 
@@ -169,31 +162,19 @@ async def test_keycloak_owner_llm_and_rfc8693_scope_match_typed_turn() -> None:
         for socket in (typed, voice)
     ]
     assert all(isinstance(outcome, PreparedDispatch) for outcome in outcomes)
-    assert (
-        outcomes[0].args
-        == outcomes[1].args
-        == {
-            "record": "123",
-            "_delegation_token": "attenuated-parity-token",
-        }
-    )
-    assert outcomes[0].delegation_token == outcomes[1].delegation_token
-    assert delegation.calls == [
-        (
-            RAW_KEYCLOAK_TOKEN,
-            AGENT_ID,
-            (TOOL_ID, "send_email"),
-            USER_ID,
-            ("tools:read",),
-        ),
-        (
-            RAW_KEYCLOAK_TOKEN,
-            AGENT_ID,
-            (TOOL_ID, "send_email"),
-            USER_ID,
-            ("tools:read",),
-        ),
-    ]
+    typed_outcome, voice_outcome = outcomes
+    tokens = [outcome.args.pop("_delegation_token") for outcome in outcomes]
+    assert typed_outcome.args == voice_outcome.args == {"record": "123"}
+    identity = node_identity.load_node_identity(create=False)
+    claims = [identity.verify_token(token, audience=None) for token in tokens]
+    for claim in claims:
+        assert claim["sub"] == USER_ID
+        assert set(claim["scope"].split()) == {"tools:read", f"tool:{TOOL_ID}", "tool:send_email"}
+        assert claim["act"]["sub"] == f"agent:{AGENT_ID}"
+    stable = ("sub", "scope", "act", "aud", "iss")
+    assert {key: claims[0].get(key) for key in stable} == {key: claims[1].get(key) for key in stable}
+    assert delegation.calls == []
+    node_identity.reset_cache()
 
 
 @pytest.mark.asyncio
@@ -226,7 +207,8 @@ async def test_tool_denial_and_egress_confirmation_have_identical_verdicts(
     chat_id = "voice-parity-chat" if chat_bound else None
     runtime._ws_active_chat = {id(socket): chat_id for socket in (typed, voice)}
     runtime._map_file_paths = lambda chat, args, **kwargs: args
-    runtime.audit_recorder = SimpleNamespace(record=AsyncMock())
+    recorder = SimpleNamespace(record=AsyncMock())
+    monkeypatch.setattr("audit.recorder.get_recorder", lambda: recorder)
     confirmed = [
         await Orchestrator._run_gate_stack(
             runtime,
@@ -241,37 +223,13 @@ async def test_tool_denial_and_egress_confirmation_have_identical_verdicts(
     ]
     assert all(isinstance(outcome, GateRefusal) for outcome in confirmed)
     assert confirmed[0].response.error == confirmed[1].response.error
-    if chat_bound:
-        assert confirmed[0].response.error is None
-        assert confirmed[0].response.result == confirmed[1].response.result
-        assert confirmed[0].response.result["_data"]["status"] == "confirmation_required"
-        assert len(runtime._hitl_pending_calls) == 2
-        cards = []
-        request_ids = []
-        for socket, outcome in zip((typed, voice), confirmed, strict=True):
-            card = copy.deepcopy(outcome.response.ui_components[0])
-            request_id = card.pop("id").removeprefix("hitl_")
-            assert str(uuid.UUID(request_id)) == request_id
-            request_ids.append(request_id)
-            pending = runtime._hitl_pending_calls[request_id]
-            assert pending.websocket is socket
-            assert (pending.owner, pending.chat, pending.agent, pending.tool) == (
-                USER_ID, chat_id, AGENT_ID, "send_email")
-            assert pending.risks == ("egress",)
-            assert card["title"] == "Review action"
-            for component in card["content"]:
-                if component.get("action") == "authorize_action":
-                    assert component["payload"].pop("hitl_request_id") == request_id
-            cards.append(card)
-        assert request_ids[0] != request_ids[1]
-        assert cards[0] == cards[1]
-    else:
-        assert confirmed[0].response.error == {
-            "message": "Confirmation requires an interactive signed-in conversation. "
-                       "Reissue the action there.",
-            "retryable": False,
-        }
-        assert not getattr(runtime, "_hitl_pending_calls", {})
+    assert confirmed[0].response.error["code"] == "confirmation_required"
+    assert confirmed[0].response.error["retryable"] is False
+    assert all(not outcome.response.ui_components for outcome in confirmed)
+    events = [call.args[0] for call in recorder.record.await_args_list]
+    assert len(events) == 2
+    assert all(event.action_type == "tool.send_email.denied" and event.inputs_meta["gate"] == "hitl"
+               and event.conversation_id == chat_id for event in events)
     assert delegation.calls == []
 
 
@@ -325,8 +283,8 @@ async def test_phi_memory_gate_and_audit_verdict_match_typed_turn(
     assert results[0].result == results[1].result
     assert phi not in repr(results)
     assert audited == [
-        (USER_ID, "memory.remember_refused", "denied"),
-        (USER_ID, "memory.remember_refused", "denied"),
+        (USER_ID, "memory.remember_refused", "failure"),
+        (USER_ID, "memory.remember_refused", "failure"),
     ]
 
 

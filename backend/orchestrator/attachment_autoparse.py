@@ -1,5 +1,5 @@
 """Eagerly drafts a backend parser for an uploaded file type with no coverage, reusing
-agentic_creation.py's draft, security-gate, self-test, and admin-approval lifecycle
+agentic_creation.py's draft, security-gate, and admin-approval lifecycle
 without waiting on the chat LLM to call create_capability.
 """
 
@@ -48,32 +48,6 @@ def _bind_attachment_provenance(
             source_chat_id=source_chat_id,
             gap_fingerprint=gap_fingerprint,
             source_attachment_id=source_attachment_id,
-            updated_at=int(time.time() * 1000),
-        )
-
-
-def _store_self_test(
-    plane,
-    *,
-    owner_id: str,
-    draft_id: str,
-    self_test: str,
-) -> None:
-    with plane.runtime.transaction() as transaction:
-        current = plane.repositories.draft_agents.get_draft(
-            transaction,
-            owner_id=owner_id,
-            draft_id=draft_id,
-            for_update=True,
-        )
-        if current is None:
-            raise LookupError("autoparse draft is unavailable")
-        plane.repositories.draft_agents.compare_and_set_draft(
-            transaction,
-            owner_id=owner_id,
-            draft_id=draft_id,
-            expected_revision=current.state_revision,
-            updates={"self_test": self_test},
             updated_at=int(time.time() * 1000),
         )
 
@@ -128,92 +102,6 @@ async def _notify_user(orch, user_id: str, message: str, chat_id: Optional[str] 
             logger.debug("autoparse notify failed for one socket", exc_info=True)
 
 
-async def auto_continue_after_go_live(orch, *, requested_by: Optional[str],
-                                      source_chat_id: Optional[str],
-                                      source_attachment_id: Optional[str],
-                                      extension: Optional[str],
-                                      category: Optional[str]) -> bool:
-    if not (requested_by and source_chat_id and source_attachment_id):
-        return False
-    try:
-        plane = _plane(orch)
-
-        def _load_original_turn():
-            with plane.runtime.transaction() as transaction:
-                links = plane.repositories.artifacts.message_attachments.list_for_conversation(
-                    transaction,
-                    owner_id=requested_by,
-                    conversation_id=source_chat_id,
-                )
-                link = next(
-                    (
-                        candidate
-                        for candidate in links
-                        if candidate.attachment_id == source_attachment_id
-                        and candidate.message_id is not None
-                    ),
-                    None,
-                )
-                if link is None:
-                    return None
-                try:
-                    message_id = int(link.message_id)
-                except (TypeError, ValueError):
-                    return None
-                message = plane.repositories.history.messages.get(
-                    transaction,
-                    owner_id=requested_by,
-                    conversation_id=source_chat_id,
-                    message_id=message_id,
-                )
-                attachment = plane.repositories.artifacts.attachments.get(
-                    transaction,
-                    owner_id=requested_by,
-                    attachment_id=source_attachment_id,
-                )
-                if message is None or attachment is None:
-                    return None
-                return message.content, attachment
-
-        loaded = await asyncio.to_thread(_load_original_turn)
-        if loaded is None:
-            return False
-        original, attachment = loaded
-        if not isinstance(original, str) or not original.strip():
-            return False
-
-        from orchestrator.async_tasks import BackgroundTask, VirtualWebSocket
-        bg = BackgroundTask(task_id=f"autocont-{source_attachment_id[:8]}",
-                            chat_id=source_chat_id, user_id=requested_by)
-        vws = VirtualWebSocket(bg)
-        from orchestrator.chain_authority import AuthoritySkip
-        authority = await orch.derive_machine_authority(
-            user_id=requested_by, agent_id=None, turn_class="parser_replay")
-        if not isinstance(authority, AuthoritySkip):
-            orch._bind_machine_turn(vws, authority)
-        try:
-            await orch.handle_chat_message(
-                vws, str(original), source_chat_id, user_id=requested_by,
-                attachments=[{"attachment_id": source_attachment_id,
-                              "filename": attachment.filename,
-                              "category": attachment.category}],
-            )
-        finally:
-            orch._unbind_machine_turn(vws)
-            try:
-                await vws.close()
-            except Exception:  # pragma: no cover
-                pass
-        logger.info("autoparse.auto_continued",
-                    extra={"user_id": requested_by, "chat_id": source_chat_id,
-                           "attachment_id": source_attachment_id, "extension": extension,
-                           "delegated": not isinstance(authority, AuthoritySkip)})
-        return True
-    except Exception:
-        logger.debug("autoparse: auto-continue failed (non-fatal)", exc_info=True)
-        return False
-
-
 async def start(orch, attachment, *, user_id: str, chat_id: Optional[str] = None) -> CoverageStatus:
     from orchestrator import agentic_creation, parser_registry
     from orchestrator.attachments.parser_repo import (
@@ -223,7 +111,6 @@ async def start(orch, attachment, *, user_id: str, chat_id: Optional[str] = None
     extension = getattr(attachment, "extension", None)
     category = getattr(attachment, "category", "") or ""
     attachment_id = getattr(attachment, "attachment_id", None)
-    filename = getattr(attachment, "filename", "") or ""
     fp = parser_registry.gap_fingerprint(category, extension)
     plane = _plane(orch)
     parser_repo = AttachmentParserRepository.from_plane_source(plane)
@@ -289,11 +176,6 @@ async def start(orch, attachment, *, user_id: str, chat_id: Optional[str] = None
                      "trigger": "upload", "draft_id": draft_id},
     )
 
-    user_request = (
-        f"Use the {tool_name} tool to read the attached .{extension} file and "
-        f"summarize what it contains."
-    )
-    test_attachments = [{"attachment_id": attachment_id, "filename": filename, "category": category}]
     try:
         draft = await lifecycle.generate_code(draft_id)
         if (draft or {}).get("status") in ("error", "rejected"):
@@ -311,40 +193,11 @@ async def start(orch, attachment, *, user_id: str, chat_id: Optional[str] = None
             return {"status": "unavailable", "gap_fingerprint": fp}
 
         draft = await lifecycle.start_draft_agent(draft_id)
-        self_test = await agentic_creation._self_test_draft(
-            orch, draft, user_request, user_id, attachments=test_attachments)
-        refines = 0
-        while self_test.get("status") != "passed" and refines < agentic_creation.SELF_TEST_MAX_AUTO_REFINES:
-            refines += 1
-            failure = "; ".join(self_test.get("errors") or [self_test.get("summary", "failed")])
-            draft = await lifecycle.refine_agent(
-                draft_id,
-                f"The self-test failed: {failure}. Fix {tool_name} so it reads the "
-                f".{extension} file and returns its content (standard library only).")
-            if (draft or {}).get("status") == "error":
-                break
-            draft = await lifecycle.start_draft_agent(draft_id)
-            self_test = await agentic_creation._self_test_draft(
-                orch, draft, user_request, user_id, attachments=test_attachments)
-        self_test["auto_refines"] = refines
-        await asyncio.to_thread(
-            _store_self_test,
-            plane,
-            owner_id=user_id,
-            draft_id=draft_id,
-            self_test=json.dumps(self_test),
-        )
         await agentic_creation._audit(
             user_id, "lifecycle.auto_created",
             f"Auto-created parser draft '{agent_name}' ({draft_id})",
             correlation_id=draft_id, chat_id=chat_id,
             inputs_meta={"draft_id": draft_id, "gap_fingerprint": fp})
-        await agentic_creation._audit(
-            user_id, "lifecycle.self_test",
-            f"Parser self-test {self_test.get('status')}: {self_test.get('summary', '')}",
-            correlation_id=draft_id,
-            outcome="success" if self_test.get("status") == "passed" else "failure",
-            chat_id=chat_id, inputs_meta={"draft_id": draft_id})
     except Exception as exc:
         if "LLM not configured" in str(exc):
             logger.warning(

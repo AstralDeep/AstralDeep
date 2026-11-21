@@ -153,6 +153,20 @@ def _safe_error_code(response) -> str:
     return str(body.get("code") or body.get("error") or detail or "")
 
 
+def test_a_schedule_with_no_upcoming_run_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    store = _FakeScheduleStore()
+    store.count_active = lambda _user_id: 0
+    client = _client(monkeypatch, store, user_id="owner-a", execution_enabled=True)
+
+    response = client.post("/api/schedule", json={
+        "name": "Past", "instruction": "Roll a die", "schedule_kind": "one_shot",
+        "schedule_expr": "2020-01-01T09:00:00Z", "consent": True,
+    })
+
+    assert response.status_code == 400
+    assert "no upcoming run" in response.json()["detail"]
+
+
 def test_run_now_requires_authentication(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

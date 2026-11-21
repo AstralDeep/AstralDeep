@@ -21,20 +21,21 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 CONTRACT = "astral.composition-verification/v1"
-SCHEMA_RELATIVE_PATH = Path(
-    "specs/074-multirepo-lets-integration/contracts/composition-manifest.schema.json"
-)
+SCHEMA_RELATIVE_PATH = Path("contracts/composition-manifest-v2.schema.json")
+COMPOSITION_FORMAT = "astral.composition/v2"
+IN_TREE_COMPONENTS = frozenset({"astral-plane"})
 
 COMPONENT_ORDER = (
     "astral-projection",
+    "astral-kernel",
     "astral-plane",
     "astral-primitives",
     "lets",
 )
-PRIVATE_COMPONENTS = frozenset({"astral-projection", "astral-plane"})
+PRIVATE_COMPONENTS = frozenset({"astral-projection", "astral-kernel"})
 EXPECTED_MODULE_NAMES = {
     "astral-projection": "AstralProjection",
-    "astral-plane": "AstralPlane",
+    "astral-kernel": "AstralKernel",
     "astral-primitives": "AstralPrimitives",
     "lets": "LETS",
 }
@@ -645,6 +646,47 @@ def compute_primitives_digest(component_root: Path) -> str:
     return digest.hexdigest()
 
 
+_FORMATTED_SCHEMA_STEMS = frozenset({"mesh_event", "run_ledger"})
+
+
+def _leading_string_constants(
+    stem: str, declarations: list[ast.stmt]
+) -> tuple[dict[str, str], list[ast.stmt]]:
+    constants: dict[str, str] = {}
+    index = 0
+    while index < len(declarations) - 1:
+        declaration = declarations[index]
+        if (not isinstance(declaration, ast.Assign) or len(declaration.targets) != 1
+                or not isinstance(declaration.targets[0], ast.Name)
+                or not isinstance(declaration.value, ast.Constant)
+                or type(declaration.value.value) is not str
+                or declaration.targets[0].id in constants):
+            raise CompositionError(
+                f"Plane {stem} schema may declare only unique string constants before the reviewed tuple"
+            )
+        constants[declaration.targets[0].id] = declaration.value.value
+        index += 1
+    return constants, declarations[index:]
+
+
+def _schema_text(node: ast.expr, constants: dict[str, str]) -> str | None:
+    if isinstance(node, ast.Constant):
+        return node.value if type(node.value) is str else None
+    if not isinstance(node, ast.JoinedStr):
+        return None
+    parts: list[str] = []
+    for part in node.values:
+        if isinstance(part, ast.Constant) and type(part.value) is str:
+            parts.append(part.value)
+        elif (isinstance(part, ast.FormattedValue) and isinstance(part.value, ast.Name)
+                and part.value.id in constants and part.conversion == -1
+                and part.format_spec is None):
+            parts.append(constants[part.value.id])
+        else:
+            return None
+    return "".join(parts)
+
+
 def _plane_schema_literal_import(
     component_root: Path, tree: ast.Module, *, stem: str, symbol: str
 ) -> dict[str, object]:
@@ -699,6 +741,9 @@ def _plane_schema_literal_import(
             and declarations[1].annotation.id == "Final"):
         declaration = declarations[1]
         declarations = [ast.Assign(targets=[declaration.target], value=declaration.value)]
+    constants: dict[str, str] = {}
+    if stem in _FORMATTED_SCHEMA_STEMS:
+        constants, declarations = _leading_string_constants(stem, declarations)
     if (len(declarations) != 1 or not isinstance(declarations[0], ast.Assign)
             or len(declarations[0].targets) != 1 or not isinstance(declarations[0].targets[0], ast.Name)
             or declarations[0].targets[0].id != symbol or not isinstance(declarations[0].value, ast.Tuple)):
@@ -709,13 +754,15 @@ def _plane_schema_literal_import(
                      "typesafe_credential", "mesh", "stop", "completion_wake",
                      "notification", "atlas_page", "atlas_revision", "atlas_link",
                      "capability_publication", "harness_binding", "push_delivery",
-                     "observation", "harness_capture"}
+                     "observation", "harness_capture", "chat_queue", "conversation_branch",
+                     "computer_use", "verification_credential", "chat_read_receipt",
+                     *_FORMATTED_SCHEMA_STEMS}
                 and isinstance(item, ast.Call)
                 and not item.args and not item.keywords
                 and isinstance(item.func, ast.Attribute) and item.func.attr == "strip"
-                and isinstance(item.func.value, ast.Constant)
-                and type(item.func.value.value) is str):
-            items[index] = ast.Constant(value=item.func.value.value.strip())
+                and (stem in _FORMATTED_SCHEMA_STEMS or isinstance(item.func.value, ast.Constant))
+                and (text := _schema_text(item.func.value, constants)) is not None):
+            items[index] = ast.Constant(value=text.strip())
     if (not 1 <= len(items) <= _MAX_LITERAL_SEQUENCE_ITEMS or any(
             not isinstance(item, ast.Constant) or not isinstance(item.value, str) or not item.value
             for item in items)):
@@ -749,6 +796,14 @@ def _plane_migration_digest(component_root: Path) -> str:
         ("observation", "OBSERVATION_SCHEMA_STATEMENTS"),
         ("project", "PROJECT_SCHEMA_STATEMENTS"),
         ("harness_capture", "HARNESS_CAPTURE_SCHEMA_STATEMENTS"),
+        ("audit_conversation", "AUDIT_CONVERSATION_SCHEMA_STATEMENTS"),
+        ("chat_queue", "CHAT_QUEUE_SCHEMA_STATEMENTS"),
+        ("conversation_branch", "CONVERSATION_BRANCH_SCHEMA_STATEMENTS"),
+        ("computer_use", "COMPUTER_USE_SCHEMA_STATEMENTS"),
+        ("verification_credential", "VERIFICATION_CREDENTIAL_SCHEMA_STATEMENTS"),
+        ("chat_read_receipt", "CHAT_READ_RECEIPT_SCHEMA_STATEMENTS"),
+        ("mesh_event", "MESH_EVENT_SCHEMA_STATEMENTS"),
+        ("run_ledger", "RUN_LEDGER_SCHEMA_STATEMENTS"),
     ):
         reviewed_literals.update(_plane_schema_literal_import(
             component_root, tree, stem=stem, symbol=symbol))
@@ -1000,6 +1055,22 @@ def _verify_projection(
     )
 
 
+def _verify_kernel(
+    component_root: Path,
+    component: dict[str, object],
+    compatibility: dict[str, object],
+    diagnostics: list[Diagnostic],
+) -> None:
+    package_version, _ = _project_metadata(component_root / "python" / "rote", "astral-rote")
+    _compare_contract(
+        diagnostics,
+        "astral-kernel",
+        "components.astral-kernel.contract_version",
+        component.get("contract_version"),
+        package_version,
+    )
+
+
 def _verify_plane(
     component_root: Path,
     component: dict[str, object],
@@ -1032,6 +1103,9 @@ def _verify_plane(
     plane = compatibility.get("data_plane")
     if not isinstance(plane, dict):
         raise CompositionError("composition data_plane contract is missing")
+    sqlite_registry = compatibility.get("data_plane_sqlite")
+    if not isinstance(sqlite_registry, dict):
+        raise CompositionError("composition data_plane_sqlite contract is missing")
     observations = {
         "components.astral-plane.contract_version": (
             component.get("contract_version"),
@@ -1056,6 +1130,10 @@ def _verify_plane(
         "compatibility.data_plane.blob_layout_version": (
             plane.get("blob_layout_version"),
             constants.get("BLOB_LAYOUT_VERSION"),
+        ),
+        "compatibility.data_plane_sqlite.schema_revision": (
+            sqlite_registry.get("schema_revision"),
+            revisions.get("SCHEMA_REVISION"),
         ),
         "astralplane package version": (
             package_version,
@@ -1177,6 +1255,8 @@ def _verify_component_contract(
     try:
         if component_name == "astral-projection":
             _verify_projection(component_root, component, compatibility, diagnostics)
+        elif component_name == "astral-kernel":
+            _verify_kernel(component_root, component, compatibility, diagnostics)
         elif component_name == "astral-plane":
             _verify_plane(component_root, component, compatibility, diagnostics)
         elif component_name == "astral-primitives":
@@ -1236,6 +1316,16 @@ def verify_composition(
         manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
         manifest = _read_json(manifest_path)
         schema = _read_json(schema_path)
+        declared_format = manifest.get("format") if isinstance(manifest, dict) else None
+        if declared_format != COMPOSITION_FORMAT:
+            _diagnostic(
+                diagnostics,
+                "E_COMPOSITION_FORMAT",
+                f"composition format {declared_format!r} is not supported; "
+                f"this verifier reads {COMPOSITION_FORMAT!r} only",
+                "Regenerate the manifest in the v2 format with the Plane package under in_tree.",
+            )
+            return VerificationReport(manifest_sha256, tuple(diagnostics))
         schema_errors = _validate_manifest_schema(manifest, schema)
     except (OSError, CompositionError) as exc:
         _diagnostic(
@@ -1287,8 +1377,13 @@ def verify_composition(
             )
 
     components = manifest["components"]
+    in_tree = manifest["in_tree"]
     compatibility = manifest["compatibility"]
-    if not isinstance(components, dict) or not isinstance(compatibility, dict):
+    if (
+        not isinstance(components, dict)
+        or not isinstance(in_tree, dict)
+        or not isinstance(compatibility, dict)
+    ):
         raise AssertionError("schema admitted malformed composition sections")
     expected_paths = {
         str(component["path"])
@@ -1305,6 +1400,22 @@ def verify_composition(
 
     initialized: dict[str, Path] = {}
     for component_name in COMPONENT_ORDER:
+        if component_name in IN_TREE_COMPONENTS:
+            in_tree_component = in_tree[component_name]
+            if not isinstance(in_tree_component, dict):
+                raise AssertionError("schema admitted a malformed in-tree component")
+            in_tree_root = root / str(in_tree_component["path"])
+            if not (in_tree_root / "pyproject.toml").is_file():
+                _diagnostic(
+                    diagnostics,
+                    "E_COMPONENT_MISSING",
+                    "in-tree component folder is missing or empty",
+                    "Restore the committed folder; it is part of this repository.",
+                    component=component_name,
+                )
+                continue
+            initialized[component_name] = in_tree_root
+            continue
         component = components[component_name]
         if not isinstance(component, dict):
             raise AssertionError("schema admitted a malformed component")
@@ -1441,7 +1552,11 @@ def verify_composition(
         component_root = initialized.get(component_name)
         if component_root is None:
             continue
-        component = components[component_name]
+        component = (
+            in_tree[component_name]
+            if component_name in IN_TREE_COMPONENTS
+            else components[component_name]
+        )
         if isinstance(component, dict):
             _verify_component_contract(
                 component_name,
@@ -1482,7 +1597,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(report.to_dict(), sort_keys=True, separators=(",", ":")))
     elif report.ok:
         print(
-            "composition verified: four exact clean component pins and compatibility "
+            "composition verified: four exact clean component pins, the in-tree Plane and compatibility "
             f"contracts ({report.manifest_sha256})"
         )
     else:

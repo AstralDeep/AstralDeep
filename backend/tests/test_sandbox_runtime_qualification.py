@@ -1999,6 +1999,7 @@ def test_prepare_runtime_requires_matching_dependency_lock(tmp_path: Path):
             allow_download=False,
             node_path=node,
             bwrap_path=TRUE_COMMAND,
+            socat_path=tmp_path / "missing-socat",
             machine="aarch64",
         )
 

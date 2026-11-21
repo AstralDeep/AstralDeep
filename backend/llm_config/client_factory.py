@@ -7,6 +7,7 @@ from typing import Any, Iterable, Optional, Protocol, Tuple
 
 from openai import OpenAI
 
+from .deadlines import deadlines_for
 from .local_endpoint import classify_endpoint
 from .types import CredentialSource, LLMUnavailable, ResolvedConfig
 
@@ -105,7 +106,7 @@ def build_llm_client(
         "base_url": config.base_url,
         "max_retries": 0,
         "timeout": (
-            DEFAULT_LLM_REQUEST_TIMEOUT_SECONDS
+            deadlines_for(config.base_url).http_timeout()
             if timeout is None
             else timeout
         ),

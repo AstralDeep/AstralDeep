@@ -1,30 +1,26 @@
 """Verifies the current caller for Work write commands - bare-Bearer or cookie-bound -
-without granting dispatch authority. Composes work_submit_authority.py and
-work_continuation_authority.py for work_controls.py and work_publication.py.
+without granting dispatch authority. Composes work_submit_authority.py for work_controls.py and work_publication.py.
 """
 
 from __future__ import annotations
 
 import asyncio
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 import time
-import json
 
 from astralplane.repositories import (
     RepositoryConflictError, RepositoryDataError, RepositoryNotFoundError,
     RepositoryValidationError,
 )
-from astralplane.repositories.assignment_models import AssignmentRecord
 from astralplane.repositories.history import (
-    SessionConsentObservation, SessionCredentialFence, SessionExecutionObservation,
+    SessionConsentObservation,
 )
 from audit.repository import AuditRepository
 from fastapi import Request
 
 from orchestrator import auth
 from orchestrator.session_store import SessionRefreshUnavailable, WebSessionStore
-from orchestrator.work_continuation_authority import OperationControlAuthority
 from orchestrator.work_submit_authority import (
     AuthenticatedWorkRequest, _authenticate_work_request, _expiry, capture_human_caller,
 )
@@ -40,13 +36,6 @@ def _unauthenticated():
 
 def _unavailable():
     raise AssignmentError("work_control_unavailable", 503)
-
-
-def _same_credential(left, right):
-    if type(left) is not SessionCredentialFence or type(right) is not SessionCredentialFence:
-        return False
-    return json.dumps(asdict(left), sort_keys=True, allow_nan=False) == json.dumps(
-        asdict(right), sort_keys=True, allow_nan=False)
 
 
 def _orchestrator(app):
@@ -113,7 +102,6 @@ class WorkCallerAuthority:
     _token: str = field(repr=False)
     _deadline: float
     _until: datetime
-    _original: OperationControlAuthority | None = field(default=None, repr=False)
 
     def _assert_local(self, assignments):
         self._binding.assert_current(assignments)
@@ -139,48 +127,11 @@ class WorkCallerAuthority:
             if self.caller is not None:
                 state = repository.assert_current_consent(tx, observation=self.caller)
                 self.context.assert_current(self._binding.runtime, now=state.observed_at)
-            if self._original is not None:
-                current = repository.assert_current_execution(tx, observation=self._original.observation)
-                if self.caller is not None and not (
-                        self.caller.started_at <= current.observed_at < self.caller.valid_until):
-                    _unauthenticated()
-                operation = self._original.record.operation
-                if min(datetime.fromisoformat(operation["deadline_at"]),
-                       datetime.fromisoformat(operation["authority"]["expires_at"])) <= current.observed_at:
-                    _unauthenticated()
         except (RepositoryConflictError, RepositoryDataError, RepositoryNotFoundError,
                 RepositoryValidationError):
             _unauthenticated()
         self._assert_local(assignments)
         return state
-
-    def with_original(self, authority: OperationControlAuthority) -> WorkCallerAuthority:
-        caller = self.require_session()
-        if (self._original is not None or type(authority) is not OperationControlAuthority
-                or authority.request_context is not self.context
-                or authority.plane_runtime is not self._binding.runtime
-                or authority.command not in {"resume", "wake"}
-                or type(authority.record) is not AssignmentRecord
-                or authority.record.owner_id != self.context.owner_id
-                or type(authority.observation) is not SessionExecutionObservation
-                or authority.observation.credential.owner_id != self.context.owner_id):
-            _unauthenticated()
-        operation = authority.record.operation
-        if (operation is None or type(operation.get("version")) is not int or operation["version"] != 2
-                or operation["authority"].get("origin") != "interactive"
-                or operation["authority"].get("reference_kind") != "session_incarnation"
-                or operation["authority"].get("reference_id") != authority.observation.credential.incarnation_id):
-            _unauthenticated()
-        original = authority.observation.credential
-        if original.incarnation_id == caller.credential.incarnation_id:
-            if (original.session_id != caller.credential.session_id
-                    or not _same_credential(authority.request_credential, caller.credential)):
-                _unauthenticated()
-            caller = replace(caller, credential=original,
-                             valid_until=min(caller.valid_until, authority.observation.valid_until))
-        elif authority.request_credential is not None:
-            _unauthenticated()
-        return replace(self, caller=caller, _original=authority)
 
     async def verify_delivery(self) -> None:
         try:

@@ -1,0 +1,1380 @@
+{
+  "cases": [
+    {
+      "expect": {
+        "ok": {
+          "members": [
+            "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c"
+          ],
+          "mesh": "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e",
+          "rejected": {},
+          "stop": 0
+        }
+      },
+      "input": {
+        "entries": [
+          {
+            "author": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+            "body": {
+              "device": {
+                "cert": "XDr9mmu91zSdmXMMGj6X9S8Zc1YWkdExf9BOO4kTNechkih9rSjUKTdT0yd3ppJptJgjlYqrUIFQf_9F2lOfvQ",
+                "identity": "BGu-ySJRD-eaPX1InaWwz-PrJKahD2fZmFCTjRDoLxjVkTumbkShewtnlcP_aL0xvDp1CuLZeHYtLWU7JXyDaVU",
+                "kind": "desktop",
+                "label": "local-v2/alice",
+                "ops": "98dbF54AHip3sZoiSvNc6YZDqglrC4XbULQOJNYyqHQ",
+                "presence": "BCp9Kf0eZjRdqdF0vzbv833DVCUwjrnRdn6MDc_QCVtwigBiz78fP24SXkgK0azaXzJa3bZkoAjPetPi-nr2grs",
+                "wrap": "Lr3sh9YQxdPoDLFDrP-X8kwUbsi2vcAAYjIOlbprDnk"
+              },
+              "epoch": {
+                "group": "personal",
+                "recovery_wrap": {
+                  "ct": "VPChNAryixWqVOXq9J03EXnEQU_i2ercKcD5aQMv8EumlJSetx5dHgQ4Y8-XbKIP",
+                  "epk": "kPK_aqTGub9LjrZjCtbIEPR154xjoZUpIXaXKLMpewE",
+                  "nonce": "UY19FElY0sA2TIc1VJslCWErWAc53q2o"
+                },
+                "wraps": [
+                  {
+                    "device": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+                    "wrap": {
+                      "ct": "3yadmSlN-fxT7p20hlIyclm9Z3zaYUutpaOriPBS4NAyO4lmB6nspxBgsTSeMbr3",
+                      "epk": "9FjpKfWJW3imPOVwlLOOoMaj1DzFgNFRhgmJaAsxvi0",
+                      "nonce": "trwZIhwjQuI2tRdz_5CzgVLFEdMAGqej"
+                    }
+                  }
+                ]
+              },
+              "recovery": {
+                "sign": "014cllX1QBYdHgnT2N3B9xMkNJJxROWx5_XjqUFqM84",
+                "wrap": "cXeOzTwc3KomB8shsFwfmR8h92w6LG2p_f8nKAQpUWo"
+              }
+            },
+            "clock": {
+              "ms": 1794441600000,
+              "n": 0
+            },
+            "follows": [],
+            "mesh": null,
+            "presence_sig": "NEUBX2hHvwVjxYi1NDm6EVS3zIGgt-9mZdYRrOa-SH4tw350lp4SkeIRGbYai94mPM7coemWlHTPRg4VtCE2iA",
+            "sig": "8scpKvu6KFbzpU19JT6Okgrl8gtProUxVNqIK6KoHysr9HZQWtxwY83txVs-F4EaDzQ9ENrehkAUINtWvzMUyQ",
+            "type": "genesis",
+            "v": 2
+          }
+        ],
+        "mesh": "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e",
+        "now_s": 1794441601
+      },
+      "kind": "roster_fold",
+      "name": "issuer_free_genesis"
+    },
+    {
+      "expect": {
+        "ok": {
+          "members": [
+            "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146",
+            "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c"
+          ],
+          "mesh": "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e",
+          "rejected": {},
+          "stop": 0
+        }
+      },
+      "input": {
+        "entries": [
+          {
+            "author": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+            "body": {
+              "device": {
+                "cert": "XDr9mmu91zSdmXMMGj6X9S8Zc1YWkdExf9BOO4kTNechkih9rSjUKTdT0yd3ppJptJgjlYqrUIFQf_9F2lOfvQ",
+                "identity": "BGu-ySJRD-eaPX1InaWwz-PrJKahD2fZmFCTjRDoLxjVkTumbkShewtnlcP_aL0xvDp1CuLZeHYtLWU7JXyDaVU",
+                "kind": "desktop",
+                "label": "local-v2/alice",
+                "ops": "98dbF54AHip3sZoiSvNc6YZDqglrC4XbULQOJNYyqHQ",
+                "presence": "BCp9Kf0eZjRdqdF0vzbv833DVCUwjrnRdn6MDc_QCVtwigBiz78fP24SXkgK0azaXzJa3bZkoAjPetPi-nr2grs",
+                "wrap": "Lr3sh9YQxdPoDLFDrP-X8kwUbsi2vcAAYjIOlbprDnk"
+              },
+              "epoch": {
+                "group": "personal",
+                "recovery_wrap": {
+                  "ct": "VPChNAryixWqVOXq9J03EXnEQU_i2ercKcD5aQMv8EumlJSetx5dHgQ4Y8-XbKIP",
+                  "epk": "kPK_aqTGub9LjrZjCtbIEPR154xjoZUpIXaXKLMpewE",
+                  "nonce": "UY19FElY0sA2TIc1VJslCWErWAc53q2o"
+                },
+                "wraps": [
+                  {
+                    "device": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+                    "wrap": {
+                      "ct": "3yadmSlN-fxT7p20hlIyclm9Z3zaYUutpaOriPBS4NAyO4lmB6nspxBgsTSeMbr3",
+                      "epk": "9FjpKfWJW3imPOVwlLOOoMaj1DzFgNFRhgmJaAsxvi0",
+                      "nonce": "trwZIhwjQuI2tRdz_5CzgVLFEdMAGqej"
+                    }
+                  }
+                ]
+              },
+              "recovery": {
+                "sign": "014cllX1QBYdHgnT2N3B9xMkNJJxROWx5_XjqUFqM84",
+                "wrap": "cXeOzTwc3KomB8shsFwfmR8h92w6LG2p_f8nKAQpUWo"
+              }
+            },
+            "clock": {
+              "ms": 1794441600000,
+              "n": 0
+            },
+            "follows": [],
+            "mesh": null,
+            "presence_sig": "NEUBX2hHvwVjxYi1NDm6EVS3zIGgt-9mZdYRrOa-SH4tw350lp4SkeIRGbYai94mPM7coemWlHTPRg4VtCE2iA",
+            "sig": "8scpKvu6KFbzpU19JT6Okgrl8gtProUxVNqIK6KoHysr9HZQWtxwY83txVs-F4EaDzQ9ENrehkAUINtWvzMUyQ",
+            "type": "genesis",
+            "v": 2
+          },
+          {
+            "author": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+            "body": {
+              "device": {
+                "cert": "ExvCzfyRkEai3UUaSuuHuKlYYftW1sMyE6-iDApYnEhiybYOcuQXo5mwiCUqC69XwVLR5BMBCptPrFvToa8rfQ",
+                "identity": "BAFRoLAee7XAfvWQVg2zIhXYNKgHS152RngFf9r1IvpmbQps_RaM0w0p0yU9i87kdNLWa9SjnXsiYn2KFCp9NN8",
+                "kind": "desktop",
+                "label": "local-v2/bob",
+                "ops": "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+                "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE",
+                "wrap": "iPl0fmKVFFOMboxehJu2UuoohnOJGFQ34R_y1KduXCw"
+              }
+            },
+            "clock": {
+              "ms": 1794441600001,
+              "n": 0
+            },
+            "follows": [
+              "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e"
+            ],
+            "mesh": "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e",
+            "presence_sig": "R9S5yG2_yxQRHvtKDwJHBHWcqtM42ZhdQKhLYIMZmhdH_dRWwKsqPJNyaXDZXzP9AgLA6ax1s10aUyeupUm09A",
+            "sig": "KjSgGOsQlJOm88a7wjVQ81TwoW00gehfR7lIAGcIac1tXh-aY6x-LzJZ2hs8jQ6nlIw9_-tTpPbnK2KbX4yZiQ",
+            "type": "add",
+            "v": 2
+          }
+        ],
+        "mesh": "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e",
+        "now_s": 1794441601
+      },
+      "kind": "roster_fold",
+      "name": "signed_device_add"
+    },
+    {
+      "expect": {
+        "ok": {
+          "members": [
+            "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146",
+            "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c"
+          ],
+          "mesh": "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e",
+          "rejected": {},
+          "stop": 0
+        }
+      },
+      "input": {
+        "entries": [
+          {
+            "author": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+            "body": {
+              "device": {
+                "cert": "ExvCzfyRkEai3UUaSuuHuKlYYftW1sMyE6-iDApYnEhiybYOcuQXo5mwiCUqC69XwVLR5BMBCptPrFvToa8rfQ",
+                "identity": "BAFRoLAee7XAfvWQVg2zIhXYNKgHS152RngFf9r1IvpmbQps_RaM0w0p0yU9i87kdNLWa9SjnXsiYn2KFCp9NN8",
+                "kind": "desktop",
+                "label": "local-v2/bob",
+                "ops": "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+                "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE",
+                "wrap": "iPl0fmKVFFOMboxehJu2UuoohnOJGFQ34R_y1KduXCw"
+              }
+            },
+            "clock": {
+              "ms": 1794441600001,
+              "n": 0
+            },
+            "follows": [
+              "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e"
+            ],
+            "mesh": "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e",
+            "presence_sig": "R9S5yG2_yxQRHvtKDwJHBHWcqtM42ZhdQKhLYIMZmhdH_dRWwKsqPJNyaXDZXzP9AgLA6ax1s10aUyeupUm09A",
+            "sig": "KjSgGOsQlJOm88a7wjVQ81TwoW00gehfR7lIAGcIac1tXh-aY6x-LzJZ2hs8jQ6nlIw9_-tTpPbnK2KbX4yZiQ",
+            "type": "add",
+            "v": 2
+          },
+          {
+            "author": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+            "body": {
+              "device": {
+                "cert": "XDr9mmu91zSdmXMMGj6X9S8Zc1YWkdExf9BOO4kTNechkih9rSjUKTdT0yd3ppJptJgjlYqrUIFQf_9F2lOfvQ",
+                "identity": "BGu-ySJRD-eaPX1InaWwz-PrJKahD2fZmFCTjRDoLxjVkTumbkShewtnlcP_aL0xvDp1CuLZeHYtLWU7JXyDaVU",
+                "kind": "desktop",
+                "label": "local-v2/alice",
+                "ops": "98dbF54AHip3sZoiSvNc6YZDqglrC4XbULQOJNYyqHQ",
+                "presence": "BCp9Kf0eZjRdqdF0vzbv833DVCUwjrnRdn6MDc_QCVtwigBiz78fP24SXkgK0azaXzJa3bZkoAjPetPi-nr2grs",
+                "wrap": "Lr3sh9YQxdPoDLFDrP-X8kwUbsi2vcAAYjIOlbprDnk"
+              },
+              "epoch": {
+                "group": "personal",
+                "recovery_wrap": {
+                  "ct": "VPChNAryixWqVOXq9J03EXnEQU_i2ercKcD5aQMv8EumlJSetx5dHgQ4Y8-XbKIP",
+                  "epk": "kPK_aqTGub9LjrZjCtbIEPR154xjoZUpIXaXKLMpewE",
+                  "nonce": "UY19FElY0sA2TIc1VJslCWErWAc53q2o"
+                },
+                "wraps": [
+                  {
+                    "device": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+                    "wrap": {
+                      "ct": "3yadmSlN-fxT7p20hlIyclm9Z3zaYUutpaOriPBS4NAyO4lmB6nspxBgsTSeMbr3",
+                      "epk": "9FjpKfWJW3imPOVwlLOOoMaj1DzFgNFRhgmJaAsxvi0",
+                      "nonce": "trwZIhwjQuI2tRdz_5CzgVLFEdMAGqej"
+                    }
+                  }
+                ]
+              },
+              "recovery": {
+                "sign": "014cllX1QBYdHgnT2N3B9xMkNJJxROWx5_XjqUFqM84",
+                "wrap": "cXeOzTwc3KomB8shsFwfmR8h92w6LG2p_f8nKAQpUWo"
+              }
+            },
+            "clock": {
+              "ms": 1794441600000,
+              "n": 0
+            },
+            "follows": [],
+            "mesh": null,
+            "presence_sig": "NEUBX2hHvwVjxYi1NDm6EVS3zIGgt-9mZdYRrOa-SH4tw350lp4SkeIRGbYai94mPM7coemWlHTPRg4VtCE2iA",
+            "sig": "8scpKvu6KFbzpU19JT6Okgrl8gtProUxVNqIK6KoHysr9HZQWtxwY83txVs-F4EaDzQ9ENrehkAUINtWvzMUyQ",
+            "type": "genesis",
+            "v": 2
+          }
+        ],
+        "mesh": "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e",
+        "now_s": 1794441601
+      },
+      "kind": "roster_fold",
+      "name": "arrival_order_independent"
+    },
+    {
+      "expect": {
+        "ok": {
+          "members": [
+            "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146",
+            "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c"
+          ],
+          "mesh": "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e",
+          "rejected": {},
+          "stop": 0
+        }
+      },
+      "input": {
+        "entries": [
+          {
+            "author": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+            "body": {
+              "device": {
+                "cert": "XDr9mmu91zSdmXMMGj6X9S8Zc1YWkdExf9BOO4kTNechkih9rSjUKTdT0yd3ppJptJgjlYqrUIFQf_9F2lOfvQ",
+                "identity": "BGu-ySJRD-eaPX1InaWwz-PrJKahD2fZmFCTjRDoLxjVkTumbkShewtnlcP_aL0xvDp1CuLZeHYtLWU7JXyDaVU",
+                "kind": "desktop",
+                "label": "local-v2/alice",
+                "ops": "98dbF54AHip3sZoiSvNc6YZDqglrC4XbULQOJNYyqHQ",
+                "presence": "BCp9Kf0eZjRdqdF0vzbv833DVCUwjrnRdn6MDc_QCVtwigBiz78fP24SXkgK0azaXzJa3bZkoAjPetPi-nr2grs",
+                "wrap": "Lr3sh9YQxdPoDLFDrP-X8kwUbsi2vcAAYjIOlbprDnk"
+              },
+              "epoch": {
+                "group": "personal",
+                "recovery_wrap": {
+                  "ct": "VPChNAryixWqVOXq9J03EXnEQU_i2ercKcD5aQMv8EumlJSetx5dHgQ4Y8-XbKIP",
+                  "epk": "kPK_aqTGub9LjrZjCtbIEPR154xjoZUpIXaXKLMpewE",
+                  "nonce": "UY19FElY0sA2TIc1VJslCWErWAc53q2o"
+                },
+                "wraps": [
+                  {
+                    "device": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+                    "wrap": {
+                      "ct": "3yadmSlN-fxT7p20hlIyclm9Z3zaYUutpaOriPBS4NAyO4lmB6nspxBgsTSeMbr3",
+                      "epk": "9FjpKfWJW3imPOVwlLOOoMaj1DzFgNFRhgmJaAsxvi0",
+                      "nonce": "trwZIhwjQuI2tRdz_5CzgVLFEdMAGqej"
+                    }
+                  }
+                ]
+              },
+              "recovery": {
+                "sign": "014cllX1QBYdHgnT2N3B9xMkNJJxROWx5_XjqUFqM84",
+                "wrap": "cXeOzTwc3KomB8shsFwfmR8h92w6LG2p_f8nKAQpUWo"
+              }
+            },
+            "clock": {
+              "ms": 1794441600000,
+              "n": 0
+            },
+            "follows": [],
+            "mesh": null,
+            "presence_sig": "NEUBX2hHvwVjxYi1NDm6EVS3zIGgt-9mZdYRrOa-SH4tw350lp4SkeIRGbYai94mPM7coemWlHTPRg4VtCE2iA",
+            "sig": "8scpKvu6KFbzpU19JT6Okgrl8gtProUxVNqIK6KoHysr9HZQWtxwY83txVs-F4EaDzQ9ENrehkAUINtWvzMUyQ",
+            "type": "genesis",
+            "v": 2
+          },
+          {
+            "author": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+            "body": {
+              "device": {
+                "cert": "XDr9mmu91zSdmXMMGj6X9S8Zc1YWkdExf9BOO4kTNechkih9rSjUKTdT0yd3ppJptJgjlYqrUIFQf_9F2lOfvQ",
+                "identity": "BGu-ySJRD-eaPX1InaWwz-PrJKahD2fZmFCTjRDoLxjVkTumbkShewtnlcP_aL0xvDp1CuLZeHYtLWU7JXyDaVU",
+                "kind": "desktop",
+                "label": "local-v2/alice",
+                "ops": "98dbF54AHip3sZoiSvNc6YZDqglrC4XbULQOJNYyqHQ",
+                "presence": "BCp9Kf0eZjRdqdF0vzbv833DVCUwjrnRdn6MDc_QCVtwigBiz78fP24SXkgK0azaXzJa3bZkoAjPetPi-nr2grs",
+                "wrap": "Lr3sh9YQxdPoDLFDrP-X8kwUbsi2vcAAYjIOlbprDnk"
+              },
+              "epoch": {
+                "group": "personal",
+                "recovery_wrap": {
+                  "ct": "VPChNAryixWqVOXq9J03EXnEQU_i2ercKcD5aQMv8EumlJSetx5dHgQ4Y8-XbKIP",
+                  "epk": "kPK_aqTGub9LjrZjCtbIEPR154xjoZUpIXaXKLMpewE",
+                  "nonce": "UY19FElY0sA2TIc1VJslCWErWAc53q2o"
+                },
+                "wraps": [
+                  {
+                    "device": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+                    "wrap": {
+                      "ct": "3yadmSlN-fxT7p20hlIyclm9Z3zaYUutpaOriPBS4NAyO4lmB6nspxBgsTSeMbr3",
+                      "epk": "9FjpKfWJW3imPOVwlLOOoMaj1DzFgNFRhgmJaAsxvi0",
+                      "nonce": "trwZIhwjQuI2tRdz_5CzgVLFEdMAGqej"
+                    }
+                  }
+                ]
+              },
+              "recovery": {
+                "sign": "014cllX1QBYdHgnT2N3B9xMkNJJxROWx5_XjqUFqM84",
+                "wrap": "cXeOzTwc3KomB8shsFwfmR8h92w6LG2p_f8nKAQpUWo"
+              }
+            },
+            "clock": {
+              "ms": 1794441600000,
+              "n": 0
+            },
+            "follows": [],
+            "mesh": null,
+            "presence_sig": "NEUBX2hHvwVjxYi1NDm6EVS3zIGgt-9mZdYRrOa-SH4tw350lp4SkeIRGbYai94mPM7coemWlHTPRg4VtCE2iA",
+            "sig": "8scpKvu6KFbzpU19JT6Okgrl8gtProUxVNqIK6KoHysr9HZQWtxwY83txVs-F4EaDzQ9ENrehkAUINtWvzMUyQ",
+            "type": "genesis",
+            "v": 2
+          },
+          {
+            "author": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+            "body": {
+              "device": {
+                "cert": "ExvCzfyRkEai3UUaSuuHuKlYYftW1sMyE6-iDApYnEhiybYOcuQXo5mwiCUqC69XwVLR5BMBCptPrFvToa8rfQ",
+                "identity": "BAFRoLAee7XAfvWQVg2zIhXYNKgHS152RngFf9r1IvpmbQps_RaM0w0p0yU9i87kdNLWa9SjnXsiYn2KFCp9NN8",
+                "kind": "desktop",
+                "label": "local-v2/bob",
+                "ops": "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+                "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE",
+                "wrap": "iPl0fmKVFFOMboxehJu2UuoohnOJGFQ34R_y1KduXCw"
+              }
+            },
+            "clock": {
+              "ms": 1794441600001,
+              "n": 0
+            },
+            "follows": [
+              "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e"
+            ],
+            "mesh": "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e",
+            "presence_sig": "R9S5yG2_yxQRHvtKDwJHBHWcqtM42ZhdQKhLYIMZmhdH_dRWwKsqPJNyaXDZXzP9AgLA6ax1s10aUyeupUm09A",
+            "sig": "KjSgGOsQlJOm88a7wjVQ81TwoW00gehfR7lIAGcIac1tXh-aY6x-LzJZ2hs8jQ6nlIw9_-tTpPbnK2KbX4yZiQ",
+            "type": "add",
+            "v": 2
+          },
+          {
+            "author": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+            "body": {
+              "device": {
+                "cert": "ExvCzfyRkEai3UUaSuuHuKlYYftW1sMyE6-iDApYnEhiybYOcuQXo5mwiCUqC69XwVLR5BMBCptPrFvToa8rfQ",
+                "identity": "BAFRoLAee7XAfvWQVg2zIhXYNKgHS152RngFf9r1IvpmbQps_RaM0w0p0yU9i87kdNLWa9SjnXsiYn2KFCp9NN8",
+                "kind": "desktop",
+                "label": "local-v2/bob",
+                "ops": "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+                "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE",
+                "wrap": "iPl0fmKVFFOMboxehJu2UuoohnOJGFQ34R_y1KduXCw"
+              }
+            },
+            "clock": {
+              "ms": 1794441600001,
+              "n": 0
+            },
+            "follows": [
+              "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e"
+            ],
+            "mesh": "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e",
+            "presence_sig": "R9S5yG2_yxQRHvtKDwJHBHWcqtM42ZhdQKhLYIMZmhdH_dRWwKsqPJNyaXDZXzP9AgLA6ax1s10aUyeupUm09A",
+            "sig": "KjSgGOsQlJOm88a7wjVQ81TwoW00gehfR7lIAGcIac1tXh-aY6x-LzJZ2hs8jQ6nlIw9_-tTpPbnK2KbX4yZiQ",
+            "type": "add",
+            "v": 2
+          }
+        ],
+        "mesh": "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e",
+        "now_s": 1794441601
+      },
+      "kind": "roster_fold",
+      "name": "duplicates_idempotent"
+    },
+    {
+      "expect": {
+        "ok": {
+          "members": [
+            "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146",
+            "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c"
+          ],
+          "mesh": "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e",
+          "rejected": {},
+          "stop": 1
+        }
+      },
+      "input": {
+        "entries": [
+          {
+            "author": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+            "body": {
+              "device": {
+                "cert": "XDr9mmu91zSdmXMMGj6X9S8Zc1YWkdExf9BOO4kTNechkih9rSjUKTdT0yd3ppJptJgjlYqrUIFQf_9F2lOfvQ",
+                "identity": "BGu-ySJRD-eaPX1InaWwz-PrJKahD2fZmFCTjRDoLxjVkTumbkShewtnlcP_aL0xvDp1CuLZeHYtLWU7JXyDaVU",
+                "kind": "desktop",
+                "label": "local-v2/alice",
+                "ops": "98dbF54AHip3sZoiSvNc6YZDqglrC4XbULQOJNYyqHQ",
+                "presence": "BCp9Kf0eZjRdqdF0vzbv833DVCUwjrnRdn6MDc_QCVtwigBiz78fP24SXkgK0azaXzJa3bZkoAjPetPi-nr2grs",
+                "wrap": "Lr3sh9YQxdPoDLFDrP-X8kwUbsi2vcAAYjIOlbprDnk"
+              },
+              "epoch": {
+                "group": "personal",
+                "recovery_wrap": {
+                  "ct": "VPChNAryixWqVOXq9J03EXnEQU_i2ercKcD5aQMv8EumlJSetx5dHgQ4Y8-XbKIP",
+                  "epk": "kPK_aqTGub9LjrZjCtbIEPR154xjoZUpIXaXKLMpewE",
+                  "nonce": "UY19FElY0sA2TIc1VJslCWErWAc53q2o"
+                },
+                "wraps": [
+                  {
+                    "device": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+                    "wrap": {
+                      "ct": "3yadmSlN-fxT7p20hlIyclm9Z3zaYUutpaOriPBS4NAyO4lmB6nspxBgsTSeMbr3",
+                      "epk": "9FjpKfWJW3imPOVwlLOOoMaj1DzFgNFRhgmJaAsxvi0",
+                      "nonce": "trwZIhwjQuI2tRdz_5CzgVLFEdMAGqej"
+                    }
+                  }
+                ]
+              },
+              "recovery": {
+                "sign": "014cllX1QBYdHgnT2N3B9xMkNJJxROWx5_XjqUFqM84",
+                "wrap": "cXeOzTwc3KomB8shsFwfmR8h92w6LG2p_f8nKAQpUWo"
+              }
+            },
+            "clock": {
+              "ms": 1794441600000,
+              "n": 0
+            },
+            "follows": [],
+            "mesh": null,
+            "presence_sig": "NEUBX2hHvwVjxYi1NDm6EVS3zIGgt-9mZdYRrOa-SH4tw350lp4SkeIRGbYai94mPM7coemWlHTPRg4VtCE2iA",
+            "sig": "8scpKvu6KFbzpU19JT6Okgrl8gtProUxVNqIK6KoHysr9HZQWtxwY83txVs-F4EaDzQ9ENrehkAUINtWvzMUyQ",
+            "type": "genesis",
+            "v": 2
+          },
+          {
+            "author": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+            "body": {
+              "device": {
+                "cert": "ExvCzfyRkEai3UUaSuuHuKlYYftW1sMyE6-iDApYnEhiybYOcuQXo5mwiCUqC69XwVLR5BMBCptPrFvToa8rfQ",
+                "identity": "BAFRoLAee7XAfvWQVg2zIhXYNKgHS152RngFf9r1IvpmbQps_RaM0w0p0yU9i87kdNLWa9SjnXsiYn2KFCp9NN8",
+                "kind": "desktop",
+                "label": "local-v2/bob",
+                "ops": "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+                "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE",
+                "wrap": "iPl0fmKVFFOMboxehJu2UuoohnOJGFQ34R_y1KduXCw"
+              }
+            },
+            "clock": {
+              "ms": 1794441600001,
+              "n": 0
+            },
+            "follows": [
+              "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e"
+            ],
+            "mesh": "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e",
+            "presence_sig": "R9S5yG2_yxQRHvtKDwJHBHWcqtM42ZhdQKhLYIMZmhdH_dRWwKsqPJNyaXDZXzP9AgLA6ax1s10aUyeupUm09A",
+            "sig": "KjSgGOsQlJOm88a7wjVQ81TwoW00gehfR7lIAGcIac1tXh-aY6x-LzJZ2hs8jQ6nlIw9_-tTpPbnK2KbX4yZiQ",
+            "type": "add",
+            "v": 2
+          },
+          {
+            "author": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+            "body": {
+              "counter": 1
+            },
+            "clock": {
+              "ms": 1794441600002,
+              "n": 0
+            },
+            "follows": [
+              "sha256:f674c094ea5a0ab7f484a699e6f481f09fae157123aaa6c858037c7de9c55467"
+            ],
+            "mesh": "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e",
+            "sig": "LS-sROxXDndjmQ7UvUuCyOqVY9spxGjzIEfWeUiBp4tuyvbT7jeVwoacbAxT6NGYvUyueNaNECMEMBl2aMZZKA",
+            "type": "stop",
+            "v": 2
+          }
+        ],
+        "mesh": "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e",
+        "now_s": 1794441601
+      },
+      "kind": "roster_fold",
+      "name": "stop_preserves_signed_membership"
+    },
+    {
+      "expect": {
+        "ok": {
+          "members": [
+            "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146",
+            "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c"
+          ],
+          "mesh": "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e",
+          "rejected": {},
+          "stop": 1
+        }
+      },
+      "input": {
+        "entries": [
+          {
+            "author": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+            "body": {
+              "device": {
+                "cert": "XDr9mmu91zSdmXMMGj6X9S8Zc1YWkdExf9BOO4kTNechkih9rSjUKTdT0yd3ppJptJgjlYqrUIFQf_9F2lOfvQ",
+                "identity": "BGu-ySJRD-eaPX1InaWwz-PrJKahD2fZmFCTjRDoLxjVkTumbkShewtnlcP_aL0xvDp1CuLZeHYtLWU7JXyDaVU",
+                "kind": "desktop",
+                "label": "local-v2/alice",
+                "ops": "98dbF54AHip3sZoiSvNc6YZDqglrC4XbULQOJNYyqHQ",
+                "presence": "BCp9Kf0eZjRdqdF0vzbv833DVCUwjrnRdn6MDc_QCVtwigBiz78fP24SXkgK0azaXzJa3bZkoAjPetPi-nr2grs",
+                "wrap": "Lr3sh9YQxdPoDLFDrP-X8kwUbsi2vcAAYjIOlbprDnk"
+              },
+              "epoch": {
+                "group": "personal",
+                "recovery_wrap": {
+                  "ct": "VPChNAryixWqVOXq9J03EXnEQU_i2ercKcD5aQMv8EumlJSetx5dHgQ4Y8-XbKIP",
+                  "epk": "kPK_aqTGub9LjrZjCtbIEPR154xjoZUpIXaXKLMpewE",
+                  "nonce": "UY19FElY0sA2TIc1VJslCWErWAc53q2o"
+                },
+                "wraps": [
+                  {
+                    "device": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+                    "wrap": {
+                      "ct": "3yadmSlN-fxT7p20hlIyclm9Z3zaYUutpaOriPBS4NAyO4lmB6nspxBgsTSeMbr3",
+                      "epk": "9FjpKfWJW3imPOVwlLOOoMaj1DzFgNFRhgmJaAsxvi0",
+                      "nonce": "trwZIhwjQuI2tRdz_5CzgVLFEdMAGqej"
+                    }
+                  }
+                ]
+              },
+              "recovery": {
+                "sign": "014cllX1QBYdHgnT2N3B9xMkNJJxROWx5_XjqUFqM84",
+                "wrap": "cXeOzTwc3KomB8shsFwfmR8h92w6LG2p_f8nKAQpUWo"
+              }
+            },
+            "clock": {
+              "ms": 1794441600000,
+              "n": 0
+            },
+            "follows": [],
+            "mesh": null,
+            "presence_sig": "NEUBX2hHvwVjxYi1NDm6EVS3zIGgt-9mZdYRrOa-SH4tw350lp4SkeIRGbYai94mPM7coemWlHTPRg4VtCE2iA",
+            "sig": "8scpKvu6KFbzpU19JT6Okgrl8gtProUxVNqIK6KoHysr9HZQWtxwY83txVs-F4EaDzQ9ENrehkAUINtWvzMUyQ",
+            "type": "genesis",
+            "v": 2
+          },
+          {
+            "author": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+            "body": {
+              "device": {
+                "cert": "ExvCzfyRkEai3UUaSuuHuKlYYftW1sMyE6-iDApYnEhiybYOcuQXo5mwiCUqC69XwVLR5BMBCptPrFvToa8rfQ",
+                "identity": "BAFRoLAee7XAfvWQVg2zIhXYNKgHS152RngFf9r1IvpmbQps_RaM0w0p0yU9i87kdNLWa9SjnXsiYn2KFCp9NN8",
+                "kind": "desktop",
+                "label": "local-v2/bob",
+                "ops": "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+                "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE",
+                "wrap": "iPl0fmKVFFOMboxehJu2UuoohnOJGFQ34R_y1KduXCw"
+              }
+            },
+            "clock": {
+              "ms": 1794441600001,
+              "n": 0
+            },
+            "follows": [
+              "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e"
+            ],
+            "mesh": "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e",
+            "presence_sig": "R9S5yG2_yxQRHvtKDwJHBHWcqtM42ZhdQKhLYIMZmhdH_dRWwKsqPJNyaXDZXzP9AgLA6ax1s10aUyeupUm09A",
+            "sig": "KjSgGOsQlJOm88a7wjVQ81TwoW00gehfR7lIAGcIac1tXh-aY6x-LzJZ2hs8jQ6nlIw9_-tTpPbnK2KbX4yZiQ",
+            "type": "add",
+            "v": 2
+          },
+          {
+            "author": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+            "body": {
+              "counter": 1
+            },
+            "clock": {
+              "ms": 1794441600002,
+              "n": 0
+            },
+            "follows": [
+              "sha256:f674c094ea5a0ab7f484a699e6f481f09fae157123aaa6c858037c7de9c55467"
+            ],
+            "mesh": "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e",
+            "sig": "LS-sROxXDndjmQ7UvUuCyOqVY9spxGjzIEfWeUiBp4tuyvbT7jeVwoacbAxT6NGYvUyueNaNECMEMBl2aMZZKA",
+            "type": "stop",
+            "v": 2
+          },
+          {
+            "author": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+            "body": {
+              "counter": 1
+            },
+            "clock": {
+              "ms": 1794441600003,
+              "n": 0
+            },
+            "follows": [
+              "sha256:36346509ad2a3243cf3df123cab99240832f6f9e7d09ff1ee49780838c0bb691"
+            ],
+            "mesh": "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e",
+            "presence_sig": "I3ecXxkgBfHjJL3BZpEMPn4RLeNBsv4xSxKaDdnegushtVuOJtXNjq52CZYq2QPYHcDBUMjh7HoiDAGid7O0fA",
+            "sig": "dB9GJ0NG3fK8emUNlcNr7xNqGeN5xVcvbNrlXexmwfRLcEinSsAX2Ka6VUy3Y9fNUy6UBB7OoVeelIMrIBxmcQ",
+            "type": "resume",
+            "v": 2
+          }
+        ],
+        "mesh": "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e",
+        "now_s": 1794441601
+      },
+      "kind": "roster_fold",
+      "name": "resume_requires_presence"
+    },
+    {
+      "expect": {
+        "ok": {
+          "members": [
+            "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c"
+          ],
+          "mesh": "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e",
+          "rejected": {},
+          "stop": 1
+        }
+      },
+      "input": {
+        "entries": [
+          {
+            "author": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+            "body": {
+              "device": {
+                "cert": "XDr9mmu91zSdmXMMGj6X9S8Zc1YWkdExf9BOO4kTNechkih9rSjUKTdT0yd3ppJptJgjlYqrUIFQf_9F2lOfvQ",
+                "identity": "BGu-ySJRD-eaPX1InaWwz-PrJKahD2fZmFCTjRDoLxjVkTumbkShewtnlcP_aL0xvDp1CuLZeHYtLWU7JXyDaVU",
+                "kind": "desktop",
+                "label": "local-v2/alice",
+                "ops": "98dbF54AHip3sZoiSvNc6YZDqglrC4XbULQOJNYyqHQ",
+                "presence": "BCp9Kf0eZjRdqdF0vzbv833DVCUwjrnRdn6MDc_QCVtwigBiz78fP24SXkgK0azaXzJa3bZkoAjPetPi-nr2grs",
+                "wrap": "Lr3sh9YQxdPoDLFDrP-X8kwUbsi2vcAAYjIOlbprDnk"
+              },
+              "epoch": {
+                "group": "personal",
+                "recovery_wrap": {
+                  "ct": "VPChNAryixWqVOXq9J03EXnEQU_i2ercKcD5aQMv8EumlJSetx5dHgQ4Y8-XbKIP",
+                  "epk": "kPK_aqTGub9LjrZjCtbIEPR154xjoZUpIXaXKLMpewE",
+                  "nonce": "UY19FElY0sA2TIc1VJslCWErWAc53q2o"
+                },
+                "wraps": [
+                  {
+                    "device": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+                    "wrap": {
+                      "ct": "3yadmSlN-fxT7p20hlIyclm9Z3zaYUutpaOriPBS4NAyO4lmB6nspxBgsTSeMbr3",
+                      "epk": "9FjpKfWJW3imPOVwlLOOoMaj1DzFgNFRhgmJaAsxvi0",
+                      "nonce": "trwZIhwjQuI2tRdz_5CzgVLFEdMAGqej"
+                    }
+                  }
+                ]
+              },
+              "recovery": {
+                "sign": "014cllX1QBYdHgnT2N3B9xMkNJJxROWx5_XjqUFqM84",
+                "wrap": "cXeOzTwc3KomB8shsFwfmR8h92w6LG2p_f8nKAQpUWo"
+              }
+            },
+            "clock": {
+              "ms": 1794441600000,
+              "n": 0
+            },
+            "follows": [],
+            "mesh": null,
+            "presence_sig": "NEUBX2hHvwVjxYi1NDm6EVS3zIGgt-9mZdYRrOa-SH4tw350lp4SkeIRGbYai94mPM7coemWlHTPRg4VtCE2iA",
+            "sig": "8scpKvu6KFbzpU19JT6Okgrl8gtProUxVNqIK6KoHysr9HZQWtxwY83txVs-F4EaDzQ9ENrehkAUINtWvzMUyQ",
+            "type": "genesis",
+            "v": 2
+          },
+          {
+            "author": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+            "body": {
+              "device": {
+                "cert": "ExvCzfyRkEai3UUaSuuHuKlYYftW1sMyE6-iDApYnEhiybYOcuQXo5mwiCUqC69XwVLR5BMBCptPrFvToa8rfQ",
+                "identity": "BAFRoLAee7XAfvWQVg2zIhXYNKgHS152RngFf9r1IvpmbQps_RaM0w0p0yU9i87kdNLWa9SjnXsiYn2KFCp9NN8",
+                "kind": "desktop",
+                "label": "local-v2/bob",
+                "ops": "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+                "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE",
+                "wrap": "iPl0fmKVFFOMboxehJu2UuoohnOJGFQ34R_y1KduXCw"
+              }
+            },
+            "clock": {
+              "ms": 1794441600001,
+              "n": 0
+            },
+            "follows": [
+              "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e"
+            ],
+            "mesh": "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e",
+            "presence_sig": "R9S5yG2_yxQRHvtKDwJHBHWcqtM42ZhdQKhLYIMZmhdH_dRWwKsqPJNyaXDZXzP9AgLA6ax1s10aUyeupUm09A",
+            "sig": "KjSgGOsQlJOm88a7wjVQ81TwoW00gehfR7lIAGcIac1tXh-aY6x-LzJZ2hs8jQ6nlIw9_-tTpPbnK2KbX4yZiQ",
+            "type": "add",
+            "v": 2
+          },
+          {
+            "author": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+            "body": {
+              "counter": 1
+            },
+            "clock": {
+              "ms": 1794441600002,
+              "n": 0
+            },
+            "follows": [
+              "sha256:f674c094ea5a0ab7f484a699e6f481f09fae157123aaa6c858037c7de9c55467"
+            ],
+            "mesh": "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e",
+            "sig": "LS-sROxXDndjmQ7UvUuCyOqVY9spxGjzIEfWeUiBp4tuyvbT7jeVwoacbAxT6NGYvUyueNaNECMEMBl2aMZZKA",
+            "type": "stop",
+            "v": 2
+          },
+          {
+            "author": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+            "body": {
+              "counter": 1
+            },
+            "clock": {
+              "ms": 1794441600003,
+              "n": 0
+            },
+            "follows": [
+              "sha256:36346509ad2a3243cf3df123cab99240832f6f9e7d09ff1ee49780838c0bb691"
+            ],
+            "mesh": "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e",
+            "presence_sig": "I3ecXxkgBfHjJL3BZpEMPn4RLeNBsv4xSxKaDdnegushtVuOJtXNjq52CZYq2QPYHcDBUMjh7HoiDAGid7O0fA",
+            "sig": "dB9GJ0NG3fK8emUNlcNr7xNqGeN5xVcvbNrlXexmwfRLcEinSsAX2Ka6VUy3Y9fNUy6UBB7OoVeelIMrIBxmcQ",
+            "type": "resume",
+            "v": 2
+          },
+          {
+            "author": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+            "body": {
+              "cutoff": {
+                "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY": 0
+              },
+              "device": "sha256:0fd64f43d244722f37741d7311f32a0daf9ce3b1f782dfac507cb623d7dbf146"
+            },
+            "clock": {
+              "ms": 1794441600004,
+              "n": 0
+            },
+            "follows": [
+              "sha256:d9f711c9ad545631e396c1f23cb45ca33501bc8feecfeae90c1bfe80816ccbb1"
+            ],
+            "mesh": "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e",
+            "presence_sig": "fpoXyIXdWi9TF55CB-2gY3Hh1CQ33Mkq_s0bRP10Z4cHt8W3EpTkSMuIsnV6E8HIaDir-F7pcu4jnhW5dlECPA",
+            "sig": "pU3h3um03pQByjWZ4IgFNUxQLfL4F548jhwuoAKFB3MEo4jqrXA9YJwflhpjMg3btPGzQ6sC2KR486n8K3kmXA",
+            "type": "remove",
+            "v": 2
+          }
+        ],
+        "mesh": "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e",
+        "now_s": 1794441601
+      },
+      "kind": "roster_fold",
+      "name": "removal_preserves_cutoff"
+    },
+    {
+      "expect": {
+        "error": "roster.malformed"
+      },
+      "input": {
+        "entry": {
+          "author": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+          "body": {
+            "device": {
+              "cert": "XDr9mmu91zSdmXMMGj6X9S8Zc1YWkdExf9BOO4kTNechkih9rSjUKTdT0yd3ppJptJgjlYqrUIFQf_9F2lOfvQ",
+              "identity": "BGu-ySJRD-eaPX1InaWwz-PrJKahD2fZmFCTjRDoLxjVkTumbkShewtnlcP_aL0xvDp1CuLZeHYtLWU7JXyDaVU",
+              "kind": "desktop",
+              "label": "local-v2/alice",
+              "ops": "98dbF54AHip3sZoiSvNc6YZDqglrC4XbULQOJNYyqHQ",
+              "presence": "BCp9Kf0eZjRdqdF0vzbv833DVCUwjrnRdn6MDc_QCVtwigBiz78fP24SXkgK0azaXzJa3bZkoAjPetPi-nr2grs",
+              "wrap": "Lr3sh9YQxdPoDLFDrP-X8kwUbsi2vcAAYjIOlbprDnk"
+            },
+            "epoch": {
+              "group": "personal",
+              "recovery_wrap": {
+                "ct": "VPChNAryixWqVOXq9J03EXnEQU_i2ercKcD5aQMv8EumlJSetx5dHgQ4Y8-XbKIP",
+                "epk": "kPK_aqTGub9LjrZjCtbIEPR154xjoZUpIXaXKLMpewE",
+                "nonce": "UY19FElY0sA2TIc1VJslCWErWAc53q2o"
+              },
+              "wraps": [
+                {
+                  "device": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+                  "wrap": {
+                    "ct": "3yadmSlN-fxT7p20hlIyclm9Z3zaYUutpaOriPBS4NAyO4lmB6nspxBgsTSeMbr3",
+                    "epk": "9FjpKfWJW3imPOVwlLOOoMaj1DzFgNFRhgmJaAsxvi0",
+                    "nonce": "trwZIhwjQuI2tRdz_5CzgVLFEdMAGqej"
+                  }
+                }
+              ]
+            },
+            "recovery": {
+              "sign": "014cllX1QBYdHgnT2N3B9xMkNJJxROWx5_XjqUFqM84",
+              "wrap": "cXeOzTwc3KomB8shsFwfmR8h92w6LG2p_f8nKAQpUWo"
+            }
+          },
+          "clock": {
+            "ms": 1794441600000,
+            "n": 0
+          },
+          "follows": [],
+          "mesh": null,
+          "presence_sig": "NEUBX2hHvwVjxYi1NDm6EVS3zIGgt-9mZdYRrOa-SH4tw350lp4SkeIRGbYai94mPM7coemWlHTPRg4VtCE2iA",
+          "sig": "8scpKvu6KFbzpU19JT6Okgrl8gtProUxVNqIK6KoHysr9HZQWtxwY83txVs-F4EaDzQ9ENrehkAUINtWvzMUyQ",
+          "type": "genesis",
+          "v": 1
+        }
+      },
+      "kind": "roster_shape",
+      "name": "version_1_is_unsupported"
+    },
+    {
+      "expect": {
+        "error": "roster.malformed"
+      },
+      "input": {
+        "entry": {
+          "author": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+          "body": {
+            "device": {
+              "cert": "XDr9mmu91zSdmXMMGj6X9S8Zc1YWkdExf9BOO4kTNechkih9rSjUKTdT0yd3ppJptJgjlYqrUIFQf_9F2lOfvQ",
+              "identity": "BGu-ySJRD-eaPX1InaWwz-PrJKahD2fZmFCTjRDoLxjVkTumbkShewtnlcP_aL0xvDp1CuLZeHYtLWU7JXyDaVU",
+              "kind": "desktop",
+              "label": "local-v2/alice",
+              "ops": "98dbF54AHip3sZoiSvNc6YZDqglrC4XbULQOJNYyqHQ",
+              "presence": "BCp9Kf0eZjRdqdF0vzbv833DVCUwjrnRdn6MDc_QCVtwigBiz78fP24SXkgK0azaXzJa3bZkoAjPetPi-nr2grs",
+              "wrap": "Lr3sh9YQxdPoDLFDrP-X8kwUbsi2vcAAYjIOlbprDnk"
+            },
+            "epoch": {
+              "group": "personal",
+              "recovery_wrap": {
+                "ct": "VPChNAryixWqVOXq9J03EXnEQU_i2ercKcD5aQMv8EumlJSetx5dHgQ4Y8-XbKIP",
+                "epk": "kPK_aqTGub9LjrZjCtbIEPR154xjoZUpIXaXKLMpewE",
+                "nonce": "UY19FElY0sA2TIc1VJslCWErWAc53q2o"
+              },
+              "wraps": [
+                {
+                  "device": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+                  "wrap": {
+                    "ct": "3yadmSlN-fxT7p20hlIyclm9Z3zaYUutpaOriPBS4NAyO4lmB6nspxBgsTSeMbr3",
+                    "epk": "9FjpKfWJW3imPOVwlLOOoMaj1DzFgNFRhgmJaAsxvi0",
+                    "nonce": "trwZIhwjQuI2tRdz_5CzgVLFEdMAGqej"
+                  }
+                }
+              ]
+            },
+            "issuers": [],
+            "recovery": {
+              "sign": "014cllX1QBYdHgnT2N3B9xMkNJJxROWx5_XjqUFqM84",
+              "wrap": "cXeOzTwc3KomB8shsFwfmR8h92w6LG2p_f8nKAQpUWo"
+            }
+          },
+          "clock": {
+            "ms": 1794441600000,
+            "n": 0
+          },
+          "follows": [],
+          "mesh": null,
+          "presence_sig": "NEUBX2hHvwVjxYi1NDm6EVS3zIGgt-9mZdYRrOa-SH4tw350lp4SkeIRGbYai94mPM7coemWlHTPRg4VtCE2iA",
+          "sig": "8scpKvu6KFbzpU19JT6Okgrl8gtProUxVNqIK6KoHysr9HZQWtxwY83txVs-F4EaDzQ9ENrehkAUINtWvzMUyQ",
+          "type": "genesis",
+          "v": 2
+        }
+      },
+      "kind": "roster_shape",
+      "name": "genesis_has_no_issuers"
+    },
+    {
+      "expect": {
+        "error": "roster.malformed"
+      },
+      "input": {
+        "entry": {
+          "author": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+          "body": {
+            "attestation": null,
+            "device": {
+              "cert": "ExvCzfyRkEai3UUaSuuHuKlYYftW1sMyE6-iDApYnEhiybYOcuQXo5mwiCUqC69XwVLR5BMBCptPrFvToa8rfQ",
+              "identity": "BAFRoLAee7XAfvWQVg2zIhXYNKgHS152RngFf9r1IvpmbQps_RaM0w0p0yU9i87kdNLWa9SjnXsiYn2KFCp9NN8",
+              "kind": "desktop",
+              "label": "local-v2/bob",
+              "ops": "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE",
+              "wrap": "iPl0fmKVFFOMboxehJu2UuoohnOJGFQ34R_y1KduXCw"
+            }
+          },
+          "clock": {
+            "ms": 1794441600001,
+            "n": 0
+          },
+          "follows": [
+            "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e"
+          ],
+          "mesh": "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e",
+          "presence_sig": "R9S5yG2_yxQRHvtKDwJHBHWcqtM42ZhdQKhLYIMZmhdH_dRWwKsqPJNyaXDZXzP9AgLA6ax1s10aUyeupUm09A",
+          "sig": "KjSgGOsQlJOm88a7wjVQ81TwoW00gehfR7lIAGcIac1tXh-aY6x-LzJZ2hs8jQ6nlIw9_-tTpPbnK2KbX4yZiQ",
+          "type": "add",
+          "v": 2
+        }
+      },
+      "kind": "roster_shape",
+      "name": "add_has_no_attestation"
+    },
+    {
+      "expect": {
+        "error": "roster.malformed"
+      },
+      "input": {
+        "entry": {
+          "author": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+          "body": {
+            "device": {
+              "cert": "ExvCzfyRkEai3UUaSuuHuKlYYftW1sMyE6-iDApYnEhiybYOcuQXo5mwiCUqC69XwVLR5BMBCptPrFvToa8rfQ",
+              "identity": "BAFRoLAee7XAfvWQVg2zIhXYNKgHS152RngFf9r1IvpmbQps_RaM0w0p0yU9i87kdNLWa9SjnXsiYn2KFCp9NN8",
+              "kind": "desktop",
+              "label": "local-v2/bob",
+              "ops": "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE",
+              "wrap": "iPl0fmKVFFOMboxehJu2UuoohnOJGFQ34R_y1KduXCw"
+            }
+          },
+          "clock": {
+            "ms": 1794441600001,
+            "n": 0
+          },
+          "follows": [
+            "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e"
+          ],
+          "mesh": "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e",
+          "presence_sig": "R9S5yG2_yxQRHvtKDwJHBHWcqtM42ZhdQKhLYIMZmhdH_dRWwKsqPJNyaXDZXzP9AgLA6ax1s10aUyeupUm09A",
+          "sig": "KjSgGOsQlJOm88a7wjVQ81TwoW00gehfR7lIAGcIac1tXh-aY6x-LzJZ2hs8jQ6nlIw9_-tTpPbnK2KbX4yZiQ",
+          "type": "attest",
+          "v": 2
+        }
+      },
+      "kind": "roster_shape",
+      "name": "removed_attest_family"
+    },
+    {
+      "expect": {
+        "error": "roster.malformed"
+      },
+      "input": {
+        "entry": {
+          "author": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+          "body": {
+            "device": {
+              "cert": "ExvCzfyRkEai3UUaSuuHuKlYYftW1sMyE6-iDApYnEhiybYOcuQXo5mwiCUqC69XwVLR5BMBCptPrFvToa8rfQ",
+              "identity": "BAFRoLAee7XAfvWQVg2zIhXYNKgHS152RngFf9r1IvpmbQps_RaM0w0p0yU9i87kdNLWa9SjnXsiYn2KFCp9NN8",
+              "kind": "desktop",
+              "label": "local-v2/bob",
+              "ops": "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE",
+              "wrap": "iPl0fmKVFFOMboxehJu2UuoohnOJGFQ34R_y1KduXCw"
+            }
+          },
+          "clock": {
+            "ms": 1794441600001,
+            "n": 0
+          },
+          "follows": [
+            "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e"
+          ],
+          "mesh": "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e",
+          "presence_sig": "R9S5yG2_yxQRHvtKDwJHBHWcqtM42ZhdQKhLYIMZmhdH_dRWwKsqPJNyaXDZXzP9AgLA6ax1s10aUyeupUm09A",
+          "sig": "KjSgGOsQlJOm88a7wjVQ81TwoW00gehfR7lIAGcIac1tXh-aY6x-LzJZ2hs8jQ6nlIw9_-tTpPbnK2KbX4yZiQ",
+          "type": "issuer",
+          "v": 2
+        }
+      },
+      "kind": "roster_shape",
+      "name": "removed_issuer_family"
+    },
+    {
+      "expect": {
+        "error": "roster.malformed"
+      },
+      "input": {
+        "entry": {
+          "author": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+          "body": {
+            "device": {
+              "cert": "ExvCzfyRkEai3UUaSuuHuKlYYftW1sMyE6-iDApYnEhiybYOcuQXo5mwiCUqC69XwVLR5BMBCptPrFvToa8rfQ",
+              "identity": "BAFRoLAee7XAfvWQVg2zIhXYNKgHS152RngFf9r1IvpmbQps_RaM0w0p0yU9i87kdNLWa9SjnXsiYn2KFCp9NN8",
+              "kind": "desktop",
+              "label": "local-v2/bob",
+              "ops": "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE",
+              "wrap": "iPl0fmKVFFOMboxehJu2UuoohnOJGFQ34R_y1KduXCw"
+            }
+          },
+          "clock": {
+            "ms": 1794441600001,
+            "n": 0
+          },
+          "follows": [
+            "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e"
+          ],
+          "mesh": "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e",
+          "presence_sig": "R9S5yG2_yxQRHvtKDwJHBHWcqtM42ZhdQKhLYIMZmhdH_dRWwKsqPJNyaXDZXzP9AgLA6ax1s10aUyeupUm09A",
+          "sig": "KjSgGOsQlJOm88a7wjVQ81TwoW00gehfR7lIAGcIac1tXh-aY6x-LzJZ2hs8jQ6nlIw9_-tTpPbnK2KbX4yZiQ",
+          "type": "add",
+          "v": 3
+        }
+      },
+      "kind": "roster_shape",
+      "name": "future_version_is_unsupported"
+    },
+    {
+      "expect": {
+        "error": "roster.malformed"
+      },
+      "input": {
+        "entry": {
+          "author": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+          "body": {
+            "device": {
+              "cert": "ExvCzfyRkEai3UUaSuuHuKlYYftW1sMyE6-iDApYnEhiybYOcuQXo5mwiCUqC69XwVLR5BMBCptPrFvToa8rfQ",
+              "identity": "BAFRoLAee7XAfvWQVg2zIhXYNKgHS152RngFf9r1IvpmbQps_RaM0w0p0yU9i87kdNLWa9SjnXsiYn2KFCp9NN8",
+              "kind": "desktop",
+              "label": "local-v2/bob",
+              "ops": "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+              "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE",
+              "wrap": "iPl0fmKVFFOMboxehJu2UuoohnOJGFQ34R_y1KduXCw"
+            }
+          },
+          "clock": {
+            "ms": 1794441600001,
+            "n": 0
+          },
+          "follows": [
+            "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e"
+          ],
+          "mesh": "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e",
+          "presence_sig": "R9S5yG2_yxQRHvtKDwJHBHWcqtM42ZhdQKhLYIMZmhdH_dRWwKsqPJNyaXDZXzP9AgLA6ax1s10aUyeupUm09A",
+          "sig": "KjSgGOsQlJOm88a7wjVQ81TwoW00gehfR7lIAGcIac1tXh-aY6x-LzJZ2hs8jQ6nlIw9_-tTpPbnK2KbX4yZiQ",
+          "type": "add",
+          "unexpected": true,
+          "v": 2
+        }
+      },
+      "kind": "roster_shape",
+      "name": "unknown_envelope_field"
+    },
+    {
+      "expect": {
+        "ok": {
+          "members": [
+            "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c"
+          ],
+          "mesh": "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e",
+          "rejected": {
+            "sha256:f674c094ea5a0ab7f484a699e6f481f09fae157123aaa6c858037c7de9c55467": "roster.bad_signature"
+          },
+          "stop": 0
+        }
+      },
+      "input": {
+        "entries": [
+          {
+            "author": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+            "body": {
+              "device": {
+                "cert": "XDr9mmu91zSdmXMMGj6X9S8Zc1YWkdExf9BOO4kTNechkih9rSjUKTdT0yd3ppJptJgjlYqrUIFQf_9F2lOfvQ",
+                "identity": "BGu-ySJRD-eaPX1InaWwz-PrJKahD2fZmFCTjRDoLxjVkTumbkShewtnlcP_aL0xvDp1CuLZeHYtLWU7JXyDaVU",
+                "kind": "desktop",
+                "label": "local-v2/alice",
+                "ops": "98dbF54AHip3sZoiSvNc6YZDqglrC4XbULQOJNYyqHQ",
+                "presence": "BCp9Kf0eZjRdqdF0vzbv833DVCUwjrnRdn6MDc_QCVtwigBiz78fP24SXkgK0azaXzJa3bZkoAjPetPi-nr2grs",
+                "wrap": "Lr3sh9YQxdPoDLFDrP-X8kwUbsi2vcAAYjIOlbprDnk"
+              },
+              "epoch": {
+                "group": "personal",
+                "recovery_wrap": {
+                  "ct": "VPChNAryixWqVOXq9J03EXnEQU_i2ercKcD5aQMv8EumlJSetx5dHgQ4Y8-XbKIP",
+                  "epk": "kPK_aqTGub9LjrZjCtbIEPR154xjoZUpIXaXKLMpewE",
+                  "nonce": "UY19FElY0sA2TIc1VJslCWErWAc53q2o"
+                },
+                "wraps": [
+                  {
+                    "device": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+                    "wrap": {
+                      "ct": "3yadmSlN-fxT7p20hlIyclm9Z3zaYUutpaOriPBS4NAyO4lmB6nspxBgsTSeMbr3",
+                      "epk": "9FjpKfWJW3imPOVwlLOOoMaj1DzFgNFRhgmJaAsxvi0",
+                      "nonce": "trwZIhwjQuI2tRdz_5CzgVLFEdMAGqej"
+                    }
+                  }
+                ]
+              },
+              "recovery": {
+                "sign": "014cllX1QBYdHgnT2N3B9xMkNJJxROWx5_XjqUFqM84",
+                "wrap": "cXeOzTwc3KomB8shsFwfmR8h92w6LG2p_f8nKAQpUWo"
+              }
+            },
+            "clock": {
+              "ms": 1794441600000,
+              "n": 0
+            },
+            "follows": [],
+            "mesh": null,
+            "presence_sig": "NEUBX2hHvwVjxYi1NDm6EVS3zIGgt-9mZdYRrOa-SH4tw350lp4SkeIRGbYai94mPM7coemWlHTPRg4VtCE2iA",
+            "sig": "8scpKvu6KFbzpU19JT6Okgrl8gtProUxVNqIK6KoHysr9HZQWtxwY83txVs-F4EaDzQ9ENrehkAUINtWvzMUyQ",
+            "type": "genesis",
+            "v": 2
+          },
+          {
+            "author": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+            "body": {
+              "device": {
+                "cert": "ExvCzfyRkEai3UUaSuuHuKlYYftW1sMyE6-iDApYnEhiybYOcuQXo5mwiCUqC69XwVLR5BMBCptPrFvToa8rfQ",
+                "identity": "BAFRoLAee7XAfvWQVg2zIhXYNKgHS152RngFf9r1IvpmbQps_RaM0w0p0yU9i87kdNLWa9SjnXsiYn2KFCp9NN8",
+                "kind": "desktop",
+                "label": "local-v2/bob",
+                "ops": "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+                "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE",
+                "wrap": "iPl0fmKVFFOMboxehJu2UuoohnOJGFQ34R_y1KduXCw"
+              }
+            },
+            "clock": {
+              "ms": 1794441600001,
+              "n": 0
+            },
+            "follows": [
+              "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e"
+            ],
+            "mesh": "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e",
+            "presence_sig": "R9S5yG2_yxQRHvtKDwJHBHWcqtM42ZhdQKhLYIMZmhdH_dRWwKsqPJNyaXDZXzP9AgLA6ax1s10aUyeupUm09A",
+            "sig": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "type": "add",
+            "v": 2
+          }
+        ],
+        "mesh": "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e",
+        "now_s": 1794441601
+      },
+      "kind": "roster_fold",
+      "name": "invalid_identity_signature_denied"
+    },
+    {
+      "expect": {
+        "ok": {
+          "members": [
+            "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c"
+          ],
+          "mesh": "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e",
+          "rejected": {
+            "sha256:f674c094ea5a0ab7f484a699e6f481f09fae157123aaa6c858037c7de9c55467": "roster.bad_presence_signature"
+          },
+          "stop": 0
+        }
+      },
+      "input": {
+        "entries": [
+          {
+            "author": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+            "body": {
+              "device": {
+                "cert": "XDr9mmu91zSdmXMMGj6X9S8Zc1YWkdExf9BOO4kTNechkih9rSjUKTdT0yd3ppJptJgjlYqrUIFQf_9F2lOfvQ",
+                "identity": "BGu-ySJRD-eaPX1InaWwz-PrJKahD2fZmFCTjRDoLxjVkTumbkShewtnlcP_aL0xvDp1CuLZeHYtLWU7JXyDaVU",
+                "kind": "desktop",
+                "label": "local-v2/alice",
+                "ops": "98dbF54AHip3sZoiSvNc6YZDqglrC4XbULQOJNYyqHQ",
+                "presence": "BCp9Kf0eZjRdqdF0vzbv833DVCUwjrnRdn6MDc_QCVtwigBiz78fP24SXkgK0azaXzJa3bZkoAjPetPi-nr2grs",
+                "wrap": "Lr3sh9YQxdPoDLFDrP-X8kwUbsi2vcAAYjIOlbprDnk"
+              },
+              "epoch": {
+                "group": "personal",
+                "recovery_wrap": {
+                  "ct": "VPChNAryixWqVOXq9J03EXnEQU_i2ercKcD5aQMv8EumlJSetx5dHgQ4Y8-XbKIP",
+                  "epk": "kPK_aqTGub9LjrZjCtbIEPR154xjoZUpIXaXKLMpewE",
+                  "nonce": "UY19FElY0sA2TIc1VJslCWErWAc53q2o"
+                },
+                "wraps": [
+                  {
+                    "device": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+                    "wrap": {
+                      "ct": "3yadmSlN-fxT7p20hlIyclm9Z3zaYUutpaOriPBS4NAyO4lmB6nspxBgsTSeMbr3",
+                      "epk": "9FjpKfWJW3imPOVwlLOOoMaj1DzFgNFRhgmJaAsxvi0",
+                      "nonce": "trwZIhwjQuI2tRdz_5CzgVLFEdMAGqej"
+                    }
+                  }
+                ]
+              },
+              "recovery": {
+                "sign": "014cllX1QBYdHgnT2N3B9xMkNJJxROWx5_XjqUFqM84",
+                "wrap": "cXeOzTwc3KomB8shsFwfmR8h92w6LG2p_f8nKAQpUWo"
+              }
+            },
+            "clock": {
+              "ms": 1794441600000,
+              "n": 0
+            },
+            "follows": [],
+            "mesh": null,
+            "presence_sig": "NEUBX2hHvwVjxYi1NDm6EVS3zIGgt-9mZdYRrOa-SH4tw350lp4SkeIRGbYai94mPM7coemWlHTPRg4VtCE2iA",
+            "sig": "8scpKvu6KFbzpU19JT6Okgrl8gtProUxVNqIK6KoHysr9HZQWtxwY83txVs-F4EaDzQ9ENrehkAUINtWvzMUyQ",
+            "type": "genesis",
+            "v": 2
+          },
+          {
+            "author": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+            "body": {
+              "device": {
+                "cert": "ExvCzfyRkEai3UUaSuuHuKlYYftW1sMyE6-iDApYnEhiybYOcuQXo5mwiCUqC69XwVLR5BMBCptPrFvToa8rfQ",
+                "identity": "BAFRoLAee7XAfvWQVg2zIhXYNKgHS152RngFf9r1IvpmbQps_RaM0w0p0yU9i87kdNLWa9SjnXsiYn2KFCp9NN8",
+                "kind": "desktop",
+                "label": "local-v2/bob",
+                "ops": "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+                "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE",
+                "wrap": "iPl0fmKVFFOMboxehJu2UuoohnOJGFQ34R_y1KduXCw"
+              }
+            },
+            "clock": {
+              "ms": 1794441600001,
+              "n": 0
+            },
+            "follows": [
+              "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e"
+            ],
+            "mesh": "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e",
+            "presence_sig": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "sig": "KjSgGOsQlJOm88a7wjVQ81TwoW00gehfR7lIAGcIac1tXh-aY6x-LzJZ2hs8jQ6nlIw9_-tTpPbnK2KbX4yZiQ",
+            "type": "add",
+            "v": 2
+          }
+        ],
+        "mesh": "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e",
+        "now_s": 1794441601
+      },
+      "kind": "roster_fold",
+      "name": "invalid_presence_signature_denied"
+    },
+    {
+      "expect": {
+        "ok": {
+          "members": [
+            "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c"
+          ],
+          "mesh": "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e",
+          "rejected": {
+            "sha256:f674c094ea5a0ab7f484a699e6f481f09fae157123aaa6c858037c7de9c55467": "roster.bad_signature"
+          },
+          "stop": 0
+        }
+      },
+      "input": {
+        "entries": [
+          {
+            "author": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+            "body": {
+              "device": {
+                "cert": "XDr9mmu91zSdmXMMGj6X9S8Zc1YWkdExf9BOO4kTNechkih9rSjUKTdT0yd3ppJptJgjlYqrUIFQf_9F2lOfvQ",
+                "identity": "BGu-ySJRD-eaPX1InaWwz-PrJKahD2fZmFCTjRDoLxjVkTumbkShewtnlcP_aL0xvDp1CuLZeHYtLWU7JXyDaVU",
+                "kind": "desktop",
+                "label": "local-v2/alice",
+                "ops": "98dbF54AHip3sZoiSvNc6YZDqglrC4XbULQOJNYyqHQ",
+                "presence": "BCp9Kf0eZjRdqdF0vzbv833DVCUwjrnRdn6MDc_QCVtwigBiz78fP24SXkgK0azaXzJa3bZkoAjPetPi-nr2grs",
+                "wrap": "Lr3sh9YQxdPoDLFDrP-X8kwUbsi2vcAAYjIOlbprDnk"
+              },
+              "epoch": {
+                "group": "personal",
+                "recovery_wrap": {
+                  "ct": "VPChNAryixWqVOXq9J03EXnEQU_i2ercKcD5aQMv8EumlJSetx5dHgQ4Y8-XbKIP",
+                  "epk": "kPK_aqTGub9LjrZjCtbIEPR154xjoZUpIXaXKLMpewE",
+                  "nonce": "UY19FElY0sA2TIc1VJslCWErWAc53q2o"
+                },
+                "wraps": [
+                  {
+                    "device": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+                    "wrap": {
+                      "ct": "3yadmSlN-fxT7p20hlIyclm9Z3zaYUutpaOriPBS4NAyO4lmB6nspxBgsTSeMbr3",
+                      "epk": "9FjpKfWJW3imPOVwlLOOoMaj1DzFgNFRhgmJaAsxvi0",
+                      "nonce": "trwZIhwjQuI2tRdz_5CzgVLFEdMAGqej"
+                    }
+                  }
+                ]
+              },
+              "recovery": {
+                "sign": "014cllX1QBYdHgnT2N3B9xMkNJJxROWx5_XjqUFqM84",
+                "wrap": "cXeOzTwc3KomB8shsFwfmR8h92w6LG2p_f8nKAQpUWo"
+              }
+            },
+            "clock": {
+              "ms": 1794441600000,
+              "n": 0
+            },
+            "follows": [],
+            "mesh": null,
+            "presence_sig": "NEUBX2hHvwVjxYi1NDm6EVS3zIGgt-9mZdYRrOa-SH4tw350lp4SkeIRGbYai94mPM7coemWlHTPRg4VtCE2iA",
+            "sig": "8scpKvu6KFbzpU19JT6Okgrl8gtProUxVNqIK6KoHysr9HZQWtxwY83txVs-F4EaDzQ9ENrehkAUINtWvzMUyQ",
+            "type": "genesis",
+            "v": 2
+          },
+          {
+            "author": "sha256:3e12e6c5cc474af72a790b85bc913f15c4a6d50f6f2f60b134e4f39cdcaac43c",
+            "body": {
+              "device": {
+                "cert": "ExvCzfyRkEai3UUaSuuHuKlYYftW1sMyE6-iDApYnEhiybYOcuQXo5mwiCUqC69XwVLR5BMBCptPrFvToa8rfQ",
+                "identity": "BAFRoLAee7XAfvWQVg2zIhXYNKgHS152RngFf9r1IvpmbQps_RaM0w0p0yU9i87kdNLWa9SjnXsiYn2KFCp9NN8",
+                "kind": "desktop",
+                "label": "local-v2/bob",
+                "ops": "NS9u_flLj-Tcq8IpBWI7cmEHCmOFuRU-3HTERl7TItY",
+                "presence": "BISDJXun_q2yyR59TQNOmGxdPPYgYLXhv_Ag8kM7rri6_iJ1Q-qWcSv0CjqjdQicV8hj7O_VUMumK6zmN5NltHE",
+                "wrap": "iPl0fmKVFFOMboxehJu2UuoohnOJGFQ34R_y1KduXCw"
+              }
+            },
+            "clock": {
+              "ms": 1794441600001,
+              "n": 0
+            },
+            "follows": [
+              "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e"
+            ],
+            "mesh": "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e",
+            "presence_sig": "-5Le70SO0oBAW6dY0Jul2gjAyVw1BDIvzzRc9kwf_QAKEznWgenohDeyXtLhegKbpiDan5hMk0I7-9sB3fI2OQ",
+            "sig": "jtavXm_Jvw8NcozE9VgpfH9dMQGItImVHQMZUy9GiuB81vO0uZrQWTrBeqZPrs5Lo4COUPVPwCc8TNazOsObGQ",
+            "type": "add",
+            "v": 2
+          }
+        ],
+        "mesh": "sha256:fb45c76be401cd86ab0cb8503e398a8e2ce8621389cbe9f0fae473e8d80fde4e",
+        "now_s": 1794441601
+      },
+      "kind": "roster_fold",
+      "name": "v1_signing_domain_denied"
+    }
+  ],
+  "format": "astral.vectors/v1",
+  "name": "roster-v2",
+  "spec": "106/contracts/roster-v2.md"
+}

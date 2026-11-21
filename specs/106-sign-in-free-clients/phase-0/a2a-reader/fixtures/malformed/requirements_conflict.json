@@ -1,0 +1,58 @@
+{
+  "card": {
+    "capabilities": {
+      "streaming": true
+    },
+    "defaultInputModes": [
+      "text/plain"
+    ],
+    "defaultOutputModes": [
+      "text/plain"
+    ],
+    "description": "Fixture card for the reader tests.",
+    "name": "Fixture Agent",
+    "security": [
+      {
+        "key": [
+          "x"
+        ]
+      }
+    ],
+    "securityRequirements": [
+      {
+        "schemes": {
+          "key": {
+            "list": []
+          }
+        }
+      }
+    ],
+    "securitySchemes": {
+      "key": {
+        "apiKeySecurityScheme": {
+          "location": "header",
+          "name": "X-Api-Key"
+        }
+      }
+    },
+    "skills": [
+      {
+        "description": "Echoes text.",
+        "id": "echo",
+        "name": "Echo",
+        "tags": [
+          "echo"
+        ]
+      }
+    ],
+    "supportedInterfaces": [
+      {
+        "protocolBinding": "JSONRPC",
+        "protocolVersion": "1.0",
+        "url": "https://agent.example.org/a2a/v1"
+      }
+    ],
+    "version": "1.0.0"
+  },
+  "expectedRefusal": "conflicting_requirements"
+}

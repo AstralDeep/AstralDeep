@@ -6,6 +6,7 @@ exercise validation, sniffing, and response shapes without Postgres or Keycloak.
 from __future__ import annotations
 
 import hashlib
+import json
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -434,3 +435,174 @@ def test_listing_is_per_user(app):
     alice = client.get("/api/attachments").json()
     assert len(alice["attachments"]) == 1
     assert alice["attachments"][0]["filename"] == "a.txt"
+
+
+class _CapturingAuditRecorder:
+    def __init__(self) -> None:
+        self.events: list[object] = []
+
+    async def record(self, event):
+        self.events.append(event)
+        return event
+
+
+@pytest.fixture
+def capture_audit(monkeypatch):
+    recorder = _CapturingAuditRecorder()
+    monkeypatch.setattr(
+        "audit.recorder.get_recorder", lambda: recorder)
+    return recorder
+
+
+def _valid_source_payload() -> str:
+    return json.dumps({
+        "kind": "window_capture",
+        "app_bundle_id": "com.apple.TextEdit",
+        "window_title": "Untitled — TextEdit",
+        "captured_at": "2026-10-27T05:20:04Z",
+        "accessibility_text_truncated": False,
+    })
+
+
+def _tiny_png_bytes() -> bytes:
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (2, 2), (10, 20, 30)).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_upload_with_valid_window_capture_source_is_accepted_and_audited(app, capture_audit):
+    client = _client(app)
+    res = client.post(
+        "/api/upload",
+        files={"file": ("capture.png", _tiny_png_bytes(), "image/png")},
+        data={"source": _valid_source_payload()},
+    )
+    assert res.status_code == 201, res.text
+    body = res.json()
+    assert body["source"] == {
+        "kind": "window_capture",
+        "app_bundle_id": "com.apple.TextEdit",
+        "window_title": "Untitled — TextEdit",
+        "captured_at": "2026-10-27T05:20:04Z",
+        "accessibility_text_truncated": False,
+    }
+
+    created = [e for e in capture_audit.events if e.action_type == "attachment.created"]
+    assert len(created) == 1
+    event = created[0]
+    assert event.event_class == "file"
+    assert event.outcome == "success"
+    assert event.actor_user_id == "user-A"
+    assert event.inputs_meta["kind"] == "window_capture"
+    assert event.inputs_meta["app_bundle_id"] == "com.apple.TextEdit"
+    assert event.inputs_meta["window_title"] == "Untitled — TextEdit"
+    assert event.inputs_meta["captured_at"] == "2026-10-27T05:20:04Z"
+    assert event.inputs_meta["accessibility_text_truncated"] is False
+    assert event.inputs_meta["sha256"] == body["sha256"]
+    assert len(event.inputs_meta["sha256"]) == 64
+    assert not [e for e in capture_audit.events if e.action_type == "attachment.source_refused"]
+
+
+def test_upload_without_descriptor_has_no_source_and_no_capture_audit(app, capture_audit):
+    client = _client(app)
+    res = client.post(
+        "/api/upload",
+        files={"file": ("notes.md", b"# hi", "text/markdown")},
+    )
+    assert res.status_code == 201, res.text
+    assert "source" not in res.json()
+    assert capture_audit.events == []
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"kind": "screen_recording", "app_bundle_id": "a", "window_title": "t",
+         "captured_at": "2026-10-27T05:20:04Z", "accessibility_text_truncated": False},
+        {"kind": "window_capture", "app_bundle_id": "a", "window_title": "t",
+         "captured_at": "2026-10-27T05:20:04Z", "accessibility_text_truncated": False,
+         "extra": True},
+        {"kind": "window_capture", "app_bundle_id": "a" * 257, "window_title": "t",
+         "captured_at": "2026-10-27T05:20:04Z", "accessibility_text_truncated": False},
+        {"kind": "window_capture", "app_bundle_id": "a", "window_title": "t",
+         "captured_at": "not-a-time", "accessibility_text_truncated": False},
+        {"kind": "window_capture", "app_bundle_id": "a"},
+    ],
+)
+def test_invalid_descriptors_return_400_store_nothing_and_are_audited(app, capture_audit, payload):
+    client = _client(app)
+    materializations = app.state.orchestrator.attachment_materialization_service
+    stored_before = len(materializations.calls)
+    res = client.post(
+        "/api/upload",
+        files={"file": ("capture.png", b"\x89PNG\r\n\x1a\n", "image/png")},
+        data={"source": json.dumps(payload)},
+    )
+    assert res.status_code == 400, res.text
+    assert "Invalid source descriptor" in res.json()["detail"]
+    assert len(materializations.calls) == stored_before
+    assert stub_rows_are_empty(app)
+
+    refusals = [
+        e for e in capture_audit.events
+        if e.action_type == "attachment.source_refused"
+    ]
+    assert len(refusals) == 1
+    event = refusals[0]
+    assert event.event_class == "file"
+    assert event.outcome == "failure"
+    assert event.inputs_meta["reason"]
+    assert event.inputs_meta["reason"] in event.description
+    assert not [e for e in capture_audit.events if e.action_type == "attachment.created"]
+
+
+def stub_rows_are_empty(app) -> bool:
+    materializations = app.state.orchestrator.attachment_materialization_service
+    return not getattr(materializations.repo, "records", [])
+
+
+def test_malformed_source_json_returns_400_and_is_audited(app, capture_audit):
+    client = _client(app)
+    res = client.post(
+        "/api/upload",
+        files={"file": ("capture.png", b"\x89PNG\r\n\x1a\n", "image/png")},
+        data={"source": "{"},
+    )
+    assert res.status_code == 400
+    refusals = [
+        e for e in capture_audit.events
+        if e.action_type == "attachment.source_refused"
+    ]
+    assert len(refusals) == 1
+    assert "invalid_json" in refusals[0].inputs_meta["reason"]
+
+
+def test_capture_audit_is_skipped_without_a_recorder(app, monkeypatch):
+    monkeypatch.setattr("audit.recorder.get_recorder", lambda: None)
+    client = _client(app)
+    res = client.post(
+        "/api/upload",
+        files={"file": ("capture.png", _tiny_png_bytes(), "image/png")},
+        data={"source": _valid_source_payload()},
+    )
+    assert res.status_code == 201, res.text
+    assert res.json()["source"]["kind"] == "window_capture"
+
+
+def test_capture_audit_failure_does_not_block_the_upload(app, capture_audit):
+    async def _exploding_record(event):
+        raise RuntimeError("audit store unavailable")
+
+    capture_audit.record = _exploding_record
+    client = _client(app)
+    res = client.post(
+        "/api/upload",
+        files={"file": ("capture.png", _tiny_png_bytes(), "image/png")},
+        data={"source": _valid_source_payload()},
+    )
+    assert res.status_code == 201, res.text
+    assert res.json()["source"]["app_bundle_id"] == "com.apple.TextEdit"

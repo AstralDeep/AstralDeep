@@ -1,5 +1,5 @@
 """Tests for a code-review security-hardening pass
-(backend/shared/expression_evaluator.py, orchestrator/delegation.py, mas_defense.py):
+(backend/shared/expression_evaluator.py, orchestrator/agent_authority.py, mas_defense.py):
 sandbox escape refusal, scope-fallback removal, and fail-closed signing-key defaults.
 """
 
@@ -41,32 +41,29 @@ def test_sandbox_still_allows_legitimate_expressions(expr, row, expected):
     assert ExpressionEvaluator(expr).evaluate(row) == expected
 
 
-from orchestrator.delegation import DelegationService  # noqa: E402
+from orchestrator import agent_authority as dg  # noqa: E402
 
 
 def test_required_scope_absent_is_denied_not_fallen_through():
-    assert DelegationService.is_tool_in_scope(
+    assert dg.is_tool_in_scope(
         "fetch_page", ["tools:search"], "tools:read") is False
 
 
 def test_required_scope_present_is_allowed():
-    assert DelegationService.is_tool_in_scope(
+    assert dg.is_tool_in_scope(
         "fetch_page", ["tools:read"], "tools:read") is True
 
 
 def test_required_scope_present_but_tool_level_constrained():
     scopes = ["tools:read", "tool:other"]
-    assert DelegationService.is_tool_in_scope("fetch_page", scopes, "tools:read") is False
-    assert DelegationService.is_tool_in_scope("other", scopes, "tools:read") is True
+    assert dg.is_tool_in_scope("fetch_page", scopes, "tools:read") is False
+    assert dg.is_tool_in_scope("other", scopes, "tools:read") is True
 
 
 def test_no_required_scope_falls_back_to_tool_level():
-    assert DelegationService.is_tool_in_scope("x", [], "") is True
-    assert DelegationService.is_tool_in_scope("x", ["tool:x"], "") is True
-    assert DelegationService.is_tool_in_scope("y", ["tool:x"], "") is False
-
-
-from orchestrator import delegation as dg  # noqa: E402
+    assert dg.is_tool_in_scope("x", [], "") is True
+    assert dg.is_tool_in_scope("x", ["tool:x"], "") is True
+    assert dg.is_tool_in_scope("y", ["tool:x"], "") is False
 
 
 def test_normalize_hop_parent_synthesizes_missing_actor():
@@ -84,26 +81,41 @@ def test_normalize_hop_parent_leaves_existing_chain_untouched():
     assert dg.normalize_hop_parent(already, "agent:b") is already
 
 
-def test_child_signing_key_fails_closed_in_production(monkeypatch):
+def test_child_signing_key_fails_closed_outside_the_personal_profile(monkeypatch):
+    monkeypatch.delenv("ASTRAL_NODE_PROFILE", raising=False)
     monkeypatch.delenv("ASTRAL_ENV", raising=False)
-    monkeypatch.delenv("DELEGATION_CHILD_SIGNING_KEY", raising=False)
-    monkeypatch.delenv("MEMORY_HMAC_KEY", raising=False)
     with pytest.raises(dg.DelegationConfigError):
         dg._child_signing_key()
 
 
-def test_child_signing_key_uses_configured_key(monkeypatch):
-    monkeypatch.delenv("ASTRAL_ENV", raising=False)
-    monkeypatch.delenv("MEMORY_HMAC_KEY", raising=False)
-    monkeypatch.setenv("DELEGATION_CHILD_SIGNING_KEY", "real-key")
-    assert dg._child_signing_key() == b"real-key"
-
-
-def test_child_signing_key_dev_fallback(monkeypatch):
+@pytest.mark.parametrize("variable", ["DELEGATION_CHILD_SIGNING_KEY", "MEMORY_HMAC_KEY"])
+def test_a_configured_secret_never_becomes_the_child_signing_key(monkeypatch, variable):
+    monkeypatch.delenv("ASTRAL_NODE_PROFILE", raising=False)
     monkeypatch.setenv("ASTRAL_ENV", "development")
-    monkeypatch.delenv("DELEGATION_CHILD_SIGNING_KEY", raising=False)
-    monkeypatch.delenv("MEMORY_HMAC_KEY", raising=False)
-    assert dg._child_signing_key() == b"mock-delegation-secret"
+    monkeypatch.setenv(variable, "real-key")
+    with pytest.raises(dg.DelegationConfigError):
+        dg._child_signing_key()
+
+
+@pytest.mark.parametrize("profile", [None, "personal"])
+def test_a_token_signed_with_the_former_constant_is_refused(monkeypatch, tmp_path, profile):
+    from jose import jwt as jose_jwt
+    from shared import node_identity
+
+    monkeypatch.setenv("ASTRAL_ENV", "development")
+    monkeypatch.setenv(node_identity.DATA_DIR_ENV, str(tmp_path / "node"))
+    if profile is None:
+        monkeypatch.delenv("ASTRAL_NODE_PROFILE", raising=False)
+    else:
+        monkeypatch.setenv("ASTRAL_NODE_PROFILE", profile)
+    node_identity.reset_cache()
+    forged = jose_jwt.encode({"sub": "u", "exp": int(__import__("time").time()) + 60},
+                             b"mock-delegation-secret", algorithm="HS256")
+    try:
+        with pytest.raises(dg.RecursiveDelegationError):
+            dg.verify_signed_delegation(forged)
+    finally:
+        node_identity.reset_cache()
 
 
 from orchestrator import mas_defense as mas  # noqa: E402

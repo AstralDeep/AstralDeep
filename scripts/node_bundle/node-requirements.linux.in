@@ -1,0 +1,3 @@
+-r node-requirements.in
+pdf2image==1.17.0
+python-magic==0.4.27

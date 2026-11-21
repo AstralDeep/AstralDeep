@@ -38,7 +38,7 @@ def test_phase_b_modules_are_not_imported_when_flag_is_absent():
     environment["PYTHONPATH"] = os.pathsep.join(
         (
             str(ROOT / "backend"),
-            str(component_source("AstralPlane", "src")),
+            str(ROOT / "plane" / "src"),
             str(component_source("AstralProjection", "backend")),
             str(component_source("AstralPrimitives")),
             str(component_source("LETS", "src")),
@@ -84,7 +84,7 @@ def test_endpoint_install_is_structurally_guarded_by_the_flag():
 
 def test_recreated_flag_off_app_has_no_residual_surface_or_server_record(monkeypatch):
     monkeypatch.setenv("ASTRAL_ENV", "development")
-    monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://idp.test/realms/astral")
+    monkeypatch.setenv("ASTRAL_NODE_PROFILE", "personal")
     server = object()
     enabled_app = FastAPI()
     install_mcp_server(enabled_app, server, public_base_url="http://mcp.test")

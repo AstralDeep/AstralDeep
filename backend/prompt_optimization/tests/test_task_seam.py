@@ -1,12 +1,8 @@
-"""Tests for the task seam: fail-closed AST extraction of the one allowlisted planning
-prompt, frozen head versus mutable instruction split, and untrusted instruction text
-validation.
-"""
+"""Checks retirement of the product planning target and the frozen prompt used by the offline benchmark."""
 
 from __future__ import annotations
 
 import hashlib
-import textwrap
 from pathlib import Path
 
 import pytest
@@ -16,9 +12,10 @@ from prompt_optimization import task
 REPO_ROOT = Path(task.__file__).resolve().parents[2]
 
 
-def test_loads_real_planning_prompt_seam():
-    prompt = task.load_task_prompt(REPO_ROOT)
-    assert prompt.task_id == task.TASK_ID
+def test_loads_frozen_synthetic_planning_prompt():
+    prompt = task.load_task_prompt(REPO_ROOT, task.SYNTHETIC_TASK_ID)
+    assert prompt.task_id == task.SYNTHETIC_TASK_ID
+    assert prompt.prompt_digest == "9ae14ce7f70e2ec975965030f76b44ef83142e4587f92964324485cbe1e2e148"
     assert task.INSTRUCTION_MARKER in prompt.head + task.INSTRUCTION_MARKER + prompt.rules
     assert prompt.head.strip()
     assert prompt.rules.strip()
@@ -30,16 +27,14 @@ def test_loads_real_planning_prompt_seam():
     ).hexdigest()
 
 
-def test_real_seam_has_exactly_one_marker():
-    raw = (REPO_ROOT / task.SOURCE_PATH).read_text(encoding="utf-8")
-    assert raw.count(task.INSTRUCTION_MARKER) >= 0
-    prompt = task.load_task_prompt(REPO_ROOT)
-    assert prompt.head.count(task.INSTRUCTION_MARKER) == 0
-    assert prompt.rules.count(task.INSTRUCTION_MARKER) == 0
+@pytest.mark.parametrize("task_id", [task.RETIRED_TASK_ID, "unknown"])
+def test_unavailable_tasks_fail_before_loading_a_fixture(tmp_path, task_id):
+    with pytest.raises(task.TaskSeamError, match="retired|unknown"):
+        task.load_task_prompt(tmp_path, task_id)
 
 
 def test_render_replaces_only_allowlisted_field():
-    prompt = task.load_task_prompt(REPO_ROOT)
+    prompt = task.load_task_prompt(REPO_ROOT, task.SYNTHETIC_TASK_ID)
     rendered = prompt.render("Custom instruction line.\n")
     head, rules = task.split_rendered(rendered)
     assert head == prompt.head
@@ -48,7 +43,7 @@ def test_render_replaces_only_allowlisted_field():
 
 
 def test_render_validates_instruction():
-    prompt = task.load_task_prompt(REPO_ROOT)
+    prompt = task.load_task_prompt(REPO_ROOT, task.SYNTHETIC_TASK_ID)
     with pytest.raises(task.InstructionRejected):
         prompt.render("")
     with pytest.raises(task.InstructionRejected):
@@ -70,114 +65,19 @@ def test_validate_instruction_accepts_bounded_plain_text():
     assert task.validate_instruction(edge) == edge
 
 
-def _write_source(tmp_path: Path, body: str) -> Path:
-    root = tmp_path / "repo"
-    (root / "backend" / "orchestrator").mkdir(parents=True, exist_ok=True)
-    (root / "backend" / "orchestrator" / "coordinator.py").write_text(
-        textwrap.dedent(body), encoding="utf-8"
-    )
-    return root
-
-
-def test_missing_seam_fails_closed(tmp_path):
-    root = _write_source(tmp_path, "class Other:\n    PROMPT = 'x'\n")
+@pytest.mark.parametrize("raw", [b"", b"no marker", b"head\nRules:\n", b"\nRules:\nrules",
+                                 b"head\nRules:\none\nRules:\ntwo", b"\xff"])
+def test_malformed_fixture_fails_closed(tmp_path, raw):
+    fixture = tmp_path / task.SOURCE_PATH
+    fixture.parent.mkdir(parents=True)
+    fixture.write_bytes(raw)
     with pytest.raises(task.TaskSeamError):
-        task.load_task_prompt(root)
+        task.load_task_prompt(tmp_path, task.SYNTHETIC_TASK_ID)
 
 
-def test_non_string_seam_fails_closed(tmp_path):
-    root = _write_source(
-        tmp_path,
-        """
-        class Coordinator:
-            PLANNING_PROMPT = ["not", "a", "string"]
-        """,
-    )
-    with pytest.raises(task.TaskSeamError):
-        task.load_task_prompt(root)
-
-
-def test_missing_marker_fails_closed(tmp_path):
-    root = _write_source(
-        tmp_path,
-        """
-        class Coordinator:
-            PLANNING_PROMPT = "no rules marker here"
-        """,
-    )
-    with pytest.raises(task.TaskSeamError):
-        task.load_task_prompt(root)
-
-
-def test_double_marker_fails_closed(tmp_path):
-    root = _write_source(
-        tmp_path,
-        """
-        class Coordinator:
-            PLANNING_PROMPT = "a\\nRules:\\nfirst\\nRules:\\nsecond"
-        """,
-    )
-    with pytest.raises(task.TaskSeamError):
-        task.load_task_prompt(root)
-
-
-def test_non_assign_statement_in_class_is_skipped(tmp_path):
-    root = _write_source(
-        tmp_path,
-        '''
-        class Coordinator:
-            """A docstring statement."""
-
-            PLANNING_PROMPT = "head\\nRules:\\ntail"
-        ''',
-    )
-    prompt = task.load_task_prompt(root)
-    assert prompt.rules == "tail"
-
-
-def test_other_assignments_are_skipped(tmp_path):
-    root = _write_source(
-        tmp_path,
-        '''
-        class Coordinator:
-            OTHER = 1
-            PLANNING_PROMPT = "head\\nRules:\\ntail"
-        ''',
-    )
-    prompt = task.load_task_prompt(root)
-    assert prompt.rules == "tail"
-
-
-def test_empty_head_or_rules_fails_closed(tmp_path):
-    root = _write_source(
-        tmp_path,
-        '''
-        class Coordinator:
-            PLANNING_PROMPT = "\\nRules:\\ntail"
-        ''',
-    )
-    with pytest.raises(task.TaskSeamError):
-        task.load_task_prompt(root)
-    root = _write_source(
-        tmp_path,
-        '''
-        class Coordinator:
-            PLANNING_PROMPT = "head\\nRules:\\n   "
-        ''',
-    )
-    with pytest.raises(task.TaskSeamError):
-        task.load_task_prompt(root)
-
-
-def test_unreadable_source_fails_closed(tmp_path):
-    with pytest.raises(task.TaskSeamError):
-        task.load_task_prompt(tmp_path / "missing")
-
-
-def test_unparsable_source_fails_closed(tmp_path):
-    root = _write_source(tmp_path, "class Coordinator:\n    broken(")
-    with pytest.raises(task.TaskSeamError):
-        task.load_task_prompt(root)
+def test_missing_fixture_fails_closed(tmp_path):
+    with pytest.raises(task.TaskSeamError, match="unreadable"):
+        task.load_task_prompt(tmp_path, task.SYNTHETIC_TASK_ID)
 
 
 def test_split_rendered_requires_single_marker():

@@ -1,6 +1,6 @@
-"""OS-level sandbox for launched agent/parser child processes: POSIX resource limits via
-a preexec_fn plus a scrubbed, temp-scoped environment, backstopping the static checks
-agent_lifecycle.py's start_draft_agent already runs.
+"""Launch options for model-written agent servers and parser children: POSIX resource limits through a preexec_fn, a scrubbed temp-scoped environment and a loopback bind address.
+agent_lifecycle.py's start_draft_agent and start.py's generated agent launch both build their child through agent_launch.
+Only a development node may turn the limits and the scrub off with FF_SANDBOX_CODEGEN.
 """
 
 from __future__ import annotations
@@ -8,7 +8,9 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Mapping, Optional
+
+from orchestrator.boot_posture import is_dev_mode
 
 logger = logging.getLogger("orchestrator.sandbox")
 
@@ -22,16 +24,22 @@ _SECRET_ENV_DENYLIST = (
     # Uniquely required to keep the audit chain tamper-evident
     "AUDIT_HMAC_SECRET",
     "GITHUB_TOKEN",
-    "KEYCLOAK_CLIENT_SECRET", "AGENT_SERVICE_CLIENT_SECRET",
+    "AGENT_SERVICE_CLIENT_SECRET",
     "VOICE_CONTROL_SECRET", "LIVEKIT_API_SECRET", "LIVEKIT_API_KEY",
     "DATABASE_URL",
     "TYPESAFE_API_KEY", "TYPESAFE_BASE_URL", "TYPESAFE_DEFAULT_MODEL",
 )
 
 _SECRET_ENV_PREFIXES = ("AUDIT_HMAC_SECRET_",)
+_SECRET_ENV_SUFFIXES = ("_SECRET", "_PASSWORD", "_TOKEN", "_API_KEY", "_PRIVATE_KEY")
+# The agent presents it in RegisterAgent and the orchestrator refuses the registration without it
+_SECRET_ENV_KEEP = frozenset({"AGENT_API_KEY"})
+LOOPBACK_HOST = "127.0.0.1"
 
 
 def sandbox_enabled() -> bool:
+    if not is_dev_mode():
+        return True
     return os.getenv("FF_SANDBOX_CODEGEN", "true").strip().lower() in ("1", "true", "yes", "on")
 
 
@@ -97,9 +105,43 @@ def sandbox_env(base_env: Optional[Dict[str, str]], tmpdir: str) -> Dict[str, st
     env = dict(base_env if base_env is not None else os.environ)
     for key in _SECRET_ENV_DENYLIST:
         env.pop(key, None)
-    for key in [k for k in env if k.startswith(_SECRET_ENV_PREFIXES)]:
+    for key in [k for k in env if k.startswith(_SECRET_ENV_PREFIXES) or (k.endswith(_SECRET_ENV_SUFFIXES) and k not in _SECRET_ENV_KEEP)]:
         env.pop(key, None)
     env["TMPDIR"] = tmpdir
     env["TEMP"] = tmpdir
     env["TMP"] = tmpdir
     return env
+
+
+@dataclass(frozen=True)
+class AgentLaunch:
+    popen: Dict[str, Any]
+    limits_applied: bool
+
+
+def agent_launch(agent_dir: str, base_env: Optional[Mapping[str, str]] = None) -> AgentLaunch:
+    env = dict(os.environ if base_env is None else base_env)
+    popen: Dict[str, Any] = {}
+    limits_applied = False
+    if sandbox_enabled():
+        tmpdir = os.path.join(agent_dir, "_sandbox_tmp")
+        os.makedirs(tmpdir, exist_ok=True)
+        limits = build_limits()
+        preexec = make_preexec(limits)
+        if preexec is not None:
+            popen["preexec_fn"] = preexec
+            limits_applied = True
+        env = sandbox_env(env, tmpdir)
+        logger.info("agent launch limits for %s: %s", agent_dir, limits)
+    env["HOST"] = LOOPBACK_HOST
+    popen["env"] = env
+    return AgentLaunch(popen, limits_applied)
+
+
+def draft_confinement(limits_applied: bool) -> Dict[str, Any]:
+    limits = "with process resource limits only" if limits_applied else "with no resource limits"
+    return {
+        "confined": False,
+        "resource_limits": limits_applied,
+        "notice": f"This agent runs unconfined {limits}. It can read and write files and reach the network as you can.",
+    }

@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+import pytest_asyncio
 from fastapi import FastAPI
 from fastapi.responses import Response
 from fastapi.testclient import TestClient
@@ -40,15 +41,13 @@ from orchestrator.work_admission import (
     OwnerScope,
     WorkAdmissionCoordinator,
 )
+from shared import node_identity
 from shared.protocol import AgentCard, AgentSkill, MCPResponse
+from tests.helpers.dev_mesh import MCP_BASE, MCP_META, SignedClient, door_for, shared_node
 
 
-BASE = "http://mcp.test"
-META = {
-    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
-    "io.modelcontextprotocol/clientCapabilities": {},
-    "io.modelcontextprotocol/clientInfo": {"name": "test-host", "version": "1"},
-}
+BASE = MCP_BASE
+META = MCP_META
 
 
 class _Permissions:
@@ -65,6 +64,9 @@ class _Permissions:
     def get_enabled_scope_names(self, user_id, agent_id):
         return ["tools:read"] if self.allowed else []
 
+    def get_tool_scope(self, agent_id, tool_name):
+        return "tools:read"
+
     def list_disabled_agents(self, _user_id):
         return ()
 
@@ -74,13 +76,13 @@ class _Orchestrator:
         self.history = SimpleNamespace(db=SimpleNamespace())
         self.tool_permissions = _Permissions()
         self.security_flags = {}
-        self.agents = {"reader-1": object()}
-        self.local_agents = {}
+        self.agents = {"weather-1": object()}
+        self.local_agents = {"weather-1": object()}
         self.agent_cards = {
-            "reader-1": AgentCard(
+            "weather-1": AgentCard(
                 name="Reader",
                 description="Reads things",
-                agent_id="reader-1",
+                agent_id="weather-1",
                 skills=[
                     AgentSkill(
                         id="read_value",
@@ -172,25 +174,30 @@ class _Orchestrator:
         return MCPResponse(
             result={"echo": kwargs["arguments"].get("value", "")},
             ui_components=[{"type": "text", "content": "Rendered result"}],
-            responder_info={"name": "reader-1", "version": "1"},
+            responder_info={"name": "weather-1", "version": "1"},
         )
 
 
-@pytest.fixture
-def endpoint(monkeypatch):
+module_loop = pytest.mark.asyncio(loop_scope="module")
+
+
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def mesh(tmp_path_factory):
+    async with shared_node(tmp_path_factory, _Orchestrator()) as served:
+        yield served
+
+
+@pytest_asyncio.fixture(loop_scope="module")
+async def endpoint(mesh, monkeypatch):
     from shared.feature_flags import flags
 
-    monkeypatch.setenv("ASTRAL_ENV", "development")
-    monkeypatch.setenv("USE_MOCK_AUTH", "true")
-    monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://idp.test/realms/astral")
     monkeypatch.setitem(flags._flags, "mcp_server", False)
     orchestrator = _Orchestrator()
-    app = FastAPI()
-    install_mcp_server(app, orchestrator, public_base_url=BASE)
-    return TestClient(app), orchestrator
+    async with door_for(mesh, orchestrator, lambda app, host: install_mcp_server(app, host, public_base_url=BASE)) as door:
+        yield SignedClient(door, door.mint(["read_value"])), orchestrator
 
 
-def _request(method, params=None, *, token="dev-mcp-token", headers=None, request_id=1):
+def _request(method, params=None, *, headers=None, request_id=1):
     body = {
         "jsonrpc": "2.0",
         "id": request_id,
@@ -198,7 +205,6 @@ def _request(method, params=None, *, token="dev-mcp-token", headers=None, reques
         "params": {**(params or {}), "_meta": dict(META)},
     }
     merged = {
-        "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
         "MCP-Protocol-Version": "2026-07-28",
         "Mcp-Method": method,
@@ -207,25 +213,25 @@ def _request(method, params=None, *, token="dev-mcp-token", headers=None, reques
     return body, merged
 
 
-def test_discover_and_protected_resource_metadata(endpoint, monkeypatch):
+@module_loop
+async def test_discover_and_protected_resource_metadata(endpoint, monkeypatch):
     from shared.feature_flags import flags
 
     monkeypatch.setitem(flags._flags, "mcp_server", False)
     client, _ = endpoint
-    metadata = client.get("/.well-known/oauth-protected-resource/mcp")
+    metadata = await client.get("/.well-known/oauth-protected-resource/mcp")
     assert metadata.status_code == 200
     assert metadata.json() == {
         "resource": f"{BASE}/mcp",
-        "authorization_servers": ["https://idp.test/realms/astral"],
         "scopes_supported": [
             "mcp:discover",
             "mcp:tools:read",
             "mcp:tools:invoke",
         ],
-        "bearer_methods_supported": ["header"],
+        "bearer_methods_supported": [],
     }
     body, headers = _request("server/discover")
-    response = client.post("/mcp", json=body, headers=headers)
+    response = await client.post("/mcp", json=body, headers=headers)
     assert response.status_code == 200
     result = response.json()["result"]
     assert result["supportedVersions"] == ["2026-07-28"]
@@ -233,13 +239,14 @@ def test_discover_and_protected_resource_metadata(endpoint, monkeypatch):
     assert result["ttlMs"] == 60_000
 
 
-def test_discover_advertises_resources_when_the_surface_is_enabled(endpoint, monkeypatch):
+@module_loop
+async def test_discover_advertises_resources_when_the_surface_is_enabled(endpoint, monkeypatch):
     from shared.feature_flags import flags
 
     monkeypatch.setitem(flags._flags, "mcp_server", True)
     client, _ = endpoint
     body, headers = _request("server/discover")
-    response = client.post("/mcp", json=body, headers=headers)
+    response = await client.post("/mcp", json=body, headers=headers)
     assert response.status_code == 200
     result = response.json()["result"]
     assert result["capabilities"] == {"tools": {}, "resources": {}}
@@ -247,10 +254,11 @@ def test_discover_advertises_resources_when_the_surface_is_enabled(endpoint, mon
     assert "extensions" not in result["capabilities"]
 
 
-def test_list_is_permission_projected_private_and_recomputed(endpoint):
+@module_loop
+async def test_list_is_permission_projected_private_and_recomputed(endpoint):
     client, orchestrator = endpoint
     body, headers = _request("tools/list")
-    response = client.post("/mcp", json=body, headers=headers)
+    response = await client.post("/mcp", json=body, headers=headers)
     assert response.status_code == 200
     assert response.headers["cache-control"] == "private, max-age=60"
     tool = response.json()["result"]["tools"][0]
@@ -262,12 +270,12 @@ def test_list_is_permission_projected_private_and_recomputed(endpoint):
         "destructiveHint": False,
     }
     orchestrator.tool_permissions.allowed = False
-    response = client.post("/mcp", json=body, headers=headers)
+    response = await client.post("/mcp", json=body, headers=headers)
     assert response.json()["result"]["tools"] == []
 
 
-def test_two_users_match_chat_visibility_without_cross_user_leakage(endpoint):
-    _, orchestrator = endpoint
+def test_two_users_match_chat_visibility_without_cross_user_leakage():
+    orchestrator = _Orchestrator()
     orchestrator.agents["writer-1"] = object()
     orchestrator.agent_cards["writer-1"] = AgentCard(
         name="Writer",
@@ -285,12 +293,12 @@ def test_two_users_match_chat_visibility_without_cross_user_leakage(endpoint):
     )
     orchestrator.tool_permissions.allowed = False
     orchestrator.tool_permissions.allowed_by_identity = {
-        ("reader-user", "reader-1", "read_value"): True,
+        ("reader-user", "weather-1", "read_value"): True,
         ("writer-user", "writer-1", "write_value"): True,
     }
 
     for user_id, expected in (
-        ("reader-user", {("reader-1", "read_value")}),
+        ("reader-user", {("weather-1", "read_value")}),
         ("writer-user", {("writer-1", "write_value")}),
     ):
         chat_set = {
@@ -309,33 +317,39 @@ def test_two_users_match_chat_visibility_without_cross_user_leakage(endpoint):
     )
 
 
-def test_call_rechecks_permission_and_returns_content_plus_structured(endpoint):
+@module_loop
+async def test_call_rechecks_permission_and_returns_content_plus_structured(endpoint):
     client, orchestrator = endpoint
     body, headers = _request(
         "tools/call",
         {"name": "read_value", "arguments": {"value": "hi"}},
         headers={"Mcp-Name": "read_value"},
     )
-    response = client.post("/mcp", json=body, headers=headers)
+    response = await client.post("/mcp", json=body, headers=headers)
     assert response.status_code == 200
     result = response.json()["result"]
     assert result["resultType"] == "complete"
     assert result["content"] == [{"type": "text", "text": "Rendered result"}]
     assert result["structuredContent"] == {"echo": "hi"}
     assert result["isError"] is False
-    assert orchestrator.calls[0]["claims"].get("_raw_token") is None
+    claims = orchestrator.calls[0]["claims"]
+    assert claims.get("_raw_token") is None
+    assert claims["sub"] == node_identity.bound_mesh_owner()
+    assert claims["_caller_id"] == client.ticket.id
 
     orchestrator.tool_permissions.allowed = False
     for _ in range(10):
-        refused = client.post("/mcp", json=body, headers=headers)
-        assert refused.json()["result"]["isError"] is True
+        refused = await client.post("/mcp", json=body, headers=headers)
+        assert refused.status_code == 403
+        assert 'error="caller.tool_unavailable"' in refused.headers["www-authenticate"]
     assert len(orchestrator.calls) == 1
     assert orchestrator.work_admission.inspect_admission_class(
         AdmissionClass.MCP
     ).active_count == 0
 
 
-def test_raising_tool_is_a_redacted_completed_tool_error(endpoint):
+@module_loop
+async def test_raising_tool_is_a_redacted_completed_tool_error(endpoint):
     client, orchestrator = endpoint
     orchestrator.execute_mcp_tool = AsyncMock(
         side_effect=RuntimeError("patient-secret-must-not-escape")
@@ -345,7 +359,7 @@ def test_raising_tool_is_a_redacted_completed_tool_error(endpoint):
         {"name": "read_value", "arguments": {"value": "hi"}},
         headers={"Mcp-Name": "read_value"},
     )
-    response = client.post("/mcp", json=body, headers=headers)
+    response = await client.post("/mcp", json=body, headers=headers)
     assert response.status_code == 200
     assert response.json()["result"] == {
         "resultType": "complete",
@@ -362,7 +376,8 @@ def test_raising_tool_is_a_redacted_completed_tool_error(endpoint):
     assert "patient-secret-must-not-escape" not in response.text
 
 
-def test_tracked_operation_stays_an_astral_result_not_an_mcp_task(endpoint):
+@module_loop
+async def test_tracked_operation_stays_an_astral_result_not_an_mcp_task(endpoint):
     client, orchestrator = endpoint
     orchestrator.execute_mcp_tool = AsyncMock(
         return_value=MCPResponse(
@@ -375,7 +390,7 @@ def test_tracked_operation_stays_an_astral_result_not_an_mcp_task(endpoint):
         {"name": "read_value", "arguments": {}},
         headers={"Mcp-Name": "read_value"},
     )
-    result = client.post("/mcp", json=body, headers=headers).json()["result"]
+    result = (await client.post("/mcp", json=body, headers=headers)).json()["result"]
     assert result["resultType"] == "complete"
     assert result["structuredContent"] == {
         "operation_id": "job-123",
@@ -384,17 +399,18 @@ def test_tracked_operation_stays_an_astral_result_not_an_mcp_task(endpoint):
     assert "task" not in repr(result).lower()
 
 
-def test_notification_empty_subscription_and_removed_methods(endpoint):
+@module_loop
+async def test_notification_empty_subscription_and_removed_methods(endpoint):
     client, _ = endpoint
     body, headers = _request("subscriptions/listen")
-    listed = client.post("/mcp", json=body, headers=headers)
+    listed = await client.post("/mcp", json=body, headers=headers)
     assert listed.json()["result"]["notificationTypes"] == []
     body.pop("id")
-    notified = client.post("/mcp", json=body, headers=headers)
+    notified = await client.post("/mcp", json=body, headers=headers)
     assert notified.status_code == 202
     assert not notified.content
-    assert client.get("/mcp").status_code == 405
-    assert client.delete("/mcp").status_code == 405
+    assert (await client.get("/mcp")).status_code == 405
+    assert (await client.delete("/mcp")).status_code == 405
 
 
 @pytest.mark.parametrize(
@@ -406,21 +422,23 @@ def test_notification_empty_subscription_and_removed_methods(endpoint):
         (lambda body, headers: body["params"]["_meta"].pop("io.modelcontextprotocol/clientCapabilities"), 400, -32602),
     ],
 )
-def test_mirror_and_required_metadata_refusals(endpoint, mutate, expected_status, expected_code):
+@module_loop
+async def test_mirror_and_required_metadata_refusals(endpoint, mutate, expected_status, expected_code):
     client, _ = endpoint
     body, headers = _request("server/discover")
     mutate(body, headers)
-    response = client.post("/mcp", content=json.dumps(body), headers=headers)
+    response = await client.post("/mcp", content=json.dumps(body), headers=headers)
     assert response.status_code == expected_status
     assert response.json()["error"]["code"] == expected_code
 
 
-def test_unsupported_version_and_missing_capability(endpoint):
+@module_loop
+async def test_unsupported_version_and_missing_capability(endpoint):
     client, _ = endpoint
     body, headers = _request("server/discover")
     body["params"]["_meta"]["io.modelcontextprotocol/protocolVersion"] = "2099-01-01"
     headers["MCP-Protocol-Version"] = "2099-01-01"
-    response = client.post("/mcp", json=body, headers=headers)
+    response = await client.post("/mcp", json=body, headers=headers)
     assert response.status_code == 400
     assert response.json()["error"] == {
         "code": -32022,
@@ -429,36 +447,41 @@ def test_unsupported_version_and_missing_capability(endpoint):
     }
 
     body, headers = _request("server/discover", {"requiredCapabilities": ["sampling"]})
-    response = client.post("/mcp", json=body, headers=headers)
+    response = await client.post("/mcp", json=body, headers=headers)
     assert response.status_code == 400
     assert response.json()["error"]["code"] == -32021
     assert response.json()["error"]["data"] == {"missing": ["sampling"]}
 
 
-def test_auth_challenges_reject_web_cookie_and_query_credentials(endpoint):
-    client, _ = endpoint
-    body, headers = _request("server/discover", token="dev-token")
-    responses = [client.post("/mcp", json=body, headers=headers) for _ in range(20)]
+@module_loop
+async def test_auth_challenges_reject_bearer_cookie_and_query_credentials(endpoint):
+    client, orchestrator = endpoint
+    body, headers = _request("server/discover")
+    bearer = {**headers, "Authorization": "Bearer eyJhbGciOiJSUzI1NiJ9.e30.c2ln"}
+    plain = client.door.client
+    responses = [await plain.post("/mcp", json=body, headers=bearer) for _ in range(20)]
     assert all(response.status_code == 401 for response in responses)
-    response = responses[-1]
-    challenge = response.headers["www-authenticate"]
-    assert f'resource_metadata="{BASE}/.well-known/oauth-protected-resource/mcp"' in challenge
-    assert 'scope="mcp:discover"' in challenge
-    assert 'error="invalid_token"' in challenge
+    challenge = responses[-1].headers["www-authenticate"]
+    assert challenge == 'AstralCaller realm="astral-mcp", error="node.bearer_refused"'
 
-    headers.pop("Authorization")
-    client.cookies.set("session", "secret")
-    cookie_only = client.post("/mcp", json=body, headers=headers)
+    plain.cookies.set("session", "secret")
+    cookie_only = await plain.post("/mcp", json=body, headers=headers)
     assert cookie_only.status_code == 401
-    client.cookies.clear()
-    query = client.post("/mcp?access_token=secret", json=body, headers=headers)
+    assert 'error="node.bearer_refused"' in cookie_only.headers["www-authenticate"]
+    plain.cookies.clear()
+    query = await plain.post("/mcp?access_token=secret", json=body, headers=bearer)
     assert query.status_code == 401
+    assert 'error="node.bearer_refused"' in query.headers["www-authenticate"]
+    assert orchestrator.calls == []
+    served = await client.post("/mcp", json=body, headers=headers)
+    assert served.status_code == 200
 
 
-def test_origin_name_body_and_unknown_method_refusals(endpoint):
+@module_loop
+async def test_origin_name_body_and_unknown_method_refusals(endpoint):
     client, _ = endpoint
     body, headers = _request("server/discover", headers={"Origin": "https://evil.test"})
-    response = client.post("/mcp", json=body, headers=headers)
+    response = await client.post("/mcp", json=body, headers=headers)
     assert response.status_code == 403
     assert "access-control-allow-credentials" not in response.headers
 
@@ -467,18 +490,18 @@ def test_origin_name_body_and_unknown_method_refusals(endpoint):
         {"name": "café", "arguments": {}},
         headers={"Mcp-Name": "=?base64?Y2Fm6Q==?="},
     )
-    response = client.post("/mcp", json=body, headers=headers)
+    response = await client.post("/mcp", json=body, headers=headers)
     assert response.status_code == 400
     assert response.json()["error"]["code"] == -32020
 
     body, headers = _request("future/method")
-    response = client.post("/mcp", json=body, headers=headers)
+    response = await client.post("/mcp", json=body, headers=headers)
     assert response.status_code == 404
     assert response.json()["error"]["code"] == -32601
 
     body, headers = _request("server/discover")
     oversized = " " * (1024 * 1024 + 1)
-    response = client.post("/mcp", content=oversized, headers=headers)
+    response = await client.post("/mcp", content=oversized, headers=headers)
     assert response.status_code == 413
     assert response.json()["error"]["code"] == -32600
 
@@ -491,15 +514,15 @@ def test_flag_off_app_has_no_surface(monkeypatch):
     assert client.get("/.well-known/oauth-protected-resource/mcp").status_code == 404
 
 
-def test_metrics_are_low_cardinality_and_payload_free(endpoint):
+@module_loop
+async def test_metrics_are_low_cardinality_and_payload_free(endpoint):
     client, orchestrator = endpoint
     body, headers = _request("tools/call", {"name": "read_value", "arguments": {"value": "patient-secret"}}, headers={"Mcp-Name": "read_value"})
-    headers["Authorization"] = "Bearer dev-mcp-token"
-    assert client.post("/mcp", json=body, headers=headers).status_code == 200
+    assert (await client.post("/mcp", json=body, headers=headers)).status_code == 200
     snapshot = orchestrator.runtime_observability.snapshot()
     serialized = repr(snapshot)
     assert "patient-secret" not in serialized
-    assert "dev-mcp-token" not in serialized
+    assert client.ticket.id not in serialized
     assert all(
         set(sample.labels).issubset(
             {"deployment_instance", "operation_kind", "phase", "result_code"}
@@ -508,7 +531,7 @@ def test_metrics_are_low_cardinality_and_payload_free(endpoint):
     )
 
 
-@pytest.mark.asyncio
+@module_loop
 async def test_cancellation_releases_mcp_admission_slot(endpoint):
     _, orchestrator = endpoint
     with pytest.raises(asyncio.CancelledError):
@@ -523,7 +546,7 @@ async def test_cancellation_releases_mcp_admission_slot(endpoint):
     assert status.queued_count == 0
 
 
-@pytest.mark.asyncio
+@module_loop
 async def test_disconnect_cancels_inflight_tool_and_releases_admission(endpoint):
     _, orchestrator = endpoint
     cancelled = asyncio.Event()
@@ -623,9 +646,10 @@ def test_tool_result_covers_error_scalar_and_json_fallbacks():
     assert _structured(mapping) is mapping
 
 
-def test_cors_preflight_and_same_origin_response_never_allow_credentials(endpoint):
+@module_loop
+async def test_cors_preflight_and_same_origin_response_never_allow_credentials(endpoint):
     client, _ = endpoint
-    preflight = client.options(
+    preflight = await client.options(
         "/mcp",
         headers={
             "Origin": BASE,
@@ -637,30 +661,32 @@ def test_cors_preflight_and_same_origin_response_never_allow_credentials(endpoin
     assert "access-control-allow-credentials" not in preflight.headers
 
     body, headers = _request("server/discover", headers={"Origin": BASE})
-    response = client.post("/mcp", json=body, headers=headers)
+    response = await client.post("/mcp", json=body, headers=headers)
     assert response.headers["access-control-allow-origin"] == BASE
     assert "access-control-allow-credentials" not in response.headers
 
-    metadata = client.get(
+    metadata = await client.get(
         "/.well-known/oauth-protected-resource/mcp",
         headers={"Origin": BASE},
     )
     assert metadata.headers["access-control-allow-origin"] == BASE
 
 
-def test_non_mcp_routes_pass_through_cors_middleware(endpoint):
+@module_loop
+async def test_non_mcp_routes_pass_through_cors_middleware(endpoint):
     client, _ = endpoint
-    assert client.get("/unrelated").status_code == 404
+    assert (await client.get("/unrelated")).status_code == 404
 
 
-def test_endpoint_rejects_media_type_and_malformed_json(endpoint):
+@module_loop
+async def test_endpoint_rejects_media_type_and_malformed_json(endpoint):
     client, _ = endpoint
     body, headers = _request("server/discover")
     headers["Content-Type"] = "text/plain"
-    assert client.post("/mcp", content=json.dumps(body), headers=headers).status_code == 415
+    assert (await client.post("/mcp", content=json.dumps(body), headers=headers)).status_code == 415
 
     headers["Content-Type"] = "application/json"
-    response = client.post("/mcp", content="{", headers=headers)
+    response = await client.post("/mcp", content="{", headers=headers)
     assert response.status_code == 400
     assert response.json()["error"]["code"] == -32600
 
@@ -678,11 +704,12 @@ def test_endpoint_rejects_media_type_and_malformed_json(endpoint):
         lambda body, headers: body["params"].__setitem__("requiredCapabilities", "x"),
     ],
 )
-def test_endpoint_rejects_additional_invalid_metadata_shapes(endpoint, mutate):
+@module_loop
+async def test_endpoint_rejects_additional_invalid_metadata_shapes(endpoint, mutate):
     client, _ = endpoint
     body, headers = _request("server/discover")
     mutate(body, headers)
-    response = client.post("/mcp", content=json.dumps(body), headers=headers)
+    response = await client.post("/mcp", content=json.dumps(body), headers=headers)
     assert response.status_code == 400
 
 
@@ -693,61 +720,52 @@ def test_endpoint_rejects_additional_invalid_metadata_shapes(endpoint, mutate):
         {"name": "read_value", "arguments": []},
     ],
 )
-def test_tool_call_requires_valid_name_and_argument_object(endpoint, params):
+@module_loop
+async def test_tool_call_requires_valid_name_and_argument_object(endpoint, params):
     client, _ = endpoint
     body, headers = _request(
         "tools/call",
         params,
         headers={"Mcp-Name": "read_value"},
     )
-    response = client.post("/mcp", json=body, headers=headers)
+    response = await client.post("/mcp", json=body, headers=headers)
     assert response.status_code == 400
     assert response.json()["error"]["code"] == -32602
 
 
-def test_tool_call_requires_matching_name_header(endpoint):
+@module_loop
+async def test_tool_call_requires_matching_name_header(endpoint):
     client, _ = endpoint
     body, headers = _request("tools/call", {"name": "read_value", "arguments": {}})
-    assert client.post("/mcp", json=body, headers=headers).status_code == 400
+    assert (await client.post("/mcp", json=body, headers=headers)).status_code == 400
     headers["Mcp-Name"] = "different"
-    assert client.post("/mcp", json=body, headers=headers).status_code == 400
+    assert (await client.post("/mcp", json=body, headers=headers)).status_code == 400
 
 
-def test_capacity_refusal_is_retryable_transport_response(endpoint, monkeypatch):
+@module_loop
+async def test_capacity_refusal_is_retryable_transport_response(endpoint, monkeypatch):
     client, orchestrator = endpoint
     orchestrator._claim_personal_agent_operation = AsyncMock(return_value=None)
     body, headers = _request("server/discover")
-    response = client.post("/mcp", json=body, headers=headers)
+    response = await client.post("/mcp", json=body, headers=headers)
     assert response.status_code == 503
     assert response.headers["retry-after"] == "1"
     assert response.json()["error"]["message"] == "MCP request capacity is exhausted"
 
 
-def test_missing_subject_and_internal_failure_are_redacted(endpoint, monkeypatch):
-    import orchestrator.mcp_server_endpoint as endpoint_module
-
+@module_loop
+async def test_internal_failure_is_redacted(endpoint):
     client, orchestrator = endpoint
-
-    async def no_subject(**_kwargs):
-        return {"scope": "mcp:discover"}
-
-    monkeypatch.setattr(endpoint_module, "authorize_mcp_request", no_subject)
     body, headers = _request("server/discover")
-    assert client.post("/mcp", json=body, headers=headers).status_code == 401
-
-    async def authorized(**_kwargs):
-        return {"sub": "u1", "scope": "mcp:discover"}
-
-    monkeypatch.setattr(endpoint_module, "authorize_mcp_request", authorized)
     orchestrator._claim_personal_agent_operation = AsyncMock(
         side_effect=RuntimeError("patient-secret")
     )
-    response = client.post("/mcp", json=body, headers=headers)
+    response = await client.post("/mcp", json=body, headers=headers)
     assert response.status_code == 500
     assert "patient-secret" not in response.text
 
 
-@pytest.mark.asyncio
+@module_loop
 async def test_wait_for_disconnect_returns_completed_operation():
     class _ConnectedRequest:
         async def is_disconnected(self):
@@ -759,7 +777,7 @@ async def test_wait_for_disconnect_returns_completed_operation():
     assert await _wait_for_disconnect(_ConnectedRequest(), complete()) == "done"
 
 
-@pytest.mark.asyncio
+@module_loop
 async def test_admitted_request_terminalizes_failures(endpoint):
     _, orchestrator = endpoint
     with pytest.raises(RuntimeError, match="boom"):

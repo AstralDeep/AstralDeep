@@ -1,24 +1,19 @@
 """Tests for proof-bound voice submission in orchestrator.py: content-free
-owner-reconnectable operation identity, replaying only the durable ack on reconnect,
-redacted WS audit, and refusal before ack when no LLM is configured.
+owner-reconnectable operation identity and replaying only the durable ack on reconnect.
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
-import types
 import uuid
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
-from llm_config import LLMUnavailable
 
 from orchestrator.orchestrator import (
     ConnectionContext,
     Orchestrator,
-    _VoiceDispatchContext,
 )
 
 
@@ -173,158 +168,3 @@ async def test_reconnect_replays_only_the_exact_durable_voice_ack() -> None:
         mismatched,
     )
     assert sent == []
-
-
-@pytest.mark.asyncio
-async def test_voice_dispatch_keeps_destination_bound_and_redacts_ws_audit(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    websocket = object()
-    raw = _voice_frame()
-    user_id = "voice-owner"
-    audited: list[dict] = []
-    dispatched: list[dict] = []
-
-    async def record_ws_action(**kwargs):
-        audited.append(kwargs)
-
-    import audit.hooks
-
-    monkeypatch.setattr(audit.hooks, "record_ws_action", record_ws_action)
-    fake = SimpleNamespace()
-    fake.ui_sessions = {websocket: {"sub": user_id}}
-    fake._get_user_id = lambda _ws: user_id
-    fake._parsed_ui_frame = Orchestrator._parsed_ui_frame
-    fake._ws_active_chat = {id(websocket): _id()}
-    original_active_chat = fake._ws_active_chat[id(websocket)]
-    fake.cancelled_sessions = {}
-
-    async def retire(_ws):
-        raise AssertionError("voice submission must not retire typed welcome state")
-
-    async def admit(_ws, msg, **kwargs):
-        assert kwargs["chat_id"] == raw["session_id"]
-        assert kwargs["message"] == raw["payload"]["message"]
-        return _VoiceDispatchContext(
-            admission=SimpleNamespace(canonical_text="Canonical spoken request"),
-            connection_generation=raw["connection_generation"],
-            origin=SimpleNamespace(**raw["payload"]["voice_origin"]),
-        )
-
-    async def serialized(_ws, message, chat_id, display_message, **kwargs):
-        dispatched.append(
-            {
-                "message": message,
-                "chat_id": chat_id,
-                "voice_dispatch": kwargs["voice_dispatch"],
-            }
-        )
-
-    async def safe_send(_ws, _data):
-        return True
-
-    fake._retire_welcome_canvas = retire
-    fake._admit_voice_chat_message = admit
-    fake._serialized_chat = serialized
-    fake._safe_send = safe_send
-    fake.handle_ui_message = types.MethodType(Orchestrator.handle_ui_message, fake)
-
-    await fake.handle_ui_message(websocket, json.dumps(raw))
-    await asyncio.sleep(0)
-
-    assert len(dispatched) == 1
-    assert dispatched[0]["message"] == "Canonical spoken request"
-    assert dispatched[0]["chat_id"] == raw["session_id"]
-    assert fake._ws_active_chat[id(websocket)] == original_active_chat
-    assert len(audited) == 1
-    audit_payload = audited[0]["payload"]
-    serialized_audit = json.dumps(audit_payload, sort_keys=True)
-    assert raw["payload"]["message"] not in serialized_audit
-    assert raw["payload"]["voice_origin"]["transcript_proof"] not in serialized_audit
-    assert raw["payload"]["voice_origin"]["text_digest_sha256"] not in serialized_audit
-    assert "source_participant_identity" not in serialized_audit
-
-
-@pytest.mark.asyncio
-async def test_llm_unconfigured_rejects_admitted_voice_before_ack(user_skills_disabled) -> None:
-    websocket = object()
-    raw = _voice_frame()
-    origin = SimpleNamespace(**raw["payload"]["voice_origin"])
-    turn = SimpleNamespace(
-        submission_id=raw["submission_id"],
-        request_generation=raw["request_generation"],
-        chat_id=raw["session_id"],
-    )
-    voice_dispatch = _VoiceDispatchContext(
-        admission=SimpleNamespace(
-            canonical_text="Canonical spoken request",
-            turn=turn,
-        ),
-        connection_generation=raw["connection_generation"],
-        origin=origin,
-    )
-    orchestrator = object.__new__(Orchestrator)
-    orchestrator._LLMUnavailable = LLMUnavailable
-    orchestrator.audit_recorder = SimpleNamespace()
-    orchestrator.history = SimpleNamespace(db=SimpleNamespace())
-    orchestrator.rote = SimpleNamespace(
-        get_profile=lambda _websocket: SimpleNamespace(
-            device_type=SimpleNamespace(value="web")
-        )
-    )
-    rejected: list[dict] = []
-    audits: list[dict] = []
-    renders: list[list[dict]] = []
-
-    async def unavailable(_websocket):
-        raise orchestrator._LLMUnavailable("not configured")
-
-    async def reject(_websocket, **kwargs):
-        rejected.append(kwargs)
-
-    async def record(*args, **kwargs):
-        audits.append(kwargs)
-
-    async def render(_websocket, components):
-        renders.append(components)
-
-    orchestrator._resolve_llm_client_for = unavailable
-    orchestrator._reject_voice_submission = reject
-    orchestrator._record_llm_unconfigured = record
-    orchestrator._llm_audit_principals = lambda _websocket: (
-        "voice-owner",
-        "voice-owner",
-    )
-    orchestrator.send_ui_render = render
-
-    result = await orchestrator._handle_chat_message_impl(
-        websocket,
-        "Canonical spoken request",
-        raw["session_id"],
-        user_id="voice-owner",
-        draft_agent_id="draft-agent",
-        voice_dispatch=voice_dispatch,
-    )
-
-    assert result is None
-    assert rejected == [
-        {
-            "user_id": "voice-owner",
-            "origin": origin,
-            "submission_id": raw["submission_id"],
-            "request_generation": raw["request_generation"],
-            "chat_id": raw["session_id"],
-            "connection_generation": raw["connection_generation"],
-            "reason": "permission_denied",
-            "retry_policy": "none",
-        }
-    ]
-    assert audits == [
-        {
-            "actor_user_id": "voice-owner",
-            "auth_principal": "voice-owner",
-            "feature": "chat_dispatch",
-        }
-    ]
-    assert len(renders) == 1
-    assert "Set up your AI provider" in renders[0][0]["message"]

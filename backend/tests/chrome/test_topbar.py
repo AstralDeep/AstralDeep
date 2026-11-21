@@ -54,8 +54,9 @@ def test_menu_contains_account_and_help_groups_for_everyone():
     for label in ("Account", "Help"):
         assert label in html
     for entry in ("Agents &amp; permissions", "LLM settings", "Personalization",
-                  "Audit log", "Theme", "Take the tour", "User guide", "Sign out"):
+                  "Audit log", "Theme", "Take the tour", "User guide"):
         assert entry in html, f"menu missing entry: {entry}"
+    assert "Sign out" not in html
 
 
 def test_menu_entries_carry_chrome_open_actions():
@@ -97,11 +98,10 @@ def test_account_row_carries_gear_alone_and_no_action_icons():
         assert 'id="astral-pulse-btn"' not in html
 
 
-def test_sign_out_is_plain_link_outside_js():
+def test_menu_has_no_browser_sign_out_link():
     html = _nav(["user"])
-    assert 'href="/auth/logout"' in html
-    assert html.rindex("Sign out") > html.rindex("User guide")
-    assert "is-danger" in html
+    assert "/auth/logout" not in html
+    assert "Sign out" not in html
 
 
 def test_new_chat_button_in_topbar_for_every_role():

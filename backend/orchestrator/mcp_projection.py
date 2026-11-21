@@ -33,7 +33,7 @@ _OPERATION_ID = {"type": "string", "description": "The operation id returned by 
 _WORK_TOOL_SPECS: dict[str, dict[str, Any]] = {
     "astral_submit_operation": {
         "scope": "operations.submit",
-        "description": "Submit one chat-kind Work operation for the credential's owner.",
+        "description": "Replay a previously accepted Work submission to retrieve its existing operation.",
         "readOnly": False,
         "input_schema": {
             "type": "object",

@@ -1,0 +1,4 @@
+# CI-only Vessel documentation tooling; docs.lock.txt carries the transitive hashes.
+mkdocs==1.6.1
+mkdocs-material==9.8.1
+pydantic==2.14.3

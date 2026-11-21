@@ -1,18 +1,14 @@
-"""Bounded source-less USER chat turns use a declared research profile without tools or guidance.
-The runner retains answers under keyed receipts consumed by orchestrator/work_chat_result.py.
-"""
+"""Validates the existing Work chat profile, action identities and retained answers."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
-from astralplane.repositories.assignment_models import AssignmentEpisodeCompletion
 from llm_config import research_profile as profile
 from llm_config.research_profile import ResearchRequest, ResearchProfileUnavailable, ResearchUsage
 from persistent_agents.dispatch_context import DispatchDenied
-from persistent_agents.execution import _OperationAuthorityWindow, safe_text
-from persistent_agents.research_input import ResearchInput, chat_definition, route
-from persistent_agents.runtime_values import canonical, digest, thaw
+from persistent_agents.research_input import chat_definition
+from persistent_agents.runtime_values import digest
 
 CHAT_PROFILE = "openai-chat-turn/v1"
 LOCAL_CHAT_PROFILE = "local-chat-turn/v1"
@@ -140,127 +136,3 @@ def parse_chat_response(
         return ChatResponse(usage, text, "answer")
     except ResearchProfileUnavailable:
         return ChatResponse(usage, None, "answer_invalid")
-
-
-def chat_execution_checks(service, owner_id, claims, record, *, authority) -> dict:
-    from orchestrator.framework_operation_authority import (
-        FrameworkOperationExecutionAuthority, authority_repository,
-    )
-    from orchestrator.session_authority import OperationExecutionAuthority
-    from persistent_agents.models import AssignmentError
-
-    service._owner(owner_id, claims, human=False)
-    if record.owner_id != owner_id:
-        raise AssignmentError("assignment_not_found", 404)
-    chat_definition(record)
-    if (not isinstance(authority, (OperationExecutionAuthority, FrameworkOperationExecutionAuthority))
-            or authority.plane_runtime is not service.store.plane_runtime
-            or authority.claims != claims
-            or authority.record.owner_id != owner_id
-            or authority.record.assignment_id != record.assignment_id
-            or authority.record.definition != record.definition
-            or authority.record.instruction_revision != record.instruction_revision
-            or authority.record.control_epoch != record.control_epoch
-            or authority.record.operation != record.operation
-            or record.operation.get("version") != 2):
-        raise AssignmentError("assignment_authorization_required", 403)
-    selected = record.operation.get("authority", {})
-    credential = authority.observation.credential
-    framework = type(authority) is FrameworkOperationExecutionAuthority
-    authority_repository(service.store.plane_runtime, authority)
-    origin, kind, reference = (("framework", "credential", credential.credential_id) if framework
-        else ("interactive", "session_incarnation", credential.incarnation_id))
-    if (selected.get("origin") != origin
-            or selected.get("reference_kind") != kind
-            or selected.get("owner_id") != owner_id
-            or selected.get("reference_id") != reference
-            or credential.owner_id != owner_id or record.definition.offline_grant_id is not None):
-        raise AssignmentError("assignment_authorization_required", 403)
-    if framework:
-        from orchestrator.evidence_context import has_references
-        if has_references([{"content": record.definition.instructions}]):
-            raise AssignmentError("assignment_operation_profile_unavailable", 403)
-    permission = digest({"tools": {}, "instruction_revision": record.instruction_revision,
-                         "control_epoch": record.control_epoch,
-                         "operation_authority": thaw(record.operation["authority"])})
-    return {"permission_digest": permission, "precondition_digest": digest({"source": {}})}
-
-
-def _matching_checks(action, checks):
-    if (action.intent.permission_digest != checks["permission_digest"]
-            or action.intent.precondition_digest != checks["precondition_digest"]):
-        raise DispatchDenied("assignment_precondition_changed")
-
-
-@dataclass(frozen=True, slots=True)
-class ChatCompletion:
-    private: ResearchInput = field(repr=False)
-    model_action_id: str
-
-    def rebuild(self, executor, tx, repository, current, checks):
-        if self.private.kind != "chat":
-            raise DispatchDenied("assignment_research_binding_changed")
-        repository.assert_current_assignment_execution(tx, fence=executor.claim.fence,
-            binding=executor.binding, authority=checks["model"]["authority"].observation,
-            action_id=self.model_action_id)
-        model = repository.get_action(tx, owner_id=current.owner_id,
-            assignment_id=current.assignment_id, action_id=self.model_action_id)
-        _matching_checks(model, checks["model"])
-        answer = self.private.chat_result(model)
-        chat_definition(current)
-        result = {"version": 1, "kind": "chat", "text": answer["text"],
-                  "model_action_id": model.action_id}
-        checkpoint = {**thaw(current.checkpoint), "chat_result": result}
-        return AssignmentEpisodeCompletion(expected_state_version=current.state_version,
-            checkpoint=checkpoint, completion_digest=digest(["chat-result-v1", result]),
-            phase="waiting", wake_reason="chat_completed", completed=True,
-            terminal_outcome="completed", result_reference=model.action_id)
-
-    async def refresh(self, executor):
-        self.private.assert_record(executor.record)
-        model = await executor.refresh(route(executor.record), _research=self.private)
-        return {"model": model}
-
-    def assert_completion(self, executor, tx, repository, current, checks, completion):
-        rebuilt = self.rebuild(executor, tx, repository, current, checks)
-        expected = thaw(rebuilt)
-        expected["expected_state_version"] = completion.expected_state_version
-        if canonical(expected) != canonical(thaw(completion)):
-            raise DispatchDenied("assignment_research_result_invalid")
-
-
-async def run_chat_episode(executor):
-    from persistent_agents.runner import OneShotEpisodeResult
-
-    chat_definition(executor.record)
-    key = chat_action_key(executor.record)
-    await executor.chat_turn(key)
-    async with _OperationAuthorityWindow(executor.operation_authority_lock):
-        record = executor.record
-        model = await executor.store.transaction(
-            lambda tx, repository: repository.get_action_by_key(
-                tx, owner_id=record.owner_id, assignment_id=record.assignment_id,
-                action_key=CHAT_KEY_PREFIX + key),
-            bound_session_waits=True)
-        if model is None or model.intent.transient_input is None:
-            raise DispatchDenied("assignment_research_binding_changed")
-        private = await ResearchInput.capture_chat(record, config_store=executor.orch._llm_store,
-            key_id=model.intent.transient_input.binding_key_id,
-            guidance=executor._research_guidance)
-        proof = ChatCompletion(private, model.action_id)
-        refreshed = await proof.refresh(executor)
-
-        def prepare(tx, repository, guarded):
-            return guarded, proof.rebuild(executor, tx, repository, guarded, refreshed)
-
-        current, completion = await executor._research_transaction(
-            private, refreshed["model"]["authority"], prepare, action_id=model.action_id)
-        await safe_text(completion.checkpoint["chat_result"]["text"])
-        return OneShotEpisodeResult(current, completion, research=proof)
-
-
-__all__ = [
-    "CHAT_KEY_PREFIX", "CHAT_PROFILE", "ChatCompletion", "ChatResponse", "build_chat_request",
-    "chat_action_key", "chat_execution_checks", "chat_result_value", "parse_chat_response",
-    "run_chat_episode",
-]

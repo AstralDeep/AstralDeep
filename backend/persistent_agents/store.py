@@ -1,6 +1,6 @@
 """Bounded async wrapper over the composition-owned assignment repository; translates
 driver/timeout failures into data-free AssignmentError at the HTTP boundary. Used by
-AssignmentService, AssignmentRunner and AssignmentApprovalBridge.
+AssignmentService and AssignmentRunner.
 """
 
 from __future__ import annotations
@@ -142,9 +142,8 @@ class AssignmentStore:
         from orchestrator.framework_operation_authority import (
             FrameworkOperationExecutionAuthority, authority_repository,
         )
-        from orchestrator.session_authority import OperationExecutionAuthority
 
-        if (not isinstance(authority, (OperationExecutionAuthority, FrameworkOperationExecutionAuthority))
+        if (type(authority) is not FrameworkOperationExecutionAuthority
                 or authority.plane_runtime is not self.plane_runtime
                 or (binding is not None and fence is None)):
             raise AssignmentError("assignment_authorization_unavailable", 403)

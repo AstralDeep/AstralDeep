@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from scheduler.cron import ScheduleError, compute_next_run_ms, interval_seconds
+from scheduler.cron import ScheduleError, compute_next_run_ms, first_run_ms, interval_seconds
 from scheduler.governance import GovernanceError, validate_new_job
 
 
@@ -106,3 +106,11 @@ def test_valid_job_passes_governance():
                      schedule_kind="interval", schedule_expr="5m",
                      min_interval_seconds=60)
     assert interval_seconds("interval", "5m") == 300
+
+
+def test_a_new_job_needs_an_upcoming_run():
+    after = _ms(2026, 5, 27, 10, 0)
+    for kind, expr in (("one_shot", "2026-05-27T08:00:00Z"), ("cron", "0 9 30 2 *")):
+        with pytest.raises(ScheduleError, match="no upcoming run"):
+            first_run_ms(kind, expr, "UTC", after)
+    assert first_run_ms("interval", "1h", "UTC", after) == after + 3_600_000

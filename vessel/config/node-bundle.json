@@ -1,0 +1,8 @@
+{
+  "format": "astral.vessel-node-bundle/v1",
+  "platforms": {
+    "macos-arm64": {"descriptor": "", "sha256": ""},
+    "linux-x86_64": {"descriptor": "", "sha256": ""},
+    "linux-aarch64": {"descriptor": "", "sha256": ""}
+  }
+}

@@ -5,34 +5,22 @@ protocol parsers and per-failure-class rejection reasons.
 
 from __future__ import annotations
 
-import hashlib
 import importlib.util
 import json
 import os
 import sys
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from types import ModuleType, SimpleNamespace
+from types import ModuleType
 from typing import Any
 
 import pytest
-from astralplane import create_repository_catalog
 
-from orchestrator import voice_bootstrap
-from orchestrator.orchestrator import Orchestrator
-from orchestrator.voice_backend import VoiceSpeechBackend
-from orchestrator.voice_bootstrap import build_voice_services
-from orchestrator.voice_control_binding import VoiceControlClaims
-from shared.streaming_egress import FixedOriginHttpTransport
 
 from shared.protocol import (
     ChatCreated,
     Message,
     UserMessageAcknowledged,
     VoiceControlBinding,
-    VoiceLocalFinal,
-    VoiceLocalReady,
-    VoiceLocalRecognitionStarted,
     VoicePlayoutEvent,
     VoiceSubmissionRejected,
 )
@@ -129,18 +117,6 @@ voice_schema = _expand_boolean_schemas(validator.strict_load_json(VOICE_SCHEMA_P
 indexed = validator.index_fixture_vectors(fixture)
 
 
-class _NoDatabasePlane:
-    def __init__(self) -> None:
-        self.repositories = create_repository_catalog()
-
-    def transaction(self) -> None:
-        raise AssertionError("client-local conformance opened the database")
-
-
-def _uuid4(index: int) -> str:
-    return f"00000000-0000-4000-8000-{index:012d}"
-
-
 def test_native_clients_disable_vendor_rtc_diagnostics_before_connect() -> None:
     android = (
         REPO_ROOT
@@ -157,8 +133,9 @@ def test_native_clients_disable_vendor_rtc_diagnostics_before_connect() -> None:
     assert "LiveKit.loggingLevel = LoggingLevel.OFF" in android
     assert "LiveKit.enableWebRTCLogging = false" in android
     assert android.index("LiveKit.loggingLevel") < android.index("LiveKit.create")
-    assert "LiveKitSDK.disableLogging()" in apple
-    assert apple.index("_ = Self.vendorLoggingDisabled") < apple.index("Room(")
+    assert "LiveKit" not in apple
+    assert "Room(" not in apple
+    assert "URLSession" not in apple
     assert '_LIVEKIT_VENDOR_LOGGERS = ("livekit", "livekit.rtc"' in windows
     assert windows.index("\n_disable_livekit_vendor_logging()\n") < windows.index(
         "from livekit import rtc"
@@ -183,12 +160,9 @@ def test_apple_authenticated_transports_are_ephemeral_and_no_store() -> None:
 
     paths = (
         "components/AstralProjection/apple-clients/AstralCore/Sources/AstralCore/API/Rest.swift",
-        "components/AstralProjection/apple-clients/AstralCore/Sources/AstralCore/Auth/DeviceLogin.swift",
-        "components/AstralProjection/apple-clients/AstralCore/Sources/AstralCore/Auth/TokenStore.swift",
-        "components/AstralProjection/apple-clients/AstralCore/Sources/AstralCore/Auth/ServerSession.swift",
-        "components/AstralProjection/apple-clients/AstralCore/Sources/AstralCore/Auth/MeshEnrollment.swift",
+        "components/AstralProjection/apple-clients/AstralCore/Sources/AstralCore/API/PushRest.swift",
+        "components/AstralProjection/apple-clients/AstralCore/Sources/AstralCore/API/MeshPushRest.swift",
         "components/AstralProjection/apple-clients/AstralCore/Sources/AstralCore/Transport/WSClient.swift",
-        "components/AstralProjection/apple-clients/AstralApp/AstralApp/Voice/VoiceSessionController.swift",
     )
     for relative in paths:
         source = (REPO_ROOT / relative).read_text(encoding="utf-8")
@@ -198,8 +172,6 @@ def test_apple_authenticated_transports_are_ephemeral_and_no_store() -> None:
         REPO_ROOT / "components/AstralProjection/apple-clients/AstralApp/AstralApp/AppModel.swift"
     ).read_text(encoding="utf-8")
     assert "URLSession" not in app_model
-    assert "ServerSessionHTTP.request($0)" in app_model
-    assert "MeshEnrollmentHTTP.request" in app_model
 
 
 def _materialized(vector_id: str) -> dict[str, Any]:
@@ -326,232 +298,3 @@ def test_each_failure_class_is_rejected_for_its_canonical_reason(
 
     assert errors
     assert any(vector["expected_error"] in error for error in errors), errors
-
-
-@pytest.mark.asyncio
-async def test_web_client_local_two_turns_complete_with_speech_endpoints_blocked(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def blocked_remote_constructor(*_args: object, **_kwargs: object) -> None:
-        raise AssertionError("client_local constructed remote media")
-
-    async def blocked_speech_endpoint(
-        *_args: object,
-        **_kwargs: object,
-    ) -> None:
-        raise AssertionError("client_local contacted a remote speech endpoint")
-
-    monkeypatch.setattr(
-        voice_bootstrap.LiveKitSettings,
-        "from_environ",
-        blocked_remote_constructor,
-    )
-    monkeypatch.setattr(voice_bootstrap, "WorkerPool", blocked_remote_constructor)
-    monkeypatch.setattr(voice_bootstrap, "LiveKitService", blocked_remote_constructor)
-    monkeypatch.setattr(FixedOriginHttpTransport, "get", blocked_speech_endpoint)
-    monkeypatch.setattr(FixedOriginHttpTransport, "post", blocked_speech_endpoint)
-
-    plane = _NoDatabasePlane()
-    services = build_voice_services(
-        plane_runtime=plane,
-        plane_repositories=plane.repositories,
-        environ={
-            "ASTRAL_ENV": "test",
-            "VOICE_SPEECH_BACKEND": "client_local",
-        },
-    )
-    assert services.speech_backend is VoiceSpeechBackend.CLIENT_LOCAL
-    assert services.livekit is None
-    assert services.worker_pool is None
-
-    now = datetime.now(UTC)
-    user_id = "web-local-owner"
-    device_id = _uuid4(301)
-    connection_generation = _uuid4(302)
-    binding_id = _uuid4(303)
-    session_id = _uuid4(304)
-    chat_id = _uuid4(305)
-    session = SimpleNamespace(
-        session_id=session_id,
-        user_id=user_id,
-        device_id=device_id,
-        owner_connection_generation=connection_generation,
-        control_binding_id=binding_id,
-        control_binding_expires_at=now + timedelta(minutes=4),
-        control_owner_id="voice-coordinator-local-1",
-        control_lease_expires_at=now + timedelta(minutes=1),
-        lease_expires_at=now + timedelta(minutes=2),
-        generation=1,
-        media_grant_revision=1,
-        speech_backend="client_local",
-        state="active",
-        ended_at=None,
-        foreground_active=True,
-        microphone_enabled=True,
-        speech_muted=False,
-        visible_chat_id=chat_id,
-        chat_context_revision=1,
-        applied_visible_chat_id=chat_id,
-        applied_chat_context_revision=1,
-    )
-    turns: dict[str, SimpleNamespace] = {}
-    turn_identities = [
-        (_uuid4(311), _uuid4(312), _uuid4(313), _uuid4(314)),
-        (_uuid4(321), _uuid4(322), _uuid4(323), _uuid4(324)),
-    ]
-
-    class Repository:
-        @staticmethod
-        def get_controlled_session(**_kwargs: object) -> SimpleNamespace:
-            return session
-
-        @staticmethod
-        def get_session(**_kwargs: object) -> SimpleNamespace:
-            return session
-
-        @staticmethod
-        def bind_recognition_turn(
-            binding: object,
-            **_kwargs: object,
-        ) -> SimpleNamespace:
-            client_turn_id = str(getattr(binding, "client_turn_id"))
-            index = len(turns)
-            turn_id, submission_id, request_generation, expected_client_turn = (
-                turn_identities[index]
-            )
-            assert client_turn_id == expected_client_turn
-            turn = SimpleNamespace(
-                turn_id=turn_id,
-                client_turn_id=client_turn_id,
-                submission_id=submission_id,
-                request_generation=request_generation,
-                chat_id=chat_id,
-                chat_context_revision=1,
-            )
-            turns[turn_id] = turn
-            return SimpleNamespace(turn=turn, replayed=False)
-
-        @staticmethod
-        def get_turn(*, turn_id: str, **_kwargs: object) -> SimpleNamespace:
-            return turns[turn_id]
-
-        @staticmethod
-        def admit_local_transcript(
-            request: object,
-            **_kwargs: object,
-        ) -> SimpleNamespace:
-            return SimpleNamespace(
-                canonical_text=str(getattr(request, "canonical_text")),
-                turn=turns[str(getattr(request, "turn_id"))],
-                replayed=False,
-            )
-
-    services.repository = Repository()  # type: ignore[assignment]
-    websocket = object()
-    claims = VoiceControlClaims(
-        subject=user_id,
-        device_id=device_id,
-        connection_generation=connection_generation,
-        binding_id=binding_id,
-        issued_at=now,
-        expires_at=now + timedelta(minutes=4),
-    )
-    orchestrator = Orchestrator.__new__(Orchestrator)
-    orchestrator.voice_services = services
-    orchestrator.ui_sessions = {websocket: {"sub": user_id}}
-    orchestrator._voice_control_bindings = {id(websocket): claims}
-    orchestrator._voice_device_bindings = {(user_id, device_id): id(websocket)}
-    orchestrator.history = SimpleNamespace(
-        get_chat=lambda requested_chat_id, *, user_id: {
-            "chat_id": requested_chat_id,
-            "user_id": user_id,
-            "render_revision": 7,
-        }
-    )
-    emitted: list[dict[str, Any]] = []
-    dispatches: list[tuple[str, str, str, object]] = []
-
-    async def safe_send(_socket: object, payload: str) -> bool:
-        emitted.append(json.loads(payload))
-        return True
-
-    async def authenticated_dispatch(
-        dispatch_socket: object,
-        text: str,
-        dispatch_chat_id: str,
-        *,
-        user_id: str,
-        voice_dispatch: object,
-        **_kwargs: object,
-    ) -> None:
-        assert dispatch_socket is websocket
-        dispatches.append((text, dispatch_chat_id, user_id, voice_dispatch))
-
-    orchestrator._safe_send = safe_send
-    orchestrator.handle_chat_message = authenticated_dispatch
-
-    await orchestrator.handle_ui_message(
-        websocket,
-        VoiceLocalReady(
-            device_id=device_id,
-            connection_generation=connection_generation,
-            session_id=session_id,
-            generation=1,
-            speech_revision=1,
-            client_sequence=1,
-        ).to_json(),
-    )
-
-    texts = ("first local request", "second local request")
-    for index, text in enumerate(texts):
-        turn_id, submission_id, request_generation, client_turn_id = (
-            turn_identities[index]
-        )
-        sequence = index + 2
-        await orchestrator.handle_ui_message(
-            websocket,
-            VoiceLocalRecognitionStarted(
-                device_id=device_id,
-                connection_generation=connection_generation,
-                session_id=session_id,
-                generation=1,
-                speech_revision=1,
-                client_turn_id=client_turn_id,
-                chat_id=chat_id,
-                chat_context_revision=1,
-                recognition_sequence=sequence,
-            ).to_json(),
-        )
-        await orchestrator.handle_ui_message(
-            websocket,
-            VoiceLocalFinal(
-                device_id=device_id,
-                connection_generation=connection_generation,
-                session_id=session_id,
-                generation=1,
-                speech_revision=1,
-                client_turn_id=client_turn_id,
-                turn_id=turn_id,
-                submission_id=submission_id,
-                request_generation=request_generation,
-                chat_id=chat_id,
-                chat_context_revision=1,
-                recognition_sequence=sequence,
-                text=text,
-                text_digest_sha256=hashlib.sha256(text.encode()).hexdigest(),
-            ).to_json(),
-        )
-
-    assert [item[:3] for item in dispatches] == [
-        ("first local request", chat_id, user_id),
-        ("second local request", chat_id, user_id),
-    ]
-    assert [frame["type"] for frame in emitted] == [
-        "voice_local_session_ready",
-        "voice_local_turn_bound",
-        "voice_local_turn_bound",
-    ]
-    assert [
-        item[3].origin.client_turn_id  # type: ignore[attr-defined]
-        for item in dispatches
-    ] == [turn_identities[0][3], turn_identities[1][3]]

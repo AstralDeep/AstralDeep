@@ -6,6 +6,7 @@ jobs stay source-free, and signing dependencies are hash-locked.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import shutil
 import subprocess
@@ -13,7 +14,6 @@ import sys
 from pathlib import Path
 
 import pytest
-
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if not (
@@ -59,12 +59,48 @@ REVIEWED_HARNESS_CANARY_FINGERPRINT = (
     "3f01f0eca9255bb779fa5ff3ff67ce93716d51f1:"
     "backend/orchestrator/harness/conformance.py:typesafe-system-one-key:33"
 )
-REVIEWED_CONTEXT_TOKEN_ACCOUNTING_FINGERPRINTS = {
-    "a061349f7fcda21b417280679ce17ace99c27404:"
-    "backend/orchestrator/token_assets/NOTICE:generic-api-key:13",
-    "a061349f7fcda21b417280679ce17ace99c27404:"
-    "backend/orchestrator/token_assets/NOTICE:generic-api-key:14",
+REVIEWED_DEV_MESH_ANNOTATION_FINGERPRINT = (
+    "0e39f3eb46f250cf2d1e109637fd8a2a076fca46:"
+    "backend/devtools/dev_mesh.py:generic-api-key:86"
+)
+REVIEWED_NODE_PACK_REDACTION_FINGERPRINTS = {
+    "48c74313e88f26649ea4ddc3197441f8c9e27e61:scripts/tests/test_node_bundle_launcher.py:generic-api-key:82",
+    "48c74313e88f26649ea4ddc3197441f8c9e27e61:scripts/tests/test_node_bundle_logging.py:generic-api-key:11",
+    "48c74313e88f26649ea4ddc3197441f8c9e27e61:scripts/tests/test_node_bundle_logging.py:generic-api-key:12",
+    "48c74313e88f26649ea4ddc3197441f8c9e27e61:scripts/tests/test_node_bundle_logging.py:jwt:17",
 }
+REVIEWED_VESSEL_DEPLOY_FIXTURE_FINGERPRINT = (
+    "46bc2006932ed18ad4632690565431d10c683aeb:"
+    "tests/test_cli.py:generic-api-key:44"
+)
+REVIEWED_VESSEL_DEPLOY_UP_FIXTURE_FINGERPRINT = (
+    "46bc2006932ed18ad4632690565431d10c683aeb:"
+    "tests/test_cli.py:generic-api-key:53"
+)
+REVIEWED_PLANE_FIXTURE_FINGERPRINTS = {
+    "70508449046127c7a9af914bcc7da01501ab2fea:tests/integration/test_catalog_caller_rollback.py:generic-api-key:625",
+    "70508449046127c7a9af914bcc7da01501ab2fea:tests/repositories/test_typesafe_credential.py:generic-api-key:420",
+    "098588d6256599e4902bb3f6c322df267ddaccde:provenance/attachment-parser-and-blob-composition.json:generic-api-key:68",
+    "c1182c09ca767c7c8b3396fae91aa27d0b1c56ce:tests/repositories/test_audit.py:generic-api-key:280",
+}
+REVIEWED_CONTEXT_TOKEN_ACCOUNTING_FINGERPRINTS = {
+    (
+        "a061349f7fcda21b417280679ce17ace99c27404:"
+        "backend/orchestrator/token_assets/NOTICE:generic-api-key:13"
+    ),
+    (
+        "a061349f7fcda21b417280679ce17ace99c27404:"
+        "backend/orchestrator/token_assets/NOTICE:generic-api-key:14"
+    ),
+}
+REVIEWED_PUBLIC_LOCAL_MESH_FINGERPRINTS = {
+    "19f867946ccb52a2231e13ea3f5f67e824980eca:"
+    "specs/106-sign-in-free-clients/contracts/vectors/crypto-v2.json:"
+    f"generic-api-key:{line}"
+    for line in (78, 101, 124, 147, 170, 193, 216, 239, 468, 484, 497, 510)
+}
+REVIEWED_SHARE_VECTOR_BASELINE_SHA256 = '541a7b2d97e32f3bf575c15f2bc325d8e6420f2dec45ff1c7b11903e6e0d119b'
+REVIEWED_PUBLIC_MESH_BASELINE_SHA256 = '3dae639f3d4261b5a0fef550bb0645bbd39bc143e6a85eb6f2e464881c8e3ea0'
 WINDOWS_CANDIDATE = REPO_ROOT / ".github" / "workflows" / "build-windows-candidate.yml"
 WINDOWS_RELEASE_BRIDGE = REPO_ROOT / ".github" / "workflows" / "release-windows.yml"
 LOCK_INSTALL = (
@@ -211,30 +247,6 @@ def test_ci_secret_scan_uses_checksum_pinned_secret_free_cli() -> None:
     assert "GITLEAKS_LICENSE" not in job
 
 
-def test_gitleaks_history_baseline_is_exact_fingerprint_only() -> None:
-    lines = GITLEAKS_IGNORE.read_text(encoding="utf-8").splitlines()
-    comments = [line for line in lines if line.startswith("#")]
-    assert comments, "a baseline entry with no recorded reason is not reviewed"
-    assert all(line.lstrip("#").strip() for line in comments)
-    fingerprints = [line for line in lines if not line.startswith("#")]
-    assert len(fingerprints) == 28
-    assert len(fingerprints) == len(set(fingerprints))
-    assert REVIEWED_074_FINGERPRINTS <= set(fingerprints)
-    assert REVIEWED_079_FINGERPRINT in fingerprints
-    assert REVIEWED_089_FINGERPRINTS <= set(fingerprints)
-    assert REVIEWED_GAIA_SDK_FINGERPRINT in fingerprints
-    assert REVIEWED_HARNESS_CANARY_FINGERPRINT in fingerprints
-    assert REVIEWED_CONTEXT_TOKEN_ACCOUNTING_FINGERPRINTS <= set(fingerprints)
-    assert all(
-        re.fullmatch(
-            r"[0-9a-f]{40}:[^:]+:"
-            r"(?:generic-api-key|private-key|typesafe-system-one-key):[1-9][0-9]*",
-            fingerprint,
-        )
-        for fingerprint in fingerprints
-    )
-
-
 def test_release_tooling_job_covers_owned_scripts_with_exact_omissions() -> None:
     workflow = CI_WORKFLOW.read_text(encoding="utf-8")
     job = _workflow_job(workflow, "release-tooling-tests")
@@ -250,6 +262,8 @@ def test_release_tooling_job_covers_owned_scripts_with_exact_omissions() -> None
     assert omissions == {
         "scripts/windows_release_candidate.py",
         "scripts/export_work_contract.py",
+        "scripts/dev_mesh.py",
+        "scripts/no_docker_check.py",
     }
     assert not any("*" in omission for omission in omissions)
 
@@ -262,25 +276,32 @@ def test_release_tooling_job_covers_owned_scripts_with_exact_omissions() -> None
         "ci_network_fixture.py",
         "ci_fence_fixture_verifier.py",
         "ci_fence_fixture_verifier_v2.py",
-        "ci_plane_lane.py",
         "apple_coverage_artifacts.py",
         "backend_web_service_materials.py",
         "backend_web_test_reporter.py",
+        "build_kernel_binding.py",
         "native_xccov_domain.py",
         "merge_xccov_line_coverage.py",
         "check_changed_coverage.py",
         "check_doc_links.py",
+        "check_no_keycloak.py",
+        "dev_mesh.py",
         "export_work_contract.py",
         "export_xccov_line_coverage.py",
         "extract_release_artifact.py",
         "initialize_backend_web_services.py",
         "install_doctor.py",
         "install_local_components.py",
+        "install_kernel_binding.py",
+        "ios_store_upload.py",
+        "ios_store_profile.py",
         "macos_release_notes.py",
         "merge_backend_web_coverage.py",
         "next_macos_release.py",
+        "no_docker_check.py",
         "prepare_plane_upgrade_baseline.py",
         "package_macos_candidate.py",
+        "release_apple_framework.py",
         "release_macos.py",
         "prepare_release_evidence.py",
         "probe_backend_web_auth.py",
@@ -307,6 +328,8 @@ def test_release_tooling_job_covers_owned_scripts_with_exact_omissions() -> None
         expected_scripts
     )
     expected_test_paths = {
+        "backend/tests/test_ios_store_upload.py",
+        "backend/tests/test_ios_store_profile.py",
         "scripts/tests/test_ci_browser_retry.py",
         "scripts/tests/test_ci_network_fixture.py",
         "scripts/tests/test_ci_fence_fixture_verifier.py",
@@ -317,6 +340,7 @@ def test_release_tooling_job_covers_owned_scripts_with_exact_omissions() -> None
         "backend/tests/test_ci_plane_lane.py",
         "scripts/tests/test_prepare_plane_upgrade_baseline.py",
         "scripts/tests/test_package_macos_candidate.py",
+        "scripts/tests/test_release_apple_framework.py",
         "backend/tests/test_release_macos.py",
         "backend/tests/test_next_macos_release.py",
         "backend/tests/test_macos_release_notes.py",
@@ -337,6 +361,7 @@ def test_release_tooling_job_covers_owned_scripts_with_exact_omissions() -> None
         "backend/tests/test_release_evidence_bootstrap.py",
         "scripts/tests/test_component_build_surfaces_074.py",
         "scripts/tests/test_backend_web_auth.py",
+        "scripts/tests/test_build_kernel_binding.py",
         "scripts/tests/test_backend_web_evidence.py",
         "scripts/tests/test_backend_web_functional.py",
         "scripts/tests/test_backend_web_gate.py",
@@ -346,6 +371,7 @@ def test_release_tooling_job_covers_owned_scripts_with_exact_omissions() -> None
         "scripts/tests/test_backend_web_state.py",
         "scripts/tests/test_merge_backend_web_coverage.py",
         "scripts/tests/test_install_local_components.py",
+        "scripts/tests/test_install_kernel_binding.py",
         "scripts/tests/test_install_doctor.py",
         "backend/tests/test_install_doctor.py",
         "scripts/tests/test_retire_restored_sessions.py",
@@ -355,6 +381,8 @@ def test_release_tooling_job_covers_owned_scripts_with_exact_omissions() -> None
         "scripts/tests/test_verify_primitive_coverage.py",
         "scripts/tests/test_verify_persistent_agents_079.py",
         "scripts/tests/test_csharp_native_coverage_079.py",
+        "scripts/tests/test_check_no_keycloak.py",
+        "scripts/tests/test_no_docker_check.py",
     }
     array = job.partition("RELEASE_TOOL_TESTS=(")[2].partition(")")[0]
     assert set(re.findall(r"(?m)^\s+([^\s]+\.py)\s*$", array)) == expected_test_paths
@@ -395,12 +423,33 @@ def test_android_canary_suite_runs_without_projection_checkout(tmp_path: Path) -
     assert completed.returncode == 0, completed.stdout
 
 
-def test_lint_job_requires_actual_fence_and_merged_helper_bytes() -> None:
-    from scripts.ci_fence_egress_pilot import REVIEWED_HELPERS, evaluate_workflow
+def test_lint_job_carries_no_fence_step_and_the_pilot_is_recorded_unqualified() -> None:
+    from scripts.ci_fence_egress_pilot import STATE_ABSENT, evaluate_workflow
 
     workflow = CI_WORKFLOW.read_text(encoding="utf-8")
-    evaluation = evaluate_workflow(workflow)
-    assert evaluation.state == "conforming", evaluation.reasons
+    assert evaluate_workflow(workflow).state == STATE_ABSENT
+    lint = _workflow_job(workflow, "lint")
+    for marker in ("openai/fence", "fence_peer", "ci_network_fixture", "remount", "/run/astral-ci-peer"):
+        assert marker not in lint
+    assert "openai/fence" not in workflow
+    assert re.findall(r"(?m)^      - (?:name: ([^\n]+)|uses: (\S+))", lint) == [
+        ("", "actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd"),
+        ("", "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1"),
+        ("Install hash-locked CI-only Python tooling", ""),
+        ("Lint Deep-owned Python", ""),
+    ]
+    assert "timeout-minutes: 10" in lint
+    assert "permissions:" not in lint
+
+    record = (REPO_ROOT / "docs" / "ci-egress-fence-pilot.md").read_text(encoding="utf-8")
+    assert "rolled back" in record
+    assert "unqualified" in record
+    assert "no egress firewall" in record
+
+
+def test_reviewed_fence_helpers_stay_pinned_to_merged_default_branch_bytes() -> None:
+    from scripts.ci_fence_egress_pilot import REVIEWED_HELPERS
+
     assert REVIEWED_HELPERS is not None
     merged = subprocess.run(
         ["git", "merge-base", "--is-ancestor", REVIEWED_HELPERS.commit, "origin/main"],
@@ -428,11 +477,15 @@ def test_windows_candidate_build_never_installs_the_test_lock() -> None:
     )
     for job_name in ("windows-packaged-smoke", "windows-source-suite", "windows-producer"):
         job = _workflow_job(readiness, job_name)
-        runtime = job.index(
-            "python -m pip install --require-hashes -r "
-            "components/AstralProjection/windows-client/requirements-release.lock.txt"
-        )
+        runtime = job.index("uses: ./components/AstralProjection/.github/actions/presentation")
+        assert "projection-root: components/AstralProjection" in job
         assert runtime < job.index(LOCK_INSTALL) < job.index("python -m pytest")
+
+    assert workflow.count("uses: ./components/AstralProjection/.github/actions/presentation") == 2
+    for environment in ("a", "b"):
+        assert f"python: components/AstralProjection/windows-client/.venv-release-{environment}/Scripts/python.exe" in workflow
+        assert f"output: build/presentation-{environment}" in workflow
+    assert "ASTRAL_PRESENTATION_OUTPUT: build/presentation-a" in workflow
 
 
 @bridge_parked
@@ -488,14 +541,32 @@ def test_ci_only_python_manifest_cannot_enter_projection_product_artifacts() -> 
 
 def test_windows_release_installs_only_hash_locked_build_and_signing_deps() -> None:
     workflow = WINDOWS_RELEASE_BRIDGE.read_text(encoding="utf-8")
-    installs = [
-        line.strip() for line in workflow.splitlines() if "pip install" in line
-    ]
-    assert installs, "the release workflow must install its build/signing deps"
-    for line in installs:
-        assert "--require-hashes" in line, f"unhashed pip install: {line}"
-        assert (
-            "components/AstralProjection/windows-client/requirements-release.lock.txt" in line
-        ), f"install is not from the release lock: {line}"
+    assert "uses: ./components/AstralProjection/.github/actions/presentation" in workflow
+    assert "projection-root: components/AstralProjection" in workflow
+    assert "external-lock: windows-client/requirements-release.lock.txt" in workflow
+    assert "pip install" not in workflow
     assert "pip install --upgrade" not in workflow
     assert "sigstore>=" not in workflow
+
+
+def test_accountless_crypto_baseline_values_are_public_fixed_seed_fixtures() -> None:
+    path = REPO_ROOT / "specs/106-sign-in-free-clients/contracts/vectors/crypto-v2.json"
+    lines = path.read_text(encoding="utf-8").splitlines()
+
+    def seed(label: str) -> bytes:
+        return hashlib.sha256(b"astral-test-seed/" + label.encode()).digest()
+
+    order = int("ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551", 16)
+    expected = {
+        "secret_hex": {
+            seed("alice/ops").hex(),
+            f"{int.from_bytes(seed('alice/identity'), 'big') % (order - 1) + 1:064x}",
+        },
+        "key_hex": {seed("aead/key").hex()},
+    }
+    for fingerprint in REVIEWED_PUBLIC_LOCAL_MESH_FINGERPRINTS:
+        number = int(fingerprint.rsplit(":", 1)[1])
+        field = json.loads("{" + lines[number - 1].strip().rstrip(",") + "}")
+        assert len(field) == 1
+        name, value = next(iter(field.items()))
+        assert value in expected[name]

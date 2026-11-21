@@ -1,7 +1,6 @@
 """Tests for draft-archive wiring into the agentic-creation lifecycle
-(orchestrator/agentic_creation.py, chain_authority.py, draft_archive.py):
-high-surrogate drafts skip the behavioral self-test and archive, low scores still run
-it.
+(orchestrator/agentic_creation.py, draft_archive.py): creation runs no self-test and
+archives nothing, while approval of a live draft archives its code.
 """
 
 from __future__ import annotations
@@ -165,21 +164,11 @@ class FakeHistory:
 
 
 class FakeOrch:
-    async def derive_machine_authority(self, **kwargs):
-        from orchestrator.chain_authority import AuthoritySkip
-        return AuthoritySkip("missing_consent", "test double")
-
-    def _bind_machine_turn(self, vws, authority):
-        pass
-
-    def _unbind_machine_turn(self, vws):
-        pass
     def __init__(self, agents_dir, code=HIGH_SURROGATE_CODE):
         self.db = FakeDB()
         self.history = FakeHistory(self.db)
         self.lifecycle_manager = FakeLifecycle(self.db, agents_dir, code=code)
         self.sent = []
-        self.chat_calls = []
         self.tool_permissions = types.SimpleNamespace(
             get_agent_scopes=lambda u, a: {"tools:read": True},
             set_agent_scopes=lambda u, a, s: None,
@@ -192,17 +181,6 @@ class FakeOrch:
 
     async def _send_or_replace_components(self, websocket, components, chat_id, user_id=None):
         self.sent.append(("replace", components))
-
-    async def handle_chat_message(self, websocket, message, chat_id, display_message=None,
-                                  user_id=None, draft_agent_id=None, selected_tools=None,
-                                  attachments=None):
-        self.chat_calls.append((message, chat_id, draft_agent_id))
-        await websocket.send_json({"type": "chat_step",
-                                   "step": {"kind": "tool_call", "name": "do_thing",
-                                            "status": "completed"}})
-        await websocket.send_json({"type": "ui_render", "components": [
-            {"type": "card", "title": "Result",
-             "content": [{"type": "text", "content": "it worked"}]}]})
 
 
 def run(coro):
@@ -222,87 +200,20 @@ def _create_args():
             "user_request": "read my pdf"}
 
 
-def test_flag_off_runs_self_test_and_does_not_archive(tmp_path, monkeypatch):
+@pytest.mark.parametrize("archive_flag", ["false", "true"])
+def test_creation_runs_no_self_test_and_archives_nothing(tmp_path, monkeypatch, archive_flag):
     from shared.feature_flags import flags
     monkeypatch.setitem(flags._flags, "agentic_creation", True)
-    monkeypatch.delenv("FF_DRAFT_ARCHIVE", raising=False)
-    assert da.archive_enabled() is False
+    monkeypatch.setenv("FF_DRAFT_ARCHIVE", archive_flag)
 
     orch = FakeOrch(str(tmp_path))
     res = run(ac.handle_meta_tool(orch, "create_capability", _create_args(),
                                   user_id="u1", chat_id="c1"))
     assert res.result["status"] == "created"
+    assert "self_test" not in res.result
     draft_id = res.result["draft_id"]
-
-    assert orch.chat_calls, "flag OFF must run the real self-test (chat turn)"
-    assert orch.chat_calls[0][2] == draft_id
-    st = json.loads(orch.db.drafts[draft_id]["self_test"])
-    assert st["status"] == "passed"
-    assert not st.get("self_test_skipped")
-    assert da.get_archive("u1") == []
-
-
-def test_flag_on_high_surrogate_skips_self_test_and_archives(tmp_path, monkeypatch):
-    from shared.feature_flags import flags
-    monkeypatch.setitem(flags._flags, "agentic_creation", True)
-    monkeypatch.setenv("FF_DRAFT_ARCHIVE", "true")
-    assert da.archive_enabled() is True
-    assert da.surrogate_score(HIGH_SURROGATE_CODE) >= 0.85
-    assert da.should_skip_self_test(HIGH_SURROGATE_CODE, min_score=0.85) is False
-
-    orch = FakeOrch(str(tmp_path))
-    res = run(ac.handle_meta_tool(orch, "create_capability", _create_args(),
-                                  user_id="u1", chat_id="c1"))
-    assert res.result["status"] == "created"
-    draft_id = res.result["draft_id"]
-
-    assert orch.chat_calls == [], "high-surrogate draft must skip the self-test"
-    st = json.loads(orch.db.drafts[draft_id]["self_test"])
-    assert st["status"] == "passed"
-    assert st.get("self_test_skipped") is True
-    assert st.get("surrogate_score", 0) >= 0.85
-
-    archive = da.get_archive("u1")
-    assert len(archive) == 1
-    rec = archive[0]
-    assert rec.score > 0
-    assert "do_thing" in rec.code
-    assert "pdf" in rec.fingerprint.lower()
-
-
-MID_SURROGATE_CODE = "TOOL_REGISTRY = {}\ndef f(p):\n    return p\n" + "y = 2\n" * 30
-
-
-def test_flag_on_mid_surrogate_still_runs_self_test(tmp_path, monkeypatch):
-    from shared.feature_flags import flags
-    monkeypatch.setitem(flags._flags, "agentic_creation", True)
-    monkeypatch.setenv("FF_DRAFT_ARCHIVE", "true")
-
-    s = da.surrogate_score(MID_SURROGATE_CODE)
-    assert 0.25 <= s < 0.85, f"fixture must be mid-range, got {s}"
-    assert da.should_skip_self_test(MID_SURROGATE_CODE) is False
-    orch = FakeOrch(str(tmp_path), code=MID_SURROGATE_CODE)
-    res = run(ac.handle_meta_tool(orch, "create_capability", _create_args(),
-                                  user_id="u1", chat_id="c1"))
-    assert res.result["status"] == "created"
-    assert orch.chat_calls, "mid-surrogate draft must NOT skip the self-test"
-
-
-def test_flag_on_very_weak_cheap_rejects_before_self_test(tmp_path, monkeypatch):
-    from shared.feature_flags import flags
-    monkeypatch.setitem(flags._flags, "agentic_creation", True)
-    monkeypatch.setenv("FF_DRAFT_ARCHIVE", "true")
-
-    weak = "a = 1\nb = 2\nc = a + b\nprint(c)\nd = c * 3\ne = d - 1\nf = e + 7\n"
-    assert da.should_skip_self_test(weak) is True
-    orch = FakeOrch(str(tmp_path), code=weak)
-    res = run(ac.handle_meta_tool(orch, "create_capability", _create_args(),
-                                  user_id="u1", chat_id="c1"))
-    assert res.result["status"] == "created"
-    assert orch.chat_calls == [], "very-weak draft must be cheap-rejected (no self-test)"
-    st = json.loads(orch.db.drafts[res.result["draft_id"]]["self_test"])
-    assert st["status"] == "failed"
-    assert st.get("self_test_skipped") is True
+    assert not orch.db.drafts[draft_id].get("self_test")
+    assert "Self-test" not in json.dumps(res.ui_components)
     assert da.get_archive("u1") == []
 
 

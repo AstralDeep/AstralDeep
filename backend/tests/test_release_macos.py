@@ -26,6 +26,7 @@ sys.modules["release_macos"] = release
 SPEC.loader.exec_module(release)
 
 PROJECTION = "b" * 40
+PACKED_PROJECTION = "f" * 40
 DEEP = "a" * 40
 SIGNATURE = "S" * 86 + "=="
 NOW = dt.datetime(2026, 10, 26, 12, 0, 0, tzinfo=dt.timezone.utc)
@@ -37,6 +38,27 @@ IDENTITY = {
     "version": "2.0.0", "build": 71, "minimumMacOS": "14.0", "architecture": "arm64",
     "bundleID": "com.personalailabs.astraldeep", "executableSHA256": "e" * 64, "teamID": "593LGH35GS",
 }
+PROFILE_BYTES = (Path(__file__).resolve().parents[2] / release.PROFILE_PATH).read_bytes()
+DIRECT_ENTITLEMENTS = {
+    "com.apple.security.device.audio-input": True,
+    "com.apple.developer.associated-domains": list(release.ASSOCIATED_DOMAINS),
+}
+
+
+def decoded_profile(**changes) -> dict:
+    profile = {
+        "UUID": release.PROFILE_UUID, "TeamIdentifier": ["593LGH35GS"], "Platform": ["OSX"], "ProvisionsAllDevices": True,
+        "ExpirationDate": dt.datetime(2044, 11, 12, 1, 0, 0),
+        "Entitlements": {
+            "com.apple.developer.associated-domains": "*", "keychain-access-groups": ["593LGH35GS.*"],
+            "com.apple.developer.team-identifier": "593LGH35GS",
+            "com.apple.application-identifier": "593LGH35GS.com.personalailabs.astraldeep",
+        },
+    }
+    profile.update(changes)
+    return profile
+
+
 SITE_FILES = ["downloads.json", "appcast.xml", "mac-update-policy.json", "mac-update-policy.json.sig"]
 
 
@@ -97,9 +119,20 @@ class FakeRunner(release.Runner):
         self.generate_item = None
         self.extra_stage_file = False
         self.pin = PROJECTION
+        self.kernel_pin = "c" * 40
+        self.ancestor_ok = True
+        self.deep_changed = ["components/AstralProjection", "config/astral-composition.json"]
+        self.projection_changed = [release.NODE_PACK_METADATA_PATH]
         self.listing: str | None = None
         self.latest_tag: str | None = "v0.6.0"
+        self.apply_latest = True
         self.mounted: list[Path] = []
+        self.profile = decoded_profile()
+        self.embedded: bytes | None = PROFILE_BYTES
+        self.signed_entitlements = dict(DIRECT_ENTITLEMENTS)
+
+    def _security(self, command, cwd):
+        return release.Result(0, plistlib.dumps(self.profile).decode())
 
     def _execute(self, command, cwd):
         for matcher in self.fail:
@@ -119,14 +152,40 @@ class FakeRunner(release.Runner):
         if sub == "rev-parse":
             return release.Result(0, (PROJECTION if Path(repo) == self.env.projection else self.env.deep_sha) + "\n")
         if sub == "ls-tree":
-            return release.Result(0, f"160000 commit {self.pin}\tcomponents/AstralProjection\n")
+            path = command[-1]
+            name = next((name for name, item in self.env.current_composition["components"].items()
+                         if item["path"] == path), None)
+            if name is None:
+                return release.Result(0)
+            commit = self.env.current_composition["components"][name]["commit"]
+            if command[4] != "HEAD" and name == "astral-projection":
+                commit = PACKED_PROJECTION
+            if name == "astral-projection" and command[4] == "HEAD":
+                commit = self.pin
+            if name == "astral-kernel":
+                commit = self.kernel_pin
+            return release.Result(0, f"160000 commit {commit}\t{path}\n")
+        if sub == "merge-base":
+            return release.Result(0 if self.ancestor_ok else 1)
+        if sub == "diff":
+            paths = self.projection_changed if Path(repo) == self.env.projection else self.deep_changed
+            return release.Result(0, "".join(path + "\n" for path in paths))
+        if sub == "show":
+            if Path(repo) == self.env.projection:
+                return release.Result(0, json.dumps(self.env.prior_pins))
+            return release.Result(0, json.dumps(self.env.packed_composition))
         return release.Result(0)
 
     def _xcodebuild(self, command, cwd):
         if "archive" in command:
             Path(command[command.index("-archivePath") + 1]).mkdir(parents=True)
         else:
-            write_app(Path(command[command.index("-exportPath") + 1]) / "AstralDeep.app", self.env.info)
+            self.env.info["ASTRALNodePackURL"] = ASSETS + "node-pack.json"
+            self.env.info["ASTRALNodePackSHA256"] = hashlib.sha256((self.env.node_pack / "node-pack.json").read_bytes()).hexdigest()
+            app = Path(command[command.index("-exportPath") + 1]) / "AstralDeep.app"
+            write_app(app, self.env.info)
+            if self.embedded is not None:
+                (app / "Contents/embedded.provisionprofile").write_bytes(self.embedded)
 
     def _ditto(self, command, cwd):
         if command[1] == "-c":
@@ -151,6 +210,8 @@ class FakeRunner(release.Runner):
             return release.Result(0, self.stapler_output)
 
     def _codesign(self, command, cwd):
+        if "--entitlements" in command:
+            return release.Result(0, plistlib.dumps(self.signed_entitlements).decode())
         return release.Result(0, "", self.codesign_output)
 
     def _spctl(self, command, cwd):
@@ -183,6 +244,9 @@ class FakeRunner(release.Runner):
             return release.Result(0 if self.release_exists else 1, "", "release not found")
         if command[1:3] == ["release", "create"]:
             self.uploads = [Path(part) for part in command[command.index("--latest=false") + 1:] if part != "--prerelease"]
+            return None
+        if command[1:3] == ["release", "edit"] and "--latest" in command and self.apply_latest:
+            self.latest_tag = command[3]
             return None
         if command[1] == "api" and command[2].endswith("/releases/latest"):
             if self.latest_tag is None:
@@ -231,6 +295,56 @@ class Env:
             (self.sparkle / tool).write_text("#!/bin/sh\n")
         self.notes = tmp_path / "notes.md"
         self.notes.write_text("## 2.0.0\n\n- Updates inside the app.\n")
+        self.node_pack = tmp_path / "node-pack"
+        self.node_pack.mkdir()
+        archive_name = "astral-node-pack-3.11.18-aaaaaaaa-ccccccc-macos-arm64.tar.gz"
+        archive = self.node_pack / archive_name
+        archive.write_bytes(b"qualified pack archive")
+        manifest = {"format": "astral.nodepack-manifest/v1", "platform": "macos-arm64",
+                    "version": "3.11.18-aaaaaaaa-ccccccc", "deep": {"commit": DEEP},
+                    "kernel": {"commit": "c" * 40}, "installed_bytes": 123}
+        names = ("astral-projection", "astral-kernel", "astral-primitives", "lets")
+        commits = (PACKED_PROJECTION, "c" * 40, "2" * 40, "3" * 40)
+        paths = ("components/AstralProjection", "components/AstralKernel",
+                 "components/AstralPrimitives", "components/LETS")
+        self.packed_composition = {"format": "astral.composition/v2",
+            "in_tree": {"astral-plane": {"path": "plane", "contract_version": "astralplane.contract/v1"}},
+            "components": {
+            name: {"repository": f"https://example.invalid/{name}.git", "path": path,
+                   "commit": commit, "contract_version": "v1"}
+            for name, commit, path in zip(names, commits, paths, strict=True)
+        }}
+        self.current_composition = json.loads(json.dumps(self.packed_composition))
+        self.current_composition["components"]["astral-projection"]["commit"] = PROJECTION
+        composition_path = self.deep / "config/astral-composition.json"
+        composition_path.parent.mkdir(parents=True)
+        composition_path.write_text(json.dumps(self.current_composition))
+        manifest["components"] = {
+            name: {"repository": entry["repository"], "commit": entry["commit"]}
+            for name, entry in self.packed_composition["components"].items()
+        }
+        manifest_path = self.node_pack / "node-pack-manifest.json"
+        manifest_path.write_text(json.dumps(manifest))
+        descriptor = {"format": "astral.nodepack-descriptor/v1", "platform": "macos-arm64",
+                      "version": manifest["version"], "archive": {"file": archive_name,
+                      "size": archive.stat().st_size, "sha256": release.sha256_file(archive)},
+                      "manifest_sha256": release.sha256_file(manifest_path), "installed_bytes": 123}
+        (self.node_pack / "node-pack.json").write_text(json.dumps(descriptor))
+        pins = self.projection / "apple-clients/NodePack/pins.json"
+        pins.parent.mkdir(parents=True)
+        pins.write_text(json.dumps({"deep": {"commit": DEEP}, "kernel": {"commit": "c" * 40}}))
+        self.prior_pins = {"deep": {"commit": "e" * 40}, "kernel": {"commit": "c" * 40}}
+        entitlements = self.projection / release.DIRECT_ENTITLEMENTS
+        entitlements.parent.mkdir(parents=True, exist_ok=True)
+        entitlements.write_bytes(plistlib.dumps(DIRECT_ENTITLEMENTS))
+        self.profile_path = self.deep / release.PROFILE_PATH
+        self.profile_path.parent.mkdir(parents=True)
+        self.profile_path.write_bytes(PROFILE_BYTES)
+        self.home = tmp_path / "home"
+        monkeypatch.setenv("HOME", str(self.home))
+        info_path = self.projection / "apple-clients/AstralApp/Info.plist"
+        info_path.parent.mkdir(parents=True, exist_ok=True)
+        info_path.write_bytes(plistlib.dumps({"CFBundleName": "AstralDeep"}))
         monkeypatch.setattr(release.platform, "system", lambda: "Darwin")
         monkeypatch.setattr(release.shutil, "which", lambda name: f"/usr/bin/{name}")
         monkeypatch.setattr(release.packager, "inspect_app", lambda app, team: dict(IDENTITY))
@@ -247,7 +361,8 @@ class Env:
         return release.build_parser().parse_args([
             "--projection-commit", PROJECTION, "--version", self.version, "--build", str(self.build),
             "--notes", str(self.notes), "--staging-dir", str(stage), "--work-dir", str(self.tmp / "out" / "work"),
-            "--projection", str(self.projection), "--sparkle-bin", str(self.sparkle), *extra,
+            "--projection", str(self.projection), "--sparkle-bin", str(self.sparkle),
+            "--node-pack-dir", str(self.node_pack), *extra,
         ])
 
     def release(self, *extra, runner=None, dry=False, **kwargs):
@@ -304,6 +419,7 @@ def test_build_without_publish_stages_only_the_newest_archive_and_writes_every_a
     assert names == sorted([
         DMG, "AstralDeep-2.0.0-71-arm64.md", "appcast.xml", "SHA256SUMS", "release-provenance.json",
         "downloads.json", "mac-update-policy.json", "mac-update-policy.json.sig", release.STATE_FILE,
+        "node-pack.json", "node-pack-manifest.json", next(env.node_pack.glob("*.tar.gz")).name,
     ])
     archive = env.stage / DMG
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
@@ -320,6 +436,8 @@ def test_build_without_publish_stages_only_the_newest_archive_and_writes_every_a
     provenance = json.loads((env.stage / "release-provenance.json").read_text())
     assert provenance["tag"] == "macos-v2.0.0-71" and provenance["archive"]["sha256"] == digest
     assert provenance["archive"]["filename"] == DMG
+    assert provenance["nodePack"]["descriptorURL"] == ASSETS + "node-pack.json"
+    assert provenance["nodePack"]["descriptor_sha256"] == release.sha256_file(env.node_pack / "node-pack.json")
     assert provenance["apple"]["notarizationSubmission"] == "sub-1"
     assert provenance["apple"]["diskImageNotarizationSubmission"] == "sub-1"
     assert provenance["apple"]["gatekeeperAssessment"] == "accepted: Notarized Developer ID"
@@ -345,8 +463,9 @@ def test_steps_run_in_the_documented_order(env):
     subject, runner = env.release()
     subject.execute()
     assert tools(runner) == [
-        "git status", "git status", "git rev-parse", "git rev-parse", "git ls-tree", "gh api",
-        "xcodebuild", "xcodebuild", "codesign", "codesign",
+        "git status", "git status", "git rev-parse", "git rev-parse", "git ls-tree", "git merge-base",
+        "git diff", "git show", *("git ls-tree" for _ in range(8)), "git diff", "git show", "gh api",
+        "security", "xcodebuild", "xcodebuild", "codesign", "codesign", "codesign",
         "ditto", "xcrun notarytool", "xcrun stapler", "xcrun stapler", "spctl",
         "ditto", "hdiutil create", "codesign", "xcrun notarytool", "xcrun stapler", "xcrun stapler", "spctl",
         "hdiutil attach", "spctl", "xcrun stapler", "hdiutil detach",
@@ -647,6 +766,7 @@ def test_command_lines_use_the_documented_flags(env):
     assert plistlib.loads((env.work / "export-options.plist").read_bytes()) == {
         "method": "developer-id", "teamID": "593LGH35GS", "signingStyle": "manual",
         "signingCertificate": "Developer ID Application", "destination": "export",
+        "provisioningProfiles": {"com.personalailabs.astraldeep": release.PROFILE_UUID},
     }
     assert by["ditto"][0][:6] == ["ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", str(env.work / "export/AstralDeep.app")]
     assert by["xcrun notarytool"][0][3:] == [
@@ -669,6 +789,121 @@ def test_command_lines_use_the_documented_flags(env):
     state = json.loads((env.stage / "release-state.json").read_text())
     assert state["channel"] == "preview"
     assert release.parse_appcast(env.stage / "appcast.xml")[0]["channel"] == "preview"
+
+
+def test_profile_is_decoded_installed_and_named_for_archive_and_export(env):
+    subject, runner = env.release()
+    subject.execute()
+    archive = next(c for c in runner.history if c[:2] == ["xcodebuild", "archive"])
+    assert f"ASTRAL_PROFILE_DIRECT={release.PROFILE_UUID}" in archive
+    assert not any("PROVISIONING_PROFILE_SPECIFIER" in part for part in archive)
+    assert next(c for c in runner.history if c[0] == "security")[:4] == ["security", "cms", "-D", "-i"]
+    for folder in release.PROFILE_INSTALL_DIRS:
+        assert (env.home / folder / f"{release.PROFILE_UUID}.provisionprofile").read_bytes() == PROFILE_BYTES
+    assert next(c for c in runner.history if "--entitlements" in c)[-1].endswith("AstralDeep.app")
+
+
+def test_dry_run_checks_the_digest_but_touches_nothing(env):
+    subject, runner = env.release(dry=True)
+    subject.prepare_profile()
+    subject.verify_profile(env.work / "export/AstralDeep.app")
+    assert not env.home.exists() and not any(c[0] in {"security", "codesign"} for c in runner.history)
+
+
+def test_profile_digest_must_match_the_pin(env):
+    env.profile_path.write_bytes(PROFILE_BYTES + b"x")
+    subject, runner = env.release()
+    with pytest.raises(release.ReleaseError, match="differs from the pinned"):
+        subject.execute()
+    assert not any(c[0] == "xcodebuild" for c in runner.history)
+
+
+def test_missing_profile_file_is_refused(env):
+    env.profile_path.unlink()
+    subject, _ = env.release()
+    with pytest.raises(release.ReleaseError, match="missing or differs"):
+        subject.prepare_profile()
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"UUID": "other"}, "UUID other differs"),
+        ({"TeamIdentifier": ["OTHERTEAM01"]}, "does not belong to team"),
+        ({"Entitlements": {**decoded_profile()["Entitlements"], "com.apple.application-identifier": "593LGH35GS.other"}},
+         "is not for"),
+        ({"Platform": ["iOS"]}, "not a macOS Developer ID"),
+        ({"ProvisionsAllDevices": False}, "not a macOS Developer ID"),
+        ({"ExpirationDate": dt.datetime(2026, 10, 1)}, "expired on 2026-10-01"),
+        ({"Entitlements": {k: v for k, v in decoded_profile()["Entitlements"].items()
+                           if k != "com.apple.developer.associated-domains"}}, "does not allow the com.apple.developer.associated-domains"),
+        ({"Entitlements": {**decoded_profile()["Entitlements"], "com.apple.developer.associated-domains": ["applinks:other.example"]}},
+         "does not allow the com.apple.developer.associated-domains"),
+    ],
+)
+def test_profile_mismatches_are_refused_before_archiving(env, changes, message):
+    subject, runner = env.release()
+    runner.profile = decoded_profile(**changes)
+    with pytest.raises(release.ReleaseError, match=message):
+        subject.execute()
+    assert not any(c[0] == "xcodebuild" for c in runner.history)
+    assert not env.home.exists()
+
+
+def test_undecodable_profile_is_refused(env):
+    subject, runner = env.release()
+    runner.profile = {"UUID": release.PROFILE_UUID}
+    with pytest.raises(release.ReleaseError, match="could not be decoded"):
+        subject.prepare_profile()
+
+
+def test_listed_associated_domains_in_the_profile_are_matched_by_pattern(env):
+    subject, runner = env.release()
+    entitlements = {**decoded_profile()["Entitlements"], "com.apple.developer.associated-domains": ["applinks:*", "webcredentials:*"]}
+    runner.profile = decoded_profile(Entitlements=entitlements)
+    subject.prepare_profile()
+    assert subject.profile_allows("same", "same") and not subject.profile_allows("same", "different")
+
+
+def test_keychain_groups_with_the_build_prefix_are_matched_against_the_profile(env):
+    entitlements = env.projection / release.DIRECT_ENTITLEMENTS
+    entitlements.write_bytes(plistlib.dumps({
+        **DIRECT_ENTITLEMENTS, "keychain-access-groups": ["$(AppIdentifierPrefix)com.personalailabs.astraldeep"]}))
+    subject, runner = env.release()
+    subject.prepare_profile()
+    assert subject.expand_prefix(["$(TeamIdentifierPrefix)x", 1]) == ["593LGH35GS.x", 1]
+    runner.profile = decoded_profile(Entitlements={
+        k: v for k, v in decoded_profile()["Entitlements"].items() if k != "keychain-access-groups"})
+    with pytest.raises(release.ReleaseError, match="does not allow the keychain-access-groups"):
+        subject.prepare_profile()
+
+
+@pytest.mark.parametrize("embedded", [None, PROFILE_BYTES + b"x"])
+def test_export_without_the_pinned_profile_embedded_is_refused(env, embedded):
+    subject, runner = env.release()
+    runner.embedded = embedded
+    with pytest.raises(release.ReleaseError, match="does not embed the pinned"):
+        subject.execute()
+
+
+@pytest.mark.parametrize(
+    "signed", [{"com.apple.security.device.audio-input": True},
+               {"com.apple.developer.associated-domains": ["applinks:astraldeep.github.io"]},
+               {"com.apple.developer.associated-domains": "*"}],
+)
+def test_signed_app_without_the_associated_domains_is_refused(env, signed):
+    subject, runner = env.release()
+    runner.signed_entitlements = signed
+    with pytest.raises(release.ReleaseError, match="lacks the associated domains"):
+        subject.execute()
+
+
+def test_unreadable_signed_entitlements_are_refused(env):
+    subject, runner = env.release()
+    runner.signed_entitlements = {}
+    runner._codesign = lambda command, cwd: release.Result(0, "not a plist") if "--entitlements" in command else release.Result(0, "", "")
+    with pytest.raises(release.ReleaseError, match="unreadable"):
+        subject.execute()
 
 
 def test_account_signing_is_the_default(env):
@@ -763,6 +998,7 @@ def test_publish_uploads_site_files_as_release_assets(env):
     assert create[create.index("--notes-file") + 1] == str(env.stage / "AstralDeep-2.0.0-71-arm64.md")
     assert [path.name for path in runner.uploads] == [
         DMG, "SHA256SUMS", "release-provenance.json", "AstralDeep-2.0.0-71-arm64.md", *SITE_FILES,
+        "node-pack.json", "node-pack-manifest.json", next(env.node_pack.glob("*.tar.gz")).name,
     ]
     assert release.STATE_FILE not in [path.name for path in runner.uploads]
     joined = [" ".join(c) for c in runner.history]
@@ -778,35 +1014,45 @@ def test_publish_uploads_site_files_as_release_assets(env):
     assert any(line.startswith("Published macos-v2.0.0-71") for line in env.lines)
 
 
-def test_stable_channel_is_not_prerelease_and_not_latest(env):
+def test_publishing_a_stable_draft_marks_it_latest(env):
     subject, runner = env.release("--publish")
     subject.execute()
     create = runner.last_create()
     assert "--latest=false" in create and "--prerelease" not in create
     edit = next(c for c in runner.history if c[:3] == ["gh", "release", "edit"])
-    assert "--prerelease" not in edit and "--latest=false" in edit
+    assert "--prerelease" not in edit and "--latest" in edit
     joined = [" ".join(c) for c in runner.history]
     check = next(i for i, c in enumerate(joined) if c.startswith("gh api repos/AstralDeep/AstralDeep/releases/latest"))
     assert joined.index(" ".join(edit)) < check
 
 
-@pytest.mark.parametrize(("latest", "message"), [("macos-v2.0.0-71", "became the repository's Latest release"),
-                                                  ("broken", "Could not confirm the Latest release")])
-def test_publish_refuses_a_release_that_became_latest(env, latest, message):
-    subject, runner = env.release("--publish")
+@pytest.mark.parametrize(("channel", "latest", "message"), [
+    ("stable", "v0.6.0", "did not mark stable release"),
+    ("stable", None, "did not mark stable release"),
+    ("preview", "macos-v2.0.0-71", "marked preview release"),
+])
+def test_publish_detects_incorrect_latest_status(env, channel, latest, message):
+    subject, runner = env.release("--publish", "--channel", channel)
+    runner.apply_latest = False
     runner.latest_tag = latest
-    if latest == "broken":
-        runner.fail.append(lambda c: c[:3] == ["gh", "api", "repos/AstralDeep/AstralDeep/releases/latest"])
     with pytest.raises(release.ReleaseError, match=message):
         subject.execute()
-    assert not any(c[0] == "curl" and "--range" in c for c in runner.history)
 
 
-def test_publish_accepts_a_repository_without_a_latest_release(env):
+def test_publish_reports_an_unavailable_latest_endpoint(env):
     subject, runner = env.release("--publish")
+    runner.fail.append(lambda c: c[:3] == ["gh", "api", "repos/AstralDeep/AstralDeep/releases/latest"])
+    with pytest.raises(release.ReleaseError, match="Could not confirm the Latest release"):
+        subject.execute()
+
+
+def test_preview_can_publish_before_the_first_stable_release(env):
+    subject, runner = env.release("--publish", "--channel", "preview")
     runner.latest_tag = None
     subject.execute()
-    assert any(line.startswith("Published macos-v2.0.0-71") for line in env.lines)
+    edit = next(c for c in runner.history if c[:3] == ["gh", "release", "edit"])
+    assert "--prerelease" in edit and "--latest=false" in edit
+    assert runner.latest_tag is None
 
 
 def test_provenance_names_the_workflow_run_that_published(env):
@@ -1019,7 +1265,9 @@ def test_identity_checks_translate_packager_failures_and_version_drift(env, monk
 
 
 def test_sparkle_configuration_inside_the_built_app_is_enforced(env):
-    good = {"SUPublicEDKey": release.SPARKLE_PUBLIC_KEY, "SUFeedURL": release.FEED_URL, "SUVerifyUpdateBeforeExtraction": True}
+    good = {"SUPublicEDKey": release.SPARKLE_PUBLIC_KEY, "SUFeedURL": release.FEED_URL, "SUVerifyUpdateBeforeExtraction": True,
+            "ASTRALNodePackURL": ASSETS + "node-pack.json",
+            "ASTRALNodePackSHA256": release.sha256_file(env.node_pack / "node-pack.json")}
     for index, (patch, message) in enumerate((
         ({"SUPublicEDKey": "other"}, "expected Sparkle feed and public key"),
         ({"SUFeedURL": "http://example.com/appcast.xml"}, "expected Sparkle feed and public key"),
@@ -1034,10 +1282,166 @@ def test_sparkle_configuration_inside_the_built_app_is_enforced(env):
     app = env.tmp / "good.app"
     write_app(app, good)
     subject, runner = env.release()
+    subject.node_pack = subject.verify_node_pack()
     subject.verify_sparkle(app)
     runner.codesign_output = "TeamIdentifier=OTHERTEAM1"
     with pytest.raises(release.ReleaseError, match="Autoupdate is not signed by team"):
         subject.verify_sparkle(app)
+
+
+def test_node_pack_source_and_asset_mismatch_stop_before_signing(env):
+    descriptor_path = env.node_pack / "node-pack.json"
+    original = descriptor_path.read_text()
+    altered = json.loads(original)
+    altered["archive"]["sha256"] = "0" * 64
+    descriptor_path.write_text(json.dumps(altered))
+    subject, runner = env.release()
+    with pytest.raises(release.ReleaseError, match="descriptor, manifest and archive disagree"):
+        subject.execute()
+    assert not any(command[0] == "xcodebuild" for command in runner.history)
+    descriptor_path.write_text(original)
+
+    pins_path = env.projection / "apple-clients/NodePack/pins.json"
+    pins = json.loads(pins_path.read_text())
+    pins["deep"]["commit"] = "f" * 40
+    pins_path.write_text(json.dumps(pins))
+    subject, runner = env.release()
+    with pytest.raises(release.ReleaseError, match="source pins or version"):
+        subject.execute()
+    assert not any(command[0] == "xcodebuild" for command in runner.history)
+
+
+def test_staged_node_pack_change_refuses_publication(env):
+    subject, _ = env.release()
+    subject.execute()
+    (env.stage / "node-pack.json").write_text("{}")
+    subject, runner = env.release("--publish", "--publish-staged")
+    with pytest.raises(release.ReleaseError, match="Staged node pack asset"):
+        subject.execute()
+    assert not any(command[:3] == ["gh", "release", "create"] for command in runner.history)
+
+
+@pytest.mark.parametrize("problem,expected", [
+    ("missing", "incomplete or malformed"),
+    ("bad_name", "archive name is invalid"),
+    ("extra", "exactly its descriptor"),
+    ("descriptor_format", "descriptor format or platform"),
+    ("manifest_format", "manifest format or platform"),
+    ("ancestor", "not an ancestor"),
+    ("kernel", "astral-kernel gitlink differs"),
+])
+def test_node_pack_preflight_denies_malformed_or_foreign_inputs(env, problem, expected):
+    descriptor_path = env.node_pack / "node-pack.json"
+    manifest_path = env.node_pack / "node-pack-manifest.json"
+    subject, runner = env.release()
+    if problem == "missing":
+        descriptor_path.unlink()
+    elif problem == "bad_name":
+        data = json.loads(descriptor_path.read_text())
+        data["archive"]["file"] = "../outside.tar.gz"
+        descriptor_path.write_text(json.dumps(data))
+    elif problem == "extra":
+        (env.node_pack / "extra").write_text("unexpected")
+    elif problem == "descriptor_format":
+        data = json.loads(descriptor_path.read_text())
+        data["format"] = "unknown"
+        descriptor_path.write_text(json.dumps(data))
+    elif problem == "manifest_format":
+        data = json.loads(manifest_path.read_text())
+        data["format"] = "unknown"
+        manifest_path.write_text(json.dumps(data))
+    elif problem == "ancestor":
+        runner.ancestor_ok = False
+    else:
+        runner.kernel_pin = "d" * 40
+    with pytest.raises(release.ReleaseError, match=expected):
+        subject.execute()
+    assert not any(command[0] == "xcodebuild" for command in runner.history)
+
+
+def test_built_app_must_pin_the_exact_node_pack_descriptor(env):
+    subject, _ = env.release()
+    subject.node_pack = subject.verify_node_pack()
+    app = env.tmp / "wrong-offer.app"
+    write_app(app, {**env.info, "ASTRALNodePackURL": ASSETS + "node-pack.json",
+                    "ASTRALNodePackSHA256": "0" * 64})
+    with pytest.raises(release.ReleaseError, match="exact immutable node pack offer"):
+        subject.verify_sparkle(app)
+
+
+def test_rebuilt_node_pack_cannot_reuse_a_staged_release(env):
+    subject, _ = env.release()
+    subject.execute()
+    descriptor_path = env.node_pack / "node-pack.json"
+    descriptor_path.write_text(descriptor_path.read_text() + " ")
+    subject, runner = env.release("--publish", "--publish-staged")
+    with pytest.raises(release.ReleaseError, match="node pack changed since staging"):
+        subject.execute()
+    assert not any(command[:3] == ["gh", "release", "create"] for command in runner.history)
+
+
+@pytest.mark.parametrize("changed,expected", [
+    ("backend/orchestrator/orchestrator.py", "runtime or policy paths"),
+    ("backend/requirements.txt", "runtime or policy paths"),
+    (".github/workflows/ci.yml", "runtime or policy paths"),
+])
+def test_pack_cannot_accompany_new_deep_runtime_or_policy(env, changed, expected):
+    subject, runner = env.release()
+    runner.deep_changed.append(changed)
+    with pytest.raises(release.ReleaseError, match=expected):
+        subject.execute()
+    assert not any(command[0] == "xcodebuild" for command in runner.history)
+
+
+def test_pack_cannot_accompany_nonmetadata_projection_change(env):
+    subject, runner = env.release()
+    runner.projection_changed.append("apple-clients/AstralApp/AstralApp/App.swift")
+    with pytest.raises(release.ReleaseError, match="Projection changed beyond node pack pin metadata"):
+        subject.execute()
+    assert not any(command[0] == "xcodebuild" for command in runner.history)
+
+
+def test_pack_manifest_must_match_all_packed_component_sources(env):
+    manifest_path = env.node_pack / "node-pack-manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["components"]["astral-primitives"]["commit"] = "d" * 40
+    manifest_path.write_text(json.dumps(manifest))
+    descriptor_path = env.node_pack / "node-pack.json"
+    descriptor = json.loads(descriptor_path.read_text())
+    descriptor["manifest_sha256"] = release.sha256_file(manifest_path)
+    descriptor_path.write_text(json.dumps(descriptor))
+    subject, runner = env.release()
+    with pytest.raises(release.ReleaseError, match="astral-primitives differs from packed Deep composition"):
+        subject.execute()
+    assert not any(command[0] == "xcodebuild" for command in runner.history)
+
+
+def test_pack_listing_plane_as_a_pinned_component_is_refused_after_the_move(env):
+    manifest_path = env.node_pack / "node-pack-manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["components"]["astral-plane"] = {"repository": "https://example.invalid/astral-plane.git",
+                                              "commit": "1" * 40}
+    manifest_path.write_text(json.dumps(manifest))
+    descriptor_path = env.node_pack / "node-pack.json"
+    descriptor = json.loads(descriptor_path.read_text())
+    descriptor["manifest_sha256"] = release.sha256_file(manifest_path)
+    descriptor_path.write_text(json.dumps(descriptor))
+    subject, runner = env.release()
+    with pytest.raises(release.ReleaseError,
+                       match="Node pack component inventory differs from packed Deep composition"):
+        subject.execute()
+    assert not any(command[0] == "xcodebuild" for command in runner.history)
+
+
+def test_release_composition_may_change_only_projection_commit(env):
+    composition_path = env.deep / "config/astral-composition.json"
+    composition = json.loads(composition_path.read_text())
+    composition["components"]["astral-primitives"]["commit"] = "d" * 40
+    composition_path.write_text(json.dumps(composition))
+    subject, runner = env.release()
+    with pytest.raises(release.ReleaseError, match="composition changes beyond"):
+        subject.execute()
+    assert not any(command[0] == "xcodebuild" for command in runner.history)
 
 
 def test_notarization_problems_stop_the_release(env):

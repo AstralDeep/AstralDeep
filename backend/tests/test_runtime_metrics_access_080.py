@@ -209,7 +209,7 @@ def test_absent_bearer_is_rejected_by_real_authentication_dependency() -> None:
     response = client.get("/api/runtime-reliability/metrics")
 
     assert response.status_code == 401
-    assert response.headers["www-authenticate"] == "Bearer"
+    assert response.json()["detail"] == "node.bearer_refused"
     assert observability.snapshot_calls == 0
     assert coordinator.inspect_calls == []
     client.app.state.orchestrator._save_user_profile.assert_not_called()

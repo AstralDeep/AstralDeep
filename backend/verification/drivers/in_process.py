@@ -1,6 +1,6 @@
 """In-process driver: the deterministic CI merge gate that drives a real Orchestrator
-with a scripted LLM (backend/verification/drivers/scripted_llm.py) and a loopback MCP
-agent, running the product's real gates, audit, workspace, and web render.
+and a loopback MCP agent through the protected tool dispatch with no model, running the
+product's real permission gates and audit chain. Feeds verification/checks/authority.py.
 """
 
 from __future__ import annotations
@@ -10,15 +10,15 @@ import hashlib
 import json
 import logging
 import os
+import time
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from verification.config import RunConfig
-from verification.evidence import CapturedEvidence, flatten_components
-from verification.isolation import Principal, teardown
+from verification.evidence import CapturedEvidence
+from verification.isolation import Principal, require_issuer_scoped_cleanup, teardown
 from verification.personas import Fixture, materialize
-from verification.scenarios import Scenario
-from verification.drivers.scripted_llm import scripted_llm_for
+from verification.drivers.fixture_identity import fixture_issuer_digest, fixture_owner_id
 
 logger = logging.getLogger("verification.in_process")
 
@@ -94,11 +94,11 @@ class InProcessDriver:
         self._uploaded_blob_owners: set[str] = set()
         self._execution_nonce = uuid.uuid4().hex[:16]
         self._execution_principals: dict[str, Principal] = {}
+        self._execution_subjects: dict[str, str] = {}
         self._teardown_task: asyncio.Task[None] | None = None
         self._fixture_identity = None
 
     async def setup(self) -> None:
-        os.environ["FF_UI_DESIGNER"] = "false"
         self._saved_delegation_required = os.environ.get("DELEGATION_REQUIRED")
         os.environ["DELEGATION_REQUIRED"] = "false"
 
@@ -123,6 +123,8 @@ class InProcessDriver:
         try:
             if cancellation is not None:
                 raise cancellation
+            _runtime, repositories, _blobs = self._plane_dependencies()
+            require_issuer_scoped_cleanup(repositories)
             from pathlib import Path
             from orchestrator.knowledge_synthesis import KnowledgeIndex
 
@@ -160,6 +162,10 @@ class InProcessDriver:
         return runtime, repositories, blobs
 
     def _execution_principal(self, principal: Principal) -> Principal:
+
+        identity = getattr(self, "_fixture_identity", None)
+        if identity is None or identity.closed:
+            raise RuntimeError("verification owner requires an active fixture identity")
         existing = self._execution_principals.get(principal.user_id)
         if existing is not None:
             if tuple(existing.roles) != tuple(principal.roles):
@@ -170,36 +176,17 @@ class InProcessDriver:
             raise ValueError("verification principal is outside the configured run namespace")
         identity_digest = hashlib.sha256(principal.user_id.encode("utf-8")).hexdigest()[:12]
         suffix = f"_exec_{self._execution_nonce}_{identity_digest}"
-        maximum_base = 255 - len(suffix)
+        owner_prefix_length = len(fixture_owner_id(identity.authority, "x")) - 1
+        maximum_base = 255 - owner_prefix_length - len(suffix)
         if len(expected_prefix) > maximum_base:
             raise ValueError("verification run namespace is too long for blob ownership")
-        scoped_id = f"{principal.user_id[:maximum_base]}{suffix}"
+        subject = f"{principal.user_id[:maximum_base]}{suffix}"
+        scoped_id = fixture_owner_id(identity.authority, subject)
         scoped = Principal(user_id=scoped_id, roles=list(principal.roles))
+        self._execution_subjects[scoped_id] = subject
         self._execution_principals[principal.user_id] = scoped
         self._execution_principals[scoped_id] = scoped
         return scoped
-
-    async def _seed_llm_config(self, user_id: str) -> None:
-        store = getattr(self.orch, "_llm_store", None)
-        if store is None:  # pragma: no cover
-            return
-        try:
-            await _run_sync(
-                store.set_sync,
-                user_id,
-                provider="custom",
-                base_url="http://verif.invalid/v1",
-                model="verif-scripted-model",
-                api_key="verif-key",
-            )
-        except Exception:
-            logger.warning("verification: llm config seeding failed", exc_info=True)
-
-        # Dev-only stub: delegation calls fail open here, unlike production.
-        async def _no_delegation(*_a, **_k):
-            return None
-
-        self.orch._get_delegation_token = _no_delegation  # type: ignore[assignment]
 
     def _register_general_agent(self) -> None:
         from agents.general.mcp_server import MCPServer
@@ -292,19 +279,16 @@ class InProcessDriver:
             "path": path,
         }
 
-    async def _register_session(self, principal: Principal, chat_id: Optional[str] = None) -> CaptureSocket:
+    async def _register_session(self, principal: Principal) -> CaptureSocket:
         principal = self._execution_principal(principal)
-        await self._seed_llm_config(principal.user_id)
+        claims = Principal(principal.user_id, list(principal.roles)).claims()
         ws = CaptureSocket(label=principal.user_id)
-        claims, token = self._fixture_identity.claims_and_token(principal.claims())
-        self.orch.ui_sessions[ws] = claims | {"_raw_token": token}
+        self.orch.ui_sessions[ws] = dict(claims)
         ws.scope = {"type": "websocket", "headers": [], "query_string": b""}
         context = self.orch._new_connection_context(ws)
         context.registered = True
         context.connection_generation = uuid.uuid4()
         self.orch.ui_clients.append(ws)
-        if chat_id is not None:
-            self.orch._ws_active_chat[id(ws)] = chat_id
         return ws
 
     def _drop_session(self, ws: CaptureSocket) -> None:
@@ -313,32 +297,9 @@ class InProcessDriver:
         except ValueError:
             pass
         self.orch.ui_sessions.pop(ws, None)
-        self.orch._ws_active_chat.pop(id(ws), None)
         context = self.orch._connection_contexts.pop(id(ws), None)
         if context is not None:
             context.closing = True
-
-    async def _send_registered_turn(self, ws, message, chat_id, *, user_id, attachments):
-        from orchestrator.human_request_authority import capture_human_socket_request
-        from verification.drivers.fixture_admission import admitted_registered_turn
-
-        context = self.orch._connection_contexts[id(ws)]
-        frame = {"type": "ui_event", "action": "chat_message",
-                 "submission_id": str(uuid.uuid4()), "request_generation": str(uuid.uuid4()),
-                 "connection_generation": str(context.connection_generation),
-                 "message": message, "chat_id": chat_id}
-        pending = capture_human_socket_request(
-            self.orch.human_request_boundary, websocket=ws, context=context,
-            message=frame, purpose="skill_lookup",
-        )
-        try:
-            async with admitted_registered_turn(self.orch, ws, frame=frame, human_request=pending) as context:
-                return await self.orch.handle_chat_message(
-                    ws, message, chat_id, user_id=user_id, attachments=attachments,
-                    operation_context=context,
-                )
-        finally:
-            pending.close()
 
     async def grant_default_scopes(self, principal: Principal) -> None:
         principal = self._execution_principal(principal)
@@ -354,87 +315,20 @@ class InProcessDriver:
             principal.user_id, agent_id or self.agent_id, {scope: enabled}
         )
 
-    async def run_scenario(self, scenario: Scenario) -> CapturedEvidence:
-        p = self._execution_principal(scenario.principal)
-        persona = scenario.persona
-        await self.grant_default_scopes(p)
-        att = await self.upload_as(p, persona.fixture)
-        chat_id = await _run_sync(self.orch.history.create_chat, user_id=p.user_id)
-        ws = await self._register_session(p, chat_id)
-        self.orch._call_llm = scripted_llm_for(persona, att["attachment_id"], att["path"])
-        attachments = [
-            {
-                "attachment_id": att["attachment_id"],
-                "filename": att["filename"],
-                "category": att["category"],
-            }
-        ]
-        try:
-            await self._send_registered_turn(
-                ws, persona.query, chat_id, user_id=p.user_id, attachments=attachments
-            )
-            messages = list(ws.outputs)
-            components = flatten_components(messages)
-            workspace_state = await _run_sync(
-                self.orch.workspace.live_components, chat_id, p.user_id
-            )
-            audit_rows, chain_ok = await _run_sync(self._read_audit, p.user_id)
-            return CapturedEvidence(
-                evidence_id=f"{scenario.scenario_id}:ev",
-                scenario_id=scenario.scenario_id,
-                run_mode=self.auth_mode,
-                messages=messages,
-                components=components,
-                workspace_state=workspace_state,
-                audit_rows=audit_rows,
-                audit_chain_ok=chain_ok,
-                extra={
-                    "attachment_id": att["attachment_id"],
-                    "chat_id": chat_id,
-                    "file_category": att["category"],
-                    "synthetic_only": True,
-                },
-            )
-        finally:
-            self._drop_session(ws)
-
-    async def reference_attachment_as(
-        self, principal: Principal, attachment_id: str, filename: str
-    ) -> CapturedEvidence:
+    async def dispatch_read(
+        self, principal: Principal, attachment_id: str, tool_name: str = "read_spreadsheet"
+    ) -> Any:
         principal = self._execution_principal(principal)
-        await self.grant_default_scopes(principal)
         chat_id = await _run_sync(self.orch.history.create_chat, user_id=principal.user_id)
-        ws = await self._register_session(principal, chat_id)
-        import types as _types
-
-        async def _no_tools(websocket, messages, tools_desc=None, temperature=None,
-                            feature="tool_dispatch"):
-            return _types.SimpleNamespace(content="ack", tool_calls=None,
-                                          reasoning_content=None), _types.SimpleNamespace(
-                total_tokens=0, prompt_tokens=0, completion_tokens=0)
-
-        self.orch._call_llm = _no_tools
-        attachments = [{"attachment_id": attachment_id, "filename": filename,
-                        "category": "spreadsheet"}]
-        try:
-            await self._send_registered_turn(
-                ws, "Use the attached file.", chat_id,
-                user_id=principal.user_id, attachments=attachments,
-            )
-            messages = list(ws.outputs)
-            audit_rows, chain_ok = await _run_sync(self._read_audit, principal.user_id)
-            return CapturedEvidence(
-                evidence_id=f"xuser:{principal.user_id}:ev",
-                scenario_id=f"xuser:{principal.user_id}",
-                run_mode=self.auth_mode,
-                messages=messages,
-                components=flatten_components(messages),
-                audit_rows=audit_rows,
-                audit_chain_ok=chain_ok,
-                extra={"referenced_attachment_id": attachment_id, "chat_id": chat_id},
-            )
-        finally:
-            self._drop_session(ws)
+        return await self.orch.execute_authorized_tool(
+            claims=Principal(principal.user_id, list(principal.roles)).claims(),
+            user_id=principal.user_id,
+            agent_id=self.agent_id,
+            tool_name=tool_name,
+            arguments={"attachment_id": attachment_id},
+            channel="rest",
+            chat_id=chat_id,
+        )
 
     async def probe_cross_user(self, run_id: str) -> CapturedEvidence:
         from verification.isolation import make_principal
@@ -446,21 +340,26 @@ class InProcessDriver:
         await self.grant_default_scopes(b)
         persona = get_persona("everyday")
         att = await self.upload_as(a, persona.fixture)
-        ev = await self.reference_attachment_as(b, att["attachment_id"], att["filename"])
-        leaked = any(m in json.dumps(ev.messages) for m in persona.fixture.known_markers)
-        b_ws = await _run_sync(
-            self.orch.workspace.live_components, (ev.extra or {}).get("chat_id", ""), b.user_id
-        )
-        ev.extra.update(
-            {
+        markers = persona.fixture.known_markers
+        owner = await self.dispatch_read(a, att["attachment_id"])
+        attacker = await self.dispatch_read(b, att["attachment_id"])
+        audit_rows, chain_ok = await _run_sync(self._read_audit, b.user_id)
+        return CapturedEvidence(
+            evidence_id=f"xuser:{b.user_id}:ev",
+            scenario_id=f"xuser:{b.user_id}",
+            run_mode=self.auth_mode,
+            messages=[_response_message(attacker)],
+            audit_rows=audit_rows,
+            audit_chain_ok=chain_ok,
+            extra={
                 "victim": a.user_id,
                 "attacker": b.user_id,
                 "attachment_id": att["attachment_id"],
-                "leaked_markers": leaked,
-                "attacker_workspace_size": len(b_ws),
-            }
+                "owner_read_ok": _reads_markers(owner, markers),
+                "leaked_markers": _reads_markers(attacker, markers),
+                "refused": _refused(attacker),
+            },
         )
-        return ev
 
     async def probe_scope_withheld(self, run_id: str) -> CapturedEvidence:
         from verification.isolation import make_principal
@@ -474,47 +373,38 @@ class InProcessDriver:
         )
         persona = get_persona("everyday")
         att = await self.upload_as(c, persona.fixture)
-        chat_id = await _run_sync(self.orch.history.create_chat, user_id=c.user_id)
-        ws = await self._register_session(c, chat_id)
-        self.orch._call_llm = scripted_llm_for(persona, att["attachment_id"], att["path"])
-        try:
-            await self._send_registered_turn(
-                ws, persona.query, chat_id, user_id=c.user_id,
-                attachments=[{"attachment_id": att["attachment_id"],
-                              "filename": att["filename"], "category": att["category"]}],
-            )
-            audit_rows, chain = await _run_sync(self._read_audit, c.user_id)
-            read_ok = any(
-                r.get("event_class") == "agent_tool_call" and r.get("outcome") == "success"
-                and str(r.get("action_type") or "").startswith("tool.read_")
-                for r in audit_rows
-            )
-            return CapturedEvidence(
-                evidence_id=f"scope:{c.user_id}", scenario_id="authz:scope_withheld",
-                run_mode=self.auth_mode, messages=list(ws.outputs),
-                components=flatten_components(ws.outputs), audit_rows=audit_rows,
-                audit_chain_ok=chain, extra={"read_success": read_ok, "withheld": not read_ok},
-            )
-        finally:
-            self._drop_session(ws)
+        denied = await self.dispatch_read(c, att["attachment_id"])
+        audit_rows, chain = await _run_sync(self._read_audit, c.user_id)
+        read_ok = any(
+            r.get("event_class") == "agent_tool_call" and r.get("outcome") == "success"
+            and str(r.get("action_type") or "").startswith("tool.read_")
+            for r in audit_rows
+        )
+        await self.grant_default_scopes(c)
+        granted = await self.dispatch_read(c, att["attachment_id"])
+        withheld = _refused(denied) and not _reads_markers(denied, persona.fixture.known_markers)
+        return CapturedEvidence(
+            evidence_id=f"scope:{c.user_id}", scenario_id="authz:scope_withheld",
+            run_mode=self.auth_mode, messages=[_response_message(denied)],
+            audit_rows=audit_rows, audit_chain_ok=chain,
+            extra={
+                "read_success": read_ok,
+                "withheld": withheld and not read_ok,
+                "control_read_ok": _reads_markers(granted, persona.fixture.known_markers),
+            },
+        )
 
     def probe_delegation(self, run_id: str) -> CapturedEvidence:
         from audit.hooks import actor_principal_from_claims
         from verification.isolation import make_principal
 
         d = self._execution_principal(make_principal(run_id, "delegD"))
-        claims: Dict[str, Any]
-        try:
-            from jose import jwt
+        from orchestrator.agent_authority import mint_child_delegation
 
-            tok = self.orch.delegation._create_mock_delegation_token(
-                self.agent_id, ["read_spreadsheet"], d.user_id, ["tools:read"]
-            )
-            claims = jwt.get_unverified_claims(tok["access_token"])
-        except Exception:
-            logger.debug("mock delegation minting unavailable; using claim shape", exc_info=True)
-            claims = {"sub": d.user_id, "act": {"sub": f"agent:{self.agent_id}"},
-                      "scope": "tools:read"}
+        claims: Dict[str, Any] = mint_child_delegation(
+            {"sub": d.user_id, "scope": "tools:read", "exp": int(time.time()) + 300},
+            self.agent_id, ["tools:read"],
+        )
         actor, principal = actor_principal_from_claims(claims)
         return CapturedEvidence(
             evidence_id=f"deleg:{d.user_id}", scenario_id="authz:delegation",
@@ -578,34 +468,6 @@ class InProcessDriver:
                 self._drop_session(ws_other)
             await _run_sync(draft_store.delete_draft_agent, draft_id)
 
-    def enrich_thin_client(self, ev: CapturedEvidence) -> CapturedEvidence:
-        from verification.checks.thin_client import inspect_client_surface
-
-        ev.client_inspection = inspect_client_surface()
-        comps = [c for c in ev.components if isinstance(c, dict)]
-        try:
-            from rote.adapter import ComponentAdapter
-            from rote.capabilities import DeviceProfile
-
-            try:
-                browser = DeviceProfile.default()
-            except Exception:
-                browser = DeviceProfile.from_dict({"device_type": "browser"})
-            mobile = DeviceProfile.from_dict(
-                {"device_type": "mobile", "viewport_width": 375, "viewport_height": 667}
-            )
-            b = ComponentAdapter.adapt(comps, browser)
-            m = ComponentAdapter.adapt(comps, mobile)
-            ev.device_diff = {
-                "backend_adapted": True,
-                "browser_types": sorted({c.get("type") for c in b if isinstance(c, dict)}),
-                "mobile_types": sorted({c.get("type") for c in m if isinstance(c, dict)}),
-            }
-        except Exception:
-            logger.debug("device adaptation comparison failed", exc_info=True)
-            ev.device_diff = {"backend_adapted": True}
-        return ev
-
     def _read_audit(self, user_id: str):
         rows: List[Dict[str, Any]] = []
         try:
@@ -621,6 +483,8 @@ class InProcessDriver:
                         "outcome": getattr(d, "outcome", None),
                         "correlation_id": str(getattr(d, "correlation_id", "") or ""),
                         "agent_id": getattr(d, "agent_id", None),
+                        "inputs_meta": getattr(d, "inputs_meta", None) or {},
+                        "outcome_detail": getattr(d, "outcome_detail", None),
                     }
                 )
         except Exception:
@@ -702,11 +566,16 @@ class InProcessDriver:
 
         if not errors and plane_runtime is not None and plane_repositories is not None:
             try:
+                scope = {}
+                if getattr(self, "_execution_subjects", {}):
+
+                    scope["owner_issuer_hash"] = fixture_issuer_digest(self._fixture_identity.authority)
                 await asyncio.to_thread(
                     teardown,
                     plane_runtime=plane_runtime,
                     plane_repositories=plane_repositories,
                     run_id=self.config.run_id,
+                    **scope,
                 )
             except BaseException as error:
                 errors.append(error)
@@ -763,6 +632,22 @@ async def _close_owned_orchestrator_graph(orchestrator: Any) -> None:
 def _assert_verification_purge_ready(plane_runtime: Any, purges: Any) -> None:
     with plane_runtime.transaction() as transaction:
         purges.assert_globally_ready(transaction)
+
+
+def _response_message(response: Any) -> Dict[str, Any]:
+    return {"type": "tool_response", "result": response.result, "error": response.error}
+
+
+def _refused(response: Any) -> bool:
+    result = response.result
+    return response.error is not None or (isinstance(result, dict) and "error" in result)
+
+
+def _reads_markers(response: Any, markers: List[str]) -> bool:
+    if _refused(response):
+        return False
+    blob = json.dumps(response.result, default=str)
+    return any(marker in blob for marker in markers)
 
 
 async def _run_sync(callback, *args, **kwargs):

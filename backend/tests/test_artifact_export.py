@@ -5,7 +5,6 @@ re-invoke via the component_action gate, and auth/flag gating.
 
 from __future__ import annotations
 
-import os
 import sys
 from datetime import date
 from pathlib import Path
@@ -18,25 +17,18 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
-os.environ["USE_MOCK_AUTH"] = "true"
-
 from fastapi import FastAPI  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
-import orchestrator.web_auth as web_auth  # noqa: E402
 from orchestrator.api import _csv_body, export_router  # noqa: E402
+from orchestrator.auth import require_user_id_or_web_session  # noqa: E402
 from shared.feature_flags import flags  # noqa: E402
 
 
-def _make_mock_token(payload: dict) -> str:
-    import base64
-    import json as _json
-    body = base64.b64encode(_json.dumps(payload).encode()).decode().rstrip("=")
-    return f"header.{body}.signature"
+SUBJECT = "pytest-export-user"
+USER_ID = SUBJECT
+AUTH: dict = {}
 
-
-USER_ID = "pytest-export-user"
-AUTH = {"Authorization": f"Bearer {_make_mock_token({'sub': USER_ID})}"}
 
 CHAT_ID = "chat-export-1"
 
@@ -76,11 +68,17 @@ def orch():
 
 
 @pytest.fixture()
-def client(orch):
+def unauthenticated_client(orch):
     app = FastAPI()
     app.include_router(export_router)
     app.state.orchestrator = orch
     return TestClient(app)
+
+
+@pytest.fixture()
+def client(orch, unauthenticated_client):
+    unauthenticated_client.app.dependency_overrides[require_user_id_or_web_session] = lambda: USER_ID
+    return unauthenticated_client
 
 
 @pytest.fixture(autouse=True)
@@ -315,73 +313,11 @@ def test_flag_off_both_routes_404_route_absent_body(client, orch):
     assert r2.json() == {"detail": "Not Found"}
 
 
-def _no_session(monkeypatch):
-    async def _none(request):
-        return None
-    monkeypatch.setattr(web_auth, "ensure_session", _none)
+def test_bearer_with_an_unsigned_token_is_refused(unauthenticated_client, orch):
+    r = unauthenticated_client.get("/api/export/component/wc_tbl1.csv", params={"chat_id": CHAT_ID},
+                   headers={"Authorization": "Bearer e30.e30.sig", "Accept": "application/json"})
+    assert r.status_code == 401
+    assert r.json() == {"detail": "node.bearer_refused"}
+    orch.workspace.aget_by_component_id.assert_not_awaited()
 
 
-def test_unauthenticated_api_requests_are_401(client, orch, monkeypatch):
-    _no_session(monkeypatch)
-    orch.workspace.aget_by_component_id.return_value = _row(_table_cd())
-    headers = {"Accept": "application/json"}
-    r1 = client.get(f"/api/export/component/wc_tbl1.csv?chat_id={CHAT_ID}",
-                    headers=headers)
-    r2 = client.get(f"/api/export/canvas/{CHAT_ID}.html", headers=headers)
-    assert (r1.status_code, r2.status_code) == (401, 401)
-
-
-def test_unauthenticated_browser_navigation_redirects_to_login(client, monkeypatch):
-    from urllib.parse import quote
-    _no_session(monkeypatch)
-    accept = {"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"}
-    csv_path = f"/api/export/component/wc_tbl1.csv?chat_id={CHAT_ID}"
-    r1 = client.get(csv_path, headers=accept, follow_redirects=False)
-    assert r1.status_code == 302
-    assert r1.headers["location"] == f"/auth/login?next={quote(csv_path, safe='')}"
-    html_path = f"/api/export/canvas/{CHAT_ID}.html"
-    r2 = client.get(html_path, headers=accept, follow_redirects=False)
-    assert r2.status_code == 302
-    assert r2.headers["location"] == f"/auth/login?next={quote(html_path, safe='')}"
-
-
-def test_cookie_session_mock_mode_serves_export(client, orch):
-    orch.workspace.aget_by_component_id.return_value = _row(_table_cd())
-    r = client.get("/api/export/component/wc_tbl1.csv", params={"chat_id": CHAT_ID})
-    assert r.status_code == 200
-    assert r.headers["content-type"].startswith("text/csv")
-    orch.workspace.aget_by_component_id.assert_awaited_once_with(
-        CHAT_ID, "test_user", "wc_tbl1")
-
-
-def test_cookie_session_real_mode_serves_export(client, orch, monkeypatch):
-    monkeypatch.setenv("USE_MOCK_AUTH", "false")
-    monkeypatch.setenv("KEYCLOAK_AUTHORITY", "https://idp.example/realms/astral")
-    monkeypatch.setenv("KEYCLOAK_CLIENT_ID", "astral-frontend")
-
-    async def _sess(request):
-        return {"access_token": "signed.jwt.token", "refresh_token": "",
-                "sub": USER_ID, "created_at": 0, "resumed": True, "sid": "s"}
-    monkeypatch.setattr(web_auth, "ensure_session", _sess)
-
-    async def _jwks(url, token=None):
-        return {"keys": [{"kid": "k"}]}
-    monkeypatch.setattr("shared.jwks_cache.get_jwks", _jwks)
-    monkeypatch.setattr(
-        "jose.jwt.decode",
-        lambda token, key, **kw: {"sub": USER_ID, "azp": "astral-frontend"},
-    )
-
-    orch.workspace.aget_by_component_id.return_value = _row(_table_cd())
-    r = client.get("/api/export/component/wc_tbl1.csv", params={"chat_id": CHAT_ID})
-    assert r.status_code == 200
-    orch.workspace.aget_by_component_id.assert_awaited_once_with(
-        CHAT_ID, USER_ID, "wc_tbl1")
-
-
-def test_bearer_takes_precedence_over_cookie(client, orch, monkeypatch):
-    async def _boom(request):
-        raise AssertionError("ensure_session must not be called when a Bearer token exists")
-    monkeypatch.setattr(web_auth, "ensure_session", _boom)
-    orch.workspace.aget_by_component_id.return_value = _row(_table_cd())
-    assert _csv_get(client).status_code == 200

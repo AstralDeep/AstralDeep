@@ -47,10 +47,6 @@ _ATTACK_PATTERNS: Tuple[Tuple[str, "re.Pattern[str]"], ...] = (
 )
 
 
-def mas_defense_enabled() -> bool:
-    return os.getenv("FF_MAS_DEFENSE", "false").strip().lower() in ("1", "true", "yes", "on")
-
-
 def _key() -> Optional[bytes]:
     raw = os.getenv("MAS_MESSAGE_KEY") or os.getenv("MEMORY_HMAC_KEY")
     return raw.encode("utf-8") if raw else None

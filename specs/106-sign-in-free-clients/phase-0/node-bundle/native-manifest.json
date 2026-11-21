@@ -1,0 +1,304 @@
+{
+  "bottle_tag": "arm64_golden_gate",
+  "bottles": [
+    {
+      "formula": "brotli",
+      "version": "1.2.1",
+      "bottle_sha256": "ba4564da654b3cbc6a143d98194a5c0a4971976d5190c5627ed0b76c5c971b8f"
+    },
+    {
+      "formula": "ca-certificates",
+      "version": "2026-11-05",
+      "bottle_sha256": "8a5a35e1a3223e6bc6ca7c853e0ac3d2568de2cc329b61688682bdf57165dab9"
+    },
+    {
+      "formula": "cairo",
+      "version": "1.18.6",
+      "bottle_sha256": "1dab52f452b0eb0a90432a5f1022529abaab3aaa83b36b9e0edde404ee168f0e"
+    },
+    {
+      "formula": "fontconfig",
+      "version": "2.18.3",
+      "bottle_sha256": "0506cd2fa83e76390bb13ff8fe9c5ab7cc1a09a204893b1ce058bb96410b2adf"
+    },
+    {
+      "formula": "freetype",
+      "version": "2.15.0",
+      "bottle_sha256": "14bc1768b07e0c28391877d3ead21f66f76fd70fea699ad996a693c01a5f660f"
+    },
+    {
+      "formula": "gettext",
+      "version": "1.0",
+      "bottle_sha256": "4db034aa2ae4b1f18d86906707ece14c895198090ad028d2fb1ae4fbeb3ca6fd"
+    },
+    {
+      "formula": "giflib",
+      "version": "6.1.3",
+      "bottle_sha256": "bdf5a53f053c10c716573cf955e5f50d704d97f9d2dedc781161031744b77849"
+    },
+    {
+      "formula": "glib",
+      "version": "2.90.1",
+      "bottle_sha256": "5ccb7a549258ed35cddc280882a11a854bd0ef1b2329a1ce77e43e39d2d98e3a"
+    },
+    {
+      "formula": "gmp",
+      "version": "6.3.0",
+      "bottle_sha256": "5116a8201d8e044aef7d486da7e57f1e4dd2d8554ea6b540b44e45c0804f8f6f"
+    },
+    {
+      "formula": "gnupg",
+      "version": "2.5.24",
+      "bottle_sha256": "1cbc3ab22b562d1bef04ca0d00b0917195870a80b6a7de1051d07c1b44ac75c0"
+    },
+    {
+      "formula": "gnutls",
+      "version": "3.8.13",
+      "bottle_sha256": "366c9b9c0a6b246af58952c4bb5ac921ec5be87bdc23c0b9d8b2ca97b1a3d996"
+    },
+    {
+      "formula": "gpgme",
+      "version": "2.2.0",
+      "bottle_sha256": "a4c932fc348a7662f4d740342b51a714ad6e62309247f2e5916238db9875339c"
+    },
+    {
+      "formula": "gpgmepp",
+      "version": "2.2.0",
+      "bottle_sha256": "e9d5d7f67a5806f6b0ad13d61c991d608f6e6f0db03b9c69eb9294c6d5e5db30"
+    },
+    {
+      "formula": "graphite2",
+      "version": "1.3.15",
+      "bottle_sha256": "b6a50a657282bc4b277e2b8247bdd507962f90f4343298afe601fafdb2f959d5"
+    },
+    {
+      "formula": "harfbuzz",
+      "version": "15.1.0",
+      "bottle_sha256": "df90d0a72867ebebc59b4bbae968d7667eb3114bff7759fd2cd26f191caf407d"
+    },
+    {
+      "formula": "icu4c@79",
+      "version": "79.1",
+      "bottle_sha256": "8499235357ff52424e3fcc647a6ce57050af9f10904554df90319e6a088f665d"
+    },
+    {
+      "formula": "jpeg-turbo",
+      "version": "3.2.1",
+      "bottle_sha256": "3f245f1914445713bba97fbee6b4f7cb379b4e9c91237d12e76ee52c1975ce0e"
+    },
+    {
+      "formula": "json-c",
+      "version": "0.19",
+      "bottle_sha256": "6b45746f31780a84ae3ed11d056bd101d1b0a6d0f16bf91aad2d35a18f6107dc"
+    },
+    {
+      "formula": "libassuan",
+      "version": "3.0.2",
+      "bottle_sha256": "a2ae98aac1cc7ffda602311d837df752d4389aeecbbf230e63b95e5f21412e98"
+    },
+    {
+      "formula": "libgcrypt",
+      "version": "1.12.4",
+      "bottle_sha256": "6531ea6476a9e9c35f5c9b5420779da758edac7f486ee97a2aad8a18ee5d6fec"
+    },
+    {
+      "formula": "libgpg-error",
+      "version": "1.61",
+      "bottle_sha256": "bddda1c754a492bdc762d5eb66571bd658501c4fb4597745e17768f172a39734"
+    },
+    {
+      "formula": "libidn2",
+      "version": "2.3.8",
+      "bottle_sha256": "bacc89595e4e8d2a4e14eb71730ae96a1ca68830068a741c59fc363a355ef1bc"
+    },
+    {
+      "formula": "libksba",
+      "version": "1.8.1",
+      "bottle_sha256": "f597af732a8ef37c1cfc052ec37659502a4eb380c01d199ac853a41fe11b948a"
+    },
+    {
+      "formula": "libmagic",
+      "version": "5.48",
+      "bottle_sha256": "a8688b01c786d1b6c27d273c347e3f8f15f996a40827cf057dbe92573e13cbd6"
+    },
+    {
+      "formula": "libpng",
+      "version": "1.6.59",
+      "bottle_sha256": "7e04225ac0bc048d2b12c603f678e5fa36459909812f2f1306dbd97af337cdec"
+    },
+    {
+      "formula": "libtasn1",
+      "version": "4.21.0",
+      "bottle_sha256": "68d1748171848565af7a083ca92b834ab1fe4ac7832140b1cd22fd1fcb072fd7"
+    },
+    {
+      "formula": "libtiff",
+      "version": "4.7.2",
+      "bottle_sha256": "2678f5bb80b0578e79c76f747b637781ab3629b0c393e8c7d060ead4d42f9d6c"
+    },
+    {
+      "formula": "libunistring",
+      "version": "1.5",
+      "bottle_sha256": "fec6be46cabaefd1dc5d5ecd029c50aeaef6c93d9c7de4425968047811575e81"
+    },
+    {
+      "formula": "libusb",
+      "version": "1.0.30",
+      "bottle_sha256": "b462926c2314b5bb7d1a6721f9a3cf7336a4166ba67024b4bbd0226de457132a"
+    },
+    {
+      "formula": "libx11",
+      "version": "1.8.14",
+      "bottle_sha256": "f16e804d426ea8b43df43c0a6207a106a342b35275e5c061ec8f89ad032140a1"
+    },
+    {
+      "formula": "libxau",
+      "version": "1.0.12",
+      "bottle_sha256": "f880b5b3db6ef66ecebc49402c2ed48ffb00e288340f056f077f9f83c82ab3be"
+    },
+    {
+      "formula": "libxcb",
+      "version": "1.17.0",
+      "bottle_sha256": "36791e448c61f28491e742e9150ec78c13c8ef7f734a2a51b024cf189ed08d46"
+    },
+    {
+      "formula": "libxdmcp",
+      "version": "1.1.5",
+      "bottle_sha256": "fb949aa790c6d35e695e74ad7672ddc857538ab6256f83e3a327c78b7ca82027"
+    },
+    {
+      "formula": "libxext",
+      "version": "1.3.7",
+      "bottle_sha256": "51b795365550a5be0b6cc9b7ba9b2a6e20991feef1f79d18ed1cb711e491a304"
+    },
+    {
+      "formula": "libxrender",
+      "version": "0.9.13",
+      "bottle_sha256": "98a4cdc34145658f8c4e5a27d78f985bab6c955485da21f5890f41bbd9ac56b8"
+    },
+    {
+      "formula": "little-cms2",
+      "version": "2.20",
+      "bottle_sha256": "95b216343a5dce73473576b9ac02283944cf293b0817b48be2d8c19ba78b4cc9"
+    },
+    {
+      "formula": "lz4",
+      "version": "1.11.1",
+      "bottle_sha256": "b2422bda202e4a59007a9189493902ac7a75423640081da43de9281a89770d5c"
+    },
+    {
+      "formula": "lzo",
+      "version": "2.10",
+      "bottle_sha256": "928ed0070e25fe8082e24daa3f967657be0c1c5c72c14a3ac4cd498874eeec11"
+    },
+    {
+      "formula": "nettle",
+      "version": "4.0",
+      "bottle_sha256": "42ff85a054b4a265542175dd31f4a515e0a3e7d8113cfddacc5472555a036bc8"
+    },
+    {
+      "formula": "npth",
+      "version": "1.8",
+      "bottle_sha256": "d05077b20487633f09e465891ed781b32d251c95968c410354f921bcef875146"
+    },
+    {
+      "formula": "nspr",
+      "version": "4.40",
+      "bottle_sha256": "7858925e0755df4973feaddabcecc7d3a8dff43145dc070a48597f01ce134d52"
+    },
+    {
+      "formula": "nss",
+      "version": "3.133",
+      "bottle_sha256": "32e9edd628d592b55049351c6b5d22bd1b7861522de5c3c7ae06335abecfbbe2"
+    },
+    {
+      "formula": "openjpeg",
+      "version": "2.5.4",
+      "bottle_sha256": "031d1267409505d3e26249e279633b21a55799c99ad7ce6cb0a8ede0fd8779fb"
+    },
+    {
+      "formula": "p11-kit",
+      "version": "0.26.6",
+      "bottle_sha256": "a0751e0579ea06c14793f5b95093c34921df22e74cfe9101d0d396e44b7d378c"
+    },
+    {
+      "formula": "pcre2",
+      "version": "10.49",
+      "bottle_sha256": "5cac44323243138490ca74a2499fd347fa836df6b5fffa789944be12110e91ff"
+    },
+    {
+      "formula": "pinentry",
+      "version": "1.3.3",
+      "bottle_sha256": "12da28eefce12a79764f58d84b87896daf9ec44d7645d41b6434c3d4a2d58ba3"
+    },
+    {
+      "formula": "pixman",
+      "version": "0.46.4",
+      "bottle_sha256": "918ff532bf70bc121376f4b51420f44fc1abd0b9c519d7f8040f6ad9d304bc02"
+    },
+    {
+      "formula": "poppler",
+      "version": "26.11.0",
+      "bottle_sha256": "e4dcbb310f8d7dc72a6e5f1152828a1a143a145fb5af1a3a0e3f5c646bc2bc0c"
+    },
+    {
+      "formula": "readline",
+      "version": "8.3.6",
+      "bottle_sha256": "74b458562c5a589a612ebba8f8fc12f3ecbe083223eb4a368c723d88b26a454d"
+    },
+    {
+      "formula": "webp",
+      "version": "1.6.0",
+      "bottle_sha256": "85d3cb86c87f53f027b48cdfe15a31e82932caa43344a6fe06e00e5de402a3e7"
+    },
+    {
+      "formula": "xorgproto",
+      "version": "2026.1",
+      "bottle_sha256": "8327b24ee8a0d4b3cd9dfb6d49eb20a80484c0f25535be6e726d1b908f444514"
+    },
+    {
+      "formula": "xz",
+      "version": "5.8.4",
+      "bottle_sha256": "b2b5d6523153be05c20bcc51cd358ea3dd1f4bf893748fdedb779ab508ea63ce"
+    },
+    {
+      "formula": "zstd",
+      "version": "1.5.7",
+      "bottle_sha256": "7fb4af03304cc4897326168cdcd53290311c5543150f5502a61c3e84b6d62765"
+    }
+  ],
+  "libraries": [
+    "libassuan.9.dylib",
+    "libbrotlicommon.1.dylib",
+    "libbrotlidec.1.dylib",
+    "libfontconfig.1.dylib",
+    "libfreetype.6.dylib",
+    "libglib-2.0.0.dylib",
+    "libgpg-error.0.dylib",
+    "libgpgme.45.dylib",
+    "libgpgmepp.7.dylib",
+    "libgraphite2.3.dylib",
+    "libharfbuzz-subset.0.dylib",
+    "libharfbuzz.0.dylib",
+    "libintl.8.dylib",
+    "libjpeg.8.dylib",
+    "liblcms2.2.dylib",
+    "liblzma.5.dylib",
+    "libmagic.1.dylib",
+    "libnspr4.dylib",
+    "libnss3.dylib",
+    "libnssutil3.dylib",
+    "libopenjp2.7.dylib",
+    "libpcre2-8.0.dylib",
+    "libplc4.dylib",
+    "libplds4.dylib",
+    "libpng16.16.dylib",
+    "libpoppler.166.dylib",
+    "libsharpyuv.0.dylib",
+    "libsmime3.dylib",
+    "libssl3.dylib",
+    "libtiff.6.dylib",
+    "libwebp.7.dylib",
+    "libzstd.1.dylib"
+  ]
+}

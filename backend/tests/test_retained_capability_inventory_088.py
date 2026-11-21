@@ -20,9 +20,9 @@ BEHAVIOR_SUITES = {
                                   "tests/test_workspace_export_088.py"),
     "voice_and_local_speech": ("tests/test_voice_local_protocol_075.py",
                                "tests/test_voice_backend_rollback_075.py"),
-    "uploads_and_parsing": ("tests/test_chat_attachments_ownership.py",
+    "uploads_and_parsing": ("tests/attachments/test_upload_endpoint.py",
                             "shared/tests/test_attachment_resolver.py"),
-    "authored_skills_and_commands": ("tests/test_skill_packs.py",
+    "authored_skills_and_commands": ("tests/test_slash_commands.py",
                                      "tests/test_skill_toggle_resolution.py"),
     "memory_and_personalization": ("orchestrator/tests/test_memory_chat.py",
                                    "personalization/tests/test_memory_guard.py"),
@@ -35,7 +35,7 @@ BEHAVIOR_SUITES = {
                                             "tests/test_remote_confirmation_063.py"),
     "specialist_services": ("agents/ml_services/tests/test_union_registry.py",
                             "agents/summarizer/tests/test_registry_contract.py"),
-    "identity_and_client_delivery": ("tests/test_native_work_compat_088.py",),
+    "identity_and_client_delivery": ("tests/test_node_bearer_refusal.py",),
 }
 
 

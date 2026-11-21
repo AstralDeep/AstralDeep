@@ -31,16 +31,18 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Sequence
 
 CONTRACT_FORMAT = "astraldeep.local-components/v1"
+COMPOSITION_FORMAT = "astral.composition/v2"
 LOCK_FORMAT = "astraldeep.component-wheel-lock/v1"
 INSTALLER_FORMAT = "pip-wheel/v1"
 BUILD_TOOL_REQUIREMENTS = (
     "setuptools==83.0.0",
     "wheel==0.45.1",
     "hatchling==1.27.0",
-    "uv_build==0.12.23",
+    "uv_build==0.13.6",
 )
 EXPECTED_INSTALL_ORDER = (
     "astral-primitives",
+    "astral-kernel",
     "astral-projection",
     "astral-plane",
     "lets",
@@ -50,16 +52,18 @@ EXPECTED_IDENTITIES = {
         "components/AstralPrimitives",
         "https://github.com/AstralDeep/AstralPrimitives.git",
     ),
+    "astral-kernel": (
+        "components/AstralKernel",
+        "https://github.com/AstralDeep/AstralKernel.git",
+    ),
     "astral-projection": (
         "components/AstralProjection",
         "https://github.com/AstralDeep/AstralProjection.git",
     ),
-    "astral-plane": (
-        "components/AstralPlane",
-        "https://github.com/AstralDeep/AstralPlane.git",
-    ),
     "lets": ("components/LETS", "https://github.com/AstralDeep/LETS.git"),
 }
+
+IN_TREE_PATHS = {"astral-plane": "plane"}
 
 _CONTROL_KEYS = frozenset(
     {
@@ -71,6 +75,7 @@ _CONTROL_KEYS = frozenset(
         "build-tools",
     }
 )
+_OPTIONAL_COMPONENT_FIELDS = frozenset({"package-root"})
 _COMPONENT_FIELDS = frozenset(
     {
         "distribution",
@@ -131,9 +136,18 @@ class ComponentSpec:
     extras: tuple[str, ...]
     build_inputs: tuple[str, ...]
     required_wheel_paths: tuple[str, ...]
+    package_root: str = ""
+
+    @property
+    def in_tree(self) -> bool:
+        return self.key in IN_TREE_PATHS
 
     def source_root(self, repository_root: Path) -> Path:
-        return repository_root / Path(self.relative_path)
+        return repository_root / Path(self.relative_path) / Path(self.package_root)
+
+    @property
+    def package_path(self) -> str:
+        return f"{self.relative_path}/{self.package_root}" if self.package_root else self.relative_path
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,9 +227,9 @@ def _string_list(value: Any, *, field: str, allow_empty: bool = False) -> tuple[
 def _component_spec(key: str, value: Any) -> ComponentSpec:
     if not isinstance(value, dict):
         raise ComponentInstallError(f"component {key!r} must be a TOML table")
-    if set(value) != _COMPONENT_FIELDS:
+    if not _COMPONENT_FIELDS <= set(value) <= _COMPONENT_FIELDS | _OPTIONAL_COMPONENT_FIELDS:
         missing = sorted(_COMPONENT_FIELDS - set(value))
-        unexpected = sorted(set(value) - _COMPONENT_FIELDS)
+        unexpected = sorted(set(value) - _COMPONENT_FIELDS - _OPTIONAL_COMPONENT_FIELDS)
         raise ComponentInstallError(
             f"component {key!r} has invalid fields; missing={missing}, "
             f"unexpected={unexpected}"
@@ -244,11 +258,21 @@ def _component_spec(key: str, value: Any) -> ComponentSpec:
 
     relative_path = _safe_relative_path(value["path"], field=f"{key}.path")
     path_parts = PurePosixPath(relative_path).parts
-    if len(path_parts) != 2 or path_parts[0] != "components":
+    if key in IN_TREE_PATHS:
+        if relative_path != IN_TREE_PATHS[key]:
+            raise ComponentInstallError(
+                f"component {key!r} must live in the repository folder {IN_TREE_PATHS[key]!r}"
+            )
+    elif len(path_parts) != 2 or path_parts[0] != "components":
         raise ComponentInstallError(
             f"component {key!r} must be an immediate child of components/"
         )
 
+    package_root = (
+        _safe_relative_path(value["package-root"], field=f"{key}.package-root")
+        if "package-root" in value
+        else ""
+    )
     build_inputs = tuple(
         _safe_relative_path(item, field=f"{key}.build-inputs")
         for item in _string_list(value["build-inputs"], field=f"{key}.build-inputs")
@@ -270,6 +294,7 @@ def _component_spec(key: str, value: Any) -> ComponentSpec:
         extras=_string_list(value["extras"], field=f"{key}.extras", allow_empty=True),
         build_inputs=build_inputs,
         required_wheel_paths=required_paths,
+        package_root=package_root,
     )
 
 
@@ -280,15 +305,27 @@ def _manifest_mapping(manifest: Any, key: str) -> dict[str, Any]:
 
 
 def _validate_manifest(contract: LocalContract, manifest: Any) -> None:
+    if not isinstance(manifest, dict) or manifest.get("format") != COMPOSITION_FORMAT:
+        raise ComponentInstallError(
+            f"composition manifest format must be {COMPOSITION_FORMAT!r}; "
+            "earlier formats are no longer supported"
+        )
     components = _manifest_mapping(manifest, "components")
+    in_tree = _manifest_mapping(manifest, "in_tree")
     availability = _manifest_mapping(manifest, "availability")
     expected_keys = {component.key for component in contract.components}
-    if set(components) != expected_keys or set(availability) != expected_keys:
+    pinned_keys = {component.key for component in contract.components if not component.in_tree}
+    in_tree_keys = expected_keys - pinned_keys
+    if (
+        set(components) != pinned_keys
+        or set(in_tree) != in_tree_keys
+        or set(availability) != expected_keys
+    ):
         raise ComponentInstallError(
             "local component keys do not exactly match the composition manifest"
         )
     for component in contract.components:
-        entry = components[component.key]
+        entry = (in_tree if component.in_tree else components)[component.key]
         if not isinstance(entry, dict):
             raise ComponentInstallError(
                 f"manifest component {component.key!r} is not an object"
@@ -302,18 +339,24 @@ def _validate_manifest(contract: LocalContract, manifest: Any) -> None:
                 raise ComponentInstallError(
                     f"manifest {component.key}.{field} does not match the local contract"
                 )
-        repository = entry.get("repository")
-        commit = entry.get("commit")
-        expected_path, expected_repository = EXPECTED_IDENTITIES[component.key]
-        if (
-            component.relative_path != expected_path
-            or repository != expected_repository
-            or not isinstance(commit, str)
-            or not _SHA1_PATTERN.fullmatch(commit)
-        ):
-            raise ComponentInstallError(
-                f"manifest identity for {component.key!r} is invalid"
-            )
+        if component.in_tree:
+            if set(entry) != set(expected):
+                raise ComponentInstallError(
+                    f"manifest identity for {component.key!r} is invalid"
+                )
+        else:
+            repository = entry.get("repository")
+            commit = entry.get("commit")
+            expected_path, expected_repository = EXPECTED_IDENTITIES[component.key]
+            if (
+                component.relative_path != expected_path
+                or repository != expected_repository
+                or not isinstance(commit, str)
+                or not _SHA1_PATTERN.fullmatch(commit)
+            ):
+                raise ComponentInstallError(
+                    f"manifest identity for {component.key!r} is invalid"
+                )
         if availability[component.key] != component.availability:
             raise ComponentInstallError(
                 f"manifest availability for {component.key!r} does not match"
@@ -373,12 +416,13 @@ def _validate_git_declarations(
 ) -> None:
     modules = _parse_gitmodules(contract.repository_root / ".gitmodules")
     manifest_components = _manifest_mapping(manifest, "components")
-    expected_paths = {component.relative_path for component in contract.components}
+    pinned = tuple(component for component in contract.components if not component.in_tree)
+    expected_paths = {component.relative_path for component in pinned}
     if set(modules) != expected_paths:
         raise ComponentInstallError(
             ".gitmodules paths do not exactly match the local component contract"
         )
-    for component in contract.components:
+    for component in pinned:
         manifest_entry = manifest_components[component.key]
         expected_url = manifest_entry.get("repository")
         if modules[component.relative_path].get("url") != expected_url:
@@ -391,7 +435,7 @@ def _validate_git_declarations(
         raise ComponentInstallError("git metadata is required to validate component pins")
     if not has_git_metadata:
         return
-    for component in contract.components:
+    for component in pinned:
         expected_commit = manifest_components[component.key].get("commit")
         if _gitlink(contract.repository_root, component.relative_path) != expected_commit:
             raise ComponentInstallError(
@@ -438,7 +482,7 @@ def _validate_component_sources(contract: LocalContract) -> None:
     for component in contract.components:
         source_root = _resolved_child(
             contract.repository_root,
-            component.relative_path,
+            component.package_path,
             field=f"{component.key}.path",
         )
         if not source_root.is_dir():
@@ -525,6 +569,23 @@ def load_contract(
     if require_sources:
         _validate_component_sources(contract)
     return contract
+
+
+
+def select_components(
+    contract: LocalContract, names: Sequence[str], *, require_sources: bool = False
+) -> LocalContract:
+    available = {component.key for component in contract.components}
+    if not names or len(names) != len(set(names)) or set(names) - available:
+        raise ComponentInstallError("component selection must be nonempty, unique, and declared")
+    selected = LocalContract(
+        contract.repository_root,
+        contract.manifest_path,
+        tuple(component for component in contract.components if component.key in names),
+    )
+    if require_sources:
+        _validate_component_sources(selected)
+    return selected
 
 
 def _iter_build_files(component: ComponentSpec, repository_root: Path) -> Iterable[Path]:
@@ -1049,6 +1110,8 @@ def _parser() -> argparse.ArgumentParser:
 
     sync = subparsers.add_parser("sync", help="build, install, and verify components")
     sync.add_argument("--root", type=Path, default=Path.cwd())
+    for command in (validate, build, install, verify, sync):
+        command.add_argument("--components", nargs="+", help="select declared components in canonical order")
     return parser
 
 
@@ -1063,9 +1126,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         contract = load_contract(
             arguments.root,
-            require_sources=require_sources,
+            require_sources=require_sources and arguments.components is None,
             require_gitlinks=require_gitlinks,
         )
+        if arguments.components is not None:
+            contract = select_components(contract, arguments.components, require_sources=require_sources)
         if arguments.command == "validate":
             qualifier = "declarations" if arguments.declarations_only else "initialized sources"
             print(

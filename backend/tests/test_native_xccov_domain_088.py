@@ -176,6 +176,60 @@ def test_qualified_thin_macho_and_native_lane_metadata(lane):
     domain.test_identity(*_metadata(lane), lane)
 
 
+def _ios_skip(summary, tests, identifier, reason):
+    suite = tests["testNodes"][0]["children"][0]["children"][0]
+    suite["children"].append(
+        {
+            "nodeType": "Test Case",
+            "nodeIdentifier": identifier,
+            "result": "Skipped",
+            "children": [{"nodeType": "Failure Message", "name": "Test skipped - " + reason}],
+        }
+    )
+    summary["totalTestCount"] += 1
+    summary["skippedTests"] += 1
+
+
+KEYCHAIN_SKIP = "Keychain needs a signed host; unsigned test builds have none"
+
+
+def test_ios_unit_accepts_only_exact_declared_host_checks():
+    checks = {
+        "ConnectionKeychainTests/testConnectionItemsLeaveTheMeshDeviceItemsUnchanged()": KEYCHAIN_SKIP,
+        "ConnectionKeychainTests/testRoundTripReplaceRemoveAndAbsent()": KEYCHAIN_SKIP,
+        "ConnectionKeychainTests/testStoredItemsReadBackAsThisDeviceOnlyAndNotSynchronizable()": KEYCHAIN_SKIP,
+        "ConnectionKeychainTests/testTwoIssuersForOneConnectionDoNotCollide()": KEYCHAIN_SKIP,
+        "MeshDeviceKeysTests/testKeychainStoreRoundTrip()": KEYCHAIN_SKIP,
+        "OnDeviceFallbackModelTests/testRealVerifiedTextFallbackWhenExplicitlyRequested()": "Set ASTRAL_VERIFIED_MODEL_TEST_ROOT to a verified installed model root for this local hardware check.",
+    }
+    assert domain.IOS_SKIP_DISPOSITIONS["unit"] == checks
+    summary, tests = _metadata("unit")
+    for identifier, reason in checks.items():
+        _ios_skip(summary, tests, identifier, reason)
+    domain.test_identity(summary, tests, "unit")
+
+    for mutation in ("unknown", "reason", "lane", "status"):
+        summary, tests = _metadata("unit")
+        identifier, reason = next(iter(checks.items()))
+        if mutation == "unknown":
+            identifier = "UnknownTests/testUnlistedSkip()"
+        elif mutation == "reason":
+            reason = "not the approved local hardware condition"
+        _ios_skip(summary, tests, identifier, reason)
+        if mutation == "lane":
+            with pytest.raises(domain.DomainError):
+                domain.test_identity(summary, tests, "ui")
+        elif mutation == "status":
+            tests["testNodes"][0]["children"][0]["children"][0]["children"][-1][
+                "result"
+            ] = "Failed"
+            with pytest.raises(domain.DomainError):
+                domain.test_identity(summary, tests, "unit")
+        else:
+            with pytest.raises(domain.DomainError):
+                domain.test_identity(summary, tests, "unit")
+
+
 @pytest.mark.parametrize(
     "raw",
     [
@@ -882,9 +936,11 @@ def test_mac_native_union_refuses_relabelled_platform_binary_lane_or_architectur
 
 _QOS_WARNING = "[Internal] Thread running at User-interactive quality-of-service class waiting on a lower QoS thread running at Default quality-of-service class. Investigate ways to avoid priority inversions"
 _FOCUS_WARNING = "Accessing FocusState's value outside of the body of a View. This will result in a constant Binding of the initial value and will not update."
+_REAL_MESH_QOS_WARNING = "Thread running at User-initiated quality-of-service class waiting on a lower QoS thread running at Default quality-of-service class. Investigate ways to avoid priority inversions"
+_PHI_BRIDGE_QOS_WARNING = "Thread running at User-interactive quality-of-service class waiting on a lower QoS thread running at Default quality-of-service class. Investigate ways to avoid priority inversions"
 
 
-@pytest.mark.parametrize("text", [_QOS_WARNING, _FOCUS_WARNING])
+@pytest.mark.parametrize("text", [_QOS_WARNING, _FOCUS_WARNING, _PHI_BRIDGE_QOS_WARNING])
 @pytest.mark.parametrize(
     "location",
     [
@@ -952,6 +1008,7 @@ def test_mac_diagnostic_acceptance_does_not_hide_unknown_failure_or_nested_resul
             )
     elif mutation == "lane":
         lane = "ui"
+        warning["name"] = _FOCUS_WARNING
         summary, tests = _mac_metadata(lane)
     _case(tests)["children"] = (
         warning if mutation == "not_list" else [warning] * (17 if mutation == "too_many" else 1)
@@ -992,3 +1049,170 @@ def test_mac_named_skip_reason_is_an_exact_leaf_record(extra):
     skipped["children"][0][extra] = [] if extra == "children" else "Passed"
     with pytest.raises(domain.DomainError):
         domain.test_identity(summary, tests, "unit", platform="macos", architecture="arm64")
+
+
+def _mac_retry_metadata():
+    summary, tests = _mac_metadata("unit", skip=True)
+    _case(tests).update(
+        {
+            "name": "testExample()",
+            "nodeIdentifierURL": "test://com.apple.xcode/AstralApp/AstralAppTests/ExampleTests/testExample",
+            "details": "⚠️ Passed after 1 retry",
+            "duration": "0.51s",
+            "durationInSeconds": 0.5132024884223938,
+            "children": [
+                {
+                    "children": [
+                        {
+                            "name": 'ExampleTests.swift:151: XCTAssertEqual failed: ("3") is not equal to ("2") - synthetic',
+                            "nodeType": "Failure Message",
+                        }
+                    ],
+                    "duration": "0.88s",
+                    "durationInSeconds": 0.882032036781311,
+                    "name": "First Run",
+                    "nodeIdentifier": "1",
+                    "nodeType": "Repetition",
+                    "result": "Failed",
+                },
+                {
+                    "duration": "0.14s",
+                    "durationInSeconds": 0.14437294006347656,
+                    "name": "Retry 1",
+                    "nodeIdentifier": "2",
+                    "nodeType": "Repetition",
+                    "result": "Passed",
+                },
+            ],
+        }
+    )
+    return summary, tests
+
+
+def test_mac_unit_actual_repetition_shape_preserves_final_pass_and_named_skip():
+    summary, tests = _mac_retry_metadata()
+    domain.test_identity(summary, tests, "unit", platform="macos", architecture="arm64")
+
+
+def test_mac_retry_keeps_both_approved_skip_dispositions_and_zero_duration():
+    summary, tests = _mac_retry_metadata()
+    tests["testNodes"][0]["children"][0]["children"][0]["children"].append(
+        {
+            "nodeType": "Test Case",
+            "nodeIdentifier": "OnDeviceFallbackModelTests/testRealVerifiedTextFallbackWhenExplicitlyRequested()",
+            "result": "Skipped",
+            "children": [
+                {
+                    "nodeType": "Failure Message",
+                    "name": "Test skipped - Set ASTRAL_VERIFIED_MODEL_TEST_ROOT to a verified installed model root for this local hardware check.",
+                }
+            ],
+        }
+    )
+    summary.update(totalTestCount=3, skippedTests=2)
+    _case(tests)["children"][1].update(duration="0s", durationInSeconds=0)
+    domain.test_identity(summary, tests, "unit", platform="macos", architecture="arm64")
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "terminal_failure", "summary_failure", "first_passed", "retry_failed", "reordered",
+        "duplicate_attempt", "extra_attempt", "missing_attempt", "foreign_attempt",
+        "foreign_case_url", "foreign_case_name", "unknown_node", "unknown_field",
+        "nested_failure", "retry_failure", "empty_failure", "unbounded_failure",
+        "failure_field", "duration_bool", "duration_infinite", "duration_negative",
+        "duration_text", "details", "duplicate_case", "count", "ui_lane",
+        "foreign_failure", "invalid_identifier", "case_extra", "attempt_not_object",
+        "failure_not_list", "failure_not_object", "unknown_failure", "missing_duration",
+    ],
+)
+def test_mac_repetition_never_hides_invalid_final_result_or_attempt_identity(mutation):
+    summary, tests = _mac_retry_metadata()
+    case = _case(tests)
+    first, retry = case["children"]
+    lane = "unit"
+    if mutation == "terminal_failure":
+        case["result"] = "Failed"
+    elif mutation == "summary_failure":
+        summary["failedTests"] = 1
+    elif mutation == "first_passed":
+        first["result"] = "Passed"
+    elif mutation == "retry_failed":
+        retry["result"] = "Failed"
+    elif mutation == "reordered":
+        case["children"].reverse()
+    elif mutation == "duplicate_attempt":
+        retry["nodeIdentifier"] = "1"
+    elif mutation == "extra_attempt":
+        case["children"].append(deepcopy(retry))
+    elif mutation == "missing_attempt":
+        case["children"].pop()
+    elif mutation == "foreign_attempt":
+        retry["nodeIdentifier"] = "ForeignTests/testOther()"
+    elif mutation == "foreign_case_url":
+        case["nodeIdentifierURL"] = "test://com.apple.xcode/Other/AstralAppTests/ExampleTests/testExample"
+    elif mutation == "foreign_case_name":
+        case["name"] = "testOther()"
+    elif mutation == "unknown_node":
+        first["nodeType"] = "Test Case Run"
+    elif mutation == "unknown_field":
+        retry["extra"] = True
+    elif mutation == "nested_failure":
+        first["children"][0]["children"] = [{"nodeType": "Test Case", "result": "Failed"}]
+    elif mutation == "retry_failure":
+        retry["children"] = [{"nodeType": "Failure Message", "name": "Hidden failure"}]
+    elif mutation == "empty_failure":
+        first["children"] = []
+    elif mutation == "unbounded_failure":
+        first["children"][0]["name"] = "x" * (domain.MAX_TEXT + 1)
+    elif mutation == "failure_field":
+        first["children"][0]["result"] = "Passed"
+    elif mutation == "duration_bool":
+        retry["durationInSeconds"] = True
+    elif mutation == "duration_infinite":
+        retry["durationInSeconds"] = float("inf")
+    elif mutation == "duration_negative":
+        retry["durationInSeconds"] = -0.1
+    elif mutation == "duration_text":
+        retry["duration"] = "unknown"
+    elif mutation == "details":
+        case["details"] = "Passed after 2 retries"
+    elif mutation == "duplicate_case":
+        tests["testNodes"][0]["children"][0]["children"][0]["children"].append(deepcopy(case))
+    elif mutation == "count":
+        summary["totalTestCount"] += 1
+    elif mutation == "ui_lane":
+        lane = "ui"
+        tests["testNodes"][0]["children"][0]["name"] = "AstralAppUITests"
+    elif mutation == "foreign_failure":
+        first["children"][0]["name"] = "ForeignTests.swift:151: Failed"
+    elif mutation == "invalid_identifier":
+        case["nodeIdentifier"] = "ExampleTests/testExample()/Foreign"
+    elif mutation == "case_extra":
+        case["other"] = "Hidden result"
+    elif mutation == "attempt_not_object":
+        case["children"][1] = []
+    elif mutation == "failure_not_list":
+        first["children"] = {}
+    elif mutation == "failure_not_object":
+        first["children"] = [[]]
+    elif mutation == "unknown_failure":
+        first["children"][0]["nodeType"] = "Runtime Warning"
+    elif mutation == "missing_duration":
+        del retry["duration"]
+    with pytest.raises(domain.DomainError):
+        domain.test_identity(summary, tests, lane, platform="macos", architecture="arm64")
+
+
+@pytest.mark.parametrize("text", [_QOS_WARNING, _REAL_MESH_QOS_WARNING])
+def test_mac_ui_accepts_only_the_priority_inversion_warnings(text):
+    summary, tests = _mac_metadata("ui")
+    _case(tests)["children"] = [{"nodeType": "Runtime Warning", "name": text}]
+    domain.test_identity(summary, tests, "ui", platform="macos", architecture="arm64")
+    _case(tests)["children"] = [
+        {"nodeType": "Runtime Warning", "name": text},
+        {"nodeType": "Runtime Warning", "name": _FOCUS_WARNING},
+    ]
+    with pytest.raises(domain.DomainError):
+        domain.test_identity(summary, tests, "ui", platform="macos", architecture="arm64")

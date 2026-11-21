@@ -1,6 +1,5 @@
 """Resolves enrolled mesh members to their current advertised fabric endpoints and
-presence. mesh_api.py exposes possession-proof publication and owner topology reads;
-the shared mesh surface renders this same resolver output so every client shows
+presence. The shared mesh surface renders this same resolver output so every client shows
 identical, honest presence.
 """
 
@@ -10,7 +9,6 @@ import os
 import re
 from urllib.parse import urlsplit
 
-from orchestrator import mesh_admission as ma
 from orchestrator import mesh_enrollment as me
 from orchestrator.mesh_enrollment import MeshEnrollmentError
 
@@ -145,75 +143,6 @@ class MeshPresence:
             return REASON_MALFORMED
         return None
 
-    def publish(
-        self,
-        *,
-        admission: ma.MeshAdmission,
-        claims: dict,
-        endpoint,
-        capabilities,
-    ) -> dict:
-        owner_id = claims["sub"]
-        member_id = claims[ma.MEMBER_CLAIM]["member_id"]
-        observed_endpoint = normalize_endpoint(endpoint)
-        labels = normalize_capabilities(capabilities)
-        now = me._now_ms()
-        with self.store._transaction() as transaction:
-            _, member, record = admission.current(transaction, claims)
-            existing = self.store._get_in_transaction(
-                transaction, owner_id, PRESENCE_NAMESPACE, member_id
-            )
-            payload = {
-                "updated_at": now,
-                "record_version": RECORD_VERSION,
-                "member_id": member_id,
-                "mesh_id": record["mesh_id"],
-                "device_key_fingerprint": record["device_key_fingerprint"],
-                "membership_epoch": member.membership_epoch,
-                "authority_revision": record["authority_revision"],
-                "endpoint": observed_endpoint,
-                "capabilities": labels,
-                "observed_at": now,
-            }
-            try:
-                if existing is None:
-                    self.store._credentials.repository.upsert_credential(
-                        transaction,
-                        owner_id=owner_id,
-                        agent_id=PRESENCE_NAMESPACE,
-                        credential_key=member_id,
-                        encrypted_value=me._encode_record(payload),
-                        updated_at=payload["updated_at"],
-                    )
-                else:
-                    self.store._transition(
-                        owner_id,
-                        PRESENCE_NAMESPACE,
-                        member_id,
-                        expected_updated_at=existing["updated_at"],
-                        record=payload,
-                        transaction=transaction,
-                    )
-            except me.InvitationStateInvalid as exc:
-                raise PresenceConflict("presence changed concurrently") from exc
-            self.store._audit_transition(
-                transaction,
-                owner_id,
-                "mesh.member.presence",
-                actor_kind="member",
-                actor_id=member_id,
-                meta={
-                    "member_id": member_id,
-                    "endpoint": endpoint_origin(observed_endpoint),
-                    "capabilities": labels,
-                },
-            )
-        targets = self.resolve(owner_id)
-        for target in targets:
-            if target["member_id"] == member_id:
-                return target
-        raise me.MemberNotFound(member_id)
-
     def resolve(self, owner_id: str, *, member_id: str | None = None) -> list[dict]:
         now = me._now_ms()
         try:
@@ -289,13 +218,3 @@ class MeshPresence:
                 }
             )
         return targets
-
-    def self_presence(self, *, admission: ma.MeshAdmission, claims: dict) -> dict:
-        with self.store._transaction() as transaction:
-            admission.current(transaction, claims)
-        targets = self.resolve(
-            claims["sub"], member_id=claims[ma.MEMBER_CLAIM]["member_id"]
-        )
-        if not targets:
-            raise me.MemberNotFound(claims[ma.MEMBER_CLAIM]["member_id"])
-        return targets[0]

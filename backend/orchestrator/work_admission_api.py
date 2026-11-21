@@ -1,17 +1,15 @@
-"""HTTP submission route for fixed-research work, mounted explicitly rather than
-globally registered. Delegates acceptance to work_submit.py under
-work_submit_authority.py's caller fence; wired into api.py.
+"""Validates historical Work submission replays when an application mounts the compatibility router.
+The personal mesh server leaves this bearer route unmounted.
 """
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass, field
 from functools import wraps
 from uuid import UUID
 
 from audit.repository import AuditRepository
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 from llm_config.user_store import UserLLMConfigStore
@@ -19,7 +17,6 @@ from orchestrator.session_store import WebSessionStore
 from orchestrator.work_submit import FixedResearchPreflight, WorkSubmitService
 from orchestrator.work_submit_authority import authenticate_work_submission_request
 from persistent_agents.models import AssignmentError
-from persistent_agents.runner import AssignmentRunner
 from persistent_agents.service import AssignmentService
 from orchestrator.work_write_boundary import (
     BODY_SECONDS as _BODY_SECONDS,
@@ -32,6 +29,7 @@ _ERRORS = {
     "harness_component_unavailable", "harness_profile_unknown", "harness_capture_invalid",
     "harness_config_changed", "harness_config_unavailable", "harness_artifact_unavailable",
     "harness_capture_changed", "harness_unavailable",
+    "turn_engine_retired",
     "work_submit_invalid",
     "work_submit_unavailable",
     "work_body_too_large",
@@ -101,7 +99,6 @@ class _Composition:
     runtime: object = field(repr=False)
     audit: object = field(repr=False)
     config: object = field(repr=False)
-    runner: object = field(repr=False)
 
     @classmethod
     def capture(cls, app):
@@ -121,7 +118,6 @@ class _Composition:
             runtime,
             getattr(orch, "audit_repo", None),
             getattr(orch, "_llm_store", None),
-            getattr(orch, "persistent_assignment_runner", None),
         )
         value.assert_current()
         return value
@@ -163,17 +159,7 @@ class _Composition:
 
     def new_admission(self):
         self.assert_current()
-        if (
-            type(self.runner) is not AssignmentRunner
-            or self.orch.persistent_assignment_runner is not self.runner
-            or not self.runner.fixed_research_ready(
-                service=self.assignments, sessions=self.sessions
-            )
-        ):
-            _unavailable()
-        loop = self.runner._loop
-        if not isinstance(loop, asyncio.Task) or loop.done() or loop.cancelling():
-            _unavailable()
+        raise AssignmentError("turn_engine_retired", 410)
 
 
 async def _body(request, expected):
@@ -202,6 +188,7 @@ class WorkAdmissionRoute(APIRoute):
                         404,
                         408,
                         409,
+                        410,
                         413,
                         415,
                         422,
@@ -213,7 +200,9 @@ class WorkAdmissionRoute(APIRoute):
                     {"error": error.code if known else "work_submit_unavailable"},
                     error.status_code if known else 503,
                 )
-            except Exception:
+            except Exception as error:
+                if isinstance(error, HTTPException) and error.status_code in {401, 403}:
+                    return _json({"error": "work_authentication_required"}, 401)
                 return _json({"error": "work_submit_unavailable"}, 503)
 
         return safe

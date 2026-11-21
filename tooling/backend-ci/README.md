@@ -15,7 +15,7 @@ The required Deep CI aggregate now includes:
   probe, not a required gate.
 - Disposable PostgreSQL 17 for those tests, and the exact pinned Plane's
   PostgreSQL suite: complete, with its coverage gates, when the
-  `components/AstralPlane` gitlink differs between the immutable base and the
+  `plane/` tree differs between the immutable base and the
   candidate (`scripts/ci_plane_lane.py`; an unreadable base counts as a
   change), otherwise Plane's architecture, API, domain and bootstrap tests,
   because Plane's own CI runs the complete suite. The test producer refuses
@@ -37,7 +37,7 @@ The required Deep CI aggregate now includes:
   base's exact gitlinks. The deployed baseline
   `013a06922759ae737b24b20ab02705e35614789d` separately anchors upgrade/recovery
   rehearsal; its wider coverage comparison is diagnostic, not a replacement
-  for or additional threshold on the Constitution's changed-by-PR gate.
+  for or additional threshold on the changed-by-PR gate.
 - At least 90% changed executable JavaScript, using exact candidate source
   maps and the canonical Node/browser/offline/export union. The explicit
   `projection-web` profile retains strict Python and JavaScript producers and

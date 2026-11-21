@@ -12,13 +12,9 @@ from uuid import uuid4
 import pytest
 
 from orchestrator import orchestrator as module
-from agents.computer_use import mcp_tools
-from agents.computer_use.mcp_server import MCPServer
 from orchestrator.computer_hosts import ComputerHostRegistry
 from orchestrator.computer_sessions import ComputerSessionManager
 from shared.feature_flags import flags
-from shared.protocol import MCPRequest
-from tests.test_hitl_public_research import _dispatch
 from tests.test_hitl_task_continuation import task_runtime  # noqa: F401
 from tests.test_hitl_public_research import runtime  # noqa: F401
 from tests.test_lets_gate_ordering import gate_orchestrator  # noqa: F401
@@ -58,7 +54,7 @@ async def _ingress(state_runtime, monkeypatch, *, enabled=True):
     orch._tunnel_ingress_over_cap = lambda _owner: False
     monkeypatch.setitem(flags._flags, 'computer_use', enabled)
     generation = _NATIVE['connection_generation']
-    registered, completed = asyncio.Event(), asyncio.Event()
+    registered = asyncio.Event()
     barriers, sent = [], []
     on_send = [None]
 
@@ -79,8 +75,6 @@ async def _ingress(state_runtime, monkeypatch, *, enabled=True):
             registered.set()
             return
         await module.Orchestrator.handle_ui_message(orch, socket, raw)
-        if value.get('action') == 'authorize_action':
-            completed.set()
 
     async def feed(raw=None):
         barrier = asyncio.Event()
@@ -99,7 +93,7 @@ async def _ingress(state_runtime, monkeypatch, *, enabled=True):
         await feed()
         yield SimpleNamespace(orch=orch, websocket=websocket, generation=generation, feed=feed,
                               sent=sent, effects=effects, turns=turns, proposals=proposals, outcome=outcome,
-                              completed=completed, on_send=on_send)
+                              on_send=on_send)
     finally:
         for session in orch.computer_sessions.live_for_owner('owner-a'):
             await orch.computer_sessions.end(session, 'user_stop')
@@ -227,57 +221,37 @@ async def test_invalid_native_response_does_not_resolve_current_request_or_dispa
 
 
 @pytest.mark.parametrize('response_kind', ['response_ok', 'response_error'])
-async def test_native_closed_reply_completes_approved_operation_on_same_socket(task_runtime, monkeypatch, response_kind):  # noqa: F811
+async def test_native_closed_reply_completes_only_the_bound_host_request(task_runtime, monkeypatch, response_kind):  # noqa: F811
     async with _ingress(task_runtime, monkeypatch) as state:
         orch, websocket = state.orch, state.websocket
         await state.feed(_native_frame('announce'))
         host = orch.computer_hosts.host_for_socket(websocket)
         session = await orch.computer_sessions.start('owner-a', host, websocket, 'chat-a', wait_for_ack=False)
         await state.feed(_native_frame('heartbeat', session_id=session.session_id))
-        orch.agents['computer-use-1'] = object()
-        orch.tool_permissions.get_tool_scope_map.return_value = {'type_text': 'tools:write'}
-        loop = asyncio.get_running_loop()
         request_ready = asyncio.Event()
-        physical = []
-        monkeypatch.setattr(mcp_tools, '_ORCH', orch)
+        sent = []
 
-        async def observed(value):
-            if value.get('type') == 'computer_request':
-                physical.append(value)
+        async def observe(frame):
+            if frame.get("type") == "computer_request":
+                sent.append(frame)
                 request_ready.set()
 
-        async def execute(socket, agent, tool, args, **kwargs):
-            async def effect(_capabilities):
-                return await asyncio.to_thread(MCPServer().process_request, MCPRequest(method='tools/call', params={
-                    'name': tool, 'arguments': {**args, 'user_id': 'owner-a', 'session_id': 'chat-a',
-                                              '_runtime': SimpleNamespace(loop=loop)}}))
-
-            return await orch._execute_governed_attempt(socket, agent, tool, args,
-                user_id='owner-a', channel='web', audit_correlation_id='test', actor_user_id='owner-a',
-                auth_principal='owner-a', conversation_id='chat-a', invoke=effect)
-
-        state.on_send[0] = observed
-        orch._execute_with_retry = execute
-        proposal = await _dispatch((orch, websocket), tool='type_text',
-            args={'text': 'reviewed synthetic text', 'hwnd': 42}, agent='computer-use-1')
-        decision = next(item['payload'] for item in proposal.ui_components[0]['content']
-                        if item.get('payload', {}).get('decision') == 'approve_and_resume')
-        await state.feed(_native_frame('paused', session_id=session.session_id))
-        websocket.feed(json.dumps({'type': 'ui_event', 'action': 'authorize_action', 'payload': decision,
-            'submission_id': str(uuid4()), 'request_generation': str(uuid4()), 'connection_generation': state.generation}))
+        state.on_send[0] = observe
+        pending = asyncio.create_task(orch.computer_hosts.request(host, session.session_id, "screenshot", {}, 5))
         await asyncio.wait_for(request_ready.wait(), 5)
-        assert not state.completed.is_set() and len(orch.computer_hosts._pending) == 1
-        request, = physical
-        assert request['verb'] == 'type_text'
-        assert request['args'] == {'text': 'reviewed synthetic text', 'hwnd': 42, 'terminal_ok': False}
-        response = _native_frame(response_kind, request_id=request['request_id'])
+        frame, = sent
+        assert frame["verb"] == "screenshot"
+        response = _native_frame(response_kind, request_id=frame["request_id"])
         await state.feed(response)
-        await asyncio.wait_for(state.completed.wait(), 5)
+        if response_kind == "response_ok":
+            assert isinstance(await pending, dict)
+        else:
+            from orchestrator.computer_hosts import ComputerHostError
+            with pytest.raises(ComputerHostError):
+                await pending
         await state.feed(response)
-        assert len(physical) == 1 and not orch.computer_hosts._pending and not orch._hitl_pending_calls
-        assert session.state == ('active' if response_kind == 'response_ok' else 'paused')
-        assert any(work.frame.action == 'authorize_action'
-                   for work in orch._connection_contexts[id(websocket)].operations.values())
+        assert len(sent) == 1 and not orch.computer_hosts._pending
+
 
 async def test_project_manifest_updates_cross_urgent_ingress_without_reregistering_or_clearing_bypass(task_runtime, monkeypatch):  # noqa: F811
     from orchestrator import project_authority

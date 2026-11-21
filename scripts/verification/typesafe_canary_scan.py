@@ -159,8 +159,7 @@ def _scan_container(container: str) -> list[dict]:
 def _run_tests(artifact_dir: Path) -> tuple[int, str]:
     cmd = [sys.executable, "-m", "pytest", "-q", "-p", "no:randomly",
            "tests/test_typesafe_budget.py", "tests/test_typesafe_decision.py",
-           "tests/test_typesafe_turn_routing.py", "tests/test_typesafe_security.py",
-           "tests/test_typesafe_resilience.py", "tests/test_typesafe_layout.py",
+           "tests/test_typesafe_security.py", "tests/test_typesafe_resilience.py",
            "tests/test_typesafe_settings.py", "tests/test_typesafe_submission_screen.py",
            "llm_config/tests/test_typesafe_store.py",
            "llm_config/tests/test_typesafe_secret_hygiene.py"]

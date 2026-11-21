@@ -1,19 +1,5 @@
-# Publish the composed AstralDeep backend image to GitHub Container Registry.
-#
-# Fires only after the owner CI aggregate (`ci.yml`) has completed successfully
-# for a push to `main`; PR runs, failed runs, and other branches never publish.
-# `workflow_run` workflows are loaded from the default branch, so a candidate
-# cannot replace this publisher. The image is built from the exact commit the
-# green CI run tested, with all four component submodules initialized and the
-# same fail-closed composition preflight `make up`/`make build` require locally.
-#
-# Tags:
-#   ghcr.io/<owner>/<repo>:sha-<commit>   immutable — the only deployable ref
-#   ghcr.io/<owner>/<repo>:latest         convenience pointer only
-#
-# Deployment guidance: docs/production-deployment.md ("Deploying to
-# sandbox.ai.uky.edu"). This workflow publishes only the backend image; the
-# voice-worker image stays behind the VOICE_WORKER_CLOSURE_APPROVED gate.
+# Publishes the exact backend image from a successful same-repository main-branch CI run.
+# The default-branch controller verifies its source and image identity before applying the immutable SHA tag and latest pointer.
 name: Publish image
 
 on:
@@ -34,7 +20,7 @@ env:
 
 jobs:
   publish:
-    name: Build and push ghcr image
+    name: Publish the qualified ghcr image
     if: >-
       ${{
         github.event.workflow_run.conclusion == 'success' &&
@@ -43,9 +29,10 @@ jobs:
         github.event.workflow_run.head_repository.full_name == github.repository
       }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 30
     permissions:
       contents: read
+      actions: read
       packages: write
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
@@ -72,20 +59,26 @@ jobs:
           set -euo pipefail
           REPO_LC=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
           SHA="${{ github.event.workflow_run.head_sha }}"
-          echo "image=ghcr.io/${REPO_LC}" >> "$GITHUB_OUTPUT"
-          echo "sha_tag=ghcr.io/${REPO_LC}:sha-${SHA}" >> "$GITHUB_OUTPUT"
-          echo "latest_tag=ghcr.io/${REPO_LC}:latest" >> "$GITHUB_OUTPUT"
-      - name: Build the composed backend image
+          {
+            echo "image=ghcr.io/${REPO_LC}"
+            echo "sha_tag=ghcr.io/${REPO_LC}:sha-${SHA}"
+            echo "latest_tag=ghcr.io/${REPO_LC}:latest"
+          } >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: backend-image
+          path: build/backend-web
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Load and tag the exact qualified backend image
         run: |
           set -euo pipefail
-          docker build \
-            --file Dockerfile \
-            --tag "${{ steps.refs.outputs.sha_tag }}" \
-            --tag "${{ steps.refs.outputs.latest_tag }}" \
-            --label "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
-            --label "org.opencontainers.image.revision=${{ github.event.workflow_run.head_sha }}" \
-            --label "org.opencontainers.image.licenses=Apache-2.0" \
-            .
+          image="$(cat build/backend-web/image-id.txt)"
+          [[ "$image" =~ ^sha256:[a-f0-9]{64}$ ]]
+          docker load --input build/backend-web/image.tar.gz
+          test "$(docker image inspect "$image" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" = "${{ github.event.workflow_run.head_sha }}"
+          docker tag "$image" "${{ steps.refs.outputs.sha_tag }}"
+          docker tag "$image" "${{ steps.refs.outputs.latest_tag }}"
       - name: Log in to GitHub Container Registry
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
       - name: Push the immutable sha tag and the latest pointer

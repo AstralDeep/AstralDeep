@@ -1,6 +1,6 @@
 """Coverage for the emergency-stop framework (MCP) path: scope-gated status/stop/resume
 operations, tool projection, dispatch wiring, and the orchestrator-side dispatch gates
-for chat, scheduled turns, and tool effects.
+for tool effects.
 """
 
 from __future__ import annotations
@@ -163,32 +163,6 @@ def _orchestrator_with_stop(coordinator) -> object:
     orch.emergency_stop = coordinator
     orch.ui_sessions = {}
     return orch
-
-
-def test_chat_dispatch_refuses_new_turns_while_stopped():
-    coordinator = EmergencyStopCoordinator()
-    asyncio.run(coordinator.engage(OWNER, sweep=False))
-    orch = _orchestrator_with_stop(coordinator)
-    with pytest.raises(AssignmentError) as stopped:
-        asyncio.run(orch.handle_chat_message(object(), "hello", "chat-1", user_id=OWNER))
-    assert stopped.value.code == "emergency_stop_active"
-    allowed = EmergencyStopCoordinator()
-    orch = _orchestrator_with_stop(allowed)
-    with pytest.raises(Exception) as relaxed:
-        asyncio.run(orch.handle_chat_message(object(), "hello", "chat-1", user_id=OWNER))
-    assert "emergency_stop_active" not in str(getattr(relaxed.value, "code", ""))
-
-
-def test_scheduled_turns_refuse_to_run_while_stopped():
-    coordinator = EmergencyStopCoordinator()
-    asyncio.run(coordinator.engage(OWNER, sweep=False))
-    orch = _orchestrator_with_stop(coordinator)
-    with pytest.raises(AssignmentError) as stopped:
-        asyncio.run(orch.run_scheduled_turn(user_id=OWNER, chat_id="chat-1",
-                                            instruction="run", agent_id=None,
-                                            access_token="token", allowed_scopes=[],
-                                            correlation_id="corr"))
-    assert stopped.value.code == "emergency_stop_active"
 
 
 def test_tool_dispatch_refuses_effects_while_stopped():

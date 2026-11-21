@@ -9,11 +9,9 @@ from verification.__main__ import config_from_args, exit_code_for, parse_args
 
 
 def test_parse_and_normalize_mode():
-    args = parse_args(["--mode", "in-process", "--persona", "everyday",
-                       "--persona", "government", "--strict", "--run-id", "__verif__cli"])
+    args = parse_args(["--mode", "in-process", "--strict", "--run-id", "__verif__cli"])
     cfg = config_from_args(args)
     assert cfg.mode == "in_process"
-    assert cfg.personas == ["everyday", "government"]
     assert cfg.strict is True
     assert cfg.run_id == "__verif__cli"
 

@@ -23,7 +23,7 @@ from orchestrator.tool_permissions import VALID_SCOPES as _CANONICAL_SCOPES
 from audit.hooks import record_generic
 from shared.feature_flags import flags
 
-from .cron import ScheduleError, compute_next_run_ms
+from .cron import ScheduleError, first_run_ms
 from .governance import GovernanceError, validate_new_job
 from .store import ScheduleActionError, ScheduledJobStore
 
@@ -137,8 +137,8 @@ async def create_job(body: ScheduleCreateRequest, request: Request,
             schedule_expr=body.schedule_expr,
             min_interval_seconds=SCHEDULE_MIN_INTERVAL_SECONDS,
         )
-        next_run = compute_next_run_ms(body.schedule_kind, body.schedule_expr,
-                                       body.timezone, int(time.time() * 1000))
+        next_run = first_run_ms(body.schedule_kind, body.schedule_expr,
+                                body.timezone, int(time.time() * 1000))
     except GovernanceError as ge:
         return JSONResponse(status_code=409 if ge.code == "job_cap_reached" else 400,
                             content={"error": ge.code, "detail": str(ge), **ge.extra})

@@ -17,6 +17,8 @@ from orchestrator import computer_use_policy as policy
 from orchestrator.computer_hosts import ComputerHostError
 from orchestrator.tool_security import ToolSecurityAnalyzer
 from shared.protocol import ComputerHostDescriptor, MCPRequest
+from tests.test_preview_composite_authority import ROOT as PREVIEW_ROOT, preview_runtime  # noqa: F401
+from tests.test_project_host_authority import OWNER as PREVIEW_OWNER
 from tests.test_computer_use_076 import OWNER, _AgentOrch, _descriptor, _FakeHostSocket, _WS
 
 _EXTENSION = "agents.computer_use.browser_tools"
@@ -170,7 +172,7 @@ def test_descriptions_are_written_for_the_mac_and_steer_commands_and_the_browser
         assert "browser_" in reg[name]["description"]
     assert "run_command" in reg["type_text"]["description"] and "Terminal" in reg["type_text"]["description"]
     run = reg["run_command"]["description"]
-    assert "argv" in run and "workspace_roots" in run and "screenshot" in run and "Terminal" in run
+    assert "argv" in run and "workspace_roots" in run and "untrusted" in run and "read_output" in run
     assert reg["run_command"]["input_schema"]["required"] == ["cwd"]
     schema = reg["run_command"]["input_schema"]["properties"]
     assert schema["command"]["maxLength"] == policy.MAX_COMMAND_CHARS == 4096
@@ -195,6 +197,17 @@ def test_command_tools_are_registered_with_policy_scopes():
             reg["project_preview"]["destructive"]) == ("tools:execute", "consequential", "always")
 
 
+@pytest.fixture
+def preview_call(preview_runtime):  # noqa: F811
+    api, orch, ws, _host, session, _sent = preview_runtime
+
+    async def call(**request):
+        async with api.project_dispatch_scope(orch, ws, PREVIEW_OWNER, "chat", "computer-use-1", "project_preview", request):
+            return await asyncio.to_thread(mcp_tools.project_preview, user_id=PREVIEW_OWNER, session_id="chat", **request)
+
+    return session, call
+
+
 def test_project_preview_server_argv_is_fixed_to_a_loopback_port():
     assert mcp_tools._preview_argv("npm", "dev") == [
         "npm", "run", "dev", "--", "--host", "localhost", "--port", "4173", "--strictPort",
@@ -203,25 +216,8 @@ def test_project_preview_server_argv_is_fixed_to_a_loopback_port():
     assert "localhost:4173" in mcp_tools._preview_probe_script()
 
 
-def test_project_preview_http_probe_fits_review_and_survives_text_privacy_filter(monkeypatch):
-    from types import SimpleNamespace
-    from orchestrator.hitl_confirmation import _review_arguments
-
-    monkeypatch.setattr("personalization.phi_gate.get_phi_gate",
-                        lambda: SimpleNamespace(contains_phi=lambda _text: False))
-    preview, reviewable = _review_arguments({
-        "argv": ["node", "-e", mcp_tools._preview_probe_script()],
-        "cwd": ROOT, "timeout_s": 20, "background": False,
-    }, project_targets=frozenset({("cwd", ROOT)}))
-    assert reviewable and "[REDACTED" not in preview
-
-
-def test_project_preview_start_returns_url_and_job_bound_stop_button(monkeypatch):
-    from types import SimpleNamespace
-
-    host = SimpleNamespace(name="Mac", project_mode=True)
-    session = SimpleNamespace(session_id="session-1", command_jobs={})
-    monkeypatch.setattr(mcp_tools, "_ctx", lambda _kwargs: (OWNER, CHAT, host, session))
+async def test_project_preview_start_returns_url_and_job_bound_stop_button(monkeypatch, preview_call):
+    session, call = preview_call
     monkeypatch.setattr(mcp_tools, "_command_args", lambda args, _host: args)
     monkeypatch.setattr(mcp_tools, "read_file", lambda **_kwargs: {
         "_data": {"text": '{"scripts":{"dev":"vite --host localhost"}}', "truncated": False},
@@ -240,7 +236,7 @@ def test_project_preview_start_returns_url_and_job_bound_stop_button(monkeypatch
         return next(replies)
 
     monkeypatch.setattr(mcp_tools, "run_command", run)
-    result = mcp_tools.project_preview(action="start", cwd=ROOT, package_manager="npm", script="dev")
+    result = await call(action="start", cwd=PREVIEW_ROOT, package_manager="npm", script="dev")
     assert result["_data"]["url"] == "http://localhost:4173/"
     assert result["_data"]["job_id"] == JOB
     assert session.command_jobs == {JOB: {"started_at": "2026-10-29", "state": "running"}}
@@ -262,12 +258,8 @@ def test_project_preview_refuses_non_project_sessions_without_running_commands(m
     assert result["_data"]["code"] == "permission_denied"
 
 
-def test_project_preview_stop_delegates_only_the_session_job_id(monkeypatch):
-    from types import SimpleNamespace
-
-    host = SimpleNamespace(name="Mac", project_mode=True)
-    session = SimpleNamespace(session_id="session-1")
-    monkeypatch.setattr(mcp_tools, "_ctx", lambda _kwargs: (OWNER, CHAT, host, session))
+async def test_project_preview_stop_delegates_only_the_session_job_id(monkeypatch, preview_call):
+    _, call = preview_call
     calls = []
 
     def stop(**kwargs):
@@ -275,23 +267,19 @@ def test_project_preview_stop_delegates_only_the_session_job_id(monkeypatch):
         return {"_data": {"job_id": JOB, "state": "interrupted"}}
 
     monkeypatch.setattr(mcp_tools, "interrupt_command", stop)
-    result = mcp_tools.project_preview(action="stop", cwd=ROOT, job_id=JOB)
+    result = await call(action="stop", cwd=PREVIEW_ROOT, job_id=JOB)
     assert result["_data"] == {"computer": "Mac", "job_id": JOB, "state": "interrupted"}
     assert len(calls) == 1 and calls[0]["job_id"] == JOB and calls[0]["signal"] == "INT"
 
 
-def test_project_preview_refuses_scripts_that_do_not_run_vite(monkeypatch):
-    from types import SimpleNamespace
-
-    host = SimpleNamespace(name="Mac", project_mode=True)
-    session = SimpleNamespace(session_id="session-1")
-    monkeypatch.setattr(mcp_tools, "_ctx", lambda _kwargs: (OWNER, CHAT, host, session))
+async def test_project_preview_refuses_scripts_that_do_not_run_vite(monkeypatch, preview_call):
+    _, call = preview_call
     monkeypatch.setattr(mcp_tools, "_command_args", lambda args, _host: args)
     monkeypatch.setattr(mcp_tools, "read_file", lambda **_kwargs: {
         "_data": {"text": '{"scripts":{"dev":"next dev"}}', "truncated": False},
     })
     monkeypatch.setattr(mcp_tools, "run_command", lambda **_kwargs: pytest.fail("server must not start"))
-    result = mcp_tools.project_preview(action="start", cwd=ROOT, package_manager="npm", script="dev")
+    result = await call(action="start", cwd=PREVIEW_ROOT, package_manager="npm", script="dev")
     assert result["_data"]["code"] == "preview_unsupported"
 
 
@@ -690,37 +678,27 @@ async def test_file_effect_does_not_reinterpret_relative_reviewed_arguments(worl
 
 @pytest.mark.parametrize("action,verb", [("status", "read_output"), ("stop", "interrupt_command")])
 @pytest.mark.parametrize("code", ["permission_denied", "stale_project_grant", "confirmation_required"])
-def test_preview_lifecycle_preserves_authority_failures(monkeypatch, action, verb, code):
-    from types import SimpleNamespace
-
-    monkeypatch.setattr(mcp_tools, "_ctx", lambda _args: (
-        OWNER, CHAT, SimpleNamespace(name="Mac", project_mode=True), SimpleNamespace(session_id="session")))
+async def test_preview_lifecycle_preserves_authority_failures(monkeypatch, preview_call, action, verb, code):
+    _, call = preview_call
     denied = mcp_tools._fail(code, "Authority changed.")
     monkeypatch.setattr(mcp_tools, verb, lambda **_kwargs: denied)
-    assert mcp_tools.project_preview(action=action, cwd=ROOT, job_id=JOB) == denied
+    assert await call(action=action, cwd=PREVIEW_ROOT, job_id=JOB) == denied
 
 
 @pytest.mark.parametrize("action,verb", [("status", "read_output"), ("stop", "interrupt_command")])
 @pytest.mark.parametrize("data", [{"state": "uncertain", "job_id": JOB},
                                     {"state": "exited", "job_id": "another-job"}, None])
-def test_preview_lifecycle_never_claims_stop_without_same_job_proof(monkeypatch, action, verb, data):
-    from types import SimpleNamespace
-
-    monkeypatch.setattr(mcp_tools, "_ctx", lambda _args: (
-        OWNER, CHAT, SimpleNamespace(name="Mac", project_mode=True), SimpleNamespace(session_id="session")))
+async def test_preview_lifecycle_never_claims_stop_without_same_job_proof(monkeypatch, preview_call, action, verb, data):
+    _, call = preview_call
     monkeypatch.setattr(mcp_tools, verb, lambda **_kwargs: {"_data": data})
-    result = mcp_tools.project_preview(action=action, cwd=ROOT, job_id=JOB)
+    result = await call(action=action, cwd=PREVIEW_ROOT, job_id=JOB)
     assert result["_data"]["code"] == f"preview_{action}_uncertain"
 
 
 @pytest.mark.parametrize("phase", ["manifest", "first_status", "probe", "last_status"])
 @pytest.mark.parametrize("malformed", [False, True])
-def test_preview_start_denied_or_malformed_checks_never_publish_running(monkeypatch, phase, malformed):
-    from types import SimpleNamespace
-
-    host = SimpleNamespace(name="Mac", project_mode=True)
-    session = SimpleNamespace(session_id="session", command_jobs={})
-    monkeypatch.setattr(mcp_tools, "_ctx", lambda _args: (OWNER, CHAT, host, session))
+async def test_preview_start_denied_or_malformed_checks_never_publish_running(monkeypatch, preview_call, phase, malformed):
+    _, call = preview_call
     monkeypatch.setattr(mcp_tools, "_command_args", lambda args, _host: args)
     denied = {"_data": None} if malformed else mcp_tools._fail("permission_denied", "Grant changed.")
     manifest = {"_data": {"text": '{"scripts":{"dev":"vite"}}', "truncated": False}}
@@ -743,7 +721,7 @@ def test_preview_start_denied_or_malformed_checks_never_publish_running(monkeypa
     monkeypatch.setattr(mcp_tools, "run_command", run)
     cleanup = []
     monkeypatch.setattr(mcp_tools, "interrupt_command", lambda **args: cleanup.append(args))
-    result = mcp_tools.project_preview(action="start", cwd=ROOT, package_manager="npm", script="dev")
+    result = await call(action="start", cwd=PREVIEW_ROOT, package_manager="npm", script="dev")
     if malformed:
         assert result["_data"]["code"] == ("preview_unsupported" if phase == "manifest" else "preview_unavailable")
     else:
@@ -753,19 +731,16 @@ def test_preview_start_denied_or_malformed_checks_never_publish_running(monkeypa
 
 @pytest.mark.parametrize("action,verb", [("status", "read_output"), ("stop", "interrupt_command")])
 @pytest.mark.parametrize("manager,script", [("npm", "dev"), ("pnpm", "preview"), ("yarn", "start"), ("bun", "dev")])
-def test_confirmed_stopped_preview_can_restart_with_source_bound_launch_arguments(monkeypatch, action, verb, manager, script):
-    from types import SimpleNamespace
-
-    monkeypatch.setattr(mcp_tools, "_ctx", lambda _args: (
-        OWNER, CHAT, SimpleNamespace(name="Mac", project_mode=True), SimpleNamespace(session_id="session")))
+async def test_confirmed_stopped_preview_can_restart_with_source_bound_launch_arguments(monkeypatch, preview_call, action, verb, manager, script):
+    _, call = preview_call
     monkeypatch.setattr(mcp_tools, verb, lambda **_kwargs: {"_data": {"job_id": JOB, "state": "interrupted"}})
-    original = {"action": action, "cwd": ROOT, "package_manager": manager, "script": script, "job_id": JOB}
-    result = mcp_tools.project_preview(**original)
+    original = {"action": action, "cwd": PREVIEW_ROOT, "package_manager": manager, "script": script, "job_id": JOB}
+    result = await call(**original)
     button = result["_ui_components"][0]["content"][-1]
     assert button["label"] == "Start preview" and button["action"] == "component_action"
     assert button["payload"] == {"kind": "invoke", "params_patch": {"action": "start"}}
     assert {**original, **button["payload"]["params_patch"]} == {
-        "action": "start", "cwd": ROOT, "package_manager": manager, "script": script, "job_id": JOB}
+        "action": "start", "cwd": PREVIEW_ROOT, "package_manager": manager, "script": script, "job_id": JOB}
 
 
 @pytest.mark.parametrize("launch", [{}, {"package_manager": "npm"}, {"script": "dev"},

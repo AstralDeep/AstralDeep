@@ -1,7 +1,3 @@
-"""Tests for small cross-module guards outside the main remote-machine verb libraries
-(local_agents.py, web_auth.py, chrome/menu_model.py): a failing remote flag check
-degrades the fleet/menu safely, and credential destruction needs a principal.
-"""
 
 from __future__ import annotations
 
@@ -57,13 +53,3 @@ def test_remote_machines_menu_item_is_absent_when_the_flag_cannot_be_read(monkey
     assert "remote_machines" not in json.dumps(model)
 
 
-async def test_machine_credential_destruction_is_a_noop_without_a_principal(monkeypatch):
-    from orchestrator import web_auth
-
-    manager = SimpleNamespace(
-        remove_machine_credentials_for_user=lambda *_args: pytest.fail(
-            "credential persistence was touched without a principal"
-        )
-    )
-    monkeypatch.setattr(web_auth, "_CREDENTIAL_MANAGER", manager)
-    assert await web_auth._destroy_machine_credentials("", "logout") is None

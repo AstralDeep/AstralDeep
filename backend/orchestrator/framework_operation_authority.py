@@ -1,5 +1,5 @@
 """Refreshes source-less framework chat authority from the operation's exact credential.
-Keeps its machine provenance separate from interactive Keycloak session authority.
+An operation bound to any other origin is refused.
 """
 
 from __future__ import annotations
@@ -10,11 +10,7 @@ from dataclasses import dataclass, field
 
 from astralplane.repositories.assignment_models import AssignmentRecord
 from astralplane.repositories.history import FrameworkCredentialObservation
-from orchestrator.session_authority import (
-    OperationExecutionAuthority,
-    SessionAuthorityUnavailable,
-    refresh_operation_execution_authority,
-)
+from orchestrator.session_authority import SessionAuthorityUnavailable
 
 
 def framework_chat_record(record):
@@ -49,47 +45,38 @@ class FrameworkOperationExecutionAuthority:
 
 
 def authority_repository(runtime, authority):
-    if (not isinstance(authority, (OperationExecutionAuthority, FrameworkOperationExecutionAuthority))
+    if (type(authority) is not FrameworkOperationExecutionAuthority
             or authority.plane_runtime is not runtime):
         raise SessionAuthorityUnavailable("operation_authority_unavailable")
-    if type(authority) is FrameworkOperationExecutionAuthority:
-        framework_chat_record(authority.record)
-        selected = authority.record.operation["authority"]
-        observation = authority.observation
-        if (type(observation) is not FrameworkCredentialObservation
-                or observation.credential.owner_id != authority.record.owner_id
-                or observation.credential.credential_id != selected["reference_id"]
-                or observation.credential.scopes != ("operations.submit",)):
-            raise SessionAuthorityUnavailable("framework_operation_authority_unavailable")
-        return runtime.repositories.framework_credentials
-    if isinstance(authority, OperationExecutionAuthority):
-        return runtime.repositories.history.sessions
-    raise SessionAuthorityUnavailable("operation_authority_unavailable")
+    framework_chat_record(authority.record)
+    selected = authority.record.operation["authority"]
+    observation = authority.observation
+    if (type(observation) is not FrameworkCredentialObservation
+            or observation.credential.owner_id != authority.record.owner_id
+            or observation.credential.credential_id != selected["reference_id"]
+            or observation.credential.scopes != ("operations.submit",)):
+        raise SessionAuthorityUnavailable("framework_operation_authority_unavailable")
+    return runtime.repositories.framework_credentials
 
 
 def assert_operation_owner(service, authority, record):
     if authority.plane_runtime is not service.store.plane_runtime:
         raise SessionAuthorityUnavailable("operation_authority_unavailable")
     authority_repository(service.store.plane_runtime, authority)
-    service._owner(record.owner_id, authority.claims,
-                   human=type(authority) is not FrameworkOperationExecutionAuthority)
+    service._owner(record.owner_id, authority.claims, human=False)
 
 
 def invocation_principal(authority):
     principal = authority.claims
-    if type(authority) is FrameworkOperationExecutionAuthority:
-        principal["_invocation_channel"] = "framework"
-    elif isinstance(authority, OperationExecutionAuthority):
-        principal.update(_raw_token=authority.subject_token, _invocation_channel="background")
-    else:
+    if type(authority) is not FrameworkOperationExecutionAuthority:
         raise SessionAuthorityUnavailable("operation_authority_unavailable")
+    principal["_invocation_channel"] = "framework"
     return principal
 
 
 async def refresh_assignment_execution_authority(record, *, sessions, plane_runtime):
     if record.operation.get("authority", {}).get("origin") != "framework":
-        return await refresh_operation_execution_authority(owner_id=record.owner_id,
-            assignment_id=record.assignment_id, sessions=sessions, plane_runtime=plane_runtime)
+        raise SessionAuthorityUnavailable("operation_authority_unavailable")
     try:
         framework_chat_record(record)
         async with asyncio.timeout(15):

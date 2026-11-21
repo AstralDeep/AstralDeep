@@ -18,7 +18,6 @@ import subprocess
 import sys
 import urllib.error
 import urllib.request
-from urllib.parse import urlsplit
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
@@ -213,6 +212,9 @@ def required_compose_variables(
     return required, None
 
 
+_UNUSED_IDENTITY = re.compile(r"(KEYCLOAK_|WEB_SESSION_|OFFLINE_GRANT_|ASTRAL_ACCEPTED_ISSUERS)")
+
+
 def evaluate_posture(values: Mapping[str, str]) -> tuple[list[str], list[str]]:
     def raw(name: str) -> str:
         return str(values.get(name, "") or "")
@@ -224,7 +226,20 @@ def evaluate_posture(values: Mapping[str, str]) -> tuple[list[str], list[str]]:
     problems: list[str] = []
     advisories: list[str] = []
     typesafe = [name for name in TYPESAFE_VARS if get(name)]
+    if get("ASTRAL_NODE_PROFILE") != "personal":
+        problems.append(
+            "ASTRAL_NODE_PROFILE must be exactly personal: the server and institution profiles "
+            "were removed and the node exits 78 with node.profile_removed."
+        )
+    unused = sorted(name for name in values if _UNUSED_IDENTITY.match(name) and get(name))
+    if unused:
+        advisories.append(
+            f"{', '.join(unused)} set but unused: a personal node signs nobody in and reads no "
+            "identity server setting. Remove them."
+        )
     if get("ASTRAL_ENV").lower() in DEV_VALUES:
+        if mock_on:
+            advisories.append("USE_MOCK_AUTH is ignored: mock auth was removed.")
         if typesafe:
             advisories.append(
                 f"{', '.join(typesafe)} set: TypeSafe routing configuration is never read "
@@ -239,14 +254,8 @@ def evaluate_posture(values: Mapping[str, str]) -> tuple[list[str], list[str]]:
         )
     if mock_on:
         problems.append(
-            "USE_MOCK_AUTH is enabled outside development: mock authentication accepts "
-            "any token as an admin user. Set USE_MOCK_AUTH=false and configure "
-            "KEYCLOAK_*, or set ASTRAL_ENV=development (local use only)."
-        )
-    if not (raw("WEB_SESSION_ENC_KEY") or raw("OFFLINE_GRANT_ENC_KEY")):
-        problems.append(
-            "WEB_SESSION_ENC_KEY (or OFFLINE_GRANT_ENC_KEY) is unset: durable web "
-            "sessions cannot be encrypted at rest."
+            "USE_MOCK_AUTH is set but mock auth was removed. Unset USE_MOCK_AUTH; "
+            "a personal node authenticates with mesh keys."
         )
     if not get("CREDENTIAL_ENCRYPTION_KEY"):
         problems.append(
@@ -260,17 +269,13 @@ def evaluate_posture(values: Mapping[str, str]) -> tuple[list[str], list[str]]:
             "AUDIT_HMAC_SECRET is unset or still a shipped development placeholder: the "
             "audit hash chain would be forgeable. Set a high-entropy value."
         )
-    if not mock_on:
-        for variable in ("KEYCLOAK_AUTHORITY", "KEYCLOAK_CLIENT_ID", "KEYCLOAK_CLIENT_SECRET"):
-            if not get(variable):
-                problems.append(f"{variable} is unset: the OIDC sign-in flow cannot operate.")
     agent_key = get("AGENT_API_KEY")
     if agent_key and (agent_key in PLACEHOLDER_SECRETS or len(agent_key) < 16):
         problems.append(
             "AGENT_API_KEY is a shipped placeholder or too short (under 16 characters): "
             "set a high-entropy value so agent registrations cannot be forged."
         )
-    elif not agent_key and not mock_on:
+    elif not agent_key:
         advisories.append(
             "AGENT_API_KEY is unset: agent registrations will be refused (fail closed). "
             "Configure it if this deployment should run specialist agents."
@@ -697,9 +702,6 @@ def _service_findings(
         findings.extend(
             _livekit_findings(by_service.get("livekit"), tcp_probe, http_timeout)
         )
-    findings.extend(
-        _keycloak_findings(values, http_probe, http_timeout)
-    )
     return findings
 
 
@@ -857,94 +859,6 @@ def _livekit_findings(
             "LIVEKIT_BIND_IP publishes port 7880, then re-run the doctor.",
         )
     ]
-
-
-def _keycloak_findings(
-    values: Mapping[str, str],
-    http_probe: Callable[[str, float], HttpResult],
-    http_timeout: float,
-) -> list[Finding]:
-    mock_on = str(values.get("USE_MOCK_AUTH", "") or "").strip().lower() in MOCK_AUTH_VALUES
-    if mock_on:
-        return []
-    authority = str(values.get("KEYCLOAK_AUTHORITY", "") or "").strip()
-    if not authority:
-        return [
-            Finding(
-                "services.keycloak",
-                PROBLEM,
-                "services.keycloak-unconfigured",
-                "mock authentication is off but KEYCLOAK_AUTHORITY is empty: there is "
-                "no configured sign-in path.",
-                "Set KEYCLOAK_AUTHORITY, KEYCLOAK_CLIENT_ID, and KEYCLOAK_CLIENT_SECRET "
-                "in .env (or set USE_MOCK_AUTH=true with ASTRAL_ENV=development for "
-                "local development).",
-            )
-        ]
-    try:
-        parsed = urlsplit(authority)
-        valid = (parsed.scheme in {"http", "https"} and parsed.hostname
-            and parsed.username is None and parsed.password is None
-            and not parsed.query and not parsed.fragment and parsed.port != 0)
-    except ValueError:
-        valid = False
-    if not valid:
-        return [Finding("services.keycloak", PROBLEM, "services.keycloak-authority-invalid",
-            "KEYCLOAK_AUTHORITY must be an HTTP(S) realm URL without user credentials, query or fragment.",
-            "Set the public realm issuer URL in .env and re-run the doctor.")]
-    discovery = http_probe(authority.rstrip("/") + DISCOVERY_SUFFIX, http_timeout)
-    if discovery.status == 0:
-        return [
-            Finding(
-                "services.keycloak",
-                PROBLEM,
-                "services.keycloak-unreachable",
-                f"the authentication service at {authority} is unreachable from this "
-                f"host ({discovery.reason}).",
-                "Verify DNS and firewall access; the browser and the app must both "
-                "reach KEYCLOAK_AUTHORITY, then re-run the doctor.",
-            )
-        ]
-    if discovery.status != 200:
-        return [
-            Finding(
-                "services.keycloak",
-                PROBLEM,
-                "services.keycloak-discovery-failed",
-                f"OIDC discovery at {authority} returned HTTP {discovery.status}.",
-                "Verify the realm URL in KEYCLOAK_AUTHORITY and that the "
-                "authentication service is running, then re-run the doctor.",
-            )
-        ]
-    try:
-        document = json.loads(discovery.body.decode("utf-8", "replace"))
-        issuer = str(document.get("issuer") or "") if isinstance(document, dict) else ""
-    except json.JSONDecodeError:
-        issuer = ""
-    if not issuer:
-        return [
-            Finding(
-                "services.keycloak",
-                PROBLEM,
-                "services.keycloak-discovery-invalid",
-                f"OIDC discovery at {authority} returned a response without an issuer.",
-                "Verify that the URL points at a Keycloak realm, then re-run the "
-                "doctor.",
-            )
-        ]
-    if issuer.rstrip("/") != authority.rstrip("/"):
-        return [
-            Finding(
-                "services.keycloak",
-                PROBLEM,
-                "services.keycloak-issuer-mismatch",
-                f"OIDC discovery at {authority} advertises issuer {issuer}: token "
-                "validation would fail.",
-                "Set KEYCLOAK_AUTHORITY to the advertised realm issuer URL, then "
-                "re-run the doctor.",
-            )
-        ]
-    return []
 
 
 def collect(

@@ -12,3 +12,7 @@ websockets==17.1
 cryptography==48.0.1
 requests==2.34.2
 openai==3.14.1
+psycopg2-binary==2.9.12
+markdown-it-py==4.2.0
+linkify-it-py==2.0.3
+jsonschema==4.25.1

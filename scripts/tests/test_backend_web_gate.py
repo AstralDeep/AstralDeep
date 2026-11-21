@@ -150,7 +150,7 @@ def test_run_never_masks_failure_and_preserves_evidence(tmp_path, monkeypatch, s
             assert kwargs["env"]["COVERAGE_FILE"] == str(output / ".coverage")
             assert kwargs["env"]["PYTHONPATH"].split(gate.os.pathsep) == [
                 str(gate.POLICY_ROOT / "scripts"), str(root / "backend"), str(root),
-                str(root / "components/AstralPlane/src"), str(root / "components/LETS/src"),
+                str(root / "plane/src"), str(root / "components/LETS/src"),
             ]
             assert "backend_web_test_reporter" in command
             if scenario == "timeout":
@@ -444,6 +444,9 @@ with open(os.environ["FAKE_DOCKER_LOG"], "a", encoding="utf-8") as log:
     log.write(json.dumps(arguments) + "\\n")
 if arguments[:1] == ["exec"]:
     print("{{}}")
+if arguments[:1] == ["run"] and any(argument.endswith("-unset-profile") for argument in arguments):
+    print("node.profile_removed")
+    sys.exit(78)
 if arguments[:1] == ["run"] and any(argument.endswith("-negative") for argument in arguments):
     sys.exit(78)
 """, encoding="utf-8")
@@ -496,8 +499,11 @@ def test_image_gate_passes_only_a_known_group_to_the_suite_runner(tmp_path, grou
     runner = next(call for call in calls if call[:1] == ["run"]
                   and any(argument.endswith("-test") for argument in call))
     assert "--cpus=4" in runner and "--memory=10g" in runner
+    explicit_path = "PATH=/opt/astral-kernel/bin:/opt/ci-node:/usr/local/bin:/usr/bin:/bin"
+    assert runner[runner.index(explicit_path) - 1] == "--env"
     assert runner[runner.index(f"ASTRAL_GATE_GROUP={expected}") - 1] == "--env"
     assert '--group "$ASTRAL_GATE_GROUP"' in runner[-1]
+    assert '[[ "$mailbox" == /opt/astral-kernel/bin/astral-mailbox ]]' in runner[-1]
     assert "/qualification-policy/scripts/run_backend_web_tests.py" in runner[-1]
 
 

@@ -1,4 +1,4 @@
-"""Tests for delegation chain audit reconstruction (backend/orchestrator/delegation.py,
+"""Tests for delegation chain audit reconstruction (backend/orchestrator/agent_authority.py,
 audit/repository.py): a two-hop chain rebuilt from stored audit_events rows alone,
 and verify_chain catching a tampered record.
 """
@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from audit.recorder import Recorder, get_recorder, set_recorder  # noqa: E402
 from audit.repository import AuditRepository  # noqa: E402
-from orchestrator import delegation as dg  # noqa: E402
+from orchestrator import agent_authority as dg  # noqa: E402
 from shared.feature_flags import flags  # noqa: E402
 from shared.protocol import AgentHopRequest, MCPResponse  # noqa: E402
 from tests.helpers.voice_plane_runtime import isolated_plane_runtime  # noqa: E402
@@ -120,7 +120,7 @@ async def test_two_hop_reconstruction_and_tamper_evidence(orch, recorder, db):
 
     root = {"sub": user, "act": {"sub": "agent:agent-a"},
             "scope": "tools:read tool:tool_b tool:tool_c",
-            "iss": "mock-astral-delegation", "aud": "agent-svc",
+            "iss": "astral-delegation", "aud": "agent-svc",
             "iat": now, "exp": now + 300, "delegation": True}
     ui_ws = MagicMock()
     ui_ws.machine_claims = None

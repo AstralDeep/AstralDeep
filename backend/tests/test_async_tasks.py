@@ -11,7 +11,7 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
-from types import SimpleNamespace, MethodType
+from types import SimpleNamespace
 
 import pytest
 
@@ -288,6 +288,25 @@ class TestBackgroundTaskManager:
         assert len(t.task_id) == 36
         assert t._operation.connection_generation is None
         assert t._operation.request_generation is None
+
+    @pytest.mark.asyncio
+    async def test_a_background_task_does_not_inherit_the_submitting_operation(self):
+        from orchestrator.connection_context import _CONNECTION_OPERATION_CONTEXT
+
+        mgr = _manager()
+        seen = []
+
+        async def dummy(vws, **kw):
+            seen.append(_CONNECTION_OPERATION_CONTEXT.get())
+
+        token = _CONNECTION_OPERATION_CONTEXT.set({"execution_fence": "submitting-operation"})
+        try:
+            await mgr.submit("c1", "u1", dummy)
+            await _collect(mgr)
+            assert _CONNECTION_OPERATION_CONTEXT.get() == {"execution_fence": "submitting-operation"}
+        finally:
+            _CONNECTION_OPERATION_CONTEXT.reset(token)
+        assert seen == [None]
 
     @pytest.mark.asyncio
     async def test_submit_persists_exact_wire_generations(self):
@@ -1925,98 +1944,6 @@ class TestBackgroundTaskManager:
                 await mgr.cancel(task.task_id)
             if task is not None and task.asyncio_task is not None:
                 await asyncio.gather(task.asyncio_task, return_exceptions=True)
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("loss_mode", ("cancel", "lease_loss"))
-    async def test_parent_manager_loss_revokes_delegated_model_sockets(
-        self, loss_mode, monkeypatch, user_skills_disabled
-    ):
-        from orchestrator import subtasks
-        from orchestrator.connection_context import _CONNECTION_OPERATION_CONTEXT
-        from orchestrator.orchestrator import Orchestrator
-
-        monkeypatch.setitem(flags._flags, "recursive_delegation", True)
-        mgr = _manager(slot_lease=timedelta(milliseconds=100))
-        children_started = asyncio.Event()
-        parent_stopped = asyncio.Event()
-        child_sockets = []
-        child_dispatches = []
-        parent_socket = {}
-
-        orch = SimpleNamespace(
-            history=SimpleNamespace(create_chat=lambda user_id=None, **_kw:
-                                    f"sub-{len(child_sockets)}"),
-            ui_sessions={},
-            _safe_send=lambda *_args, **_kwargs: asyncio.sleep(0),
-            _chain_budgets={},
-        )
-        orch._chain_budget_for = MethodType(Orchestrator._chain_budget_for, orch)
-        orch._llm_context_user_id = MethodType(Orchestrator._llm_context_user_id, orch)
-
-        async def child_turn(vws, _message, _chat_id, **_kwargs):
-            child_sockets.append(vws)
-            child_dispatches.append("started")
-            if len(child_sockets) == 2:
-                children_started.set()
-            await asyncio.Event().wait()
-            child_dispatches.append("continued_after_cancel")
-
-        orch.handle_chat_message = child_turn
-
-        async def parent_turn(vws):
-            parent_socket["ws"] = vws
-            orch.ui_sessions[vws] = {"sub": "u1"}
-            token = _CONNECTION_OPERATION_CONTEXT.set({
-                "owner": vws.task._owner,
-                "operation": vws.task._operation,
-                "execution_fence": vws.task._execution_fence,
-            })
-            try:
-                await subtasks.handle_meta_tool(
-                    orch, "delegate_subtasks",
-                    {"subtasks": [
-                        {"title": "A", "instruction": "do A"},
-                        {"title": "B", "instruction": "do B"},
-                    ]},
-                    user_id="u1", chat_id="parent-chat", websocket=vws,
-                )
-            finally:
-                _CONNECTION_OPERATION_CONTEXT.reset(token)
-                parent_stopped.set()
-
-        task = await mgr.submit("parent-chat", "u1", parent_turn)
-        try:
-            await children_started.wait()
-            assert parent_socket["ws"].llm_context_user_id == "u1"
-            assert [ws.llm_context_user_id for ws in child_sockets] == ["u1", "u1"]
-
-            # Exercise a real manager cancellation or a coordinator-reselected
-            # execution fence after both child turns enter model/tool dispatch.
-            if loss_mode == "cancel":
-                assert await mgr.cancel(task.task_id) is True
-            else:
-                fence = task._execution_fence
-                assert fence is not None
-                mgr._coordinator.reselect_execution(fence)
-                await parent_stopped.wait()
-                assert task.asyncio_task is not None
-                await task.asyncio_task
-                assert task._lease_loss_reason == "execution_lease_lost"
-
-            if loss_mode == "cancel":
-                assert task.status is TaskStatus.CANCELLED
-            assert parent_socket["ws"]._closed is True
-            assert parent_socket["ws"].llm_context_user_id is None
-            assert all(ws._closed for ws in child_sockets)
-            assert all(ws.llm_context_user_id is None for ws in child_sockets)
-            assert child_dispatches == ["started", "started"]
-            for ws in child_sockets:
-                await ws.send_json({"type": "after_parent_cancel"})
-                assert ws.task.outputs == []
-        finally:
-            if task.status in {TaskStatus.QUEUED, TaskStatus.RUNNING}:
-                await mgr.cancel(task.task_id)
-            await _collect(mgr)
 
     @pytest.mark.asyncio
     async def test_fenced_model_owner_denials_require_live_matching_authority(self):

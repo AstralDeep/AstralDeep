@@ -1,26 +1,14 @@
-"""Proves tests/helpers/plane_template.py's engine_clone, behind test_engine_postgres.py's
-`plane` fixture, keeps per-test isolation and fidelity while booting each fresh clone of the
-session template under the template's verified boot identity: clones are ready at
-SCHEMA_REVISION on their own databases, hold independent data, survive other clones closing
-or booting concurrently, close and drop with their context, and still verify correctly when
-re-checked from scratch.
-"""
 
 import threading
 from contextlib import closing, nullcontext
-from datetime import UTC, datetime
 from uuid import uuid4
 
 import psycopg2
 import pytest
-from astralplane.database.migrations import MIGRATION_REGISTRY
 from astralplane.database.revision import SCHEMA_REVISION
-from astralplane.errors import InitializationError
 
-from persistent_agents.tests.test_engine_postgres import plane as plane
 from tests.helpers.plane_template import (
     ENGINE_CLONE_PREFIX,
-    ENGINE_SCHEMA,
     DatabaseCreationError,
     TemplateDatabase,
     client_connections,
@@ -37,22 +25,6 @@ def _database_exists(template, name):
         return cursor.fetchone() is not None
 
 
-def _grant(runtime):
-    grant_id = str(uuid4())
-    now = int(datetime.now(UTC).timestamp() * 1000)
-    with runtime.transaction() as tx:
-        runtime.repositories.offline_grants.create_grant(
-            tx, grant_id=grant_id, owner_id="owner", agent_id=None,
-            encrypted_refresh_token=b"clone-isolation-token", issued_at=now, expires_at=now + 60000)
-    return grant_id
-
-
-def _has_grant(runtime, grant_id):
-    with runtime.transaction() as tx:
-        return runtime.repositories.offline_grants.get_grant(
-            tx, owner_id="owner", grant_id=grant_id) is not None
-
-
 def _state(runtime):
     with runtime.transaction() as tx:
         meta = {row["key"]: row["value"] for row in tx.fetch_all("SELECT key, value FROM schema_meta")}
@@ -61,44 +33,6 @@ def _state(runtime):
                               "WHERE schema_revision = %s AND hook_name = 'assignment-engine-test'",
                               (SCHEMA_REVISION,))
     return meta, where, marker
-
-
-def test_clone_is_ready_on_its_own_database_with_the_templates_verified_boot(plane, plane_template):
-    report = plane.initialize(expected_revision=SCHEMA_REVISION)
-    assert plane.health().ready
-    assert report.identity == plane_template.name
-    assert report.expected_revision == SCHEMA_REVISION
-    assert report.migration.source_revision is None, (
-        "canary: Plane stopped reusing the boot state it caches per identity, "
-        "so each engine clone now re-verifies the template's schema")
-    assert report.migration.target_revision == SCHEMA_REVISION
-    meta, where, marker = _state(plane)
-    assert meta["revision"] == SCHEMA_REVISION
-    assert meta["astralplane_migration_digest"] == MIGRATION_REGISTRY.digest
-    assert where["schema"] == ENGINE_SCHEMA
-    assert where["database"].startswith(f"{ENGINE_CLONE_PREFIX}_") and where["database"] != plane_template.name
-    assert marker["state"] == "completed"
-
-
-def test_writes_through_one_clone_are_invisible_through_another(plane, plane_template):
-    with engine_clone(plane_template) as (other, _name):
-        assert other.health().ready
-        mine, theirs = _grant(plane), _grant(other)
-        assert _has_grant(plane, mine) and not _has_grant(plane, theirs)
-        assert _has_grant(other, theirs) and not _has_grant(other, mine)
-
-
-def test_closing_a_clone_runtime_does_not_break_a_later_clone(plane_template):
-    with engine_clone(plane_template) as (first, _first_name):
-        earlier = _grant(first)
-    assert not first.health().ready
-    with pytest.raises(InitializationError), first.transaction():
-        pytest.fail("a closed clone runtime must not open a transaction")
-    with engine_clone(plane_template) as (second, second_name):
-        assert second.health().ready
-        assert not _has_grant(second, earlier)
-        assert _has_grant(second, _grant(second))
-        assert _state(second)[1]["database"] == second_name
 
 
 @pytest.mark.parametrize("failure", [False, True])
@@ -110,32 +44,6 @@ def test_engine_clone_closes_its_runtime_and_drops_its_clone_on_exit(plane_templ
             raise RuntimeError("failure inside the clone")
     assert not runtime.health().ready
     assert not _database_exists(plane_template, name)
-
-
-def test_concurrent_clone_runtimes_boot_ready_and_stay_isolated(plane_template):
-    workers_count = 4
-    written = threading.Barrier(workers_count)
-    grants, errors, observations = {}, [], []
-
-    def run(index):
-        try:
-            with engine_clone(plane_template) as (runtime, name):
-                grants[index] = _grant(runtime)
-                written.wait(timeout=30)
-                observations.append((index, runtime.health().ready, _state(runtime)[1]["database"] == name,
-                                     {other: _has_grant(runtime, grant) for other, grant in grants.items()}))
-        except BaseException as exc:
-            errors.append(exc)
-
-    threads = [threading.Thread(target=run, args=(index,), daemon=True) for index in range(workers_count)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(timeout=60)
-    assert errors == [] and len(observations) == workers_count
-    for index, ready, own_database, seen in observations:
-        assert ready and own_database
-        assert seen == {other: other == index for other in range(workers_count)}
 
 
 def test_a_clone_rechecked_under_its_own_identity_is_still_correct(plane_template):

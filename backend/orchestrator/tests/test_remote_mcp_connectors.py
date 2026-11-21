@@ -10,6 +10,10 @@ from types import SimpleNamespace
 import pytest
 
 from orchestrator import remote_mcp_connectors as service
+from orchestrator import remote_mcp_pins
+
+_SAFE_ECHO = {"name": "echo", "description": "safe", "inputSchema": {"type": "object"}}
+_SAFE_ECHO_PINS = {"echo": remote_mcp_pins.definition_hash(_SAFE_ECHO)}
 
 
 class CredentialManager:
@@ -203,11 +207,9 @@ def test_schema_references_and_executable_remote_keywords_are_rejected():
 
 def test_streamable_call_uses_negotiated_session_and_validates_arguments(world, monkeypatch):
     orch, connector_id = world
-    connector = service.get_connector(orch, "owner-a", connector_id)
-    connector["tools_catalog"] = [{"name": "echo", "inputSchema": {"type": "object", "properties": {}}}]
-    connector["tools"] = {"echo": True}
-    service.save_connector(orch, "owner-a", connector)
     fake = FakeTransport()
+    service.refresh_tools(orch, "owner-a", connector_id, transport_factory=lambda *_args, **_kwargs: fake)
+    service.set_tool_selection(orch, "owner-a", connector_id, "echo", True)
     audit_events = []
 
     async def record(**event):
@@ -355,7 +357,9 @@ def test_catalog_selection_and_schema_validation_bounds(world):
     connector = service.get_connector(orch, "owner-a", connector_id)
     connector.update({"tools_catalog": [{"name": "echo", "description": "ok",
                                          "inputSchema": {"type": "object"}}],
-                      "tools": {"echo": True}})
+                      "tools": {"echo": True},
+                      "tool_pins": {"echo": remote_mcp_pins.definition_hash(
+                          {"name": "echo", "description": "ok", "inputSchema": {"type": "object"}})}})
     service.save_connector(orch, "owner-a", connector)
     assert service.list_enabled_tools(orch, "owner-a")[0]["name"] == "echo"
     assert service._validate_schema({"type": "array", "maxItems": 1, "items": {"type": "string"}}, ["a"])
@@ -634,7 +638,7 @@ def test_sanitize_schema_rejects_remote_executable_or_oversized_metadata():
 def test_tool_call_server_failures_are_audited_without_output_leak(world, monkeypatch, response, match):
     orch, connector_id = world
     connector = service.get_connector(orch, "owner-a", connector_id)
-    connector.update({"tools": {"echo": True}, "tools_catalog": []})
+    connector.update({"tools": {"echo": True}, "tools_catalog": [], "tool_pins": _SAFE_ECHO_PINS})
     service.save_connector(orch, "owner-a", connector)
     events = []
 
@@ -659,7 +663,7 @@ def test_tool_call_server_failures_are_audited_without_output_leak(world, monkey
 def test_tool_call_rechecks_enabled_state_discovery_and_argument_bounds(world, monkeypatch):
     orch, connector_id = world
     connector = service.get_connector(orch, "owner-a", connector_id)
-    connector.update({"tools": {"echo": True}, "tools_catalog": []})
+    connector.update({"tools": {"echo": True}, "tools_catalog": [], "tool_pins": _SAFE_ECHO_PINS})
     service.save_connector(orch, "owner-a", connector)
 
     async def empty(_connector, **_kwargs):
@@ -672,6 +676,8 @@ def test_tool_call_rechecks_enabled_state_discovery_and_argument_bounds(world, m
     monkeypatch.setattr(service, "_initialize", absent)
     with pytest.raises(service.RemoteMCPError, match="no longer offers"):
         service.call_tool(orch, "owner-a", connector_id, "echo", {})
+    assert service.get_connector(orch, "owner-a", connector_id)["tools"]["echo"] is False
+    service.save_connector(orch, "owner-a", connector)
     monkeypatch.setattr(service, "_initialize", empty)
     with pytest.raises(service.RemoteMCPError, match="too large"):
         service.call_tool(orch, "owner-a", connector_id, "echo", {"payload": "x" * 33000})
@@ -687,7 +693,8 @@ def test_tool_call_rechecks_enabled_state_discovery_and_argument_bounds(world, m
 def test_tool_call_sse_session_is_closed_and_success_is_returned(world, monkeypatch):
     orch, connector_id = world
     connector = service.get_connector(orch, "owner-a", connector_id)
-    connector.update({"transport": "sse", "tools": {"echo": True}, "tools_catalog": []})
+    connector.update({"transport": "sse", "tools": {"echo": True}, "tools_catalog": [],
+                      "tool_pins": _SAFE_ECHO_PINS})
     service.save_connector(orch, "owner-a", connector)
     session = service._SSESession({"url": "https://mcp.example/sse"}, object(), "/sse")
     closed = []

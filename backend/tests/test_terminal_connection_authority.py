@@ -1,61 +1,15 @@
-"""Exercises terminal execution authority across real UI disconnect and SSH admission boundaries.
-Safe retained-session REST operations keep their independent owner authorization path.
-"""
+"""Exercises terminal execution authority across SSH admission and connection invalidation. Reads retain independent owner checks."""
 
-import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event
-from types import MethodType
 from unittest.mock import Mock
 
-import httpx
 import pytest
 
-from orchestrator import terminal_approvals, terminal_ssh
-from orchestrator.orchestrator import Orchestrator
-from orchestrator.terminal_security import TerminalError, bind_terminal_authority
+from orchestrator import terminal_ssh
+from orchestrator.terminal_security import TerminalError
 from tests.helpers.terminal_connection import registered_connection
-from tests.test_terminal_handoff_delivery import handoff as handoff
-from tests.test_terminal_approvals import fixture as fixture
 from tests.test_terminal_ssh_runtime import isolated as isolated
-
-
-@pytest.mark.asyncio
-async def test_real_eof_drain_invalidates_pending_and_bound_execution_before_cleanup(handoff):
-    env, orch = handoff.fixture, handoff.fixture.orch
-    orch._open_chrome_surface = {}
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(handoff.app), base_url="https://terminal.invalid") as client:
-        response = await client.post("/api/terminals", json={})
-    assert response.status_code == 202
-    pending = handoff.state["request"]
-    with terminal_approvals.effect_scope(pending):
-        authority = bind_terminal_authority(orch, env.socket, "owner", "start_terminal")
-    context = orch._connection_contexts[id(env.socket)]
-    entered, release = asyncio.Event(), asyncio.Event()
-
-    async def blocked_capacity():
-        entered.set()
-        await release.wait()
-
-    async def eof():
-        raise StopAsyncIteration()
-
-    orch._new_connection_context = lambda _: context
-    orch._drain_connection_context = MethodType(Orchestrator._drain_connection_context, orch)
-    orch._notify_interactive_capacity = blocked_capacity
-    task = asyncio.create_task(Orchestrator._serve_ui_frames(orch, env.socket, eof))
-    try:
-        await asyncio.wait_for(entered.wait(), 5)
-        assert context.closing is True and context.registered is True
-        with pytest.raises(TerminalError, match="terminal_review_context_required"):
-            pending.assert_current()
-        with pytest.raises(TerminalError):
-            authority.assert_current("start_terminal")
-        orch.execute_single_tool.assert_not_awaited()
-    finally:
-        release.set()
-        with pytest.raises(StopAsyncIteration):
-            await task
 
 
 def _lose_context(orch, socket, loss):

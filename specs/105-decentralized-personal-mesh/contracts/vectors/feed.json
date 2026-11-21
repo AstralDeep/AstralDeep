@@ -1,0 +1,1376 @@
+{
+  "cases": [
+    {
+      "expect": {
+        "ok": {
+          "forked": [],
+          "heads": {
+            "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": {
+              "id": "sha256:972bed8675cd7c0b5450b4be39e96ee60a0f5bd79c3490cd00dd1f983f681151",
+              "seq": 3
+            },
+            "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": {
+              "id": "sha256:d53a95df9b1e71dc399066952c819e6906754a6703b075936e49a307fcf4d04c",
+              "seq": 1
+            }
+          },
+          "results": [
+            "accepted",
+            "accepted",
+            "accepted",
+            "accepted"
+          ]
+        }
+      },
+      "input": {
+        "now_ms": 1794441660000,
+        "statuses": {
+          "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": {
+            "state": "member"
+          },
+          "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": {
+            "state": "member"
+          }
+        },
+        "steps": [
+          {
+            "header": {
+              "after": [],
+              "body": "sha256:9c588c55389b6f06cd20961b3d03f403ce68855a0166ed70ba74673b16515ec6",
+              "clock": {
+                "ms": 1794441601000,
+                "n": 0
+              },
+              "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+              "key": "ck:HhKGlmreTiCWf4HBy-KKrw",
+              "labels": {
+                "confidentiality": "private",
+                "integrity": "owner"
+              },
+              "prev": null,
+              "scope": "mesh",
+              "seq": 1,
+              "sig": "M6IvKUhRXUHzaAZhEs21Z4L81SDnS-bCdaFzpWh9W9JRozNFsI76dSf9k3u2hc7jETjlySl5fyAMeFBrEcpeAA",
+              "type": "settings.set",
+              "v": 1
+            }
+          },
+          {
+            "header": {
+              "after": [],
+              "body": "sha256:934cfc59fdf9caad1f35c43ae87999df2149e63647f2bf3a2d47e6ccb1e8fe44",
+              "clock": {
+                "ms": 1794441602000,
+                "n": 0
+              },
+              "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+              "key": "ck:HhKGlmreTiCWf4HBy-KKrw",
+              "labels": {
+                "confidentiality": "private",
+                "integrity": "owner"
+              },
+              "prev": "sha256:6653dc62aa05f41ba790d35d55f943679ca02429806d20842ccdfa48092f745a",
+              "scope": "mesh",
+              "seq": 2,
+              "sig": "C2Lr8jDXb8WBG3iV4KsaiEGDo3Fxa6lCuJlTrQPyTIFbwPHMflAsAYbBZrA5RRC4-rC427XS8-O8q-HNu4sDBA",
+              "type": "settings.set",
+              "v": 1
+            }
+          },
+          {
+            "header": {
+              "after": [
+                "sha256:9223ce67368189a1cb81758f8140228c7b5ce25b1ade57a92a83fc753de90ccf"
+              ],
+              "body": "sha256:7d2863b2205efe4d1347b920673a1a1df8c3f982ea210b8b3f2e0f6915211737",
+              "clock": {
+                "ms": 1794441620000,
+                "n": 0
+              },
+              "feed": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+              "key": "ck:E-skh1om2dNgF7ihZvLKzA",
+              "labels": {
+                "confidentiality": "private",
+                "integrity": "owner"
+              },
+              "prev": null,
+              "scope": "mesh",
+              "seq": 1,
+              "sig": "hhP50P6cxYrIqm6jUYvlg-270UqTlV02YIC2hiRAmW-3cH7CZ-t_idnyVkrz2Lteob0rQ6LkHr7yNt5Jyn6WDA",
+              "type": "settings.set",
+              "v": 1
+            }
+          },
+          {
+            "header": {
+              "after": [],
+              "body": "sha256:189bab2524e23099c1d8cd8ce307a0c146bd132060673c915592b1360ead2b61",
+              "clock": {
+                "ms": 1794441603000,
+                "n": 0
+              },
+              "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+              "key": "ck:HhKGlmreTiCWf4HBy-KKrw",
+              "labels": {
+                "confidentiality": "private",
+                "integrity": "owner"
+              },
+              "prev": "sha256:9223ce67368189a1cb81758f8140228c7b5ce25b1ade57a92a83fc753de90ccf",
+              "scope": "mesh",
+              "seq": 3,
+              "sig": "0jr9WDQ5hBu0mC8baKyXpnmQuuOjL2iRwn-ndP5CNw41zzTjkUZArzGunrafzECUY5xG5PYabvMExClle-d0Cw",
+              "type": "settings.set",
+              "v": 1
+            }
+          }
+        ]
+      },
+      "kind": "feed_replay",
+      "name": "valid-chain-two-feeds"
+    },
+    {
+      "expect": {
+        "ok": {
+          "forked": [],
+          "heads": {
+            "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": {
+              "id": "sha256:9223ce67368189a1cb81758f8140228c7b5ce25b1ade57a92a83fc753de90ccf",
+              "seq": 2
+            }
+          },
+          "results": [
+            "accepted",
+            "duplicate",
+            "accepted"
+          ]
+        }
+      },
+      "input": {
+        "now_ms": 1794441660000,
+        "statuses": {
+          "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": {
+            "state": "member"
+          },
+          "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": {
+            "state": "member"
+          }
+        },
+        "steps": [
+          {
+            "header": {
+              "after": [],
+              "body": "sha256:9c588c55389b6f06cd20961b3d03f403ce68855a0166ed70ba74673b16515ec6",
+              "clock": {
+                "ms": 1794441601000,
+                "n": 0
+              },
+              "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+              "key": "ck:HhKGlmreTiCWf4HBy-KKrw",
+              "labels": {
+                "confidentiality": "private",
+                "integrity": "owner"
+              },
+              "prev": null,
+              "scope": "mesh",
+              "seq": 1,
+              "sig": "M6IvKUhRXUHzaAZhEs21Z4L81SDnS-bCdaFzpWh9W9JRozNFsI76dSf9k3u2hc7jETjlySl5fyAMeFBrEcpeAA",
+              "type": "settings.set",
+              "v": 1
+            }
+          },
+          {
+            "header": {
+              "after": [],
+              "body": "sha256:9c588c55389b6f06cd20961b3d03f403ce68855a0166ed70ba74673b16515ec6",
+              "clock": {
+                "ms": 1794441601000,
+                "n": 0
+              },
+              "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+              "key": "ck:HhKGlmreTiCWf4HBy-KKrw",
+              "labels": {
+                "confidentiality": "private",
+                "integrity": "owner"
+              },
+              "prev": null,
+              "scope": "mesh",
+              "seq": 1,
+              "sig": "M6IvKUhRXUHzaAZhEs21Z4L81SDnS-bCdaFzpWh9W9JRozNFsI76dSf9k3u2hc7jETjlySl5fyAMeFBrEcpeAA",
+              "type": "settings.set",
+              "v": 1
+            }
+          },
+          {
+            "header": {
+              "after": [],
+              "body": "sha256:934cfc59fdf9caad1f35c43ae87999df2149e63647f2bf3a2d47e6ccb1e8fe44",
+              "clock": {
+                "ms": 1794441602000,
+                "n": 0
+              },
+              "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+              "key": "ck:HhKGlmreTiCWf4HBy-KKrw",
+              "labels": {
+                "confidentiality": "private",
+                "integrity": "owner"
+              },
+              "prev": "sha256:6653dc62aa05f41ba790d35d55f943679ca02429806d20842ccdfa48092f745a",
+              "scope": "mesh",
+              "seq": 2,
+              "sig": "C2Lr8jDXb8WBG3iV4KsaiEGDo3Fxa6lCuJlTrQPyTIFbwPHMflAsAYbBZrA5RRC4-rC427XS8-O8q-HNu4sDBA",
+              "type": "settings.set",
+              "v": 1
+            }
+          }
+        ]
+      },
+      "kind": "feed_replay",
+      "name": "duplicate-is-idempotent"
+    },
+    {
+      "expect": {
+        "ok": {
+          "forked": [],
+          "heads": {
+            "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": {
+              "id": "sha256:972bed8675cd7c0b5450b4be39e96ee60a0f5bd79c3490cd00dd1f983f681151",
+              "seq": 3
+            }
+          },
+          "results": [
+            "accepted",
+            "feed.gap",
+            "accepted",
+            "accepted"
+          ]
+        }
+      },
+      "input": {
+        "now_ms": 1794441660000,
+        "statuses": {
+          "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": {
+            "state": "member"
+          },
+          "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": {
+            "state": "member"
+          }
+        },
+        "steps": [
+          {
+            "header": {
+              "after": [],
+              "body": "sha256:9c588c55389b6f06cd20961b3d03f403ce68855a0166ed70ba74673b16515ec6",
+              "clock": {
+                "ms": 1794441601000,
+                "n": 0
+              },
+              "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+              "key": "ck:HhKGlmreTiCWf4HBy-KKrw",
+              "labels": {
+                "confidentiality": "private",
+                "integrity": "owner"
+              },
+              "prev": null,
+              "scope": "mesh",
+              "seq": 1,
+              "sig": "M6IvKUhRXUHzaAZhEs21Z4L81SDnS-bCdaFzpWh9W9JRozNFsI76dSf9k3u2hc7jETjlySl5fyAMeFBrEcpeAA",
+              "type": "settings.set",
+              "v": 1
+            }
+          },
+          {
+            "header": {
+              "after": [],
+              "body": "sha256:189bab2524e23099c1d8cd8ce307a0c146bd132060673c915592b1360ead2b61",
+              "clock": {
+                "ms": 1794441603000,
+                "n": 0
+              },
+              "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+              "key": "ck:HhKGlmreTiCWf4HBy-KKrw",
+              "labels": {
+                "confidentiality": "private",
+                "integrity": "owner"
+              },
+              "prev": "sha256:9223ce67368189a1cb81758f8140228c7b5ce25b1ade57a92a83fc753de90ccf",
+              "scope": "mesh",
+              "seq": 3,
+              "sig": "0jr9WDQ5hBu0mC8baKyXpnmQuuOjL2iRwn-ndP5CNw41zzTjkUZArzGunrafzECUY5xG5PYabvMExClle-d0Cw",
+              "type": "settings.set",
+              "v": 1
+            }
+          },
+          {
+            "header": {
+              "after": [],
+              "body": "sha256:934cfc59fdf9caad1f35c43ae87999df2149e63647f2bf3a2d47e6ccb1e8fe44",
+              "clock": {
+                "ms": 1794441602000,
+                "n": 0
+              },
+              "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+              "key": "ck:HhKGlmreTiCWf4HBy-KKrw",
+              "labels": {
+                "confidentiality": "private",
+                "integrity": "owner"
+              },
+              "prev": "sha256:6653dc62aa05f41ba790d35d55f943679ca02429806d20842ccdfa48092f745a",
+              "scope": "mesh",
+              "seq": 2,
+              "sig": "C2Lr8jDXb8WBG3iV4KsaiEGDo3Fxa6lCuJlTrQPyTIFbwPHMflAsAYbBZrA5RRC4-rC427XS8-O8q-HNu4sDBA",
+              "type": "settings.set",
+              "v": 1
+            }
+          },
+          {
+            "header": {
+              "after": [],
+              "body": "sha256:189bab2524e23099c1d8cd8ce307a0c146bd132060673c915592b1360ead2b61",
+              "clock": {
+                "ms": 1794441603000,
+                "n": 0
+              },
+              "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+              "key": "ck:HhKGlmreTiCWf4HBy-KKrw",
+              "labels": {
+                "confidentiality": "private",
+                "integrity": "owner"
+              },
+              "prev": "sha256:9223ce67368189a1cb81758f8140228c7b5ce25b1ade57a92a83fc753de90ccf",
+              "scope": "mesh",
+              "seq": 3,
+              "sig": "0jr9WDQ5hBu0mC8baKyXpnmQuuOjL2iRwn-ndP5CNw41zzTjkUZArzGunrafzECUY5xG5PYabvMExClle-d0Cw",
+              "type": "settings.set",
+              "v": 1
+            }
+          }
+        ]
+      },
+      "kind": "feed_replay",
+      "name": "gap-then-fill"
+    },
+    {
+      "expect": {
+        "ok": {
+          "forked": [
+            "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ"
+          ],
+          "heads": {
+            "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": {
+              "id": "sha256:9223ce67368189a1cb81758f8140228c7b5ce25b1ade57a92a83fc753de90ccf",
+              "seq": 2
+            }
+          },
+          "results": [
+            "accepted",
+            "accepted",
+            "feed.fork",
+            "feed.forked"
+          ]
+        }
+      },
+      "input": {
+        "now_ms": 1794441660000,
+        "statuses": {
+          "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": {
+            "state": "member"
+          },
+          "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": {
+            "state": "member"
+          }
+        },
+        "steps": [
+          {
+            "header": {
+              "after": [],
+              "body": "sha256:9c588c55389b6f06cd20961b3d03f403ce68855a0166ed70ba74673b16515ec6",
+              "clock": {
+                "ms": 1794441601000,
+                "n": 0
+              },
+              "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+              "key": "ck:HhKGlmreTiCWf4HBy-KKrw",
+              "labels": {
+                "confidentiality": "private",
+                "integrity": "owner"
+              },
+              "prev": null,
+              "scope": "mesh",
+              "seq": 1,
+              "sig": "M6IvKUhRXUHzaAZhEs21Z4L81SDnS-bCdaFzpWh9W9JRozNFsI76dSf9k3u2hc7jETjlySl5fyAMeFBrEcpeAA",
+              "type": "settings.set",
+              "v": 1
+            }
+          },
+          {
+            "header": {
+              "after": [],
+              "body": "sha256:934cfc59fdf9caad1f35c43ae87999df2149e63647f2bf3a2d47e6ccb1e8fe44",
+              "clock": {
+                "ms": 1794441602000,
+                "n": 0
+              },
+              "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+              "key": "ck:HhKGlmreTiCWf4HBy-KKrw",
+              "labels": {
+                "confidentiality": "private",
+                "integrity": "owner"
+              },
+              "prev": "sha256:6653dc62aa05f41ba790d35d55f943679ca02429806d20842ccdfa48092f745a",
+              "scope": "mesh",
+              "seq": 2,
+              "sig": "C2Lr8jDXb8WBG3iV4KsaiEGDo3Fxa6lCuJlTrQPyTIFbwPHMflAsAYbBZrA5RRC4-rC427XS8-O8q-HNu4sDBA",
+              "type": "settings.set",
+              "v": 1
+            }
+          },
+          {
+            "header": {
+              "after": [],
+              "body": "sha256:87c84065b01c0e2e2718bc23ad2b49dd467600c86986b72c67a77479e39e5bd5",
+              "clock": {
+                "ms": 1794441602000,
+                "n": 0
+              },
+              "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+              "key": "ck:HhKGlmreTiCWf4HBy-KKrw",
+              "labels": {
+                "confidentiality": "private",
+                "integrity": "owner"
+              },
+              "prev": "sha256:6653dc62aa05f41ba790d35d55f943679ca02429806d20842ccdfa48092f745a",
+              "scope": "mesh",
+              "seq": 2,
+              "sig": "_2W66MpiaN-FsKy_ftBXTNXnAZaZ08Fib057FjkyjGWz47anbLCzZekPL_suQBBhg4mR0-JySpjwDmnR_TL2Aw",
+              "type": "settings.set",
+              "v": 1
+            }
+          },
+          {
+            "header": {
+              "after": [],
+              "body": "sha256:189bab2524e23099c1d8cd8ce307a0c146bd132060673c915592b1360ead2b61",
+              "clock": {
+                "ms": 1794441603000,
+                "n": 0
+              },
+              "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+              "key": "ck:HhKGlmreTiCWf4HBy-KKrw",
+              "labels": {
+                "confidentiality": "private",
+                "integrity": "owner"
+              },
+              "prev": "sha256:9223ce67368189a1cb81758f8140228c7b5ce25b1ade57a92a83fc753de90ccf",
+              "scope": "mesh",
+              "seq": 3,
+              "sig": "0jr9WDQ5hBu0mC8baKyXpnmQuuOjL2iRwn-ndP5CNw41zzTjkUZArzGunrafzECUY5xG5PYabvMExClle-d0Cw",
+              "type": "settings.set",
+              "v": 1
+            }
+          }
+        ]
+      },
+      "kind": "feed_replay",
+      "name": "fork-two-events-at-one-seq"
+    },
+    {
+      "expect": {
+        "ok": {
+          "forked": [
+            "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ"
+          ],
+          "heads": {
+            "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": {
+              "id": "sha256:9223ce67368189a1cb81758f8140228c7b5ce25b1ade57a92a83fc753de90ccf",
+              "seq": 2
+            },
+            "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": {
+              "id": "sha256:ed22a57af8bf2c10a20364b063275c5aa691f76edce2e2ef83ae0708cb9abdd5",
+              "seq": 1
+            }
+          },
+          "results": [
+            "accepted",
+            "accepted",
+            "feed.fork",
+            "accepted"
+          ]
+        }
+      },
+      "input": {
+        "now_ms": 1794441660000,
+        "statuses": {
+          "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": {
+            "state": "member"
+          },
+          "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": {
+            "state": "member"
+          }
+        },
+        "steps": [
+          {
+            "header": {
+              "after": [],
+              "body": "sha256:9c588c55389b6f06cd20961b3d03f403ce68855a0166ed70ba74673b16515ec6",
+              "clock": {
+                "ms": 1794441601000,
+                "n": 0
+              },
+              "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+              "key": "ck:HhKGlmreTiCWf4HBy-KKrw",
+              "labels": {
+                "confidentiality": "private",
+                "integrity": "owner"
+              },
+              "prev": null,
+              "scope": "mesh",
+              "seq": 1,
+              "sig": "M6IvKUhRXUHzaAZhEs21Z4L81SDnS-bCdaFzpWh9W9JRozNFsI76dSf9k3u2hc7jETjlySl5fyAMeFBrEcpeAA",
+              "type": "settings.set",
+              "v": 1
+            }
+          },
+          {
+            "header": {
+              "after": [],
+              "body": "sha256:934cfc59fdf9caad1f35c43ae87999df2149e63647f2bf3a2d47e6ccb1e8fe44",
+              "clock": {
+                "ms": 1794441602000,
+                "n": 0
+              },
+              "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+              "key": "ck:HhKGlmreTiCWf4HBy-KKrw",
+              "labels": {
+                "confidentiality": "private",
+                "integrity": "owner"
+              },
+              "prev": "sha256:6653dc62aa05f41ba790d35d55f943679ca02429806d20842ccdfa48092f745a",
+              "scope": "mesh",
+              "seq": 2,
+              "sig": "C2Lr8jDXb8WBG3iV4KsaiEGDo3Fxa6lCuJlTrQPyTIFbwPHMflAsAYbBZrA5RRC4-rC427XS8-O8q-HNu4sDBA",
+              "type": "settings.set",
+              "v": 1
+            }
+          },
+          {
+            "header": {
+              "after": [],
+              "body": "sha256:87c84065b01c0e2e2718bc23ad2b49dd467600c86986b72c67a77479e39e5bd5",
+              "clock": {
+                "ms": 1794441602000,
+                "n": 0
+              },
+              "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+              "key": "ck:HhKGlmreTiCWf4HBy-KKrw",
+              "labels": {
+                "confidentiality": "private",
+                "integrity": "owner"
+              },
+              "prev": "sha256:6653dc62aa05f41ba790d35d55f943679ca02429806d20842ccdfa48092f745a",
+              "scope": "mesh",
+              "seq": 2,
+              "sig": "_2W66MpiaN-FsKy_ftBXTNXnAZaZ08Fib057FjkyjGWz47anbLCzZekPL_suQBBhg4mR0-JySpjwDmnR_TL2Aw",
+              "type": "settings.set",
+              "v": 1
+            }
+          },
+          {
+            "header": {
+              "after": [],
+              "body": "sha256:7d2863b2205efe4d1347b920673a1a1df8c3f982ea210b8b3f2e0f6915211737",
+              "clock": {
+                "ms": 1794441611000,
+                "n": 0
+              },
+              "feed": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+              "key": "ck:E-skh1om2dNgF7ihZvLKzA",
+              "labels": {
+                "confidentiality": "private",
+                "integrity": "owner"
+              },
+              "prev": null,
+              "scope": "mesh",
+              "seq": 1,
+              "sig": "NrSIUF7Zoisb4PxB8we0U9Vqs6ARUs-CSK0As8ydynAjfS6MZLU9VyGTm3rUi8J5gZds2eheZZmXK-9kP8K-Cw",
+              "type": "settings.set",
+              "v": 1
+            }
+          }
+        ]
+      },
+      "kind": "feed_replay",
+      "name": "fork-then-feed-refused-until-reenrolled"
+    },
+    {
+      "expect": {
+        "ok": {
+          "forked": [],
+          "heads": {
+            "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": {
+              "id": "sha256:6653dc62aa05f41ba790d35d55f943679ca02429806d20842ccdfa48092f745a",
+              "seq": 1
+            }
+          },
+          "results": [
+            "accepted",
+            "event.bad_signature"
+          ]
+        }
+      },
+      "input": {
+        "now_ms": 1794441660000,
+        "statuses": {
+          "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": {
+            "state": "member"
+          },
+          "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": {
+            "state": "member"
+          }
+        },
+        "steps": [
+          {
+            "header": {
+              "after": [],
+              "body": "sha256:9c588c55389b6f06cd20961b3d03f403ce68855a0166ed70ba74673b16515ec6",
+              "clock": {
+                "ms": 1794441601000,
+                "n": 0
+              },
+              "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+              "key": "ck:HhKGlmreTiCWf4HBy-KKrw",
+              "labels": {
+                "confidentiality": "private",
+                "integrity": "owner"
+              },
+              "prev": null,
+              "scope": "mesh",
+              "seq": 1,
+              "sig": "M6IvKUhRXUHzaAZhEs21Z4L81SDnS-bCdaFzpWh9W9JRozNFsI76dSf9k3u2hc7jETjlySl5fyAMeFBrEcpeAA",
+              "type": "settings.set",
+              "v": 1
+            }
+          },
+          {
+            "header": {
+              "after": [],
+              "body": "sha256:934cfc59fdf9caad1f35c43ae87999df2149e63647f2bf3a2d47e6ccb1e8fe44",
+              "clock": {
+                "ms": 1794441602001,
+                "n": 0
+              },
+              "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+              "key": "ck:HhKGlmreTiCWf4HBy-KKrw",
+              "labels": {
+                "confidentiality": "private",
+                "integrity": "owner"
+              },
+              "prev": "sha256:6653dc62aa05f41ba790d35d55f943679ca02429806d20842ccdfa48092f745a",
+              "scope": "mesh",
+              "seq": 2,
+              "sig": "C2Lr8jDXb8WBG3iV4KsaiEGDo3Fxa6lCuJlTrQPyTIFbwPHMflAsAYbBZrA5RRC4-rC427XS8-O8q-HNu4sDBA",
+              "type": "settings.set",
+              "v": 1
+            }
+          }
+        ]
+      },
+      "kind": "feed_replay",
+      "name": "edited-header"
+    },
+    {
+      "expect": {
+        "ok": {
+          "forked": [],
+          "heads": {
+            "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": {
+              "id": "sha256:6653dc62aa05f41ba790d35d55f943679ca02429806d20842ccdfa48092f745a",
+              "seq": 1
+            }
+          },
+          "results": [
+            "accepted",
+            "event.bad_signature"
+          ]
+        }
+      },
+      "input": {
+        "now_ms": 1794441660000,
+        "statuses": {
+          "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": {
+            "state": "member"
+          },
+          "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": {
+            "state": "member"
+          }
+        },
+        "steps": [
+          {
+            "header": {
+              "after": [],
+              "body": "sha256:9c588c55389b6f06cd20961b3d03f403ce68855a0166ed70ba74673b16515ec6",
+              "clock": {
+                "ms": 1794441601000,
+                "n": 0
+              },
+              "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+              "key": "ck:HhKGlmreTiCWf4HBy-KKrw",
+              "labels": {
+                "confidentiality": "private",
+                "integrity": "owner"
+              },
+              "prev": null,
+              "scope": "mesh",
+              "seq": 1,
+              "sig": "M6IvKUhRXUHzaAZhEs21Z4L81SDnS-bCdaFzpWh9W9JRozNFsI76dSf9k3u2hc7jETjlySl5fyAMeFBrEcpeAA",
+              "type": "settings.set",
+              "v": 1
+            }
+          },
+          {
+            "header": {
+              "after": [],
+              "body": "sha256:934cfc59fdf9caad1f35c43ae87999df2149e63647f2bf3a2d47e6ccb1e8fe44",
+              "clock": {
+                "ms": 1794441602000,
+                "n": 0
+              },
+              "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+              "key": "ck:HhKGlmreTiCWf4HBy-KKrw",
+              "labels": {
+                "confidentiality": "private",
+                "integrity": "owner"
+              },
+              "prev": "sha256:6653dc62aa05f41ba790d35d55f943679ca02429806d20842ccdfa48092f745a",
+              "scope": "mesh",
+              "seq": 2,
+              "sig": "r5gVFkkItrwRnFWuwfABwda0vAXzD4oJOhcyF_KiyBwV8xbSew8FqoVQuLCyVeb5d3ky7o3T3C15dqY_MJR0CA",
+              "type": "settings.set",
+              "v": 1
+            }
+          }
+        ]
+      },
+      "kind": "feed_replay",
+      "name": "wrong-signature-context"
+    },
+    {
+      "expect": {
+        "ok": {
+          "forked": [],
+          "heads": {},
+          "results": [
+            "event.future_clock"
+          ]
+        }
+      },
+      "input": {
+        "now_ms": 1794441660000,
+        "statuses": {
+          "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": {
+            "state": "member"
+          },
+          "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": {
+            "state": "member"
+          }
+        },
+        "steps": [
+          {
+            "header": {
+              "after": [],
+              "body": "sha256:9c588c55389b6f06cd20961b3d03f403ce68855a0166ed70ba74673b16515ec6",
+              "clock": {
+                "ms": 1794441960001,
+                "n": 0
+              },
+              "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+              "key": "ck:HhKGlmreTiCWf4HBy-KKrw",
+              "labels": {
+                "confidentiality": "private",
+                "integrity": "owner"
+              },
+              "prev": null,
+              "scope": "mesh",
+              "seq": 1,
+              "sig": "Vj6MrfqPt1l8HbEqnveGpqMgqKV-cLR_QEc6kdZDS1QAM-opfpjGiQerISWqpruU32TaIjdzuBIGLZ__7bPSDg",
+              "type": "settings.set",
+              "v": 1
+            }
+          }
+        ]
+      },
+      "kind": "feed_replay",
+      "name": "future-clock"
+    },
+    {
+      "expect": {
+        "ok": {
+          "forked": [],
+          "heads": {
+            "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": {
+              "id": "sha256:9248ce74e0b53214681d78cfd575fd6eec30106874480c7268827e6257b9c2a4",
+              "seq": 1
+            }
+          },
+          "results": [
+            "accepted"
+          ]
+        }
+      },
+      "input": {
+        "now_ms": 1794441660000,
+        "statuses": {
+          "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": {
+            "state": "member"
+          },
+          "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": {
+            "state": "member"
+          }
+        },
+        "steps": [
+          {
+            "header": {
+              "after": [],
+              "body": "sha256:9c588c55389b6f06cd20961b3d03f403ce68855a0166ed70ba74673b16515ec6",
+              "clock": {
+                "ms": 1794441960000,
+                "n": 0
+              },
+              "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+              "key": "ck:HhKGlmreTiCWf4HBy-KKrw",
+              "labels": {
+                "confidentiality": "private",
+                "integrity": "owner"
+              },
+              "prev": null,
+              "scope": "mesh",
+              "seq": 1,
+              "sig": "Eq6TwqJggzZhNglEr8rgeW97Qc1x9YrQrEOkVmLAMMCuEoZ4xkFzmt43Z5FK__XFqiaasCR_3QB_ePu5cM7uAw",
+              "type": "settings.set",
+              "v": 1
+            }
+          }
+        ]
+      },
+      "kind": "feed_replay",
+      "name": "clock-at-skew-limit"
+    },
+    {
+      "expect": {
+        "ok": {
+          "forked": [
+            "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ"
+          ],
+          "heads": {
+            "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": {
+              "id": "sha256:9223ce67368189a1cb81758f8140228c7b5ce25b1ade57a92a83fc753de90ccf",
+              "seq": 2
+            }
+          },
+          "results": [
+            "accepted",
+            "accepted",
+            "feed.fork"
+          ]
+        }
+      },
+      "input": {
+        "now_ms": 1794441660000,
+        "statuses": {
+          "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": {
+            "state": "member"
+          },
+          "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": {
+            "state": "member"
+          }
+        },
+        "steps": [
+          {
+            "header": {
+              "after": [],
+              "body": "sha256:9c588c55389b6f06cd20961b3d03f403ce68855a0166ed70ba74673b16515ec6",
+              "clock": {
+                "ms": 1794441601000,
+                "n": 0
+              },
+              "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+              "key": "ck:HhKGlmreTiCWf4HBy-KKrw",
+              "labels": {
+                "confidentiality": "private",
+                "integrity": "owner"
+              },
+              "prev": null,
+              "scope": "mesh",
+              "seq": 1,
+              "sig": "M6IvKUhRXUHzaAZhEs21Z4L81SDnS-bCdaFzpWh9W9JRozNFsI76dSf9k3u2hc7jETjlySl5fyAMeFBrEcpeAA",
+              "type": "settings.set",
+              "v": 1
+            }
+          },
+          {
+            "header": {
+              "after": [],
+              "body": "sha256:934cfc59fdf9caad1f35c43ae87999df2149e63647f2bf3a2d47e6ccb1e8fe44",
+              "clock": {
+                "ms": 1794441602000,
+                "n": 0
+              },
+              "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+              "key": "ck:HhKGlmreTiCWf4HBy-KKrw",
+              "labels": {
+                "confidentiality": "private",
+                "integrity": "owner"
+              },
+              "prev": "sha256:6653dc62aa05f41ba790d35d55f943679ca02429806d20842ccdfa48092f745a",
+              "scope": "mesh",
+              "seq": 2,
+              "sig": "C2Lr8jDXb8WBG3iV4KsaiEGDo3Fxa6lCuJlTrQPyTIFbwPHMflAsAYbBZrA5RRC4-rC427XS8-O8q-HNu4sDBA",
+              "type": "settings.set",
+              "v": 1
+            }
+          },
+          {
+            "header": {
+              "after": [],
+              "body": "sha256:189bab2524e23099c1d8cd8ce307a0c146bd132060673c915592b1360ead2b61",
+              "clock": {
+                "ms": 1794441603000,
+                "n": 0
+              },
+              "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+              "key": "ck:HhKGlmreTiCWf4HBy-KKrw",
+              "labels": {
+                "confidentiality": "private",
+                "integrity": "owner"
+              },
+              "prev": "sha256:947e347d6dd4343ead4b486445a5d85a8efc6cc69f4428336b81c51814b2d89d",
+              "scope": "mesh",
+              "seq": 3,
+              "sig": "VdnJzxPkELdwV2Ukno2RwunxoxiOEFDdpU5xSBrrSUzZAxcyrs3KULsHF88B2dy5rGrG6v3oT2EKb6FjRg60AQ",
+              "type": "settings.set",
+              "v": 1
+            }
+          }
+        ]
+      },
+      "kind": "feed_replay",
+      "name": "prev-does-not-match-head"
+    },
+    {
+      "expect": {
+        "ok": {
+          "forked": [],
+          "heads": {
+            "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": {
+              "id": "sha256:6653dc62aa05f41ba790d35d55f943679ca02429806d20842ccdfa48092f745a",
+              "seq": 1
+            }
+          },
+          "results": [
+            "accepted",
+            "feed.clock_regress"
+          ]
+        }
+      },
+      "input": {
+        "now_ms": 1794441660000,
+        "statuses": {
+          "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": {
+            "state": "member"
+          },
+          "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": {
+            "state": "member"
+          }
+        },
+        "steps": [
+          {
+            "header": {
+              "after": [],
+              "body": "sha256:9c588c55389b6f06cd20961b3d03f403ce68855a0166ed70ba74673b16515ec6",
+              "clock": {
+                "ms": 1794441601000,
+                "n": 0
+              },
+              "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+              "key": "ck:HhKGlmreTiCWf4HBy-KKrw",
+              "labels": {
+                "confidentiality": "private",
+                "integrity": "owner"
+              },
+              "prev": null,
+              "scope": "mesh",
+              "seq": 1,
+              "sig": "M6IvKUhRXUHzaAZhEs21Z4L81SDnS-bCdaFzpWh9W9JRozNFsI76dSf9k3u2hc7jETjlySl5fyAMeFBrEcpeAA",
+              "type": "settings.set",
+              "v": 1
+            }
+          },
+          {
+            "header": {
+              "after": [],
+              "body": "sha256:934cfc59fdf9caad1f35c43ae87999df2149e63647f2bf3a2d47e6ccb1e8fe44",
+              "clock": {
+                "ms": 1794441601000,
+                "n": 0
+              },
+              "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+              "key": "ck:HhKGlmreTiCWf4HBy-KKrw",
+              "labels": {
+                "confidentiality": "private",
+                "integrity": "owner"
+              },
+              "prev": "sha256:6653dc62aa05f41ba790d35d55f943679ca02429806d20842ccdfa48092f745a",
+              "scope": "mesh",
+              "seq": 2,
+              "sig": "qTdMRHoZUiCVsQf-Lpk-vifVtvPI_2fBmrm-QmzrBUzxBeeg2ckiPWtthtDNtmWhlUZFWoxQJ5fqf5WuGzeIBA",
+              "type": "settings.set",
+              "v": 1
+            }
+          }
+        ]
+      },
+      "kind": "feed_replay",
+      "name": "clock-must-rise-within-a-feed"
+    },
+    {
+      "expect": {
+        "ok": {
+          "forked": [],
+          "heads": {
+            "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": {
+              "id": "sha256:9223ce67368189a1cb81758f8140228c7b5ce25b1ade57a92a83fc753de90ccf",
+              "seq": 2
+            }
+          },
+          "results": [
+            "accepted",
+            "accepted",
+            "feed.removed"
+          ]
+        }
+      },
+      "input": {
+        "now_ms": 1794441660000,
+        "statuses": {
+          "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": {
+            "cutoff": 2,
+            "state": "removed"
+          }
+        },
+        "steps": [
+          {
+            "header": {
+              "after": [],
+              "body": "sha256:9c588c55389b6f06cd20961b3d03f403ce68855a0166ed70ba74673b16515ec6",
+              "clock": {
+                "ms": 1794441601000,
+                "n": 0
+              },
+              "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+              "key": "ck:HhKGlmreTiCWf4HBy-KKrw",
+              "labels": {
+                "confidentiality": "private",
+                "integrity": "owner"
+              },
+              "prev": null,
+              "scope": "mesh",
+              "seq": 1,
+              "sig": "M6IvKUhRXUHzaAZhEs21Z4L81SDnS-bCdaFzpWh9W9JRozNFsI76dSf9k3u2hc7jETjlySl5fyAMeFBrEcpeAA",
+              "type": "settings.set",
+              "v": 1
+            }
+          },
+          {
+            "header": {
+              "after": [],
+              "body": "sha256:934cfc59fdf9caad1f35c43ae87999df2149e63647f2bf3a2d47e6ccb1e8fe44",
+              "clock": {
+                "ms": 1794441602000,
+                "n": 0
+              },
+              "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+              "key": "ck:HhKGlmreTiCWf4HBy-KKrw",
+              "labels": {
+                "confidentiality": "private",
+                "integrity": "owner"
+              },
+              "prev": "sha256:6653dc62aa05f41ba790d35d55f943679ca02429806d20842ccdfa48092f745a",
+              "scope": "mesh",
+              "seq": 2,
+              "sig": "C2Lr8jDXb8WBG3iV4KsaiEGDo3Fxa6lCuJlTrQPyTIFbwPHMflAsAYbBZrA5RRC4-rC427XS8-O8q-HNu4sDBA",
+              "type": "settings.set",
+              "v": 1
+            }
+          },
+          {
+            "header": {
+              "after": [],
+              "body": "sha256:189bab2524e23099c1d8cd8ce307a0c146bd132060673c915592b1360ead2b61",
+              "clock": {
+                "ms": 1794441603000,
+                "n": 0
+              },
+              "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+              "key": "ck:HhKGlmreTiCWf4HBy-KKrw",
+              "labels": {
+                "confidentiality": "private",
+                "integrity": "owner"
+              },
+              "prev": "sha256:9223ce67368189a1cb81758f8140228c7b5ce25b1ade57a92a83fc753de90ccf",
+              "scope": "mesh",
+              "seq": 3,
+              "sig": "0jr9WDQ5hBu0mC8baKyXpnmQuuOjL2iRwn-ndP5CNw41zzTjkUZArzGunrafzECUY5xG5PYabvMExClle-d0Cw",
+              "type": "settings.set",
+              "v": 1
+            }
+          }
+        ]
+      },
+      "kind": "feed_replay",
+      "name": "removed-device-beyond-cutoff"
+    },
+    {
+      "expect": {
+        "ok": {
+          "forked": [],
+          "heads": {},
+          "results": [
+            "feed.unknown"
+          ]
+        }
+      },
+      "input": {
+        "now_ms": 1794441660000,
+        "statuses": {},
+        "steps": [
+          {
+            "header": {
+              "after": [],
+              "body": "sha256:9c588c55389b6f06cd20961b3d03f403ce68855a0166ed70ba74673b16515ec6",
+              "clock": {
+                "ms": 1794441601000,
+                "n": 0
+              },
+              "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+              "key": "ck:HhKGlmreTiCWf4HBy-KKrw",
+              "labels": {
+                "confidentiality": "private",
+                "integrity": "owner"
+              },
+              "prev": null,
+              "scope": "mesh",
+              "seq": 1,
+              "sig": "M6IvKUhRXUHzaAZhEs21Z4L81SDnS-bCdaFzpWh9W9JRozNFsI76dSf9k3u2hc7jETjlySl5fyAMeFBrEcpeAA",
+              "type": "settings.set",
+              "v": 1
+            }
+          }
+        ]
+      },
+      "kind": "feed_replay",
+      "name": "unknown-feed"
+    },
+    {
+      "expect": {
+        "ok": {
+          "forked": [],
+          "heads": {
+            "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": {
+              "id": "sha256:9223ce67368189a1cb81758f8140228c7b5ce25b1ade57a92a83fc753de90ccf",
+              "seq": 2
+            }
+          },
+          "results": [
+            "accepted",
+            "accepted",
+            "feed.after_clock"
+          ]
+        }
+      },
+      "input": {
+        "now_ms": 1794441660000,
+        "statuses": {
+          "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": {
+            "state": "member"
+          },
+          "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": {
+            "state": "member"
+          }
+        },
+        "steps": [
+          {
+            "header": {
+              "after": [],
+              "body": "sha256:9c588c55389b6f06cd20961b3d03f403ce68855a0166ed70ba74673b16515ec6",
+              "clock": {
+                "ms": 1794441601000,
+                "n": 0
+              },
+              "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+              "key": "ck:HhKGlmreTiCWf4HBy-KKrw",
+              "labels": {
+                "confidentiality": "private",
+                "integrity": "owner"
+              },
+              "prev": null,
+              "scope": "mesh",
+              "seq": 1,
+              "sig": "M6IvKUhRXUHzaAZhEs21Z4L81SDnS-bCdaFzpWh9W9JRozNFsI76dSf9k3u2hc7jETjlySl5fyAMeFBrEcpeAA",
+              "type": "settings.set",
+              "v": 1
+            }
+          },
+          {
+            "header": {
+              "after": [],
+              "body": "sha256:934cfc59fdf9caad1f35c43ae87999df2149e63647f2bf3a2d47e6ccb1e8fe44",
+              "clock": {
+                "ms": 1794441602000,
+                "n": 0
+              },
+              "feed": "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ",
+              "key": "ck:HhKGlmreTiCWf4HBy-KKrw",
+              "labels": {
+                "confidentiality": "private",
+                "integrity": "owner"
+              },
+              "prev": "sha256:6653dc62aa05f41ba790d35d55f943679ca02429806d20842ccdfa48092f745a",
+              "scope": "mesh",
+              "seq": 2,
+              "sig": "C2Lr8jDXb8WBG3iV4KsaiEGDo3Fxa6lCuJlTrQPyTIFbwPHMflAsAYbBZrA5RRC4-rC427XS8-O8q-HNu4sDBA",
+              "type": "settings.set",
+              "v": 1
+            }
+          },
+          {
+            "header": {
+              "after": [
+                "sha256:9223ce67368189a1cb81758f8140228c7b5ce25b1ade57a92a83fc753de90ccf"
+              ],
+              "body": "sha256:7d2863b2205efe4d1347b920673a1a1df8c3f982ea210b8b3f2e0f6915211737",
+              "clock": {
+                "ms": 1794441601500,
+                "n": 0
+              },
+              "feed": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+              "key": "ck:E-skh1om2dNgF7ihZvLKzA",
+              "labels": {
+                "confidentiality": "private",
+                "integrity": "owner"
+              },
+              "prev": null,
+              "scope": "mesh",
+              "seq": 1,
+              "sig": "lS9KRFm5WELshYmR1Mqhe0F8TNtG1Qf6bKx6jmmK5VFzuuzb9U3LZerOo_6IqjA61_wz9KSFKojxUWWjNaoaAw",
+              "type": "settings.set",
+              "v": 1
+            }
+          }
+        ]
+      },
+      "kind": "feed_replay",
+      "name": "after-event-must-precede"
+    },
+    {
+      "expect": {
+        "ok": {
+          "forked": [],
+          "heads": {
+            "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": {
+              "id": "sha256:d53a95df9b1e71dc399066952c819e6906754a6703b075936e49a307fcf4d04c",
+              "seq": 1
+            }
+          },
+          "results": [
+            "accepted"
+          ]
+        }
+      },
+      "input": {
+        "now_ms": 1794441660000,
+        "statuses": {
+          "A-bOg5JENH2roJm7U8gSOC3gdfyOewgcxMLOj2EGuFQ": {
+            "state": "member"
+          },
+          "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA": {
+            "state": "member"
+          }
+        },
+        "steps": [
+          {
+            "header": {
+              "after": [
+                "sha256:9223ce67368189a1cb81758f8140228c7b5ce25b1ade57a92a83fc753de90ccf"
+              ],
+              "body": "sha256:7d2863b2205efe4d1347b920673a1a1df8c3f982ea210b8b3f2e0f6915211737",
+              "clock": {
+                "ms": 1794441620000,
+                "n": 0
+              },
+              "feed": "glLlj3BDjuumPj8EUcvbZCJmHWOo3ZJv0KJMC1EzcLA",
+              "key": "ck:E-skh1om2dNgF7ihZvLKzA",
+              "labels": {
+                "confidentiality": "private",
+                "integrity": "owner"
+              },
+              "prev": null,
+              "scope": "mesh",
+              "seq": 1,
+              "sig": "hhP50P6cxYrIqm6jUYvlg-270UqTlV02YIC2hiRAmW-3cH7CZ-t_idnyVkrz2Lteob0rQ6LkHr7yNt5Jyn6WDA",
+              "type": "settings.set",
+              "v": 1
+            }
+          }
+        ]
+      },
+      "kind": "feed_replay",
+      "name": "after-unknown-event-is-held"
+    }
+  ],
+  "devices": {
+    "alice": {
+      "identity_scalar_hex": "0ce393242316eeda13b045c780dd99a3784bbaec0abd572ed0d822df7a61e9a6",
+      "kind": "desktop",
+      "ops_seed_hex": "37a6db180b13765d86ecf35cb5ed52d2a4aa7fb3ece91194f61e7f645e82c3c6",
+      "presence_scalar_hex": "66b9efeacbe85c32fafabc4594ae4c65513ae9a9f15078f02b6238780ebd99ea",
+      "wrap_private_hex": "934e3161ec9672a79552d2db56e2ac25fa5377388f3eb0ea915c9df63ba3a676"
+    },
+    "bob": {
+      "identity_scalar_hex": "5fcd1295f19588d646f38f369c1aa31ab0ba657e2a0ae5e11c740f26a089c84e",
+      "kind": "pocket",
+      "ops_seed_hex": "b0e9bfff3ad8661a30c97858c5492e774456b06d6ec7cb73b3a3c18431a408d3",
+      "presence_scalar_hex": "436f7838b991b7dc7203257f893bf810b7005d216efa22108493968e4ceb230c",
+      "wrap_private_hex": "66ccd3807bc7390c1937aa892b267d756fd593dfb6bc212889bf4f586cb1d6a0"
+    },
+    "carol": {
+      "identity_scalar_hex": "37c4f251aa26504e40020b2c1a8991abd1375409e99d798db37a6ea0a112424f",
+      "kind": "desktop",
+      "ops_seed_hex": "12470ac3ce9fedabd6ec8c1975aee8b9530a10f189cdd7e814eb4ccc67c75aaa",
+      "presence_scalar_hex": "bfcf06edd73197dc7ff47b135cc6a5792aaab1ab3fef426b56921ff2ebea0edb",
+      "wrap_private_hex": "f2100eb3b3967d9462d41955564ba00be4694df3ad48cbb13a3e8347e306670d"
+    },
+    "dave": {
+      "identity_scalar_hex": "b889f91aabfd0f244f12f137e15b19f247a02d2799824ba1af6c3eb9265422a3",
+      "kind": "satellite",
+      "ops_seed_hex": "91f3ea8d5dc532355d1d9fed02e3130595e425dc932d1ac92a03d892e8384860",
+      "presence_scalar_hex": "32aa0246bf7a4958376612da9172a936fdfbbc754c9588938df23474d9da802d",
+      "wrap_private_hex": "999c04164c2f8c4f3e38e0a4071a6ef6da25a744fac14e5076fd7d9b95c4587d"
+    },
+    "mallory": {
+      "identity_scalar_hex": "b9fdeaa4e28ffe58ee6323e71e30140fd0db2bf430601c734dd757f0ea38a72d",
+      "kind": "pocket",
+      "ops_seed_hex": "3f425ae3013e29a6fd8d3e8d9449ff0e85f8013275a283880dbfef18075ca71d",
+      "presence_scalar_hex": "d6a9b899c9eae91a1cbba1abc64728f6f083c6718c0c3b78155eaf9cd8f2859c",
+      "wrap_private_hex": "528456ec67167228ec4f9df7c714ee125c28e39201372e46bed8c21603181006"
+    },
+    "node1": {
+      "identity_scalar_hex": "782850c40eb281337d54e213fbb6f1e45fa58883d25b1ac60e6b1e4cd9f765f4",
+      "kind": "node",
+      "ops_seed_hex": "f4c7daa92619d74644c327b2de7c4bb58b29f4b7005cdc3718fcb9751257132e",
+      "presence_scalar_hex": "2e1efe8dcf780eea84694e338691bca0f8a379f3ebf2692ee279bcc3256f4d2a",
+      "wrap_private_hex": "ed77f67bea91fde1d5e0b5456f847ab758bcf3cd41202fc74c0e2335d53d9c74"
+    }
+  },
+  "format": "astral.vectors/v1",
+  "name": "feed",
+  "spec": "contracts/event.md#feeds-and-chains"
+}

@@ -1,10 +1,10 @@
-"""Namespaced verification principals and teardown (AstralPlane harness_cleanup
-repository): every harness identity, chat, attachment, and draft is prefixed so runs
-never collide with or pollute real user data.
+"""Verification subjects retain their synthetic namespace under issuer-scoped owners.
+The AstralPlane harness_cleanup repository removes only the run's scoped fixtures.
 """
 
 from __future__ import annotations
 
+import inspect
 import logging
 from dataclasses import dataclass, field
 from typing import Any, List
@@ -46,12 +46,21 @@ def is_harness_principal(user_id: str) -> bool:
     return bool(user_id) and user_id.startswith(NAMESPACE_PREFIX)
 
 
+def require_issuer_scoped_cleanup(plane_repositories: Any) -> None:
+    cleanup = getattr(plane_repositories, "harness_cleanup", None)
+    purge_run = getattr(cleanup, "purge_run", None)
+    if (not callable(purge_run)
+            or "owner_issuer_hash" not in inspect.signature(purge_run).parameters):
+        raise RuntimeError("Plane does not support issuer-scoped verification cleanup")
+
+
 # No fallback path — missing deps must fail, never leave state behind.
 def teardown(
     *,
     plane_runtime: Any,
     plane_repositories: Any,
     run_id: str,
+    owner_issuer_hash: str | None = None,
 ) -> int:
     from astralplane.repositories.harness_cleanup import HarnessCleanupProfile
 
@@ -63,11 +72,16 @@ def teardown(
             "verification teardown requires the application Plane "
             "harness_cleanup repository"
         )
+    scope = {}
+    if owner_issuer_hash is not None:
+        require_issuer_scoped_cleanup(plane_repositories)
+        scope["owner_issuer_hash"] = owner_issuer_hash
     with plane_runtime.transaction() as transaction:
         report = cleanup.purge_run(
             transaction,
             profile=HarnessCleanupProfile.VERIFICATION,
             run_id=run_id,
+            **scope,
         )
         deleted = getattr(report, "total_deleted", None)
         if isinstance(deleted, bool) or not isinstance(deleted, int) or deleted < 0:

@@ -36,16 +36,14 @@ MAX_HEADING_CHARS = 80
 FALLBACK_TITLE_CHARS = 60
 LEFTOVER_HEADING = "Also"
 
-SUBSTANTIAL_TEXT_CHARS = 600
-SUBSTANTIAL_STRUCTURES = 2
-
 FRAME_HTML_BUDGET = 768 * 1024
 
 REF_TYPE = "ref"
 _CHILD_KEYS = ("children", "content")
 _HEADING_VARIANTS = frozenset({"h1", "h2", "h3", "heading", "title"})
 _MARKDOWN_HEADING = re.compile(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$")
-_LIST_ITEM = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+\S")
+
+
 _FENCE = re.compile(r"^\s*(```|~~~)")
 _MARKDOWN_MARKS = re.compile(r"[*_`>#]+")
 
@@ -75,10 +73,6 @@ def socket_accepted_types(orch: Any, websocket: Any) -> frozenset:
                 sorted(accepted), getattr(profile, "supported_types", None) is not None,
                 CAPABILITY in (capabilities or ()))
     return accepted
-
-
-def artifact_capable(orch: Any, websocket: Any) -> bool:
-    return FRAME_TYPE in socket_accepted_types(orch, websocket)
 
 
 def frame_id(chat_id: str, key: str) -> str:
@@ -385,56 +379,6 @@ def fallback_frame(
     spans = [{"heading": "", "layout": DEFAULT_LAYOUT, "count": len(layout)}]
     return [assemble({}, spans, layout, artifact_id=frame_id(chat_id, layout_key),
                      user_request=user_request, round_components=round_components)]
-
-
-def substantial_text(text: str) -> bool:
-    body = (text or "").strip()
-    if len(body) >= SUBSTANTIAL_TEXT_CHARS:
-        return True
-    structures, in_fence, in_list = 0, False, False
-    for line in body.splitlines():
-        if _FENCE.match(line):
-            if not in_fence:
-                structures += 1
-            in_fence = not in_fence
-            in_list = False
-            continue
-        if in_fence:
-            continue
-        if _MARKDOWN_HEADING.match(line):
-            structures += 1
-            in_list = False
-        elif _LIST_ITEM.match(line):
-            if not in_list:
-                structures += 1
-            in_list = True
-        elif line.strip():
-            in_list = False
-    return structures >= SUBSTANTIAL_STRUCTURES
-
-
-def document_frame(chat_id: str, text: str, *, user_request: str = "") -> Dict[str, Any]:
-    body = {"type": "text", "content": text, "variant": "markdown"}
-    title = ""
-    for line in (text or "").splitlines():
-        match = _MARKDOWN_HEADING.match(line)
-        if match:
-            title = _within(_plain(match.group(1)), MAX_TITLE_CHARS)
-            break
-    if not title:
-        first = next((ln for ln in (text or "").splitlines() if ln.strip()), "")
-        title = _within(_plain(first), FALLBACK_TITLE_CHARS)
-    artifact_id = "art_" + hashlib.sha1(f"{chat_id or ''}|{text or ''}".encode()).hexdigest()[:16]
-    return {
-        "type": FRAME_TYPE,
-        "id": artifact_id,
-        "component_id": artifact_id,
-        "title": title or _one_line(user_request)[:FALLBACK_TITLE_CHARS].strip() or "Document",
-        "kind": "document",
-        "version": 1,
-        "sections": [{"id": "s1", "heading": "", "layout": DEFAULT_LAYOUT, "children": [body]}],
-        "actions": default_actions(),
-    }
 
 
 def _slug(title: str) -> str:

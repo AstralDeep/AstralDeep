@@ -1,7 +1,4 @@
-"""Tests for orchestrator-side remote-compute wiring (orchestrator/orchestrator.py): the
-job poll loop's failure survival and cancel propagation, the remote_op_decision
-route, boot's flag-gated poller launch, and the marker-gated trace tee.
-"""
+"""Checks remote-compute poller startup, cancellation, failure recovery and the marker-gated trace tee."""
 
 from __future__ import annotations
 
@@ -14,13 +11,13 @@ from types import SimpleNamespace
 import pytest
 
 from orchestrator import orchestrator as oo
-from orchestrator import remote_confirmation as rc
 from orchestrator import remote_jobs as rj
 from orchestrator.orchestrator import Orchestrator
 from tests.helpers.remote_plane_runtime import make_remote_plane_source
 
 _REAL_EXISTS = os.path.exists
-_MARKER = "/app/.frame_trace"
+_TRACE_DIR = "/trace"
+_MARKER = "/trace/.frame_trace"
 
 
 @pytest.fixture(autouse=True)
@@ -82,75 +79,6 @@ class _WS:
         self.sent.append(data)
 
 
-def _ui_host(monkeypatch, ws, user_id="u-1"):
-    async def _record_ws_action(**kwargs):
-        return None
-
-    import audit.hooks
-    monkeypatch.setattr(audit.hooks, "record_ws_action", _record_ws_action)
-
-    fake = SimpleNamespace(
-        ui_sessions={ws: {"sub": user_id, "preferred_username": "tester"}},
-        _parsed_ui_frame=Orchestrator._parsed_ui_frame,
-        _get_user_id=lambda _ws: user_id,
-    )
-    fake.handle_ui_message = types.MethodType(Orchestrator.handle_ui_message, fake)
-    return fake
-
-
-async def test_remote_op_decision_routes_to_the_confirmation_handler(monkeypatch):
-    seen: list = []
-
-    async def _handle_decision(orch, websocket, user_id, payload):
-        seen.append((orch, websocket, user_id, payload))
-
-    monkeypatch.setattr(rc, "handle_decision", _handle_decision)
-    ws = _WS()
-    fake = _ui_host(monkeypatch, ws)
-
-    await fake.handle_ui_message(ws, json.dumps({
-        "type": "ui_event",
-        "action": "remote_op_decision",
-        "payload": {"proposal_id": "p-1", "decision": "approve"},
-    }))
-
-    assert len(seen) == 1
-    orch, sock, user_id, payload = seen[0]
-    assert orch is fake and sock is ws
-    assert user_id == "u-1"
-    assert payload == {"proposal_id": "p-1", "decision": "approve"}
-
-
-async def test_remote_op_decision_tolerates_an_empty_payload(monkeypatch):
-    seen: list = []
-
-    async def _handle_decision(orch, websocket, user_id, payload):
-        seen.append(payload)
-
-    monkeypatch.setattr(rc, "handle_decision", _handle_decision)
-    ws = _WS()
-    fake = _ui_host(monkeypatch, ws)
-
-    await fake.handle_ui_message(ws, json.dumps({
-        "type": "ui_event", "action": "remote_op_decision", "payload": {}}))
-    assert seen == [{}]
-
-
-async def test_other_actions_do_not_reach_the_confirmation_handler(monkeypatch):
-    called: list = []
-
-    async def _handle_decision(*a, **k):
-        called.append(a)
-
-    monkeypatch.setattr(rc, "handle_decision", _handle_decision)
-    ws = _WS()
-    fake = _ui_host(monkeypatch, ws)
-
-    await fake.handle_ui_message(ws, json.dumps({
-        "type": "ui_event", "action": "schedule_decision", "payload": {}}))
-    assert called == []
-
-
 class _Stop(Exception):
     pass
 
@@ -164,15 +92,11 @@ async def _drive_start(monkeypatch, *, remote_compute: bool, gaiakeep: bool = Fa
     async def _noop_loop():
         await asyncio.sleep(3600)
 
-    async def _revoke_once():
-        return 0
-
-    from orchestrator import agent_trust, session_store, web_auth
+    from orchestrator import agent_trust, boot_posture
     from shared.feature_flags import flags
 
-    monkeypatch.setattr(session_store, "assert_production_posture", lambda: None)
+    monkeypatch.setattr(boot_posture, "assert_production_posture", lambda: None)
     monkeypatch.setattr(agent_trust, "seed_safe", _seed_safe)
-    monkeypatch.setattr(web_auth, "process_revocation_queue_once", _revoke_once)
     enabled = {"safe_agents": True, "inprocess_agents": False,
                "remote_compute": remote_compute, "gaiakeep": gaiakeep, "cresco": gaiakeep,
                "fhir": fhir}
@@ -302,6 +226,7 @@ def _set_marker(monkeypatch, present: bool):
 
 
 def test_trace_frame_is_off_without_the_marker(monkeypatch):
+    monkeypatch.setenv("ASTRAL_FRAME_TRACE_DIR", _TRACE_DIR)
     _set_marker(monkeypatch, False)
     sink: list = []
     monkeypatch.setattr(oo, "open", _fake_open(sink), raising=False)
@@ -311,6 +236,7 @@ def test_trace_frame_is_off_without_the_marker(monkeypatch):
 
 
 def test_trace_frame_appends_a_typed_record_when_armed(monkeypatch):
+    monkeypatch.setenv("ASTRAL_FRAME_TRACE_DIR", _TRACE_DIR)
     _set_marker(monkeypatch, True)
     sink: list = []
     monkeypatch.setattr(oo, "open", _fake_open(sink), raising=False)
@@ -318,14 +244,27 @@ def test_trace_frame_appends_a_typed_record_when_armed(monkeypatch):
     ws = _WS()
     Orchestrator._trace_frame(None, ws, json.dumps({"type": "ui_upsert"}), ok=True)
 
-    assert sink[0][0] == "open" and sink[0][1] == "/app/frame_trace.jsonl"
+    assert sink[0][0] == "open" and sink[0][1] == "/trace/frame_trace.jsonl"
     rec = json.loads(sink[1])
     assert rec["type"] == "ui_upsert"
     assert rec["sock"] == "_WS" and rec["sock_id"] == id(ws)
     assert rec["ok"] is True and rec["error"] == ""
 
 
+def test_trace_frame_is_off_with_no_trace_directory_and_touches_nothing(monkeypatch, tmp_path):
+    monkeypatch.delenv("ASTRAL_FRAME_TRACE_DIR", raising=False)
+    monkeypatch.chdir(tmp_path)
+    checked: list = []
+    monkeypatch.setattr(os.path, "exists", lambda path: checked.append(path) or True)
+    sink: list = []
+    monkeypatch.setattr(oo, "open", _fake_open(sink), raising=False)
+
+    Orchestrator._trace_frame(None, _WS(), json.dumps({"type": "ui_render"}), ok=True)
+    assert sink == [] and checked == [] and list(tmp_path.iterdir()) == []
+
+
 def test_trace_frame_records_an_unparsable_frame_as_unknown_type(monkeypatch):
+    monkeypatch.setenv("ASTRAL_FRAME_TRACE_DIR", _TRACE_DIR)
     _set_marker(monkeypatch, True)
     sink: list = []
     monkeypatch.setattr(oo, "open", _fake_open(sink), raising=False)

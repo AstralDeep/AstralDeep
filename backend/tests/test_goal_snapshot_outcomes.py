@@ -102,53 +102,6 @@ def test_public_snapshot_publisher_persists_partial_atomic_result_as_failed(data
     ]
 
 
-def test_public_snapshot_publisher_persists_partial_voice_result_as_failed(database):
-    coordinator = publication_tests._coordinator(database)
-    repository = publication_tests._repository(database, coordinator)
-    chat_id, owner, claim, staged = publication_tests._voice_stage(
-        database,
-        repository,
-        coordinator,
-    )
-    stage = ConversationPublicationStage(
-        history=repository._history,
-        commit_id=staged["commit_id"],
-        chat_id=chat_id,
-        user_id=publication_tests.OWNER,
-        base_render_revision=staged["base_render_revision"],
-        next_render_revision=staged["base_render_revision"] + 1,
-        operation_fence=claim.fence,
-        publication_role="assistant_result",
-        execution_base_render_revision=staged["execution_base_render_revision"],
-        completion_state="failed",
-    )
-    orchestrator = _orchestrator(database, repository)
-
-    result = asyncio.run(
-        orchestrator._publish_conversation_snapshot(
-            None,
-            stage=stage,
-            request_generation=staged["request_generation"],
-        )
-    )
-
-    assert result["state"] == "committed"
-    assert stage.committed is True
-    assert publication_tests._operation_state(coordinator, owner, claim).state is OperationState.FAILED
-    snapshot = repository.build_snapshot(
-        chat_id=chat_id,
-        owner_user_id=publication_tests.OWNER,
-        connection_generation=uuid.uuid4(),
-        request_generation=staged["request_generation"],
-        snapshot_purpose="commit",
-    )
-    assert [
-        part["text"]
-        for message in snapshot["transcript"]
-        for part in message["parts"]
-    ] == ["question", "Useful partial answer"]
-
-
 def test_public_snapshot_publisher_persists_partial_atomic_result_as_cancelled(database):
     coordinator = publication_tests._coordinator(database)
     repository = publication_tests._repository(database, coordinator)
@@ -184,56 +137,6 @@ def test_public_snapshot_publisher_persists_partial_atomic_result_as_cancelled(d
     assert snapshot["transcript"][0]["parts"] == [
         {"type": "text", "text": "Useful partial answer"}
     ]
-
-
-def test_public_snapshot_publisher_persists_partial_voice_result_as_cancelled(database):
-    coordinator = publication_tests._coordinator(database)
-    repository = publication_tests._repository(database, coordinator)
-    chat_id, owner, claim, staged = publication_tests._voice_stage(
-        database,
-        repository,
-        coordinator,
-    )
-    stage = ConversationPublicationStage(
-        history=repository._history,
-        commit_id=staged["commit_id"],
-        chat_id=chat_id,
-        user_id=publication_tests.OWNER,
-        base_render_revision=staged["base_render_revision"],
-        next_render_revision=staged["base_render_revision"] + 1,
-        operation_fence=claim.fence,
-        publication_role="assistant_result",
-        execution_base_render_revision=staged["execution_base_render_revision"],
-        completion_state="cancelled",
-    )
-    orchestrator = _orchestrator(database, repository)
-
-    result = asyncio.run(
-        orchestrator._publish_conversation_snapshot(
-            None,
-            stage=stage,
-            request_generation=staged["request_generation"],
-        )
-    )
-
-    assert result["state"] == "committed"
-    assert stage.committed is True
-    operation = publication_tests._operation_state(coordinator, owner, claim)
-    assert operation.state is OperationState.CANCELLED
-    assert operation.terminal_code == "goal_cancelled"
-    assert operation.safe_summary == "Request cancelled; conversation committed"
-    snapshot = repository.build_snapshot(
-        chat_id=chat_id,
-        owner_user_id=publication_tests.OWNER,
-        connection_generation=uuid.uuid4(),
-        request_generation=staged["request_generation"],
-        snapshot_purpose="commit",
-    )
-    assert [
-        part["text"]
-        for message in snapshot["transcript"]
-        for part in message["parts"]
-    ] == ["question", "Useful partial answer"]
 
 
 def test_public_snapshot_publisher_keeps_default_stage_completion(database):

@@ -1,0 +1,4877 @@
+{
+  "cases": [
+    {
+      "expect": {
+        "ok": true
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "valid"
+    },
+    {
+      "expect": {
+        "ok": true
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [
+            {
+              "date": "2026-11-18",
+              "id": "arm64-pack",
+              "review": "owner",
+              "summary": "The Linux arm64 pack is left out."
+            }
+          ],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "valid_with_an_exception"
+    },
+    {
+      "expect": {
+        "ok": true
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "/turns": {
+              "consent": "own-redacted",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": true
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "valid_caller_turn_door_redacted"
+    },
+    {
+      "expect": {
+        "ok": true
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "valid_owner_door_with_no_consent"
+    },
+    {
+      "expect": {
+        "code": "assembly.malformed"
+      },
+      "input": {
+        "document": [
+          {
+            "assembly": "example.personal-node",
+            "capabilities": {
+              "offered": [
+                "chat",
+                "mesh-peer",
+                "tool-dispatch"
+              ],
+              "required_controls": [
+                "consent-gate",
+                "egress-allowlist"
+              ]
+            },
+            "doors": {
+              "/mcp": {
+                "consent": "none",
+                "notification_types": [],
+                "principal": "caller-ticket",
+                "turns": false
+              },
+              "mesh": {
+                "consent": "full",
+                "notification_types": [],
+                "principal": "owner-device",
+                "turns": true
+              }
+            },
+            "exceptions": [],
+            "format": "astral.assembly/v0",
+            "ports": {
+              "authority": {
+                "adapters": [
+                  "kernel-authz"
+                ],
+                "contracts": []
+              },
+              "identity": {
+                "adapters": [
+                  "mesh-caller"
+                ],
+                "contracts": [
+                  {
+                    "format": "astral.caller/v1",
+                    "path": "contracts/caller-ticket.md",
+                    "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                  }
+                ]
+              },
+              "persistence": {
+                "adapters": [
+                  "plane"
+                ],
+                "contracts": []
+              },
+              "tool-provider": {
+                "adapters": [
+                  "executor",
+                  "mcp-servers"
+                ],
+                "contracts": []
+              },
+              "ui-adaptation": {
+                "adapters": [
+                  "rote"
+                ],
+                "contracts": []
+              }
+            }
+          }
+        ]
+      },
+      "kind": "validate",
+      "name": "not_an_object"
+    },
+    {
+      "expect": {
+        "code": "assembly.unknown_format"
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "format_absent"
+    },
+    {
+      "expect": {
+        "code": "assembly.unknown_format"
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "format": "astral.assembly/v1",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "format_other_version"
+    },
+    {
+      "expect": {
+        "code": "assembly.unknown_section"
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "flags": {},
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "unknown_section"
+    },
+    {
+      "expect": {
+        "code": "assembly.section_missing"
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "section_missing"
+    },
+    {
+      "expect": {
+        "code": "assembly.malformed"
+      },
+      "input": {
+        "document": {
+          "assembly": "Example Node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "assembly_bad_name"
+    },
+    {
+      "expect": {
+        "code": "assembly.malformed"
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": []
+        }
+      },
+      "kind": "validate",
+      "name": "ports_not_an_object"
+    },
+    {
+      "expect": {
+        "code": "assembly.unknown_port"
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "transport": {
+              "adapters": [
+                "iroh"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "unknown_port"
+    },
+    {
+      "expect": {
+        "code": "assembly.port_missing"
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "port_missing"
+    },
+    {
+      "expect": {
+        "code": "assembly.unknown_key"
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ],
+              "flags": []
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "port_unknown_key"
+    },
+    {
+      "expect": {
+        "code": "assembly.malformed"
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "port_member_missing"
+    },
+    {
+      "expect": {
+        "code": "assembly.malformed"
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "adapters_empty"
+    },
+    {
+      "expect": {
+        "code": "assembly.malformed"
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "executor"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "adapters_repeated"
+    },
+    {
+      "expect": {
+        "code": "assembly.malformed"
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "Mesh Caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "adapter_bad_name"
+    },
+    {
+      "expect": {
+        "code": "assembly.ambiguous"
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller",
+                "institutional"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "two_identity_adapters"
+    },
+    {
+      "expect": {
+        "code": "assembly.ambiguous"
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane",
+                "kernel-log"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "two_persistence_adapters"
+    },
+    {
+      "expect": {
+        "code": "assembly.contract_malformed"
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": {}
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "contracts_not_a_list"
+    },
+    {
+      "expect": {
+        "code": "assembly.contract_malformed"
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                "astral.caller/v1"
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "contract_not_an_object"
+    },
+    {
+      "expect": {
+        "code": "assembly.contract_malformed"
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+                  "version": 1
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "contract_extra_member"
+    },
+    {
+      "expect": {
+        "code": "assembly.contract_malformed"
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "a.md"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "contract_member_missing"
+    },
+    {
+      "expect": {
+        "code": "assembly.contract_malformed"
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "/etc/passwd",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "contract_absolute_path"
+    },
+    {
+      "expect": {
+        "code": "assembly.contract_malformed"
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "specs/../secret.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "contract_parent_path"
+    },
+    {
+      "expect": {
+        "code": "assembly.contract_malformed"
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "specs\\a.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "contract_backslash_path"
+    },
+    {
+      "expect": {
+        "code": "assembly.contract_malformed"
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "specs//a.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "contract_unnormalized_path"
+    },
+    {
+      "expect": {
+        "code": "assembly.contract_malformed"
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F0F"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "contract_uppercase_digest"
+    },
+    {
+      "expect": {
+        "code": "assembly.contract_malformed"
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "contract_short_digest"
+    },
+    {
+      "expect": {
+        "code": "assembly.unknown_key"
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "optional": [],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "capabilities_unknown_key"
+    },
+    {
+      "expect": {
+        "code": "assembly.malformed"
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "capabilities_member_missing"
+    },
+    {
+      "expect": {
+        "code": "assembly.malformed"
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "tool-dispatch",
+              "chat"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "offered_unsorted"
+    },
+    {
+      "expect": {
+        "code": "assembly.malformed"
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "chat"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "offered_repeated"
+    },
+    {
+      "expect": {
+        "code": "assembly.unknown_control"
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "firewall"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "unknown_control"
+    },
+    {
+      "expect": {
+        "code": "assembly.malformed"
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {},
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "doors_empty"
+    },
+    {
+      "expect": {
+        "code": "assembly.malformed"
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": [],
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "doors_not_an_object"
+    },
+    {
+      "expect": {
+        "code": "assembly.malformed"
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "door_empty_name"
+    },
+    {
+      "expect": {
+        "code": "assembly.unknown_key"
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "events": [],
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "door_unknown_key"
+    },
+    {
+      "expect": {
+        "code": "assembly.malformed"
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket"
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "door_member_missing"
+    },
+    {
+      "expect": {
+        "code": "assembly.unknown_principal"
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "contact",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "door_unknown_principal"
+    },
+    {
+      "expect": {
+        "code": "assembly.malformed"
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": 0
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "door_turns_not_boolean"
+    },
+    {
+      "expect": {
+        "code": "assembly.malformed"
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [
+                "Progress"
+              ],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "door_notification_bad_name"
+    },
+    {
+      "expect": {
+        "code": "assembly.malformed"
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "partial",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "door_unknown_consent"
+    },
+    {
+      "expect": {
+        "code": "assembly.consent_visibility"
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "caller_door_full_consent"
+    },
+    {
+      "expect": {
+        "code": "assembly.consent_visibility"
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "own-redacted",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "caller_door_redacted_without_turns"
+    },
+    {
+      "expect": {
+        "code": "assembly.consent_visibility"
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "/turns": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": true
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "caller_turn_door_full_consent"
+    },
+    {
+      "expect": {
+        "code": "assembly.consent_visibility"
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "own-redacted",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "owner_door_redacted_consent"
+    },
+    {
+      "expect": {
+        "code": "assembly.consent_visibility"
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "connection": {
+              "consent": "own-redacted",
+              "notification_types": [],
+              "principal": "outside-service",
+              "turns": true
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "outside_service_door_redacted"
+    },
+    {
+      "expect": {
+        "code": "assembly.exception_malformed"
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": {},
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "exceptions_not_a_list"
+    },
+    {
+      "expect": {
+        "code": "assembly.exception_malformed"
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [
+            "arm64-pack"
+          ],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "exception_not_an_object"
+    },
+    {
+      "expect": {
+        "code": "assembly.exception_malformed"
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [
+            {
+              "date": "2026-11-18",
+              "id": "x",
+              "review": "owner"
+            }
+          ],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "exception_member_missing"
+    },
+    {
+      "expect": {
+        "code": "assembly.exception_malformed"
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [
+            {
+              "date": "2026-11-18",
+              "id": "arm64-pack",
+              "review": "",
+              "summary": "The Linux arm64 pack is left out."
+            }
+          ],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "exception_empty_review"
+    },
+    {
+      "expect": {
+        "code": "assembly.exception_malformed"
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [
+            {
+              "date": "18 Nov 2026",
+              "id": "arm64-pack",
+              "review": "owner",
+              "summary": "The Linux arm64 pack is left out."
+            }
+          ],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "exception_bad_date"
+    },
+    {
+      "expect": {
+        "code": "assembly.malformed"
+      },
+      "input": {
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {},
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        }
+      },
+      "kind": "validate",
+      "name": "first_failure_wins_port_before_door"
+    },
+    {
+      "expect": {
+        "ok": true
+      },
+      "input": {
+        "capabilities": [
+          "chat",
+          "mesh-peer",
+          "tool-dispatch"
+        ],
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        },
+        "notification_types": []
+      },
+      "kind": "runtime",
+      "name": "runtime_valid"
+    },
+    {
+      "expect": {
+        "ok": true
+      },
+      "input": {
+        "capabilities": [
+          "tool-dispatch",
+          "mesh-peer",
+          "chat"
+        ],
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        },
+        "notification_types": []
+      },
+      "kind": "runtime",
+      "name": "runtime_capabilities_in_another_order"
+    },
+    {
+      "expect": {
+        "code": "assembly.capability_mismatch"
+      },
+      "input": {
+        "capabilities": [
+          "chat",
+          "mesh-peer",
+          "tool-dispatch",
+          "mesh-mailbox"
+        ],
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        },
+        "notification_types": []
+      },
+      "kind": "runtime",
+      "name": "runtime_capability_not_offered"
+    },
+    {
+      "expect": {
+        "code": "assembly.capability_mismatch"
+      },
+      "input": {
+        "capabilities": [
+          "chat"
+        ],
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        },
+        "notification_types": []
+      },
+      "kind": "runtime",
+      "name": "runtime_offers_a_capability_the_node_lacks"
+    },
+    {
+      "expect": {
+        "code": "assembly.notification_mismatch"
+      },
+      "input": {
+        "capabilities": [
+          "chat",
+          "mesh-peer",
+          "tool-dispatch"
+        ],
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        },
+        "notification_types": [
+          "notifications/progress"
+        ]
+      },
+      "kind": "runtime",
+      "name": "runtime_door_serves_an_undeclared_notification"
+    },
+    {
+      "expect": {
+        "code": "assembly.notification_mismatch"
+      },
+      "input": {
+        "capabilities": [
+          "chat",
+          "mesh-peer",
+          "tool-dispatch"
+        ],
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [
+                "notifications/progress"
+              ],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        },
+        "notification_types": []
+      },
+      "kind": "runtime",
+      "name": "runtime_manifest_declares_an_unserved_notification"
+    },
+    {
+      "expect": {
+        "ok": true
+      },
+      "input": {
+        "capabilities": [
+          "chat",
+          "mesh-peer",
+          "tool-dispatch"
+        ],
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [
+                "consent.requested"
+              ],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "format": "astral.assembly/v0",
+          "ports": {
+            "authority": {
+              "adapters": [
+                "kernel-authz"
+              ],
+              "contracts": []
+            },
+            "identity": {
+              "adapters": [
+                "mesh-caller"
+              ],
+              "contracts": [
+                {
+                  "format": "astral.caller/v1",
+                  "path": "contracts/caller-ticket.md",
+                  "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+                }
+              ]
+            },
+            "persistence": {
+              "adapters": [
+                "plane"
+              ],
+              "contracts": []
+            },
+            "tool-provider": {
+              "adapters": [
+                "executor",
+                "mcp-servers"
+              ],
+              "contracts": []
+            },
+            "ui-adaptation": {
+              "adapters": [
+                "rote"
+              ],
+              "contracts": []
+            }
+          }
+        },
+        "notification_types": []
+      },
+      "kind": "runtime",
+      "name": "runtime_owner_door_notifications_are_not_compared"
+    },
+    {
+      "expect": {
+        "code": "assembly.section_missing"
+      },
+      "input": {
+        "capabilities": [
+          "chat",
+          "mesh-peer",
+          "tool-dispatch"
+        ],
+        "document": {
+          "assembly": "example.personal-node",
+          "capabilities": {
+            "offered": [
+              "chat",
+              "mesh-peer",
+              "tool-dispatch"
+            ],
+            "required_controls": [
+              "consent-gate",
+              "egress-allowlist"
+            ]
+          },
+          "doors": {
+            "/mcp": {
+              "consent": "none",
+              "notification_types": [],
+              "principal": "caller-ticket",
+              "turns": false
+            },
+            "mesh": {
+              "consent": "full",
+              "notification_types": [],
+              "principal": "owner-device",
+              "turns": true
+            }
+          },
+          "exceptions": [],
+          "format": "astral.assembly/v0"
+        },
+        "notification_types": []
+      },
+      "kind": "runtime",
+      "name": "runtime_invalid_document_is_refused_first"
+    }
+  ],
+  "format": "astral.assembly/v0",
+  "spec": "106/contracts/assembly.md"
+}

@@ -165,7 +165,7 @@ def test_revocation_is_durable_and_effects_persist(tmp_path: Path) -> None:
 
 
 def test_handoff_attenuation_and_drift(tmp_path: Path) -> None:
-    from orchestrator.delegation import _token_scopes
+    from orchestrator.agent_authority import _token_scopes
 
     from tests.multiturn_replay.engine import _delegation_parent, ReplayEngine
 
@@ -529,7 +529,7 @@ def test_expired_delegation_chain_is_refused() -> None:
         "sub": scenario.owner_id,
         "act": {"sub": f"agent:{scenario.agent_id}-worker"},
         "scope": "tools:read",
-        "iss": "mock-astral-delegation",
+        "iss": "astral-delegation",
         "aud": "agent-service",
         "iat": 1,
         "exp": 2,

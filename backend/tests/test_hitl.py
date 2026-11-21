@@ -1,11 +1,7 @@
-"""Tests for runtime human-in-the-loop risk assessment (orchestrator/hitl.py): the
-enabling flag, egress/irreversible/cross-principal/tainted risk classification,
-confirmation cards with provenance, and escalation thresholds.
-"""
+"""Tests tool risk classification, its feature flag, and repeated denial escalation in orchestrator.hitl."""
 
 from __future__ import annotations
 
-import dataclasses
 import sys
 from pathlib import Path
 
@@ -21,9 +17,7 @@ from orchestrator.hitl import (  # noqa: E402
     EGRESS,
     IRREVERSIBLE,
     UNTRUSTED_TAINTED,
-    ConfirmationRequest,
     assess_risk,
-    confirmation_request,
     escalation_needed,
     is_high_risk,
     requires_confirmation,
@@ -147,46 +141,6 @@ def test_is_high_risk_two_risks_is_compounded():
 
 def test_is_high_risk_empty_is_false():
     assert is_high_risk([]) is False
-
-
-def test_confirmation_request_summary_mentions_phrases():
-    req = confirmation_request("send_email", [EGRESS, IRREVERSIBLE])
-    assert isinstance(req, ConfirmationRequest)
-    assert req.tool == "send_email"
-    assert req.risks == (EGRESS, IRREVERSIBLE)
-    assert "send data off this system" in req.summary
-    assert "make an irreversible change" in req.summary
-    assert req.summary.endswith("confirm?")
-
-
-def test_confirmation_request_carries_provenance():
-    prov = {"source": "web-research-1", "tool": "fetch_page"}
-    req = confirmation_request("send_email", [EGRESS], provenance=prov)
-    assert req.provenance == prov
-    assert req.provenance is not prov
-
-
-def test_confirmation_request_provenance_defaults_empty():
-    req = confirmation_request("send_email", [EGRESS])
-    assert req.provenance == {}
-
-
-def test_confirmation_request_is_frozen():
-    req = confirmation_request("send_email", [EGRESS])
-    with pytest.raises(dataclasses.FrozenInstanceError):
-        req.tool = "other"  # type: ignore[misc]
-
-
-def test_confirmation_request_all_phrases_render():
-    risks = sorted([EGRESS, IRREVERSIBLE, CROSS_PRINCIPAL, UNTRUSTED_TAINTED])
-    req = confirmation_request("transfer_funds", risks)
-    for phrase in (
-        "send data off this system",
-        "make an irreversible change",
-        "act on another account",
-        "use untrusted data",
-    ):
-        assert phrase in req.summary
 
 
 def test_escalation_high_risk_at_threshold():

@@ -353,13 +353,15 @@ def _content_parts(
     stored: Any,
     *,
     already_decoded: bool = False,
+    typed_by_user: bool = False,
 ) -> list[dict[str, Any]]:
     if already_decoded:
         if isinstance(stored, str):
             stripped = stored.strip()
             if not stripped:
                 return _recovery_parts()
-            if stripped.startswith(("{", "[")):
+            # A person can start a message with a bracket, so only other roles can be damaged JSON.
+            if stripped.startswith(("{", "[")) and not typed_by_user:
                 try:
                     json.loads(
                         stored,
@@ -632,46 +634,6 @@ class ConversationCommitRepository:
             ),
         }
 
-    @staticmethod
-    def _assert_operation_authority(
-        operation: Any,
-        *,
-        owner_user_id: str,
-        chat_id: str,
-        request_generation: str,
-        connection_generation: str,
-        operation_owner: Any,
-    ) -> None:
-        expected_scope = getattr(operation_owner, "owner_scope", None)
-        if operation.owner_scope != expected_scope:
-            raise ConversationCommitConflict(
-                "conversation operation owner scope changed"
-            )
-        if str(getattr(operation.owner_scope, "value", "")) != "user":
-            raise ConversationCommitConflict(
-                "voice publication requires user operation ownership"
-            )
-        if (
-            operation.owner_user_id != owner_user_id
-            or getattr(operation_owner, "owner_user_id", None) != owner_user_id
-        ):
-            raise ConversationCommitConflict("conversation operation owner changed")
-        if operation.chat_id != chat_id:
-            raise ConversationCommitConflict("conversation operation chat changed")
-        if str(operation.request_generation or "") != request_generation:
-            raise ConversationCommitConflict(
-                "conversation operation request generation changed"
-            )
-        actual_connection = (
-            None
-            if operation.connection_generation is None
-            else str(operation.connection_generation)
-        )
-        if actual_connection != connection_generation:
-            raise ConversationCommitConflict(
-                "conversation operation connection generation changed"
-            )
-
     def _load_component_view(
         self,
         transaction: Any,
@@ -811,290 +773,6 @@ class ConversationCommitRepository:
                     committed_render_revision=revision,
                 ),
             )
-
-    def accept_voice_turn(
-        self,
-        *,
-        chat_id: str,
-        owner_user_id: str,
-        request_generation: Any,
-        result_request_generation: Any,
-        connection_generation: Any,
-        user_content: Any,
-        operation_fence: Any,
-        operation_owner: Any,
-        accept_turn: Callable[..., Any],
-    ) -> dict[str, Any]:
-        chat_id = _uuid4_text(chat_id, "chat_id")
-        owner_user_id = _required_text(owner_user_id, "owner_user_id")
-        request_generation = _uuid4_text(
-            request_generation, "request_generation"
-        )
-        result_request_generation = _uuid4_text(
-            result_request_generation, "result_request_generation"
-        )
-        connection_generation = _uuid4_text(
-            connection_generation, "connection_generation"
-        )
-        if result_request_generation == request_generation:
-            raise ValueError("result request generation must be distinct")
-        if operation_fence is None or operation_owner is None:
-            raise ValueError("voice acceptance requires operation authority")
-        if not callable(accept_turn):
-            raise TypeError("accept_turn must be callable")
-        message = self._validate_messages(
-            [{"role": "user", "content": user_content}]
-        )[0]
-        acceptance_commit_id = _uuid4_text(
-            self.uuid_factory(), "acceptance_commit_id"
-        )
-        result_commit_id = _uuid4_text(self.uuid_factory(), "result_commit_id")
-
-        with self._transaction(operation_fence) as transaction:
-            operation = self.operation_coordinator.assert_current_execution(
-                operation_fence,
-                transaction=transaction,
-            )
-            self._assert_operation_authority(
-                operation,
-                owner_user_id=owner_user_id,
-                chat_id=chat_id,
-                request_generation=request_generation,
-                connection_generation=connection_generation,
-                operation_owner=operation_owner,
-            )
-            chat = self._history.conversations.get(
-                transaction,
-                owner_id=owner_user_id,
-                conversation_id=chat_id,
-                for_update=True,
-            )
-            if chat is None:
-                raise ConversationNotFound("conversation not found")
-            existing = self._workspaces.publications.get_by_request(
-                transaction,
-                owner_id=owner_user_id,
-                conversation_id=chat_id,
-                request_generation=request_generation,
-                for_update=True,
-            )
-            if existing is not None:
-                if (
-                    existing.owner_id != owner_user_id
-                    or existing.publication_role != "user_acceptance"
-                    or existing.state != "committed"
-                    or str(existing.operation_id or "")
-                    != str(operation_fence.operation_id)
-                    or int(existing.operation_execution_generation or 0)
-                    != int(operation_fence.execution_generation)
-                ):
-                    raise ConversationCommitConflict(
-                        "voice acceptance idempotency identity changed"
-                    )
-                result = self._workspaces.publications.get_by_request(
-                    transaction,
-                    owner_id=owner_user_id,
-                    conversation_id=chat_id,
-                    request_generation=result_request_generation,
-                    for_update=True,
-                )
-                if (
-                    result is None
-                    or result.publication_role != "assistant_result"
-                    or result.parent_publication_id != existing.publication_id
-                ):
-                    raise ConversationCommitConflict(
-                        "voice result idempotency identity changed"
-                    )
-                accepted_messages = self._history.messages.list_for_publication(
-                    transaction,
-                    owner_id=owner_user_id,
-                    conversation_id=chat_id,
-                    publication_id=existing.publication_id,
-                    limit=2,
-                )
-                if (
-                    len(accepted_messages) != 1
-                    or accepted_messages[0].role != "user"
-                    or accepted_messages[0].commit_position != 0
-                ):
-                    raise ConversationSnapshotInvalid(
-                        "voice acceptance message is unavailable"
-                    )
-                return {
-                    "acceptance": self._commit_record(existing),
-                    "result": self._commit_record(result),
-                    "message_id": accepted_messages[0].message_id,
-                    "accepted_turn": None,
-                    "components": self._load_component_view(
-                        transaction,
-                        chat_id=chat_id,
-                        owner_user_id=owner_user_id,
-                        commit_id=existing.publication_id,
-                        revision=int(existing.committed_render_revision or 0),
-                        require_state="committed",
-                    ),
-                    "layouts": self._load_layout_view(
-                        transaction,
-                        chat_id=chat_id,
-                        owner_user_id=owner_user_id,
-                        commit_id=existing.publication_id,
-                        revision=int(existing.committed_render_revision or 0),
-                        require_state="committed",
-                    ),
-                }
-
-            base_revision = chat.render_revision
-            base_commit_id = (
-                None
-                if base_revision == 0
-                else chat.publication_id
-            )
-            if base_revision > 0 and not base_commit_id:
-                raise ConversationSnapshotInvalid(
-                    "current conversation commit anchor is unavailable"
-                )
-            components = self._load_component_view(
-                transaction,
-                chat_id=chat_id,
-                owner_user_id=owner_user_id,
-                commit_id=base_commit_id,
-                revision=base_revision,
-                require_state=(None if base_revision == 0 else "committed"),
-            )
-            layouts = self._load_layout_view(
-                transaction,
-                chat_id=chat_id,
-                owner_user_id=owner_user_id,
-                commit_id=base_commit_id,
-                revision=base_revision,
-                require_state=(None if base_revision == 0 else "committed"),
-            )
-            component_digest = canonical_components_sha256(components)
-            layout_digest = canonical_layouts_sha256(layouts)
-            next_revision = base_revision + 1
-            operation_id = str(operation_fence.operation_id)
-            operation_generation = int(operation_fence.execution_generation)
-            current_time = datetime.now(UTC)
-            current_ms = int(current_time.timestamp() * 1000)
-            try:
-                acceptance_stage = self._workspaces.publications.stage(
-                    transaction,
-                    publication_id=acceptance_commit_id,
-                    owner_id=owner_user_id,
-                    conversation_id=chat_id,
-                    request_generation=request_generation,
-                    operation_id=operation_id,
-                    operation_execution_generation=operation_generation,
-                    base_render_revision=base_revision,
-                    started_at=current_time,
-                    publication_role="user_acceptance",
-                    execution_base_publication_id=base_commit_id,
-                    execution_base_render_revision=base_revision,
-                    execution_base_components_sha256=component_digest,
-                    execution_base_layouts_sha256=layout_digest,
-                )
-                message_record = (
-                    self._history.messages.append_next_to_staged_publication(
-                        transaction,
-                        owner_id=owner_user_id,
-                        conversation_id=chat_id,
-                        publication_id=acceptance_commit_id,
-                        role=message["role"],
-                        content=message["content"],
-                    )
-                )
-            except RepositoryNotFoundError as exc:
-                raise ConversationNotFound("conversation not found") from exc
-            except RepositoryConflictError as exc:
-                raise ConversationCommitConflict(
-                    "voice acceptance publication lost its stage fence"
-                ) from exc
-            message_id = message_record.message_id
-            self._insert_component_view(
-                transaction,
-                chat_id=chat_id,
-                owner_user_id=owner_user_id,
-                commit_id=acceptance_commit_id,
-                revision=next_revision,
-                components=components,
-                current_ms=current_ms,
-            )
-            self._insert_layout_view(
-                transaction,
-                chat_id=chat_id,
-                owner_user_id=owner_user_id,
-                commit_id=acceptance_commit_id,
-                revision=next_revision,
-                layouts=layouts,
-                current_ms=current_ms,
-            )
-            try:
-                acceptance = self._workspaces.publications.commit_at_head(
-                    transaction,
-                    owner_id=owner_user_id,
-                    conversation_id=chat_id,
-                    publication_id=acceptance_stage.publication_id,
-                    expected_staged_base_render_revision=base_revision,
-                    expected_head_render_revision=base_revision,
-                    expected_head_publication_id=base_commit_id,
-                    committed_at=current_time,
-                    updated_at=current_ms,
-                )
-                result = self._workspaces.publications.stage(
-                    transaction,
-                    publication_id=result_commit_id,
-                    owner_id=owner_user_id,
-                    conversation_id=chat_id,
-                    request_generation=result_request_generation,
-                    operation_id=operation_id,
-                    operation_execution_generation=operation_generation,
-                    base_render_revision=next_revision,
-                    started_at=current_time,
-                    publication_role="assistant_result",
-                    parent_publication_id=acceptance_commit_id,
-                    execution_base_publication_id=acceptance_commit_id,
-                    execution_base_render_revision=next_revision,
-                    execution_base_components_sha256=component_digest,
-                    execution_base_layouts_sha256=layout_digest,
-                )
-            except RepositoryConflictError as exc:
-                raise ConversationCommitConflict(
-                    "voice acceptance publication lost its commit fence"
-                ) from exc
-            result_revision = next_revision + 1
-            self._insert_component_view(
-                transaction,
-                chat_id=chat_id,
-                owner_user_id=owner_user_id,
-                commit_id=result_commit_id,
-                revision=result_revision,
-                components=components,
-                current_ms=current_ms,
-            )
-            self._insert_layout_view(
-                transaction,
-                chat_id=chat_id,
-                owner_user_id=owner_user_id,
-                commit_id=result_commit_id,
-                revision=result_revision,
-                layouts=layouts,
-                current_ms=current_ms,
-            )
-            accepted_turn = accept_turn(
-                transaction=transaction,
-                message_id=message_id,
-                acceptance_commit_id=acceptance_commit_id,
-                result_commit_id=result_commit_id,
-            )
-        return {
-            "acceptance": self._commit_record(acceptance),
-            "result": self._commit_record(result),
-            "message_id": message_id,
-            "accepted_turn": accepted_turn,
-            "components": components,
-            "layouts": layouts,
-        }
 
     def stage_commit(
         self,
@@ -2057,6 +1735,7 @@ class ConversationCommitRepository:
                     transaction=transaction,
                 )
         return self._commit_record(committed)
+
     def build_snapshot(
         self,
         *,
@@ -2164,7 +1843,11 @@ class ConversationCommitRepository:
             for message in message_records:
                 # Don't re-parse: prose like '[]' would become real JSON
                 parts = _rail_parts(
-                    _content_parts(message.content, already_decoded=True),
+                    _content_parts(
+                        message.content,
+                        already_decoded=True,
+                        typed_by_user=message.role == "user",
+                    ),
                     canvas_component_ids=canvas_component_ids,
                 )
                 if not parts:
@@ -2293,39 +1976,6 @@ class ConversationCommitRepository:
                 }
             )
         return output
-
-    def committed_assistant_content(
-        self,
-        *,
-        commit_id: Any,
-        owner_user_id: str,
-    ) -> Any | None:
-        commit_id = _uuid4_text(commit_id, "commit_id")
-        owner_user_id = _required_text(owner_user_id, "owner_user_id")
-        with self._transaction() as transaction:
-            publication = self._workspaces.publications.get_for_owner(
-                transaction,
-                owner_id=owner_user_id,
-                publication_id=commit_id,
-            )
-            if (
-                publication is None
-                or publication.state != "committed"
-                or publication.publication_role != "assistant_result"
-            ):
-                return None
-            record = (
-                self._workspaces.publications.get_latest_committed_assistant_content(
-                    transaction,
-                    owner_id=owner_user_id,
-                    publication_id=commit_id,
-                )
-            )
-        return (
-            None
-            if record is None
-            else _strip_reserved_presentation(record.content)
-        )
 
 def _component_preview_text(components) -> str:
     parts = []
@@ -2563,36 +2213,6 @@ class HistoryManager:
             owner_id=user_id,
             conversation_id=chat_id,
         )
-
-    def update_chat_title(self, chat_id: str, title: str, user_id: str = 'legacy'):
-        stage = current_scheduled_history_stage()
-        if stage is not None:
-            stage.update_title(
-                self,
-                chat_id=chat_id,
-                user_id=user_id,
-                title=title,
-            )
-            return
-        timestamp = int(time.time() * 1000)
-        with self._history.transaction() as transaction:
-            conversations = self._history.repository.conversations
-            chat = conversations.get(
-                transaction,
-                owner_id=user_id,
-                conversation_id=chat_id,
-                for_update=True,
-            )
-            if chat is None:
-                return
-            conversations.rename(
-                transaction,
-                owner_id=user_id,
-                conversation_id=chat_id,
-                title=title,
-                expected_updated_at=chat.updated_at,
-                updated_at=max(timestamp, chat.updated_at + 1),
-            )
 
     def rename_chat(self, chat_id: str, title: str, user_id: str) -> bool:
         with self._history.transaction() as transaction:
@@ -3062,18 +2682,6 @@ class HistoryManager:
             "title": record.title,
             "created_at": record.created_at,
         }
-
-    def add_file_mapping(self, chat_id: str, original_name: str, backend_path: str, user_id: str = 'legacy'):
-        import time
-        timestamp = int(time.time() * 1000)
-        self._conversation_files.call(
-            self._conversation_files.repository.add_mapping,
-            owner_id=user_id,
-            conversation_id=chat_id,
-            original_name=original_name,
-            backend_path=backend_path,
-            uploaded_at=timestamp,
-        )
 
     def get_file_mappings(self, chat_id: str, user_id: str = 'legacy') -> List[Dict]:
         records = self._conversation_files.call(

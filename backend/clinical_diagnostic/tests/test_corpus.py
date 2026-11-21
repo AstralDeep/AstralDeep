@@ -160,7 +160,7 @@ def test_partition_summary_is_empty_for_no_cases():
 
 
 def test_corpus_path_is_the_tracked_fixture():
-    assert SYNTHETIC_CORPUS_PATH.endswith("fixtures/professional_synthetic.json")
+    assert SYNTHETIC_CORPUS_PATH.replace("\\", "/").endswith("fixtures/professional_synthetic.json")
     assert PROVENANCE["schema"] == "healthbench-professional/v1"
     item = RubricItem("c1", "Criterion.", 1.0)
     assert item.criterion_id == "c1"
