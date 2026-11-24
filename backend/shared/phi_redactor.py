@@ -121,6 +121,12 @@ SECRET_VALUE_PATTERNS: Tuple[Tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\bBearer\s+[a-zA-Z0-9_.\-]{25,}\b"), "[REDACTED:bearer_token]"),
 )
 
+try:
+    from security.secret_detection.detector import SecretDetector
+    _SECRET_DETECTOR: Optional[SecretDetector] = SecretDetector()
+except Exception:  # pragma: no cover
+    _SECRET_DETECTOR = None
+
 
 
 def _matches_phi_field_key(key: str) -> bool:
@@ -146,6 +152,14 @@ def _redact_string(s: str, phi: bool = True) -> Tuple[str, bool]:
         if new_s != s:
             changed = True
             s = new_s
+    if _SECRET_DETECTOR is not None:
+        try:
+            det_res = _SECRET_DETECTOR.scan_and_redact(s)
+            if det_res.has_secrets and det_res.redacted_text != s:
+                s = det_res.redacted_text
+                changed = True
+        except Exception:  # pragma: no cover
+            pass
     return s, changed
 
 
