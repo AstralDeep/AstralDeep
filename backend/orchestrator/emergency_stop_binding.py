@@ -202,6 +202,9 @@ def mount(orch):
         interrupt=lambda owner_id, task: interrupt_owner(orch, owner_id, task),
     )
     orch.emergency_stop = coordinator
+    term = getattr(orch, "terminal_sessions", None)
+    if term is not None and hasattr(term, "set_emergency_stop_coordinator"):
+        term.set_emergency_stop_coordinator(coordinator)
     return coordinator
 
 
@@ -223,6 +226,12 @@ async def interrupt_owner(orch, owner_id, control_task=None):
         manager = getattr(orch, manager_name, None)
         if manager is not None:
             managers.append(asyncio.create_task(manager.cancel_for_owner(owner_id)))
+    terminal_manager = getattr(orch, "terminal_sessions", None)
+    if terminal_manager is not None:
+        try:
+            terminal_manager.close_all_for_owner(owner_id, "emergency_stop")
+        except Exception:
+            logger.warning("Failed to close terminal sessions during emergency stop for %s", owner_id, exc_info=True)
     try:
         await await_interruption(tasks | set(managers))
         for task in managers:

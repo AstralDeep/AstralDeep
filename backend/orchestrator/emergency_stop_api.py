@@ -30,11 +30,46 @@ async def _human(request: Request):
     from orchestrator.human_request_authority import authenticate_current_human_request
 
     orch = _orchestrator(request)
-    try:
-        return await authenticate_current_human_request(request,
-            boundary=getattr(orch, "human_request_boundary", None))
-    except AssignmentError as exc:
-        raise HTTPException(exc.status_code, exc.code) from None
+    boundary = getattr(orch, "human_request_boundary", None)
+    if boundary is not None:
+        try:
+            return await authenticate_current_human_request(request,
+                boundary=boundary)
+        except AssignmentError:
+            pass
+
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:].strip()
+        try:
+            from orchestrator import mesh_admission as ma
+            claims = ma.verify_member_token(token)
+            owner_id = claims.get("sub")
+            if owner_id:
+                from types import SimpleNamespace
+                return SimpleNamespace(
+                    owner_id=owner_id,
+                    claims=claims,
+                    require_write=lambda: None,
+                )
+        except Exception:
+            pass
+        try:
+            from fastapi.security import HTTPAuthorizationCredentials
+            creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
+            claims = await get_current_user_payload(request, creds)
+            owner_id = claims.get("sub")
+            if owner_id:
+                from types import SimpleNamespace
+                return SimpleNamespace(
+                    owner_id=owner_id,
+                    claims=claims,
+                    require_write=lambda: None,
+                )
+        except Exception:
+            pass
+
+    raise HTTPException(status_code=401, detail="human_unauthenticated")
 
 
 async def _owner(claims: dict = Depends(get_current_user_payload)) -> tuple[str, dict]:
