@@ -146,6 +146,23 @@ def _redact_string(s: str, phi: bool = True) -> Tuple[str, bool]:
         if new_s != s:
             changed = True
             s = new_s
+
+    # Contextual privacy filter extension (Issue #318, off by default)
+    if phi:
+        try:
+            from security.privacy_filter import (
+                is_contextual_privacy_filter_enabled,
+                LocalPrivacyFilterAdapter,
+            )
+            if is_contextual_privacy_filter_enabled():
+                adapter = LocalPrivacyFilterAdapter()
+                ctx_res = adapter.filter_tool_text(s)
+                if ctx_res.status.value == "REDACTED" or ctx_res.spans_count > 0:
+                    changed = True
+                    s = ctx_res.redacted_text
+        except Exception:
+            pass
+
     return s, changed
 
 
