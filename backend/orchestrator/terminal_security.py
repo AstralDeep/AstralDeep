@@ -49,6 +49,11 @@ def require_terminal_execution(manager=None, owner_id: str | None = None) -> Non
 
     if not isinstance(manager, TerminalSessionManager) or not owner_id:
         raise TerminalError("terminal_isolation_unavailable", 503)
+    coordinator = getattr(manager, "_emergency_stop", None)
+    if coordinator is None and getattr(manager, "_orchestrator", None) is not None:
+        coordinator = getattr(manager._orchestrator, "emergency_stop", None)
+    if coordinator is not None and not coordinator.admission_allowed(owner_id):
+        raise TerminalError("emergency_stop_active", 423)
     manager.require_execution(owner_id)
 
 

@@ -9,7 +9,12 @@ import binascii
 import errno
 import hashlib
 import json
-import fcntl
+try:
+    import fcntl
+    import termios
+except ImportError:
+    fcntl = None  # type: ignore
+    termios = None  # type: ignore
 import logging
 import math
 import os
@@ -18,7 +23,6 @@ import shutil
 import signal
 import struct
 import subprocess
-import termios
 import threading
 import time
 import uuid
@@ -211,11 +215,15 @@ class TerminalSessionManager:
     def __init__(self, *, clock: Optional[Callable[[], float]] = None, orchestrator=None) -> None:
         self._sessions: Dict[str, TerminalSession] = {}
         self._orchestrator = orchestrator
+        self._emergency_stop = None
         self._pending: Dict[str, int] = {}
         self._lock = threading.Lock()
         self._clock = clock or time.monotonic
         self._sweeper: Optional[threading.Thread] = None
         self._sweeper_stop = threading.Event()
+
+    def set_emergency_stop_coordinator(self, coordinator) -> None:
+        self._emergency_stop = coordinator
 
     def require_execution(self, owner_id: str):
         from orchestrator.terminal_ssh import resolve
@@ -638,6 +646,8 @@ def _bounded_wait(value: Any) -> float:
 
 
 def _apply_winsize(fd: int, size: Tuple[int, int]) -> None:
+    if fcntl is None or termios is None:
+        return
     try:
         winsize = struct.pack("HHHH", size[1], size[0], 0, 0)
         fcntl.ioctl(fd, termios.TIOCSWINSZ, winsize)
@@ -646,8 +656,13 @@ def _apply_winsize(fd: int, size: Tuple[int, int]) -> None:
 
 
 def _set_nonblocking(fd: int) -> None:
-    flags = fcntl.fcntl(fd, fcntl.F_GETFL)
-    fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+    if fcntl is None:
+        return
+    try:
+        flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+        fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+    except OSError:
+        pass
 
 
 __all__ = [
